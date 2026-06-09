@@ -1,4 +1,7 @@
+fastmcp
 msgpack
 lz4
 numpy
 matplotlib
+pandas
+scikit-learn

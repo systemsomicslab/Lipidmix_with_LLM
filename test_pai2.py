@@ -8,6 +8,11 @@ import lz4.block
 import pprint
 import matplotlib.pyplot as plt
 import glob
+import pandas as pd
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+import base64
+import numpy as np
 
 
 class IonMode(Enum):
@@ -44,23 +49,45 @@ def deserialize_lz4_packed_msgpack(data: bytes) -> list | dict:
 
 def _convert_to_times(data: list) -> dict:
     result = {}
+    if not isinstance(data, list): return result # 安全策
+
+    # for t in data[:4]:
+    #     if t[0] == 1:
+    #         if t[1][0] >= 0:
+    #             result["rt"] = t[1][0]
+    #     elif t[0] == 2:
+    #         if t[1][0] >= 0:
+    #             result["ri"] = t[1][0]
+    #     elif t[0] == 3:
+    #         if t[1][0] >= 0:
+    #             result["m/z"] = t[1][0]
+    #     elif t[0] == 4:
+    #         if t[1][0] >= 0:
+    #             result["dt"] = t[1][0]
+
     for t in data[:4]:
-        if t[0] == 1:
-            if t[1][0] >= 0:
-                result["rt"] = t[1][0]
-        elif t[0] == 2:
-            if t[1][0] >= 0:
-                result["ri"] = t[1][0]
-        elif t[0] == 3:
-            if t[1][0] >= 0:
-                result["m/z"] = t[1][0]
-        elif t[0] == 4:
-            if t[1][0] >= 0:
-                result["dt"] = t[1][0]
+        # t がリストであり、かつ2番目の要素もリストであることを確認
+        if isinstance(t, (list, tuple)) and len(t) >= 2:
+            val_list = t[1]
+            if isinstance(val_list, (list, tuple)) and len(val_list) > 0:
+                val = val_list[0]
+                if val >= 0:
+                    if t[0] == 1: result["rt"] = val
+                    elif t[0] == 2: result["ri"] = val
+                    elif t[0] == 3: result["m/z"] = val
+                    elif t[0] == 4: result["dt"] = val
     return result
 
 
 def _convert_to_peakfeature(data: list) -> dict:
+    # formula (26番目) の安全な取得
+    formula_data = data[26]
+    formula = formula_data[0] if isinstance(formula_data, (list, tuple)) and len(formula_data) > 0 else "Unknown"
+    
+    # adduct (30番目) の安全な取得
+    adduct_data = data[30]
+    adduct = adduct_data[2] if isinstance(adduct_data, (list, tuple)) and len(adduct_data) > 2 else "Unknown"
+    
     return {
         "time": _convert_to_times(data[4]),
         "time_left": _convert_to_times(data[3]),
@@ -71,14 +98,15 @@ def _convert_to_peakfeature(data: list) -> dict:
         "peak_area": data[9],
         "peak_area_above_baseline": data[10],
         "m/z": data[43],
+        "S/N": data[40][1],
         "id": data[11],
         "ion_mode": IonMode(data[22]),
         "name": data[25],
-        "formula": data[26][0],
+        "formula": formula,
         "ontology": data[27],
         "smiles": data[28],
         "inchikey": data[29],
-        "adduct": data[30][2],
+        "adduct": adduct,
         "collision_cross_section": data[31],
         "comment": data[38],
     }
@@ -103,10 +131,7 @@ def deserialize(file: BinaryIO):
 
 
 
-def test_pai2_deserialize_and_format():
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    file_path = os.path.join(project_root, 'data', '0717_kinetex_wine_50_4min_pos_IDA_A1_202506271229.pai2')
-
+def test_pai2_deserialize_and_format(file_path):
     with open(file_path, 'rb') as f:
         packed_data = f.read()
 
@@ -123,51 +148,233 @@ def test_pai2_deserialize_and_format():
     # リストの最初の要素が辞書型であることを確認
     assert isinstance(deserialized_and_formatted_data[0], dict)
 
-    print("\n--- Deserialized and Formatted Data Sample ---")
+    # PCA分析を実行して要約を取得
+    perform_pca_summary(deserialized_and_formatted_data, filter_threshold=1000)
+
+    # print("\n--- Deserialized and Formatted Data Sample ---")
+
     # 整形されたデータの一部をダンプ (最初の3つの要素)
-    pprint.pprint(deserialized_and_formatted_data[:3])
-    print("----------------------------------------------\n")
+    # pprint.pprint(deserialized_and_formatted_data[:3])
 
-# 散布図実装
-def plot_ms_map(features: list):
-    rts = []
-    mzs = []
-    intensities = []
+    # print("----------------------------------------------\n")
+    
+    
+def get_signal_to_noise(feature: dict):
+    """PAI2データからS/N比を抽出できる場合に返す。"""
+    for key in ["signal_to_noise", "sn", "S/N", "SignalToNoise", "signalToNoise"]:
+        if key in feature and feature[key] is not None:
+            try:
+                return float(feature[key])
+            except (TypeError, ValueError):
+                pass
+    return None
 
-    for feat in features:
-        rt = feat.get("time", {}).get("rt")
-        mz = feat.get("m/z")
-        height = feat.get("peak_height", 1)
 
-        if rt is not None and mz is not None:
-            rts.append(rt)
-            mzs.append(mz)
-            intensities.append(height)
+def filter_features_by_params(features: list, filter_params: dict | None = None):
+    """指定された条件でピークを絞り込む。"""
+    if filter_params is None:
+        filter_params = {}
 
-    plt.figure(figsize=(12,8))
+    min_intensity = filter_params.get("min_intensity", filter_params.get("min_height", 0))
+    min_sn = filter_params.get("min_sn", 0)
 
-    scatter = plt.scatter(rts, mzs, c=intensities, cmap='viridis', alpha=0.6, edgecolors='none')
-    plt.colorbar(scatter, label='Peak Height')
-    plt.xlabel('Retention Time (min)')
-    plt.ylabel('m/z')
-    plt.title('MS Map')
+    filtered = []
+    for f in features:
+        if min_intensity and f.get("peak_height", 0) < min_intensity:
+            continue
+        if min_sn:
+            sn = get_signal_to_noise(f)
+            if sn is None or sn < min_sn:
+                continue
+        filtered.append(f)
 
-    plt.show()
+    return filtered
+
+
+# PCA実装
+def perform_pca_summary(features: list, filter_params: dict | None = None, filter_threshold: float | None = None):
+    """
+    特徴量からPCAを実行し、LLM向けの要約とグラフを生成する。
+
+    filter_params には以下を指定できます:
+      - min_intensity / min_height: ピーク強度の下限
+      - min_sn: S/N比の下限 (データに存在する場合のみ)
+
+    filter_threshold を指定すると min_intensity として扱われます。
+    """
+    if filter_params is None:
+        filter_params = {}
+    if filter_threshold is not None:
+        filter_params.setdefault("min_intensity", filter_threshold)
+
+    filtered_features = filter_features_by_params(features, filter_params)
+    if len(filtered_features) < 3:
+        return {
+            "status": "error",
+            "message": "有効なデータが少なすぎるため、PCAを実行できません。",
+            "total_peaks_initial": len(features),
+            "total_peaks_filtered": len(filtered_features),
+            "filter_params": filter_params,
+        }, None, None, None, filtered_features
+
+    # 特徴量抽出
+    data = []
+    for f in filtered_features:
+        data.append({
+            "RT": f.get("time", {}).get("rt"),
+            "m/z": f.get("m/z"),
+            "Height": f.get("peak_height")
+        })
+
+    df = pd.DataFrame(data)
+    if df.isnull().all(axis=None):
+        return {
+            "status": "error",
+            "message": "PCA用の有効な数値データがありません。",
+            "total_peaks_initial": len(features),
+            "total_peaks_filtered": len(filtered_features),
+            "filter_params": filter_params,
+        }, None, None, None, filtered_features
+
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(df)
+
+    pca = PCA(n_components=2)
+    pca_result = pca.fit_transform(scaled)
+
+    var_ratio = pca.explained_variance_ratio_
+    sn_values = [get_signal_to_noise(f) for f in filtered_features]
+    sn_available = [sn for sn in sn_values if sn is not None]
+
+    top_pc1 = get_top_contributors(filtered_features, pca_result, top_n=10)
+    top_pc2 = get_top_contributors(filtered_features, pca_result, top_n=10, component=1)
+
+    summary = {
+        "status": "success",
+        "total_peaks_initial": len(features),
+        "total_peaks_filtered": len(filtered_features),
+        "filter_params": filter_params,
+        "explained_variance": {
+            "PC1": f"{var_ratio[0]:.2%}",
+            "PC2": f"{var_ratio[1]:.2%}"
+        },
+        "pca_equation": "X = T P^T + E",
+        "sn_summary": {
+            "available_fraction": round(len(sn_available) / len(filtered_features), 3),
+            "count_with_sn": len(sn_available),
+            "min": round(min(sn_available), 3) if sn_available else None,
+            "median": round(np.median(sn_available), 3) if sn_available else None,
+            "max": round(max(sn_available), 3) if sn_available else None,
+        },
+        "loadings": {
+            "PC1_main_factor": df.columns[np.argmax(np.abs(pca.components_[0]))],
+            "PC2_main_factor": df.columns[np.argmax(np.abs(pca.components_[1]))],
+            "weights": {
+                "PC1": dict(zip(df.columns, np.round(pca.components_[0], 3).tolist())),
+                "PC2": dict(zip(df.columns, np.round(pca.components_[1], 3).tolist()))
+            }
+        },
+        "top_contributors": {
+            "PC1": top_pc1,
+            "PC2": top_pc2,
+        }
+    }
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    scatter = ax.scatter(pca_result[:, 0], pca_result[:, 1], alpha=0.5, c=df['m/z'], cmap='viridis')
+    ax.set_xlabel(f"PC1 ({var_ratio[0]:.1%})")
+    ax.set_ylabel(f"PC2 ({var_ratio[1]:.1%})")
+    ax.set_title(f"PCA (min_intensity={filter_params.get('min_intensity', filter_params.get('min_height', 0))})")
+    plt.colorbar(scatter, label='m/z')
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    plt.close(fig)
+    buf.seek(0)
+    img_bytes = buf.getvalue()
+    pca_index = df.index
+
+    return summary, img_bytes, pca_result, pca_index, filtered_features
+
+
+def get_top_contributors(filtered_features, pca_result, top_n=5, component=0):
+    """
+    PCスコアの絶対値で上位の代謝物を抽出する。"""
+    indices = np.argsort(np.abs(pca_result[:, component]))[::-1][:top_n]
+
+    top_metabolites = []
+    for idx in indices:
+        feat = filtered_features[idx]
+        top_metabolites.append({
+            "id": feat.get("id"),
+            "name": feat.get("name", "Unknown"),
+            "score": round(pca_result[idx, component], 2),
+            "m/z": round(feat.get("m/z") or 0, 4),
+            "height": feat.get("peak_height"),
+            "signal_to_noise": get_signal_to_noise(feat),
+            "rt": round(feat.get("time", {}).get("rt") or 0, 2)
+        })
+
+    return top_metabolites
+
+# --- 2. 重要な代謝物の抽出 ---
+
+def inspect_metabolite_details(filtered_features: list, metabolite_id: str | None = None, metabolite_name: str | None = None):
+    """
+    指定した代謝物について、強度・S/N・MS/MS情報などの詳細を返す。
+    """
+    if metabolite_id is None and metabolite_name is None:
+        return {
+            "status": "error",
+            "message": "metabolite_id か metabolite_name のいずれかを指定してください。"
+        }
+
+    matches = []
+    for feat in filtered_features:
+        if metabolite_id is not None and str(feat.get("id")) == str(metabolite_id):
+            matches.append(feat)
+        elif metabolite_name is not None and isinstance(feat.get("name"), str) and metabolite_name.lower() in feat.get("name", "").lower():
+            matches.append(feat)
+
+    if not matches:
+        return {
+            "status": "not_found",
+            "message": "指定された代謝物がフィルタ済みデータ内に見つかりませんでした。"
+        }
+
+    results = []
+    for feat in matches:
+        sn = get_signal_to_noise(feat)
+        has_msms = any(
+            isinstance(k, str) and any(token in k.lower() for token in ["msms", "fragment", "spectrum"]) 
+            for k in feat.keys()
+        )
+        results.append({
+            "id": feat.get("id"),
+            "name": feat.get("name", "Unknown"),
+            "m/z": feat.get("m/z"),
+            "rt": feat.get("time", {}).get("rt"),
+            "height": feat.get("peak_height"),
+            "area": feat.get("peak_area"),
+            "signal_to_noise": sn,
+            "has_msms_like_fields": has_msms,
+            "formula": feat.get("formula"),
+            "adduct": feat.get("adduct"),
+            "comment": feat.get("comment"),
+        })
+
+    return {
+        "status": "success",
+        "matches": results,
+        "note": "PAI2データに明示的な S/N フィールドがない場合は null になります。"
+    }
+
 
 # --- 実行セクション ---
 if __name__ == "__main__":
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    data_dir = os.path.join(project_root, 'data')
+    data_root = os.path.join(project_root, 'homework1_260408')
+    data_dir = os.path.join(data_root, 'data')
     pai2_files = glob.glob(os.path.join(data_dir, "*.pai2")) # ディレクトリ内の .pai2 ファイルを取得
-
-    if not pai2_files:
-        print(f"Error: .pai2 file not found in {data_dir}")
-    else:
-        # リストの最初に見つかったファイルを使用
-        file_path = pai2_files[0]
-        print(f"File found: {os.path.basename(file_path)}")
-
-        with open(file_path, 'rb') as f:
-            deserialized_data = deserialize(f)
-            print(f"Total peaks extracted: {len(deserialized_data)}")
-            plot_ms_map(deserialized_data)
+    file_path = pai2_files[0] if pai2_files else None
+    test_pai2_deserialize_and_format(file_path)
