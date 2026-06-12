@@ -134,10 +134,8 @@ def top_eic_spots_by_peak_top(results, top_n=20):
 
 # --- 実行 ---
 if __name__ == "__main__":
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    data_root = os.path.join(project_root, 'homework1_260408')
-    data_dir = os.path.join(data_root, 'data')
-    aef_files = glob.glob(os.path.join(data_dir, "*.aef"))
+    from data_config import get_data_dir
+    aef_files = glob.glob(os.path.join(str(get_data_dir()), "*.aef"))  # 探索先は環境変数で上書き可
     path = aef_files[0] if aef_files else None
 
     if os.path.exists(path):

@@ -87,7 +87,20 @@ def _convert_to_peakfeature(data: list) -> dict:
     # adduct (30番目) の安全な取得
     adduct_data = data[30]
     adduct = adduct_data[2] if isinstance(adduct_data, (list, tuple)) and len(adduct_data) > 2 else "Unknown"
-    
+
+    # MS/MS情報 (Key18 MS2RawSpectrumID / Key19 MS2RawSpectrumID2CE / Key24 Spectrum)
+    # 注: MS/MS実スペクトル本体は別の .dcl ファイルに格納されるため、.pai2 単体では
+    #     Key24 は通常 空配列。取得有無(Key18/19)と衝突エネルギーは .pai2 から利用可能。
+    ms2_id = data[18] if len(data) > 18 and isinstance(data[18], int) else -1
+    ce_map = data[19] if len(data) > 19 and isinstance(data[19], dict) else {}
+    spectrum = data[24] if len(data) > 24 and isinstance(data[24], list) else []
+    collision_energies = sorted({float(v) for v in ce_map.values()}) if ce_map else []
+    # SpectrumPeak は [mass, intensity, ...] 形式（本データでは空）
+    msms_spectrum = [
+        [p[0], p[1]] for p in spectrum
+        if isinstance(p, (list, tuple)) and len(p) >= 2
+    ]
+
     return {
         "time": _convert_to_times(data[4]),
         "time_left": _convert_to_times(data[3]),
@@ -109,6 +122,12 @@ def _convert_to_peakfeature(data: list) -> dict:
         "adduct": adduct,
         "collision_cross_section": data[31],
         "comment": data[38],
+        # --- MS/MS (T5で追加) ---
+        "has_msms": bool(ce_map) or ms2_id >= 0,
+        "ms2_raw_id": ms2_id,
+        "collision_energies": collision_energies,
+        "msms_peak_count": len(msms_spectrum),
+        "msms_spectrum": msms_spectrum,
     }
 
 
@@ -372,9 +391,7 @@ def inspect_metabolite_details(filtered_features: list, metabolite_id: str | Non
 
 # --- 実行セクション ---
 if __name__ == "__main__":
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    data_root = os.path.join(project_root, 'homework1_260408')
-    data_dir = os.path.join(data_root, 'data')
-    pai2_files = glob.glob(os.path.join(data_dir, "*.pai2")) # ディレクトリ内の .pai2 ファイルを取得
+    from data_config import get_data_dir
+    pai2_files = glob.glob(os.path.join(str(get_data_dir()), "*.pai2"))  # 探索先は環境変数で上書き可
     file_path = pai2_files[0] if pai2_files else None
     test_pai2_deserialize_and_format(file_path)

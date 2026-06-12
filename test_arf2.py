@@ -11,6 +11,8 @@ import glob
 import sys
 import pprint
 
+from data_config import get_data_dir
+
 class IonMode(Enum):
     Positive = 0
     Negative = 1
@@ -59,8 +61,27 @@ def deserialize_lz4_packed_msgpack(data: bytes) -> list:
     
     return all_spots_raw
 
+def _to_float(val, default: float = 0.0) -> float:
+    """数値以外/Noneを安全に float へ変換する。"""
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _nested_at(val, idx: int, default=None):
+    """list/tuple の idx 番目を安全に取り出す（MsgPackの入れ子オブジェクト用）。"""
+    if isinstance(val, (list, tuple)) and len(val) > idx:
+        return val[idx]
+    return default
+
+
 def extract_arf2_data(data: list) -> Optional[dict]:
-    """1つのスポットデータ(.arf2形式)からカタログ情報を抽出する"""
+    """1つのスポットデータ(.arf2形式 = AlignmentSpotProperty)からカタログ情報を抽出する。
+
+    Key番号は docs/AlignmentSpotProperty.md ([Key(N)]) に対応。
+    既存6項目に加え、同定情報・品質メトリクスを抽出する（後方互換のため既存キーは維持）。
+    """
     if not isinstance(data, list) or len(data) < 10:
         return None
 
@@ -68,14 +89,38 @@ def extract_arf2_data(data: list) -> Optional[dict]:
         return data[index] if len(data) > index else default
 
     times = _extract_times(get(4)) if isinstance(get(4), list) else {}
-    
+
+    # Key13 Formula = ['C5H10O2', 質量, ...] の先頭が組成式文字列
+    formula = _decode(_nested_at(get(13), 0, "")) or ""
+    # Key54 AdductType = [質量差, charge, '[M-H]-', ...] の index2 が付加体文字列
+    adduct = _decode(_nested_at(get(54), 2, "")) or ""
+
     return {
-        "MasterAlignmentID": int(get(0) or 0),
-        "RT": float(times.get("rt", 0.0)), 
-        "MassCenter": float(get(5) or 0.0),
+        # --- 既存(後方互換: summarize_arf2_data / server.py が依存) ---
+        "MasterAlignmentID": int(_to_float(get(0))),
+        "AlignmentID": int(_to_float(get(1))),
+        "RT": float(times.get("rt", 0.0)),
+        "MassCenter": _to_float(get(5)),
         "IonMode": IonMode.from_int(get(11)),
         "Name": _decode(get(12)) or "Unknown",
-        "HeightAverage": float(get(31) or 0.0)
+        "HeightAverage": _to_float(get(31)),
+        # --- 同定 / 化学情報 (Key13-16, 54) ---
+        "Formula": formula,
+        "Ontology": _decode(get(14)) or "",       # 脂質クラス (FA, PC, TG...)
+        "SMILES": _decode(get(15)) or "",
+        "InChIKey": _decode(get(16)) or "",
+        "AdductType": adduct,                      # [M-H]- など
+        # --- 強度 / 品質メトリクス (Key32-37, 43-44, 49, 51) ---
+        "HeightMin": _to_float(get(32)),
+        "HeightMax": _to_float(get(33)),
+        "PeakWidthAverage": _to_float(get(34)),
+        "SignalToNoiseAve": _to_float(get(35)),
+        "SignalToNoiseMax": _to_float(get(36)),
+        "SignalToNoiseMin": _to_float(get(37)),
+        "MassMin": _to_float(get(43)),
+        "MassMax": _to_float(get(44)),
+        "FillPercentage": _to_float(get(49)),      # 検出されたサンプルの割合
+        "MonoIsotopicPercentage": _to_float(get(51)),
     }
 
 def deserialize(file_like_object) -> List[dict]:
@@ -129,7 +174,18 @@ def summarize_arf2_data(deserialized_list: List[dict]) -> dict:
         # アノテーション済み（Unknown または 空白 でない）の数をカウント
         summary["annotated_count"] = int(df['Name'].apply(lambda x: 1 if x and str(x).lower() != "unknown" and str(x).strip() != "" else 0).sum())
         summary["annotation_rate"] = float(summary["annotated_count"] / len(df) * 100) if len(df) > 0 else 0.0
-        
+
+    if 'Ontology' in df.columns:
+        # 脂質クラス(オントロジー)分布の上位
+        onto = df['Ontology'].apply(lambda x: str(x).strip()).replace("", np.nan).dropna()
+        if not onto.empty:
+            summary["ontology_top"] = onto.value_counts().head(10).to_dict()
+
+    if 'SignalToNoiseAve' in df.columns:
+        sn = df[df['SignalToNoiseAve'] > 0]['SignalToNoiseAve']
+        if not sn.empty:
+            summary["sn_median"] = float(sn.median())
+
     return summary
 
 def generate_text_summary(deserialized_list: List[dict]) -> str:
@@ -155,18 +211,51 @@ def generate_text_summary(deserialized_list: List[dict]) -> str:
     if summary.get('ion_modes'):
         modes = ", ".join([f"{k}: {v:,}" for k, v in summary['ion_modes'].items()])
         text += f"- **検出イオンモード**: {modes}\n"
-        
+    if summary.get('sn_median'):
+        text += f"- **S/N(平均)の代表値(中央値)**: {summary['sn_median']:.1f}\n"
+    if summary.get('ontology_top'):
+        onto = ", ".join([f"{k}: {v:,}" for k, v in summary['ontology_top'].items()])
+        text += f"- **脂質クラス上位(Ontology)**: {onto}\n"
+
     return text
+
+def format_spots_as_table(deserialized_list: List[dict], delimiter: str = "\t",
+                          columns: Optional[List[str]] = None) -> str:
+    """スポット辞書のリストを CSV/TSV テーブル文字列に変換する（LLMへ渡す軽量符号化）。
+
+    整形JSON(indent/キー反復)を避け、列名を1回だけ出すことでトークン量を大幅削減する。
+    delimiter="\\t" でTSV、"," でCSV。columns省略時は全キーを先頭行のキー順で出力。
+    """
+    if not deserialized_list:
+        return ""
+
+    if columns is None:
+        columns = list(deserialized_list[0].keys())
+
+    def cell(v) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, float):
+            # 不要な桁を抑える（m/zは小数4桁、その他は適度に丸め）
+            return f"{v:.4f}".rstrip("0").rstrip(".") if v else "0"
+        s = str(v)
+        # 区切り文字・改行をエスケープ（CSV最小限対応）
+        if delimiter in s or "\n" in s or '"' in s:
+            s = '"' + s.replace('"', '""') + '"'
+        return s
+
+    lines = [delimiter.join(columns)]
+    for row in deserialized_list:
+        lines.append(delimiter.join(cell(row.get(c)) for c in columns))
+    return "\n".join(lines)
+
 
 def find_input_file(file_path: str | None = None, index: int = 0) -> str | None:
     if file_path and os.path.exists(file_path):
         return file_path
 
-    project_root = os.path.dirname(__file__)
-    data_dir = os.path.join(project_root, "data")
-
-    # .arf2 ファイルのみを検索
-    candidates = glob.glob(os.path.join(data_dir, "*.arf2"))
+    # .arf2 ファイルのみを検索（探索先は data_config 経由で環境変数上書き可）
+    candidates = glob.glob(os.path.join(str(get_data_dir()), "*.arf2"))
     return candidates[index] if candidates else None
 
 if __name__ == "__main__":
@@ -179,7 +268,17 @@ if __name__ == "__main__":
     print(f"Loading {file_path}...")
     with open(file_path, 'rb') as f:
         deserialized_data = deserialize(f)
-    
+
     if deserialized_data:
-        text_summary = generate_text_summary(deserialized_data)
-        print("\n" + text_summary)
+        # ===== デシリアライズ結果をCLI表示 =====
+        df = pd.DataFrame(deserialized_data)
+        print(f"\n===== デシリアライズ結果 (.arf2): {len(deserialized_data):,} スポット x {len(df.columns)} 項目 =====")
+        print(f"抽出項目: {list(df.columns)}")
+        with pd.option_context("display.max_columns", None, "display.width", 240):
+            print(df.head(20).to_string(index=False))
+        print(f"... 全 {len(deserialized_data):,} スポット")
+
+        # .arf2 はサンプル別強度を持たないため PCA は実行不可（メタデータ要約のみ）
+        print("\n" + generate_text_summary(deserialized_data))
+    else:
+        print("デシリアライズ結果が空です。")

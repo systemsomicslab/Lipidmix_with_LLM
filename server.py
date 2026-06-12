@@ -60,11 +60,47 @@ from test_pai2 import (
     get_top_contributors,
 )
 
-mcp = FastMCP("ms-data-parser")
+BASE_DIR = Path(__file__).parent
+OUTPUT_FORMAT_DOC = BASE_DIR / "docs" / "output_format.md"
+
+MCP_INSTRUCTIONS = """
+This server parses and analyzes MS-DIAL lipidomics outputs.
+
+Before interpreting any output from ARF, ARF2, PAI2, DCL, or EIC/AEF parser
+tools, you MUST read the MCP resource `lipidmix://docs/output-format` and use it
+as the authoritative definition of row granularity, fields, units, identifiers,
+ontology, PCA axes, and known interpretation caveats. Do not infer a field's
+meaning from its name alone. In particular, distinguish alignment spots from
+sample-level peaks, gap-filled values from detected peaks, PAI2 peak-level PCA
+from sample-level PCA, and EIC `peak_top` coordinates from intensity.
+""".strip()
+
+mcp = FastMCP("ms-data-parser", instructions=MCP_INSTRUCTIONS)
 
 # 絶対パス指定
-BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
+from data_config import get_data_dir
+# データ探索先。環境変数 LIPIDMIX_DATA_DIR で上書き可（既定: <project>/data）
+DATA_DIR = get_data_dir()
+
+
+@mcp.resource(
+    "lipidmix://docs/output-format",
+    name="output_format",
+    title="MS-DIAL parser output format and ontology",
+    description=(
+        "Authoritative field-by-field reference for ARF, ARF2, PAI2, DCL, "
+        "and EIC/AEF parser outputs. Read before interpreting parser results."
+    ),
+    mime_type="text/markdown",
+)
+def output_format_reference() -> str:
+    """Return the parser output format and ontology reference for LLM clients."""
+    try:
+        return OUTPUT_FORMAT_DOC.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Output format reference was not found: {OUTPUT_FORMAT_DOC}"
+        ) from exc
 
 
 # --- ステート保持クラス ---
@@ -331,23 +367,29 @@ def resolve_eicaef_file_path(file_path: str | None = None) -> str | None:
 
 
 @mcp.tool()
-def list_data_files(extension: str | None = None) -> list[str]:
+def list_data_files(extension: str | None = None, directory: str | None = None) -> list[str]:
     """
-    dataディレクトリ内にあるファイルパスの一覧を取得します。
-    extensionが指定された場合は、その拡張子(例: '.pai2', '.arf2', '.eic.aef'）のファイルのみをフィルタします。
+    指定したディレクトリ内にあるファイルパスの一覧を取得します。
+    - directory: 探索するディレクトリのパス。省略時は既定のデータディレクトリ
+      (環境変数 LIPIDMIX_DATA_DIR または <project>/data) を使用します。
+    - extension: 指定された場合は、その拡張子(例: '.pai2', '.arf2', '.eic.aef')のファイルのみをフィルタします。
     """
-    if not DATA_DIR.exists():
-        return [f"データディレクトリが存在しません: {DATA_DIR}"]
-   
+    target_dir = Path(directory).expanduser() if directory else DATA_DIR
+
+    if not target_dir.exists():
+        return [f"データディレクトリが存在しません: {target_dir}"]
+    if not target_dir.is_dir():
+        return [f"指定されたパスはディレクトリではありません: {target_dir}"]
+
     file_paths = []
-    for file in DATA_DIR.iterdir():
+    for file in target_dir.iterdir():
         if file.is_file():
             if extension is None or str(file).endswith(extension):
                 file_paths.append(str(file.absolute()))
-               
+
     if not file_paths:
-        return [f"条件に一致するファイルが存在しません。 (指定された拡張子: {extension})"]
-       
+        return [f"条件に一致するファイルが存在しません。 (ディレクトリ: {target_dir}, 拡張子: {extension})"]
+
     return file_paths
 
 
@@ -503,31 +545,70 @@ def pai2_update_analysis_filter(min_intensity: float = 0.0, min_sn: float = 0.0)
     return "\n".join(parts)
 
 
+def _format_pca_plot_block(pca_result: dict, sample_names: list[str], title: str, intro: str) -> str:
+    """PCAスコアプロット用のJSONとLLMへの描画指示テキストを生成する（arf_parser/arf_re_pca共通）。"""
+    components_coords = pca_result.get("components", [])
+    plot_data_points = []
+    if len(components_coords) > 0 and len(components_coords[0]) >= 2:
+        for i, name in enumerate(sample_names):
+            plot_data_points.append({
+                "sample": name,
+                "pc1": components_coords[i][0],
+                "pc2": components_coords[i][1],
+            })
+    evr = pca_result["explained_variance_ratio"]
+    plot_json_data = {
+        "title": title,
+        "x_axis": f"PC1 ({evr[0] * 100:.2f}%)",
+        "y_axis": f"PC2 ({evr[1] * 100:.2f}%)",
+        "data": plot_data_points,
+    }
+    return intro + f"```json\n{json.dumps(plot_json_data, indent=2, ensure_ascii=False)}\n```\n"
+
+
+def _format_pca_loadings_md(loading_features: list[dict], header: str) -> str:
+    """test_arf.get_pca_loading_features の構造化結果を Markdown 要約に整形する（共通）。"""
+    text = header
+    for pc in loading_features:
+        text += f"\n##### 🔹 {pc['pc']} (説明分散比: {pc['var_ratio']:.2f}%)\n"
+        for label, items in (("正", pc["positive"]), ("負", pc["negative"])):
+            text += f"**【{label}の寄与 上位ピーク】**\n"
+            for idx, item in enumerate(items, 1):
+                ann = f" - *{item['annotation']}*" if item["annotation"] else " - *Unknown*"
+                text += (f"  {idx}. ID: {item['id']} (Loading: `{item['value']:.6f}`){ann} "
+                         f"[m/z: {item['m_z']:.4f}, RT: {item['rt']:.2f} min]\n")
+    return text
+
+
 @mcp.tool()
 def arf_parser(
     file_path: str | None = None,
     props: list[str] = ["height"],
     components: int | None = None,
-    top_features: int = 10
+    top_features: int = 10,
+    log_transform: bool = False,
+    min_detection_rate: float = 0.0
 ) -> list:
     """
     .arf ファイルに対応する解析用関数
     指定されたARFファイルを読み込み、PCAを実行します。
     解析結果のテキスト要約（正負のLoading上位10件含む）と、PCAのスコアプロット画像を同時に返します。
-    
+
     引数:
     - file_path: 解析する .arf ファイルのパス (省略時は自動検索)
     - props: PCAに使用するプロパティのリスト (デフォルト: ["height"])
     - components: 計算する主成分の数
     - top_features: 各主成分から抽出する正・負の寄与トップ件数 (デフォルト: 10)
+    - log_transform: [任意] PCA前に log10 変換を適用する（強度の歪みを抑え条件分離が向上しやすい。既定 False）
+    - min_detection_rate: [任意] 特徴量の実検出率(非ギャップフィル)による足切り 0.0-1.0（既定 0.0=無効）
     """
-    
+
     file_path = resolve_arf_file_path(file_path)
     if not file_path:
         return ["データディレクトリに .arf ファイルが見つかりませんでした。"]
-    
+
     # 外部モジュールからのインポート
-    from test_arf import extract_peak_properties, build_pca_matrix, run_pca, plot_pca, extract_top_loading_features, _convert_to_times
+    from test_arf import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
 
     try:
         deserialized_and_formatted_data = session.load_data(file_path)
@@ -541,91 +622,36 @@ def arf_parser(
         if len(peak_df) > 0:
             avg_samples = len(peak_df) / len(deserialized_and_formatted_data)
 
-        # PCA行列構築
-        matrix, sample_names, feature_names = build_pca_matrix(deserialized_and_formatted_data, use_properties=props)
+        # PCA行列構築（min_detection_rate は任意の検出率フィルタ）
+        matrix, sample_names, feature_names = build_pca_matrix(
+            deserialized_and_formatted_data, use_properties=props,
+            min_detection_rate=min_detection_rate,
+        )
 
         if matrix.size == 0:
             return ["[ERROR] PCA 用データを構築できませんでした。"]
-        
-        # PCA実行
-        pca_result = run_pca(matrix, n_components=components)
-        
-        # PCAスコアプロットの生成
-        components = pca_result.get("components", [])
-        plot_data_points = []
-        
-        # PC1とPC2の座標データをサンプル名と紐付ける
-        if len(components) > 0 and len(components[0]) >= 2:
-            for i, name in enumerate(sample_names):
-                plot_data_points.append({
-                    "sample": name,
-                    "pc1": components[i][0],
-                    "pc2": components[i][1]
-                })
 
-        # 軸ラベル用に寄与率を取得
-        pc1_var = pca_result['explained_variance_ratio'][0] * 100
-        pc2_var = pca_result['explained_variance_ratio'][1] * 100
+        # PCA実行（log_transform は任意のlog10変換）
+        pca_result = run_pca(matrix, n_components=components, log_transform=log_transform)
 
-        # LLMに渡すためのJSON構造
-        plot_json_data = {
-            "title": f"PCA Score Plot ({Path(file_path).name})",
-            "x_axis": f"PC1 ({pc1_var:.2f}%)",
-            "y_axis": f"PC2 ({pc2_var:.2f}%)",
-            "data": plot_data_points
-        }
-        
-        plot_instruction_text = (
-            f"\n#### 📊 PCA スコアプロット用データ\n"
-            f"以下のJSONデータを用いて、見やすい散布図（Scatter Plot）を描画してください。\n"
-            f"各点には `sample` の名前をラベルとして表示するか、ホバー時に確認できるようにしてください。\n"
-            f"```json\n{json.dumps(plot_json_data, indent=2, ensure_ascii=False)}\n```\n"
+        # PCAスコアプロット用データ（共通ヘルパー）
+        plot_instruction_text = _format_pca_plot_block(
+            pca_result, sample_names,
+            title=f"PCA Score Plot ({Path(file_path).name})",
+            intro=(
+                "\n#### 📊 PCA スコアプロット用データ\n"
+                "以下のJSONデータを用いて、見やすい散布図（Scatter Plot）を描画してください。\n"
+                "各点には `sample` の名前をラベルとして表示するか、ホバー時に確認できるようにしてください。\n"
+            ),
         )
-        
-        loadings_summary_text = "#### 📊 PCA Loadings 寄与度分析 (各極値トップ件数)\n"
-        
-        # PC1 と PC2 (存在する分だけ) の処理を実行
-        for pc_idx in range(min(2, len(pca_result["loadings"]))):
-            pc_loadings = pca_result["loadings"][pc_idx]
-            pc_name = f"PC{pc_idx + 1}"
-            var_ratio = pca_result['explained_variance_ratio'][pc_idx] * 100
-            
-            # 特徴量名、ロード値を紐付けたオブジェクトのリストを作成
-            pc_features_list = []
-            for feat_idx, loading_value in enumerate(pc_loadings):
-                feat_name = feature_names[feat_idx]
-                parts = feat_name.split("_")
-                if len(parts) >= 3:
-                    master_id = int(parts[1])
-                    if master_id < len(deserialized_and_formatted_data):
-                        spot = deserialized_and_formatted_data[master_id]
-                        pc_features_list.append({
-                            "id": master_id,
-                            "value": loading_value,
-                            "annotation": spot.get("Name", ""),
-                            "m_z": spot.get("MassCenter"),
-                            "rt": spot.get("RT")
-                        })
-            
-            # 実数値の大きさで降順（大きい順）にソート
-            pc_features_list.sort(key=lambda x: x["value"], reverse=True)
-            
-            # 正の寄与トップN（リストの先頭から）
-            pos_top_n = pc_features_list[:top_features]
-            # 負の寄与トップN（リストの末尾から取得し、負の方向に大きい順＝昇順にするため反転）
-            neg_top_n = pc_features_list[-top_features:][::-1]
-            
-            loadings_summary_text += f"\n##### 🔹 {pc_name} (説明分散比: {var_ratio:.2f}%)\n"
-            
-            loadings_summary_text += "**【正の寄与 上位ピーク】**\n"
-            for idx, item in enumerate(pos_top_n, 1):
-                ann = f" - *{item['annotation']}*" if item['annotation'] else " - *Unknown*"
-                loadings_summary_text += f"  {idx}. ID: {item['id']} (Loading: `{item['value']:.6f}`){ann} [m/z: {item['m_z']:.4f}, RT: {item['rt']:.2f} min]\n"
-                
-            loadings_summary_text += "**【負の寄与 上位ピーク】**\n"
-            for idx, item in enumerate(neg_top_n, 1):
-                ann = f" - *{item['annotation']}*" if item['annotation'] else " - *Unknown*"
-                loadings_summary_text += f"  {idx}. ID: {item['id']} (Loading: `{item['value']:.6f}`){ann} [m/z: {item['m_z']:.4f}, RT: {item['rt']:.2f} min]\n"
+
+        # Loadings 寄与上位（test_arf の構造化関数 + 共通整形ヘルパー）
+        loading_features = get_pca_loading_features(
+            pca_result, deserialized_and_formatted_data, feature_names, top_n=top_features,
+        )
+        loadings_summary_text = _format_pca_loadings_md(
+            loading_features, header="#### 📊 PCA Loadings 寄与度分析 (各極値トップ件数)\n",
+        )
 
         # 基本的な要約テキストの作成
         output_text = (
@@ -654,45 +680,34 @@ def arf_re_pca(
     annotation_keyword: str | None = None,
     props: list[str] = ["height"],
     components: int | None = None,
-    top_features: int = 10  # ご要望通りデフォルトを10件に変更
+    top_features: int = 10,  # ご要望通りデフォルトを10件に変更
+    log_transform: bool = False,
+    min_detection_rate: float = 0.0
 ) -> list:
     """
     ARFデータに対して、強度閾値(min_intensity)や特定のアノテーションキーワード（例: 'PC', 'TG' などの脂質クラス）
     によるフィルタリングを行い、PCAを再実行（やり直し）して解釈のためのデータを返します。
     先に arf_parser を実行してデータがセッションに読み込まれている必要があります。
-    
+
     引数:
     - min_intensity: 抽出する平均強度の最小閾値 (例: 5000.0)
     - annotation_keyword: 抽出したい脂質クラスや化合物名のキーワード (例: "PC", "LPC", "TG")。部分一致でフィルタリングします。
     - props: PCAに使用するプロパティのリスト (デフォルト: ["height"])
     - components: 計算する主成分の数
     - top_features: 各主成分から抽出する正・負の寄与トップ件数 (デフォルト: 10)
+    - log_transform: [任意] PCA前に log10 変換を適用する（既定 False）
+    - min_detection_rate: [任意] 特徴量の実検出率(非ギャップフィル)による足切り 0.0-1.0（既定 0.0=無効）
     """
     if session.features is None:
         return ["先に arf_parser を実行してデータを読み込んでください。"]
         
     # 外部モジュールからのインポート
-    from test_arf import extract_peak_properties, build_pca_matrix, run_pca
-    import json
-    from pathlib import Path
+    from test_arf import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
 
     try:
-        # 1. セッションに保持されている全データ(session.features)から条件に合うものを抽出
-        filtered_spots = []
-        for spot in session.features:
-            # 強度フィルター (HeightAverage)
-            height = spot.get("HeightAverage")
-            if height is not None and height < min_intensity:
-                continue
-                
-            # アノテーション（脂質クラス）フィルター (部分一致)
-            if annotation_keyword:
-                name = spot.get("Name", "")
-                if not name or annotation_keyword.lower() not in name.lower():
-                    continue
-                    
-            filtered_spots.append(spot)
-            
+        # 1. セッションの全データから条件に合うスポットを抽出（共通ヘルパー _filter_arf_spots を利用）
+        filtered_spots = _filter_arf_spots(session.features, min_intensity, annotation_keyword)
+
         if not filtered_spots:
             return [f"指定された条件（強度 >= {min_intensity}, キーワード: '{annotation_keyword}'）に一致する脂質/スポットが見つかりませんでした。"]
 
@@ -704,84 +719,35 @@ def arf_re_pca(
         avg_samples = len(peak_df) / len(filtered_spots) if len(filtered_spots) > 0 else 0
         
         # 2. 正確に使い回された関数による行列構築とPCAの実行
-        matrix, sample_names, feature_names = build_pca_matrix(filtered_spots, use_properties=props)
+        matrix, sample_names, feature_names = build_pca_matrix(
+            filtered_spots, use_properties=props, min_detection_rate=min_detection_rate,
+        )
         if matrix.size == 0:
             return ["[ERROR] フィルタ後のデータから PCA 用行列を構築できませんでした。データ数が少なすぎる可能性があります。"]
-            
-        pca_result = run_pca(matrix, n_components=components)
+
+        pca_result = run_pca(matrix, n_components=components, log_transform=log_transform)
         session.pca_result = pca_result
-        
-        # 3. LLM（Claude）自律描画用のスコアプロットデータをJSONとして抽出
-        components_coords = pca_result.get("components", [])
-        plot_data_points = []
-        
-        if len(components_coords) > 0 and len(components_coords[0]) >= 2:
-            for i, name in enumerate(sample_names):
-                plot_data_points.append({
-                    "sample": name,
-                    "pc1": components_coords[i][0],
-                    "pc2": components_coords[i][1]
-                })
+
+        # 3. スコアプロット用データ（共通ヘルパー）
+        plot_instruction_text = _format_pca_plot_block(
+            pca_result, sample_names,
+            title=f"PCA Score Plot (Filtered - Intensity >= {min_intensity}, Keyword: '{annotation_keyword or 'None'}')",
+            intro=(
+                "\n#### 📊 PCA スコアプロット用データ (フィルタ再計算後)\n"
+                "以下のJSONデータを用いて、見やすいインタラクティブな散布図（Scatter Plot）を構築してください。\n"
+            ),
+        )
+
+        # 4. Loadings 寄与上位（メタデータは大元の session.features から取得し index ずれを防止）
+        loading_features = get_pca_loading_features(
+            pca_result, session.features, feature_names, top_n=top_features,
+        )
+        loadings_summary_text = _format_pca_loadings_md(
+            loading_features, header=f"#### 📊 PCA Loadings 寄与度分析 (各極値トップ {top_features} 件)\n",
+        )
 
         pc1_var = pca_result['explained_variance_ratio'][0] * 100
         pc2_var = pca_result['explained_variance_ratio'][1] * 100
-
-        plot_json_data = {
-            "title": f"PCA Score Plot (Filtered - Intensity >= {min_intensity}, Keyword: '{annotation_keyword or 'None'}')",
-            "x_axis": f"PC1 ({pc1_var:.2f}%)",
-            "y_axis": f"PC2 ({pc2_var:.2f}%)",
-            "data": plot_data_points
-        }
-        
-        plot_instruction_text = (
-            f"\n#### 📊 PCA スコアプロット用データ (フィルタ再計算後)\n"
-            f"以下のJSONデータを用いて、見やすいインタラクティブな散布図（Scatter Plot）を構築してください。\n"
-            f"```json\n{json.dumps(plot_json_data, indent=2, ensure_ascii=False)}\n```\n"
-        )
-        
-        # 4. Loadingsの正負トップ10件をテキスト要約に変換
-        loadings_summary_text = f"#### 📊 PCA Loadings 寄与度分析 (各極値トップ {top_features} 件)\n"
-        
-        for pc_idx in range(min(2, len(pca_result["loadings"]))):
-            pc_loadings = pca_result["loadings"][pc_idx]
-            pc_name = f"PC{pc_idx + 1}"
-            var_ratio = pca_result['explained_variance_ratio'][pc_idx] * 100
-            
-            pc_features_list = []
-            for feat_idx, loading_value in enumerate(pc_loadings):
-                feat_name = feature_names[feat_idx]
-                parts = feat_name.split("_")
-                if len(parts) >= 3:
-                    master_id = int(parts[1])
-                    # スポットのメタデータは、インデックスずれを防ぐため大元の session.features から確実に取得
-                    if master_id < len(session.features):
-                        spot = session.features[master_id]
-                        pc_features_list.append({
-                            "id": master_id,
-                            "value": loading_value,
-                            "annotation": spot.get("Name", ""),
-                            "m_z": spot.get("MassCenter"),
-                            "rt": spot.get("RT")
-                        })
-            
-            # 実数値の大きさで降順（大きい順）にソート
-            pc_features_list.sort(key=lambda x: x["value"], reverse=True)
-            
-            # 正の寄与トップN / 負の寄与トップN
-            pos_top_n = pc_features_list[:top_features]
-            neg_top_n = pc_features_list[-top_features:][::-1]
-            
-            loadings_summary_text += f"\n##### 🔹 {pc_name} (説明分散比: {var_ratio:.2f}%)\n"
-            
-            loadings_summary_text += "**【正の寄与 上位ピーク】**\n"
-            for idx, item in enumerate(pos_top_n, 1):
-                ann = f" - *{item['annotation']}*" if item['annotation'] else " - *Unknown*"
-                loadings_summary_text += f"  {idx}. ID: {item['id']} (Loading: `{item['value']:.6f}`){ann} [m/z: {item['m_z']:.4f}, RT: {item['rt']:.2f} min]\n"
-                
-            loadings_summary_text += "**【負の寄与 上位ピーク】**\n"
-            for idx, item in enumerate(neg_top_n, 1):
-                ann = f" - *{item['annotation']}*" if item['annotation'] else " - *Unknown*"
-                loadings_summary_text += f"  {idx}. ID: {item['id']} (Loading: `{item['value']:.6f}`){ann} [m/z: {item['m_z']:.4f}, RT: {item['rt']:.2f} min]\n"
 
         # 5. レポート全体の結合
         file_name = Path(session.current_file_path).name if session.current_file_path else "Unknown"
@@ -1034,3 +1000,5 @@ def _build_arf_pivot_table(features: list[dict] | None = None) -> "pd.DataFrame"
     return df_pivot.rename(columns=rename_dict)
 
 
+if __name__ == "__main__":
+    mcp.run()

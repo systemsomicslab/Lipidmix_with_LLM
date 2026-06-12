@@ -17,6 +17,8 @@ matplotlib.use('Agg')  # 非インタラクティブバックエンドを使用
 import matplotlib.pyplot as plt
 import pprint
 
+from data_config import get_data_dir
+
 
 class IonMode(Enum):
     Positive = 0
@@ -231,15 +233,34 @@ def _convert_to_alignment_feature(data: list) -> dict:
                     file_name = decoded
                     break
 
+        # Key37 PeakShape = [EstimatedNoise, SignalToNoise, ...]（msgpack配列）
+        peak_shape = data[37] if len(data) > 37 and isinstance(data[37], list) else []
+        estimated_noise = peak_shape[0] if len(peak_shape) > 0 else None
+        signal_to_noise = peak_shape[1] if len(peak_shape) > 1 else None
+
+        # MasterPeakID(Key2)が負(-2)のサンプルはギャップフィル（未検出→補間値）
+        master_peak_id = data[2] if len(data) > 2 else None
+        is_gap_filled = isinstance(master_peak_id, int) and master_peak_id < 0
+
+        # MS2: Key10 MS2RawSpectrumID2CE が非空ならMS/MS取得済み
+        ms2_ce = data[10] if len(data) > 10 else None
+        is_msms = bool(ms2_ce) if isinstance(ms2_ce, dict) else False
+
         return {
             "peak_id": data[3] if len(data) > 3 else None,
-            "file_id": data[1] if len(data) > 1 else None,
+            "file_id": data[0] if len(data) > 0 else None,  # 修正: 真のFileIDはKey0
             "file_name": file_name, # 追加
-            "master_peak_id": data[2] if len(data) > 2 else None,
+            "master_peak_id": master_peak_id,
             "height": data[18] if len(data) > 18 else None,
             "area": data[20] if len(data) > 20 else None,
+            "area_above_baseline": data[21] if len(data) > 21 else None,  # 追加(Key21)
             "m_z": data[22] if len(data) > 22 else None,
             "rt": rt_value,
+            "signal_to_noise": signal_to_noise,    # 追加(Key37[1])
+            "estimated_noise": estimated_noise,    # 追加(Key37[0])
+            "ms2_raw_id": data[9] if len(data) > 9 else None,  # 追加(Key9)
+            "is_msms": is_msms,                    # 追加: MS/MS取得有無
+            "is_gap_filled": is_gap_filled,        # 追加: 補間値フラグ
             "is_msms_matched": False,
             "is_matched": False,
         }
@@ -278,71 +299,101 @@ def extract_peak_properties(deserialized_list: list[dict]) -> pd.DataFrame:
                 "MasterPeakID": feature.get("master_peak_id"),
                 "PeakHeight": feature.get("height"),
                 "PeakArea": feature.get("area"),
+                "PeakAreaAboveBaseline": feature.get("area_above_baseline"),
                 "PeakMZ": feature.get("m_z"),
                 "PeakRT": feature.get("rt"),
+                "SignalToNoise": feature.get("signal_to_noise"),
+                "IsMsms": feature.get("is_msms"),
+                "IsGapFilled": feature.get("is_gap_filled"),
             }
             rows.append(row)
     
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
-def build_pca_matrix(deserialized_list: list[dict], use_properties: list[str] = None) -> tuple[np.ndarray, list[str], list[str]]:
+def build_pca_matrix(deserialized_list: list[dict], use_properties: list[str] = None,
+                     min_detection_rate: float = 0.0) -> tuple[np.ndarray, list[str], list[str]]:
     """
     指定された複数プロパティから多変量PCA用行列を構築
+
+    引数:
+      min_detection_rate: 特徴量(スポット)の検出率による足切り。0.0〜1.0。
+        各スポットを「実検出(非ギャップフィル)できたサンプルの割合」で評価し、
+        この閾値未満のスポットを行列から除外する。既定 0.0 = フィルタ無効（従来動作）。
+        例: 0.5 を指定すると「半数以上のサンプルで実検出されたスポット」のみ使用。
     """
     # デフォルトではHeightとAreaを使用（m_zやrtも追加可能）
     if use_properties is None:
         use_properties = ["height"]
 
     sample_data_dict = {}
+    detection_count: dict[str, int] = {}  # col_name -> 実検出(非ギャップフィル)サンプル数
 
     for spot in deserialized_list:
         aligned = spot.get("AlignedPeakProperties")
         if not isinstance(aligned, list) or not aligned:
             continue
-        
+
         master_id = spot.get("MasterAlignmentID")
-        
+
         for sample_index, sample in enumerate(aligned):
             if not isinstance(sample, list):
                 continue
-            
+
             feature = _convert_to_alignment_feature(sample)
-            
+
             # 【追加】行列のキーとしてファイル名を使用
             file_name = feature.get("file_name")
             sample_key = file_name if file_name else f"Sample_{sample_index}"
-            
+
             if sample_key not in sample_data_dict:
                 sample_data_dict[sample_key] = {}
-                
+
+            is_detected = not feature.get("is_gap_filled", False)
             # 指定された複数のプロパティを列として追加
             for prop in use_properties:
                 val = feature.get(prop)
                 col_name = f"Spot_{master_id}_{prop}"
                 # Noneの場合は0.0で埋める（欠損値処理）
                 sample_data_dict[sample_key][col_name] = float(val) if val is not None else 0.0
+                if is_detected:
+                    detection_count[col_name] = detection_count.get(col_name, 0) + 1
 
     if not sample_data_dict:
         return np.empty((0, 0)), [], []
 
     # 行がサンプル、列が「スポット×プロパティ」のデータフレームを作成
     df = pd.DataFrame.from_dict(sample_data_dict, orient='index')
-    
+
     # 改善点2: 欠損値を 0 ではなく「その列(特徴量)の平均値」で埋める (Mean Imputation)
     df = df.fillna(df.mean())
     # ※もし全サンプルで欠損だった列があれば NaN のまま残るので、その場合のみ 0.0 で埋める
     df = df.fillna(0.0)
-    
+
+    # 任意: 検出率(非ギャップフィル)による特徴量の足切り（既定0.0=無効）
+    if min_detection_rate > 0.0:
+        n_samples = len(df.index)
+        keep_cols = [
+            c for c in df.columns
+            if detection_count.get(c, 0) / n_samples >= min_detection_rate
+        ]
+        df = df[keep_cols]
+
     # 改善点3: 分散が0（全サンプルで同一の値）の列を事前に行列から除外する
     df = df.loc[:, df.var(numeric_only=True) > 0]
-    
+
     return df.to_numpy(dtype=float), list(df.index), list(df.columns)
 
 
-def run_pca(matrix: np.ndarray, n_components: int | None = None) -> dict:
+def run_pca(matrix: np.ndarray, n_components: int | None = None,
+            log_transform: bool = False) -> dict:
     """
     標準化（スケーリング）を行った上で多次元PCAを実行する
+
+    引数:
+      log_transform: True のとき標準化の前に log10 変換を適用する（既定 False=従来動作）。
+        ピーク強度は右に大きく歪むため、log変換で正規性が改善し条件分離が向上しやすい。
+        0以下/極小値対策として下限1.0でクリップしてから log10 を取る。
     """
     n_samples, n_features = matrix.shape
     max_components = min(n_samples, n_features)
@@ -353,10 +404,15 @@ def run_pca(matrix: np.ndarray, n_components: int | None = None) -> dict:
     # n_componentsが指定されていない場合は最大次元数まで計算
     target_components = max_components if n_components is None else min(n_components, max_components)
     
+    work_matrix = matrix
+    # 任意: log変換（既定オフ）。強度の歪みを抑える。
+    if log_transform:
+        work_matrix = np.log10(np.clip(matrix, 1.0, None))
+
     # 【重要】スケールの異なる多変量（Height, RTなど）を扱うための標準化
     scaler = StandardScaler()
-    scaled_matrix = scaler.fit_transform(matrix)
-    
+    scaled_matrix = scaler.fit_transform(work_matrix)
+
     pca = PCA(n_components=target_components)
     transformed = pca.fit_transform(scaled_matrix)
     
@@ -513,6 +569,50 @@ def plot_peak_height_distribution(peak_df: pd.DataFrame, filter_keyword: str = N
     print(f"[INFO] 脂質分布プロットを保存しました: {output_file} (データ件数: {len(df_filtered)}, グループ数: {len(groups)})", file=sys.stderr)
 
 
+def get_pca_loading_features(pca_result: dict, deserialized_list: list[dict],
+                             feature_names: list[str], top_n: int = 10,
+                             n_pcs: int = 2) -> list[dict]:
+    """各主成分について Loading 値の正負トップを構造化して返す（表示・整形は呼び出し側）。
+
+    返り値: [{"pc": "PC1", "var_ratio": <%>, "positive": [item...], "negative": [item...]}, ...]
+      item = {"id", "value", "annotation", "m_z", "rt"}（feature名 "Spot_<id>_<prop>" から id を取得し
+      deserialized_list[id] のメタデータを付与）。
+    server.py の arf_parser / arf_re_pca が共通で利用する。
+    """
+    loadings = pca_result.get("loadings", [])
+    evr = pca_result.get("explained_variance_ratio", [])
+    results = []
+    for pc_idx in range(min(n_pcs, len(loadings))):
+        pc_loadings = loadings[pc_idx]
+        feats = []
+        for feat_idx, loading_value in enumerate(pc_loadings):
+            parts = feature_names[feat_idx].split("_")
+            if len(parts) < 3:
+                continue
+            try:
+                master_id = int(parts[1])
+            except ValueError:
+                continue
+            if not (0 <= master_id < len(deserialized_list)):
+                continue
+            spot = deserialized_list[master_id]
+            feats.append({
+                "id": master_id,
+                "value": loading_value,
+                "annotation": spot.get("Name", ""),
+                "m_z": spot.get("MassCenter"),
+                "rt": spot.get("RT"),
+            })
+        feats.sort(key=lambda x: x["value"], reverse=True)
+        results.append({
+            "pc": f"PC{pc_idx + 1}",
+            "var_ratio": evr[pc_idx] * 100 if pc_idx < len(evr) else 0.0,
+            "positive": feats[:top_n],
+            "negative": feats[-top_n:][::-1],
+        })
+    return results
+
+
 def extract_top_loading_features(pca_result: dict, deserialized_list: list[dict], feature_names: list[str], n: int = 1):
     """
     PCAのLoadingsからPC1とPC2それぞれについて、
@@ -528,72 +628,96 @@ def extract_top_loading_features(pca_result: dict, deserialized_list: list[dict]
     for pc_idx in range(min(2, len(loadings))):
         pc_loadings = loadings[pc_idx]
         pc_name = f"PC{pc_idx + 1}"
-        
-        # スポット名とロード値のペアを作成
-        loading_pairs = [(name, value) for name, value in zip(feature_names, pc_loadings)]
-        
-        # 実際の値で降順（大きい順）にソート
-        sorted_by_value = sorted(loading_pairs, key=lambda x: x[1], reverse=True)
-        
-        # 正に寄与している上位n件（リストの先頭から）
-        positive_top_n = sorted_by_value[:n]
-        
-        # 負に寄与している上位n件（リストの末尾から取得し、負の方向に大きい順＝昇順にするため反転）
-        negative_top_n = sorted_by_value[-n:][::-1]
-        
-        f"[INFO] {pc_name} Loading分析：正の寄与 上位{n}件"
-        f"  説明分散比: {pca_result['explained_variance_ratio'][pc_idx]*100:.2f}%"
-        f"[INFO] {pc_name} Loading分析：負の寄与 上位{n}件"
-        f"[INFO] {pc_name} Loading分析：負の寄与 上位{n}件"
-        f"[INFO] {pc_name} Loading分析：負の寄与 上位{n}件"
-        f"【{pc_name} Loading分析：負の寄与 上位{n}件】"
+        var_ratio = pca_result["explained_variance_ratio"][pc_idx] * 100
+
+        # スポット名とロード値のペアを実値で降順ソート
+        sorted_by_value = sorted(
+            zip(feature_names, pc_loadings), key=lambda x: x[1], reverse=True
+        )
+        positive_top_n = sorted_by_value[:n]                 # 正の寄与 上位
+        negative_top_n = sorted_by_value[-n:][::-1]          # 負の寄与 上位
+
+        print(f"\n--- {pc_name} (説明分散比 {var_ratio:.2f}%) ---")
+        print(f"  [正の寄与 上位{n}件]")
+        _print_feature_details(positive_top_n, deserialized_list)
+        print(f"  [負の寄与 上位{n}件]")
         _print_feature_details(negative_top_n, deserialized_list)
 
 
 def _print_feature_details(feature_pairs: list[tuple], deserialized_list: list[dict]):
-    """
-    各ピークの詳細情報を出力
-    """
+    """各ピークの詳細情報を1行で出力する。"""
     for spot_name, loading_value in feature_pairs:
-        # スポット名から番号を抽出
-        spot_id = int(spot_name.split("_")[1])
-        
-        if spot_id >= len(deserialized_list):
-            f"[WARNING] スポット {spot_id} は見つかりません。"
+        try:
+            spot_id = int(spot_name.split("_")[1])
+        except (IndexError, ValueError):
             continue
-        
+        if spot_id >= len(deserialized_list):
+            continue
+
         spot = deserialized_list[spot_id]
-        
-        f"[INFO] {spot_name} (Loading = {loading_value:.6f})"
-        f"  MasterAlignmentID: {spot.get('MasterAlignmentID')}"
-        f"  RT: {spot.get('RT')}"
-        f"  MassCenter: {spot.get('MassCenter')}"
-        f"  IonMode: {spot.get('IonMode')}"
-        f"  CompoundName: {spot.get('Name')}"
-        f"[INFO]  HeightAverage: {spot.get('HeightAverage')}"
-        
-        # AlignedPeakPropertiesの詳細
-        aligned_peaks = spot.get("AlignedPeakProperties", [])
-        f"[INFO]  AlignedPeakProperties数: {len(aligned_peaks)}"
-        
-        for sample_idx, sample in enumerate(aligned_peaks):
-            if isinstance(sample, list) and len(sample) > 18:
-                f"[INFO]    [Sample {sample_idx}]"
-                f"[INFO]      Height: {sample[18] if len(sample) > 18 else 'N/A'}"
-                f"[INFO]      Area: {sample[20] if len(sample) > 20 else 'N/A'}"
-                f"[INFO]      M/Z: {sample[22] if len(sample) > 22 else 'N/A'}"
+        name = spot.get("Name") or "Unknown"
+        mz = spot.get("MassCenter")
+        rt = spot.get("RT")
+        mz_s = f"{mz:.4f}" if isinstance(mz, (int, float)) else "N/A"
+        rt_s = f"{rt:.2f}" if isinstance(rt, (int, float)) else "N/A"
+        print(f"    ID {spot_id:>4}  loading={loading_value:+.6f}  m/z={mz_s}  RT={rt_s} min  {name}")
 
 
 def find_input_file(file_path: str | None = None, index: int = 0) -> str | None:
     if file_path and os.path.exists(file_path):
         return file_path
 
-    project_root = os.path.dirname(__file__)
-    data_dir = os.path.join(project_root, "data")
-
-    # .arf ファイルのみを検索
-    candidates = glob.glob(os.path.join(data_dir, "*.arf"))
+    # .arf ファイルのみを検索（探索先は data_config 経由で環境変数上書き可）
+    candidates = glob.glob(os.path.join(str(get_data_dir()), "*.arf"))
     return candidates[index] if candidates else None
+
+
+def _list_arf_files() -> list[str]:
+    """データディレクトリ内の .arf ファイルを名前順で返す。"""
+    return sorted(glob.glob(os.path.join(str(get_data_dir()), "*.arf")))
+
+
+def _select_arf_file(file_path: str | None, index: int | None) -> str | None:
+    """解析対象 .arf を決定する（非対話対応）。
+
+    優先順位: --file > --index > 対話プロンプト(端末時のみ) > 先頭ファイル[0]。
+    """
+    if file_path:
+        if os.path.exists(file_path):
+            return file_path
+        print(f"[WARNING] 指定ファイルが見つかりません: {file_path}", file=sys.stderr)
+        return None
+
+    candidates = _list_arf_files()
+    if not candidates:
+        return None
+
+    if index is not None:
+        if 0 <= index < len(candidates):
+            return candidates[index]
+        print(f"[WARNING] index {index} は範囲外です (0..{len(candidates) - 1})。", file=sys.stderr)
+        return None
+
+    # 番号未指定: 一覧を提示
+    print("解析可能な .arf ファイル:")
+    for i, c in enumerate(candidates):
+        print(f"  [{i}] {os.path.basename(c)}")
+
+    # 対話端末のときだけプロンプト。非対話(パイプ/リダイレクト)時は先頭を既定採用
+    if sys.stdin and sys.stdin.isatty():
+        try:
+            choice = int(input("何番目のファイルを解析しますか？ "))
+        except (ValueError, EOFError):
+            print("[INFO] 無効な入力のため [0] を使用します。", file=sys.stderr)
+            choice = 0
+        if not (0 <= choice < len(candidates)):
+            print("[INFO] 範囲外のため [0] を使用します。", file=sys.stderr)
+            choice = 0
+        return candidates[choice]
+
+    print("[INFO] 非対話モードのため先頭ファイル [0] を使用します。(--file/--index で明示指定可)",
+          file=sys.stderr)
+    return candidates[0]
 
 def summarize_arf_data(deserialized_list):
     """
@@ -633,12 +757,17 @@ def main():
     parser.add_argument("--top-features", "-t", type=int, default=0, help="PCA Loadingから抽出する上位・下位ピーク件数")
     parser.add_argument("--props", nargs="+", default=["height"], 
                         help="PCAに使用するプロパティ (例: height area). m_zやrtは量ではないため非推奨です。")
-    parser.add_argument("--components", type=int, default=None, 
+    parser.add_argument("--components", type=int, default=None,
                         help="計算する主成分の数 (デフォルト: 計算可能な最大数)")
+    parser.add_argument("--index", "-i", type=int, default=None,
+                        help="data/ 内の .arf 一覧から解析するファイルを番号で指定（非対話）。--file指定時は無視")
+    parser.add_argument("--log-transform", action="store_true",
+                        help="[任意] PCA前に log10 変換を適用する（強度の歪みを抑え条件分離が向上しやすい）")
+    parser.add_argument("--min-detection-rate", type=float, default=0.0,
+                        help="[任意] 特徴量(スポット)の実検出率による足切り 0.0-1.0（既定0=無効。例 0.5）")
     args = parser.parse_args()
 
-    index = int(input("何番目のファイルを解析しますか？ "))
-    file_path = find_input_file(args.file, index)
+    file_path = _select_arf_file(args.file, args.index)
     if not file_path:
         raise FileNotFoundError(".arf ファイルが見つかりません。")
 
@@ -654,6 +783,13 @@ def main():
     if len(peak_df) > 0:
         avg_samples = len(peak_df) / len(deserialized)
         print(f"[INFO] 平均サンプル数/スポット: {avg_samples:.2f} (抽出が成功していればサンプル数と一致します)")
+
+    # ===== デシリアライズ結果（抽出した per-sample ピークプロパティ）をCLI表示 =====
+    if len(peak_df) > 0:
+        print("\n===== デシリアライズ結果: 抽出ピークプロパティ (先頭20行) =====")
+        with pd.option_context("display.max_columns", None, "display.width", 220):
+            print(peak_df.head(20).to_string(index=False))
+        print(f"... 全 {len(peak_df):,} レコード ({len(deserialized):,} スポット x 平均{avg_samples:.0f}サンプル)")
 
     if args.export:
         peak_df.to_csv(args.export, index=False)
@@ -682,19 +818,45 @@ def main():
     
 
     if args.pca:
-        matrix, sample_names, feature_names = build_pca_matrix(deserialized, use_properties=args.props)
-        
+        matrix, sample_names, feature_names = build_pca_matrix(
+            deserialized, use_properties=args.props,
+            min_detection_rate=args.min_detection_rate,
+        )
+
         if matrix.size == 0:
             print("PCA 用データを構築できませんでした。")
             return
 
         print(f"[INFO] PCA入力行列の形状: {matrix.shape} (サンプル数 x 特徴量数)")
         print(f"[INFO] 使用プロパティ: {args.props}")
+        if args.min_detection_rate > 0.0:
+            print(f"[INFO] 検出率フィルタ: >= {args.min_detection_rate} (特徴量 {len(feature_names)} 件に絞り込み)")
+        if args.log_transform:
+            print("[INFO] log10 変換: 有効")
         try:
-            pca_result = run_pca(matrix, n_components=args.components)
+            pca_result = run_pca(matrix, n_components=args.components,
+                                 log_transform=args.log_transform)
             print(f"[INFO] PCA 実行完了 (計算された主成分数: {len(pca_result['explained_variance_ratio'])})")
-            print(f"Explained variance ratio: {pca_result['explained_variance_ratio']}")
-            
+
+            # ===== PCA結果をCLI表示 =====
+            evr = pca_result["explained_variance_ratio"]
+            print("\n===== PCA 説明分散比 =====")
+            for i, r in enumerate(evr[: min(5, len(evr))], 1):
+                print(f"  PC{i}: {r * 100:.2f}%")
+            if len(evr) > 0:
+                print(f"  (PC1-PC2 累積: {sum(evr[:2]) * 100:.2f}%)")
+
+            comps = pca_result.get("components", [])
+            if comps and len(comps[0]) >= 2:
+                print("\n===== サンプル別 PCA スコア (PC1, PC2) =====")
+                for name, c in zip(sample_names, comps):
+                    print(f"  {name:<42} PC1={c[0]:+9.3f}  PC2={c[1]:+9.3f}")
+
+            # 寄与上位ピーク（--top-features 未指定でも上位5件を表示）
+            n_show = args.top_features if args.top_features else 5
+            print(f"\n===== PCA Loadings 寄与上位/下位 {n_show}件 =====")
+            extract_top_loading_features(pca_result, deserialized, feature_names, n=n_show)
+
             # PCAプロットを表示
             plot_file = args.output_plot or "pca_plot.png"
             plot_pca(pca_result, sample_names, args.props, file_path, plot_file)
@@ -702,9 +864,6 @@ def main():
             if args.output_sample_scores:
                 plot_pca_scores_by_sample(pca_result, sample_names, output_file=args.output_sample_scores)
 
-            if args.top_features:
-                extract_top_loading_features(pca_result, deserialized, feature_names, n=args.top_features)
-            
             if args.output_pca:
                 # pca_result にサンプル名を保存しているため、そのまま渡す
                 pca_result["samples"] = sample_names
