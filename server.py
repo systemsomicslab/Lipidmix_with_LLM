@@ -49,10 +49,27 @@ from test_pai2 import (
 
 BASE_DIR = Path(__file__).parent
 OUTPUT_FORMAT_DOC = BASE_DIR / "docs" / "output_format.md"
+
+
+def _state_dir(env_var: str, default_name: str) -> Path:
+    """蓄積される状態ディレクトリを解決する。
+
+    環境変数があればそのパスを、無ければ <project>/<default_name> を使う
+    （data_config.get_data_dir と同じ流儀）。NAS常駐運用では共有ボリューム上の
+    パスを指すことで、ローカル開発のコードと蓄積された知識を分離できる。
+    """
+    override = os.environ.get(env_var)
+    target = Path(override).expanduser() if override else BASE_DIR / default_name
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 # 蓄積ノートの置き場（再利用コーパス）。analyses/ はセッション固有なので分離。
-KNOWLEDGE_DIR = BASE_DIR / "knowledge"
-PLAYBOOK_DIR = BASE_DIR / "playbook"
-ANALYSES_DIR = BASE_DIR / "analyses"
+# NAS常駐では LIPIDMIX_KNOWLEDGE_DIR / LIPIDMIX_ANALYSES_DIR を共有ボリュームへ向ける。
+# playbook/ は版管理された手順なのでコード側（イメージ内）に置いたまま。
+KNOWLEDGE_DIR = _state_dir("LIPIDMIX_KNOWLEDGE_DIR", "knowledge")
+PLAYBOOK_DIR = _state_dir("LIPIDMIX_PLAYBOOK_DIR", "playbook")
+ANALYSES_DIR = _state_dir("LIPIDMIX_ANALYSES_DIR", "analyses")
 
 MCP_INSTRUCTIONS = """
 This server parses and analyzes MS-DIAL lipidomics outputs.
@@ -132,7 +149,13 @@ These steps are guidance, not hard gates — but interpretation requires passing
 through this gateway, so treat them as required preamble.
 """.strip()
 
-mcp = FastMCP("ms-data-parser", instructions=MCP_INSTRUCTIONS)
+mcp = FastMCP(
+    "ms-data-parser",
+    instructions=MCP_INSTRUCTIONS,
+    # HTTPトランスポート時のみ使用。stdioでは無視される。
+    host=os.environ.get("LIPIDMIX_HOST", "127.0.0.1"),
+    port=int(os.environ.get("LIPIDMIX_PORT", "8000")),
+)
 
 # 絶対パス指定
 from data_config import get_data_dir
@@ -1458,4 +1481,7 @@ def _filter_arf_spots(
 
 
 if __name__ == "__main__":
-    mcp.run()
+    # 既定は stdio（ローカル開発: Claude がサブプロセスとして起動）。
+    # NAS常駐では LIPIDMIX_TRANSPORT=streamable-http を設定し HTTP で待受ける。
+    transport = os.environ.get("LIPIDMIX_TRANSPORT", "stdio")
+    mcp.run(transport=transport)

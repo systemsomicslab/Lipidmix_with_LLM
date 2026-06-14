@@ -1,0 +1,24 @@
+# 研究室NASでの常駐運用。NAS上でこのリポジトリを git pull し、
+#   docker compose up -d --build
+# で起動する。左側のホストパスは実際のNASの永続パスに合わせて編集すること。
+services:
+  lipidmix:
+    build: .
+    container_name: lipidmix
+    restart: unless-stopped
+    ports:
+      - "8000:8000"          # http://<NAS-IP>:8000/mcp で待受
+    environment:
+      LIPIDMIX_TRANSPORT: streamable-http
+      LIPIDMIX_HOST: 0.0.0.0
+      LIPIDMIX_PORT: "8000"
+      # ── 蓄積される状態は NAS 共有ボリュームへ（コンテナ再作成でも消えない）──
+      LIPIDMIX_KNOWLEDGE_DIR: /state/knowledge   # 論文探索で溜まる知識＋レビュー待ち inbox
+      LIPIDMIX_ANALYSES_DIR: /state/analyses     # 解析記録・objective
+      # ── 解析対象の MS-DIAL 出力（読み取り専用）──
+      LIPIDMIX_DATA_DIR: /data
+      MPLBACKEND: Agg
+    volumes:
+      # 左側 = NAS上の実パス（Synology例: /volume1/lipidmix/...）。右側は変更しない。
+      - /volume1/lipidmix/state:/state
+      - /volume1/lipidmix/data:/data:ro
