@@ -1,8 +1,8 @@
 .venv/
 .venv-1/
 data/
-vs/
-vscode/
+.vs/
+.vscode/
 bin/
 docs/
 _pycache_/
@@ -10,6 +10,9 @@ obj/
 photos/
 workspace/
 debug/
+analysis/
+knowledge/
+playbook/
 .check.py
 *.pyc
 *.pyo

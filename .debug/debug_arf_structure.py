@@ -4,7 +4,7 @@ import msgpack
 import lz4.block
 from test_arf import deserialize_lz4_packed_msgpack
 
-os.chdir('C:/Users/yuu18/OneDrive/Desktop/homework1_260408')
+os.chdir('C:/Users/yuu18/Lipidmix_with_LLM')
 path = 'data/AlignmentResult_2026_04_07_14_07_25.arf2'
 with open(path, 'rb') as f:
     data = f.read()

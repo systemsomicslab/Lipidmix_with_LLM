@@ -18,6 +18,8 @@ import matplotlib.pyplot as plt
 import pprint
 
 from data_config import get_data_dir
+from msdial_classes import get_sample_class_id
+from msdial_tags import get_sample_peak_tag_info
 
 
 class IonMode(Enum):
@@ -284,6 +286,12 @@ def extract_peak_properties(deserialized_list: list[dict]) -> pd.DataFrame:
             # 【追加】抽出したファイル名を優先し、無い場合はSample_0などにフォールバック
             file_name = feature.get("file_name")
             sample_label = file_name if file_name else f"Sample_{sample_index}"
+            sample_tag_info = get_sample_peak_tag_info(
+                spot, feature.get("file_id"), file_name,
+            )
+            sample_class_id = get_sample_class_id(
+                spot, feature.get("file_id"), file_name,
+            )
 
             row = {
                 "MasterAlignmentID": spot.get("MasterAlignmentID"),
@@ -292,8 +300,10 @@ def extract_peak_properties(deserialized_list: list[dict]) -> pd.DataFrame:
                 "SpotMassCenter": spot.get("MassCenter"),
                 "IonMode": spot.get("IonMode"),
                 "CompoundName": spot.get("Name"),
+                "AlignmentTags": list(spot.get("Tags") or []),
                 "SampleIndex": sample_index,
                 "FileName": sample_label, # CSVにもファイル名を追加
+                "ClassID": sample_class_id,
                 "PeakID": feature.get("peak_id"),
                 "FileID": feature.get("file_id"),
                 "MasterPeakID": feature.get("master_peak_id"),
@@ -305,6 +315,7 @@ def extract_peak_properties(deserialized_list: list[dict]) -> pd.DataFrame:
                 "SignalToNoise": feature.get("signal_to_noise"),
                 "IsMsms": feature.get("is_msms"),
                 "IsGapFilled": feature.get("is_gap_filled"),
+                "PeakTags": list(sample_tag_info.get("Tags") or []),
             }
             rows.append(row)
     

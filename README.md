@@ -1,32 +1,33 @@
 # Lipidmix with LLM
 
-Python prototypes for parsing, cleaning, visualizing, and exposing MS-DIAL lipidomics data to an LLM/MCP workflow. The repository currently focuses on MS-DIAL binary outputs such as `.arf`, `.arf2`, `.EIC.aef`, and `.pai2`, plus a Tkinter LC-MS/MS viewer and an MS-CleanP-style feature cleanup module.
+Python prototypes for parsing, analyzing, and exposing MS-DIAL lipidomics data to an LLM/MCP workflow. The repository focuses on MS-DIAL binary outputs such as `.arf`, `.arf2`, `.EIC.aef`, and `.pai2`, and adds a knowledge/workflow accumulation layer (`knowledge/`, `playbook/`) surfaced to the LLM through MCP resources.
 
 ## What is included
 
-- `server.py` - FastMCP server named `ms-data-parser`. It exposes tools for listing files, parsing MS-DIAL data, running PCA summaries, querying EIC data by m/z or RT, and applying MS-CleanP filtering.
+- `server.py` - FastMCP server named `ms-data-parser`. It exposes tools for listing files, loading a dataset (`load_dataset`), parsing MS-DIAL data, running PCA summaries, and querying EIC data by m/z or RT. It also serves the knowledge/playbook indexes as MCP resources.
+- `knowledge_store.py` - Pure-logic layer for the accumulation notes: parses note frontmatter, builds the dynamic `knowledge`/`playbook` indexes, and expands a note with its `[[link]]` neighbors under a structural budget.
 - `test_arf.py` - `.arf` parser and command-line analysis script. It can export peak properties, run PCA, create PCA plots, group replicates, plot peak-height distributions, and inspect top loading features.
+- `msdial_tags.py` - Parser and filter engine for MS-DIAL `*_tags.xml` sidecars. It joins per-sample tags by `FileName` + `MasterPeakID` and alignment tags by `MasterAlignmentID`.
+- `msdial_classes.py` - Reads user-defined Class ID values (`AnalysisFileClass`) from `.mddata`, resolves `.mddata` from `.mdproject` or the ARF directory, and filters ARF sample rows before PCA.
 - `test_arf2.py` - `.arf2` parser and text summary generator.
 - `test_eic_aef.py` - `.EIC.aef` parser with EIC summaries and m/z or RT search helpers.
 - `test_pai2.py` - `.pai2` parser with feature filtering, PCA summaries, top-contributor extraction, and metabolite detail lookup.
 - `test_dcl.py` - `.dcl` (MSDecResult) parser. Reads MS-DIAL's custom binary deconvoluted MS/MS spectra (not msgpack/lz4), and can attach those spectra to `.pai2` peaks by index (`attach_msms_to_features`).
 - `data_config.py` - Single source of truth for the data search directory. Returns `<project>/data` by default, or the path in the `LIPIDMIX_DATA_DIR` environment variable when set. Used by `server.py` and all `test_*` parsers.
-- `MS_CleanP.py` - MS-CleanP-inspired cleanup pipeline for MS-DIAL-like feature tables. It supports blank filtering, RSD filtering, mass-defect checks, isotope/adduct/loss link inference, graph clustering, representative peak selection, and CSV export.
-- `lcmsms_viewer.py` - Tkinter desktop viewer for LC-MS/MS data processing, plotting, grid rendering, library building, mzML conversion helpers, and run history.
 - `check.py` - Scratch / pseudo-workspace for temporary experiments and quick code verification. Treat it as a throwaway sandbox: write exploratory code here, and once something works, copy the good code into its proper module and clear `check.py` back out. Nothing should depend on `check.py`, and it is not expected to retain content between tasks.
 - `docs/HISTRY.md` - Development and fact log. Record the timeline of work, findings from investigations, and design decisions here. Fine-grained development history goes in this file.
 - `docs/task.md` - Task management. Track development progress, plans, and task status (`TODO`/`DOING`/`DONE`/`HOLD`) here. Detailed facts behind each task live in `docs/HISTRY.md`.
 - `docs/*.md` (schema files) - MS-DIAL C# MessagePack schema definitions used as the authoritative index reference for the binary parsers: `AlignmentSpotProperty.md` (→ `.arf2`), `AlignmentChromPeakFeature.md` (→ `.arf` per-sample rows), `ChromatogramPeakFeature.md` (→ `.pai2`).
 - `data/` - Default MS-DIAL data directory used by the parsers and MCP tools. Override with the `LIPIDMIX_DATA_DIR` environment variable to point the parsers and `server.py` at any MS-DIAL output folder (e.g. the folder holding the raw acquisition files). All file discovery goes through `data_config.get_data_dir()`.
 - `*.png`, `pca_result.json`, `output_peaks.csv` - Generated analysis artifacts from prior runs.
-- `debug_*.py` and `test_*.py` scripts - Development and parser-inspection utilities.
-- `homework1_260408.csproj` / `.sln` - A small .NET project scaffold that is separate from the Python MS-DIAL tooling.
+- `knowledge/`, `playbook/`, `analyses/` - Accumulation layer. `knowledge/` holds literature-derived notes (citation required), `playbook/` holds reusable analysis workflows, and `analyses/` holds per-experiment objective records. See `docs/HISTRY.md` (2026-06-13).
+- `tests/` - Unit tests (`python -m unittest discover -s tests -t .`). Note that `test_arf.py`/`test_arf2.py`/`test_eic_aef.py`/`test_pai2.py`/`test_dcl.py` at the repo root are **parser modules**, not unit tests; the `test_` prefix is a legacy naming artifact.
 
 ## Supported data formats
 
 The current Python workflow targets these MS-DIAL outputs:
 
-- `.arf` - Alignment result peak properties. Used for feature extraction, PCA, plotting, and MS-CleanP filtering.
+- `.arf` - Alignment result peak properties. Used for feature extraction, PCA, and plotting.
 - `.arf2` - Alignment result format parsed with LZ4/msgpack deserialization.
 - `.EIC.aef` - Extracted ion chromatogram data. Used for summary statistics and peak searches by m/z or retention time.
 - `.pai2` - Peak annotation/feature data. Used for PCA summaries, top metabolite contributors, and detail inspection.
@@ -137,15 +138,6 @@ pandas
 scikit-learn
 ```
 
-`lcmsms_viewer.py` also imports Pillow (`PIL`) and may use optional mzML/conversion tooling such as `pyteomics` or ProteoWizard `msconvert`, depending on the workflow. Install those separately if you use the viewer features that require them.
-
-The original MS-CleanR bridge is optional. Install its Python dependency only
-when you plan to call `mscleanp_filter` with the R-backed workflow:
-
-```bash
-python -m pip install -r requirements-mscleanr.txt
-```
-
 ## FastMCP server
 
 Start the MCP server with:
@@ -158,21 +150,40 @@ The server looks for example inputs in the repository `data/` directory unless a
 
 Available MCP tools include:
 
+- `load_dataset(directory=None)` - Entry point. Given an MS-DIAL output folder, runs the standard initial analysis (arf2 overview -> arf PCA), auto-selecting the latest `*PeakProperties.arf` when duplicates exist, and primes the session.
 - `list_data_files(extension=None, directory=None)` - List files in the given `directory` (defaults to the configured data directory: `LIPIDMIX_DATA_DIR` or `<project>/data`), optionally filtered by extension.
 - `pai2_parser(file_path, filter_threshold=None)` - Parse `.pai2`, run PCA summary generation, and cache the parsed session.
 - `pai2_get_top_metabolites(top_n=10)` - Return top PCA contributors from the latest `.pai2` analysis.
 - `pai2_inspect_metabolite_details(metabolite_id=None, metabolite_name=None)` - Inspect a cached `.pai2` metabolite by ID or name.
 - `pai2_update_analysis_filter(min_intensity=0.0, min_sn=0.0)` - Re-filter cached `.pai2` features and rerun PCA.
-- `arf_parser(file_path=None, props=["height"], components=None, top_features=10)` - Parse `.arf`, build a PCA matrix, and return PCA summary/plot data.
-- `arf_re_pca(...)` - Rerun PCA against the cached `.arf` session with updated settings.
+- `arf_parser(..., class_ids=None, tag_labels=None, ...)` - Parse `.arf`, auto-load adjacent `.mddata` and tag sidecars, optionally filter samples by Class ID, and build a PCA matrix.
+- `arf_list_classes()` - List Class ID values and sample counts discovered from the cached ARF dataset's `.mddata`.
+- `arf_list_tags()` - List discovered tag definitions, matched sample files, and tag assignment counts for the cached `.arf` session.
+- `arf_re_pca(..., class_ids=None, tag_labels=None, ...)` - Rerun PCA with intensity, annotation, Class ID, and MS-DIAL tag filters.
 - `arf2_parser(file_path=None)` - Parse and summarize `.arf2`.
 - `eicaef_parser(file_path=None)` - Parse and summarize `.EIC.aef`.
 - `eicaef_top_peak_tops(file_path=None, top_n=20)` - Return EIC spots ranked by peak-top intensity.
 - `eicaef_search_by_mz_range(file_path=None, min_mz=0.0, max_mz=1000.0, max_results=20)` - Search EIC spots by m/z range.
 - `eicaef_search_by_rt_range(file_path=None, min_rt=0.0, max_rt=20.0, max_results=20)` - Search EIC spots by retention-time range.
-- `mscleanp_filter(do_blank_sub=True, blank_ratio=3.0, do_rsd_filter=True, rsd_threshold=30.0, components=None)` - Apply MS-CleanP filtering to the cached `.arf` session and rerun PCA.
 
-`mscleanp_filter` expects `.arf` data to have already been loaded with `arf_parser`.
+The server also exposes MCP **resources**: `lipidmix://docs/output-format` (authoritative parser output reference), `lipidmix://knowledge/index` and `lipidmix://playbook/index` (dynamic, one line per note), and `lipidmix://{knowledge,playbook}/expand/{slug}` (a note plus its 1-hop `[[link]]` neighbors within a structural budget).
+
+MS-DIAL tag filtering supports `any`, `all`, `none`, and `not_all`. Use
+`tag_scope="sample_peak"` for the per-sample `*_tags.xml` files generated next
+to `.pai2` files, or `tag_scope="alignment_spot"` for the alignment result
+sidecar. Sample tag files are matched to ARF `FileName` values after removing
+the processing timestamp suffix such as `_202605151012`.
+Exact sample-name matches take precedence. Timestamp-stripped matching is used
+only when it resolves to exactly one ARF sample; ambiguous or duplicate matches
+raise an error. When a sample tag file is missing, the default `error` policy
+stops analysis. Set `missing_sample_policy="exclude"` to remove those samples,
+or `"untagged"` to treat them explicitly as having no selected tags.
+
+Class ID filtering uses the user-defined values from MS-DIAL's
+`Option > File property setting > Class ID`. Call `arf_list_classes()` after
+loading an ARF to inspect available values, then pass one or more values with
+`class_ids=["control"]` or `class_ids=["control", "LPS"]`. Multiple values are
+combined with OR. Matching is case-insensitive and sample counts are not fixed.
 
 ## Command-line examples
 
@@ -200,16 +211,10 @@ Run the `.arf2` summary script:
 python test_arf2.py
 ```
 
-Run MS-CleanP cleanup on a CSV feature table:
+Run the unit tests:
 
 ```bash
-python MS_CleanP.py output_peaks.csv --output-prefix cleanp --blank-ratio 3.0 --rsd 30.0 --ion-mode unknown
-```
-
-Launch the LC-MS/MS desktop viewer:
-
-```bash
-python lcmsms_viewer.py
+python -m unittest discover -s tests -t .
 ```
 
 ## Data and output conventions
@@ -224,4 +229,3 @@ python lcmsms_viewer.py
 - Several source comments and strings contain mojibake, but many user-facing Japanese strings in parser arguments are still readable in context.
 - `fastmcp_msdial_cli.py` imports `msdial_reader`, but no `msdial_reader.py` source file is present in the current directory. Treat `server.py` as the active MCP entry point unless that module is restored.
 - Some scripts are development utilities and may assume files exist in `data/` or use hard-coded example search paths.
-- The checked-in `requirements.txt` covers the core parser/server dependencies, but the Tkinter viewer may need extra packages or external conversion tools for specific workflows.
