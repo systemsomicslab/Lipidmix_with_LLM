@@ -1,0 +1,542 @@
+# パーサー出力フォーマットとオントロジー
+
+## 1. 目的と対象
+
+この文書は、LLM が本リポジトリのパーサー出力を解析するときに、各行・列・JSON キーが何を表すかを誤解しないための参照資料である。README に記載された主要な MS-DIAL 出力パーサーを対象とする。
+
+| パーサー | 入力 | 主な実装 |
+|---|---|---|
+| ARF | `*_PeakProperties.arf` | `test_arf.py` |
+| ARF2 | `*.arf2` | `test_arf2.py` |
+| PAI2 | `*.pai2` | `test_pai2.py` |
+| DCL | `*.dcl` | `test_dcl.py` |
+| EIC/AEF | `*.EIC.aef` | `test_eic_aef.py` |
+
+記載内容は、実装、`docs/AlignmentSpotProperty.md`、`docs/AlignmentChromPeakFeature.md`、`docs/ChromatogramPeakFeature.md`、および次の実ファイルに対する出力確認に基づく。
+
+```text
+C:\Users\yuu18\datasets\2_lipidome_lcms\NEG
+```
+
+代表テストファイル:
+
+- `AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf`
+- `AlignmentResult_2026_05_15_10_13_35.arf2`
+- `AlignmentResult_2026_05_15_10_13_35.EIC.aef`
+- `20220901_RAW_control_0h_1_NEG_202605151012.pai2`
+- `20220901_RAW_control_0h_1_NEG_202605151012.dcl`
+
+## 2. 共通オントロジー
+
+本リポジトリでは、同じ LC-MS データを異なる粒度で表現する。
+
+```text
+データセット
+  ├─ アラインメントスポット（全サンプルをまたぐ同一候補ピーク）
+  │    ├─ ARF2: スポットの代表値、同定情報、品質統計
+  │    ├─ ARF: サンプル別ピークプロパティ
+  │    └─ EIC/AEF: サンプル別クロマトグラム点列
+  └─ 個別測定ファイル（1サンプル）
+       ├─ PAI2: そのサンプルで検出されたピーク
+       └─ DCL: PAI2 ピークに対応するデコンボリューション済み MS/MS
+```
+
+主要エンティティと関係:
+
+| エンティティ | 意味 | 主な識別子・対応 |
+|---|---|---|
+| Alignment spot | 複数サンプル間で同一とみなされたピーク集合 | ARF/ARF2 の `MasterAlignmentID`、`AlignmentID`、EIC の `spot_id`。今回の実測ではすべて 0 始まりで 714 件 |
+| Aligned sample peak | 1スポットに属する1サンプルのピーク | ARF の1行。`MasterAlignmentID` と `FileID`/`SampleIndex` の組で特定 |
+| Raw-file peak feature | 1測定ファイル中の検出ピーク | PAI2 の1要素。`id` は当該 PAI2 内のピークID |
+| MSDec result | デコンボリューション済み MS/MS | DCL の1要素。`dcl_index` と PAI2 のリスト順序が対応する設計 |
+| EIC sample trace | 1スポット・1サンプルの抽出イオンクロマトグラム | EIC の `spot_id` と `samples[].file_id` の組で特定 |
+| Annotation | 候補化合物名 | `Name`/`name`。空文字、`Unknown`、`no MS2:`、`low score:`を含み得るため、存在するだけで確定同定を意味しない |
+| Ontology | 化学・脂質クラス | `Ontology`/`ontology`。例: `FA`, `PC`, `PE`, `TG`, `Cer_NS`。化合物名より上位の分類概念 |
+
+共通の値:
+
+| 値 | 意味 |
+|---|---|
+| RT | retention time、保持時間。通常は分（min） |
+| RI | retention index。未使用時は 0 または欠落 |
+| m/z | 質量電荷比。単位なし |
+| Drift / dt | イオンモビリティのドリフト時間。未使用時は `-1` または欠落 |
+| Height | ピーク頂点強度 |
+| Area | ピーク面積。`AboveBaseline` はベースラインより上だけを積分した値 |
+| S/N | signal-to-noise ratio、信号対雑音比 |
+| IonMode | イオン化極性。パーサーにより文字列、Enum、整数のいずれか |
+
+## 3. ARF (`test_arf.py`)
+
+### 3.1 `deserialize()` のスポット出力
+
+型は `list[dict]`。**1要素は1アラインメントスポット**であり、全サンプルのピークを `AlignedPeakProperties` に保持する。実測は 714 スポット、各スポット 60 サンプルだった。
+
+| キー | 型 | 意味 |
+|---|---|---|
+| `MasterAlignmentID` | int | パーサーがスポット順に付与する 0 始まりのマスターID |
+| `AlignmentID` | int | 現実装では `MasterAlignmentID` と同じ連番 |
+| `RT` | float/null | 代表サンプルから取得したスポット代表RT（min） |
+| `MassCenter` | float/null | 代表サンプルから取得したスポット代表 m/z |
+| `IonMode` | str | `Positive`、`Negative`、`Both`、`Unknown` のいずれか |
+| `Name` | str/null | 代表アノテーション名。空文字の場合は未注釈 |
+| `HeightAverage` | float/null | 現実装ではグループ先頭サンプルの `height` を格納する。名前に反して全サンプル平均を再計算していない |
+| `AlignedPeakProperties` | list[list] | そのスポットに属する全サンプルの生 MessagePack 配列。LLM 解析では通常、次節の表形式を使う |
+| `TagIds` / `Tags` | list | アラインメント結果の `*_tags.xml` から `MasterAlignmentID` で結合したタグ |
+| `SamplePeakTags` | dict | サンプル別 `*_tags.xml` から `FileName` と `MasterPeakID` で結合した、タグ付きピークのみの辞書 |
+| `SampleClasses` | dict | `.mddata` の `AnalysisFileBean` と `FileID`/`FileName` で結合したサンプルClass IDメタデータ |
+
+実測先頭スポットは `RT=7.9141`, `MassCenter=101.06208`, `IonMode=Negative`, `HeightAverage=1317.9375` だった。
+
+### 3.2 `extract_peak_properties()` の表/CSV
+
+型は `pandas.DataFrame`。**1行は「1アラインメントスポット × 1サンプル」の1ピーク**である。実測は 714 × 60 = 42,840 行、19列だった。同じ `MasterAlignmentID` がサンプル数だけ繰り返される。
+
+| 列 | 型 | 意味 |
+|---|---|---|
+| `MasterAlignmentID` | int | 行が属するアラインメントスポットID |
+| `AlignmentID` | int | 現実装では `MasterAlignmentID` と同じ値 |
+| `SpotRT` | float/null | アラインメントスポット全体の代表RT（min） |
+| `SpotMassCenter` | float/null | アラインメントスポット全体の代表 m/z |
+| `IonMode` | str | スポットのイオンモード |
+| `CompoundName` | str/null | スポットの候補化合物名。空文字は未注釈 |
+| `AlignmentTags` | list[str] | アラインメントスポットに付与されたMS-DIALタグ |
+| `SampleIndex` | int | `AlignedPeakProperties` 内での 0 始まり位置。サンプル順序を示す |
+| `FileName` | str | 測定ファイル名。取得できない場合は `Sample_<SampleIndex>` |
+| `ClassID` | str/null | MS-DIALのFile property settingで指定した `AnalysisFileClass` |
+| `PeakID` | int/null | 測定ファイル内のピークID。ギャップフィルでは負値になり得る |
+| `FileID` | int/null | データセット内の測定ファイルID。実測では 0..59 |
+| `MasterPeakID` | int/null | 元ピークのマスターID。負値は未検出を補間したギャップフィルを示す |
+| `PeakHeight` | float/null | 当該サンプルのピーク頂点強度 |
+| `PeakArea` | float/null | 当該サンプルのピーク面積 |
+| `PeakAreaAboveBaseline` | float/null | ベースラインより上のピーク面積 |
+| `PeakMZ` | float/null | 当該サンプルで観測されたピーク m/z |
+| `PeakRT` | float/null | 当該サンプルで観測されたピークRT（min） |
+| `SignalToNoise` | float/null | `PeakShape[1]` 由来の S/N |
+| `IsMsms` | bool | MS2 raw spectrum ID-to-collision-energy map が非空か。MS/MS取得情報があることを示すが、スペクトル本体は含まない |
+| `IsGapFilled` | bool | `MasterPeakID < 0` か。`true` は実検出ではなくギャップフィルされた値 |
+| `PeakTags` | list[str] | 当該サンプルピークの `MasterPeakID` に付与されたMS-DIALタグ |
+
+実測先頭行は `FileID=0`, `FileName=20220901_RAW_control_0h_1_NEG`, `PeakHeight=1317.9375`, `SignalToNoise=26.0696`, `IsGapFilled=true` だった。
+
+### 3.3 `build_pca_matrix()` の行列
+
+返り値は `(matrix, sample_names, feature_names)`。
+
+| 出力 | 行・列の意味 |
+|---|---|
+| `matrix` | 2次元 `numpy.ndarray`。**行=サンプル、列=スポット×選択プロパティ** |
+| `sample_names` | 行ラベル。通常は `FileName` |
+| `feature_names` | 列ラベル。`Spot_<MasterAlignmentID>_<property>` 形式。例: `Spot_0_height` |
+
+`property` は `_convert_to_alignment_feature()` の `height`, `area`, `area_above_baseline`, `m_z`, `rt`, `signal_to_noise` などを指定できる。指定値が `None` のセルはまず欠損となり列平均で補完され、全欠損なら 0 となる。分散 0 の列は除外される。`min_detection_rate > 0` の場合は、非ギャップフィルサンプル率が閾値未満の列も除外される。実測の既定 `height` 行列は 60行 × 714列だった。
+
+### 3.4 `run_pca()` と Loading 出力
+
+PCA 前に各列を `StandardScaler` で標準化する。`log_transform=true` の場合は値を 1 以上にクリップして `log10` 変換してから標準化する。
+
+| JSONキー | 形状 | 意味 |
+|---|---|---|
+| `components` | `[sample][PC]` | 各サンプルの主成分スコア。行順は `sample_names` と同じ |
+| `explained_variance_ratio` | `[PC]` | 各主成分が説明する分散の比率。0..1 |
+| `singular_values` | `[PC]` | 各主成分に対応する特異値 |
+| `loadings` | `[PC][feature]` | 各主成分に対する各入力列の係数。列順は `feature_names` と同じ |
+
+実測2成分PCAでは `components` が 60×2、`loadings` が 2×714、説明分散比が PC1=`0.2403868`, PC2=`0.1519661` だった。主成分の符号は数学的に反転可能なので、正負そのものよりサンプルと特徴量の相対関係を解釈する。
+
+`get_pca_loading_features()` の各要素:
+
+| キー | 意味 |
+|---|---|
+| `pc` | `PC1` などの主成分名 |
+| `var_ratio` | 説明分散比を百分率にした値 |
+| `positive` | Loading 値が大きい側の上位特徴量リスト |
+| `negative` | Loading 値が小さい側の上位特徴量リスト |
+| `positive/negative[].id` | `MasterAlignmentID` |
+| `positive/negative[].value` | Loading 係数 |
+| `positive/negative[].annotation` | スポットの `Name` |
+| `positive/negative[].m_z` | スポット代表 m/z |
+| `positive/negative[].rt` | スポット代表RT（min） |
+
+### 3.5 ARF要約
+
+`summarize_arf_data()` は次の辞書を返す。
+
+| キー | 意味 |
+|---|---|
+| `total_peaks` | スポット数。名前は peaks だがサンプル別行数ではない |
+| `rt_range` | スポット代表RTの `(min, max)` |
+| `mass_range` | スポット代表 m/z の `(min, max)` |
+| `height_average_mean` | `HeightAverage` の算術平均 |
+| `height_average_max` | `HeightAverage` の最大値 |
+| `ion_modes` | イオンモード別スポット数 |
+| `named_compounds` | `Name` が null でない件数。**空文字も数えるため、真の注釈済み件数とは限らない** |
+
+### 3.6 MS-DIALタグ
+
+`msdial_tags.py` はARFと同じディレクトリの `*_tags.xml`（互換用に拡張子なしの `*_tags` も可）を読む。サンプル別ファイルは処理時刻の12桁接尾辞を除いた名前でARFの `FileName` と対応させ、XMLの `Peak/@Id` をARF行の `MasterPeakID` と結合する。アラインメント結果用ファイルは `Peak/@Id` を `MasterAlignmentID` と結合する。
+
+タグ条件は `any`、`all`、`none`、`not_all` を使用できる。`sample_peak` スコープでは条件に一致しないサンプル別行をスポット内から除外し、`alignment_spot` スコープではスポット全体を除外する。タグ未付与ピークは `any`/`all` には一致せず、`none`/`not_all` には一致する。
+
+サンプル名は完全一致を優先し、MS-DIAL処理時刻の12桁接尾辞を除く補助照合は一意に決まる場合だけ使用する。重複・曖昧照合はエラーとなる。タグファイル未対応サンプルは既定でエラーにし、`missing_sample_policy=exclude` で除外、`untagged` で明示的にタグなし扱いへ変更できる。サンプル数は固定せず、ARFから検出した件数を使用する。
+
+### 3.7 Class ID
+
+`msdial_classes.py` は `.mddata` の `MsdialDataStorageBase.Key0 AnalysisFiles` を読み、各 `AnalysisFileBean` の `AnalysisFileId`、`AnalysisFileName`、`AnalysisFileClass` を抽出する。`.mddata` は明示パス、`.mdproject` 内の参照、またはARFと同じディレクトリから解決する。
+
+ARFサンプルとの結合は `FileID` を優先し、欠損時は正規化した `FileName` を使用する。両方が異なるサンプルへ解決された場合はエラーとする。`filter_arf_by_class_ids()` は選択Class ID以外のサンプル行を各スポットから除外し、その結果を `build_pca_matrix()` に渡すことでPCAの行をClass IDで選別できる。
+
+## 4. ARF2 (`test_arf2.py`)
+
+### 4.1 `deserialize()` / `extract_arf2_data()`
+
+型は `list[dict]`。**1行/1要素は1アラインメントスポットのカタログ情報**で、サンプル別強度は含まない。実測は 714行 × 22項目だった。
+
+| 列/キー | 型 | 意味 |
+|---|---|---|
+| `MasterAlignmentID` | int | MS-DIAL のマスターアラインメントID |
+| `AlignmentID` | int | アラインメントID |
+| `RT` | float | スポット中心RT（min） |
+| `MassCenter` | float | スポット中心 m/z |
+| `IonMode` | str | `Positive`、`Negative`、`Both`、`Unknown` |
+| `Name` | str | 候補化合物名。欠落時は `Unknown`。`no MS2:` や `low score:` は注釈の確度に関する接頭辞 |
+| `HeightAverage` | float | アラインメントスポットのサンプル間平均ピーク高さ |
+| `Formula` | str | 分子式。例: `C5H10O2` |
+| `Ontology` | str | 化学/脂質クラス。例: `FA`, `PC`, `Cer_NS` |
+| `SMILES` | str | 分子構造の SMILES 表現 |
+| `InChIKey` | str | 構造同定子 InChIKey |
+| `AdductType` | str | 観測イオンの付加体。例: `[M-H]-` |
+| `HeightMin` | float | サンプル間ピーク高さの最小値 |
+| `HeightMax` | float | サンプル間ピーク高さの最大値 |
+| `PeakWidthAverage` | float | サンプル間の平均ピーク幅。LC の場合は通常 min |
+| `SignalToNoiseAve` | float | サンプル間 S/N の平均 |
+| `SignalToNoiseMax` | float | サンプル間 S/N の最大値 |
+| `SignalToNoiseMin` | float | サンプル間 S/N の最小値 |
+| `MassMin` | float | サンプル間観測 m/z の最小値 |
+| `MassMax` | float | サンプル間観測 m/z の最大値 |
+| `FillPercentage` | float | 当該スポットが値を持つサンプルの割合。**0..1 の比率**で、百分率表示には100倍する |
+| `MonoIsotopicPercentage` | float | 単同位体ピークとして扱われる割合。**0..1 の比率** |
+
+実測先頭行では `Name=no MS2: FA 5:0`, `Ontology=FA`, `FillPercentage=0.0166667`（60サンプル中約1サンプル相当）、`MonoIsotopicPercentage=1.0` だった。
+
+### 4.2 `summarize_arf2_data()`
+
+| キー | 意味 |
+|---|---|
+| `total_spots` | スポット総数 |
+| `height_average_median` | 0より大きい `HeightAverage` の中央値 |
+| `height_average_max` | 0より大きい `HeightAverage` の最大値 |
+| `rt_range` | RT の `(min, max)` |
+| `mass_range` | m/z の `(min, max)` |
+| `ion_modes` | イオンモード別件数 |
+| `annotated_count` | `Name` が空、null、`Unknown` ではない件数。注釈確度は考慮しない |
+| `annotation_rate` | `annotated_count / total_spots * 100` |
+| `ontology_top` | 空でない `Ontology` の件数上位10クラス。文字列 `Unknown` も集計対象 |
+| `sn_median` | 0より大きい `SignalToNoiseAve` の中央値 |
+| `error` | データが空のときのエラーメッセージ |
+
+実測では 714スポット、注釈済み497件（69.61%）、S/N中央値401.76だった。
+
+### 4.3 `format_spots_as_table()`
+
+1行目が列名、2行目以降が1スポットの TSV/CSV 文字列。既定列順は上記22列の順である。浮動小数は最大4桁程度に丸め、区切り文字・改行・引用符を含むセルは二重引用符で囲む。空値は空セルになる。この丸め済み表はLLM受け渡し用であり、精密な再計算には元の辞書値を使う。
+
+## 5. PAI2 (`test_pai2.py`)
+
+### 5.1 `deserialize()` のピーク出力
+
+型は `list[dict]`。**1要素は1測定ファイル内の1検出ピーク**である。実測ファイルは404ピークだった。
+
+| キー | 型 | 意味 |
+|---|---|---|
+| `time` | dict | ピーク頂点の座標。通常 `{"rt": value}` |
+| `time_left` | dict | ピーク左端の座標 |
+| `time_right` | dict | ピーク右端の座標 |
+| `peak_height` | float | ピーク頂点強度 |
+| `peak_height_left` | float | 左端の強度 |
+| `peak_height_right` | float | 右端の強度 |
+| `peak_area` | float | ピーク面積 |
+| `peak_area_above_baseline` | float | ベースラインより上のピーク面積 |
+| `m/z` | float | ピーク m/z |
+| `S/N` | float | `PeakShape[1]` 由来の S/N |
+| `id` | int | 当該 PAI2 ファイル内のピークID |
+| `ion_mode` | `IonMode` Enum | `IonMode.Positive`（値0）、`IonMode.Negative`（値1）、`IonMode.Both`（値2）。JSON化時は文字列/数値への変換が必要 |
+| `name` | str | 候補化合物名。空文字は未注釈 |
+| `formula` | str | 分子式 |
+| `ontology` | str | 化学/脂質クラス |
+| `smiles` | str | SMILES |
+| `inchikey` | str | InChIKey |
+| `adduct` | str | 付加体。例: `[M-H]-` |
+| `collision_cross_section` | float | CCS。イオンモビリティ未使用時は 0 のことがある |
+| `comment` | str | MS-DIAL由来の注釈コメント |
+| `has_msms` | bool | MS2 raw ID が非負、または collision-energy map が非空か。MS/MS取得情報の有無 |
+| `ms2_raw_id` | int | 元データの MS2 raw spectrum ID。未設定は `-1` |
+| `collision_energies` | list[float] | MS/MS取得時の衝突エネルギー一覧。実測負イオンデータでは `-42.0` など負値も存在 |
+| `msms_peak_count` | int | PAI2 内 `msms_spectrum` の要素数。通常はスペクトル本体がDCL側にあるため0 |
+| `msms_spectrum` | list[list] | PAI2自体に格納された `[fragment_mz, intensity]`。今回の実測では空 |
+
+`time` 系辞書には、入力に存在する非負値だけが入る。
+
+| サブキー | 意味 |
+|---|---|
+| `rt` | retention time |
+| `ri` | retention index |
+| `m/z` | 座標表現内の m/z |
+| `dt` | drift time |
+
+実測先頭ピークは `id=0`, `rt=1.652`, `m/z=298.94518`, `peak_height=1698.875`, `S/N=234.517`, `has_msms=true` だったが、PAI2内の `msms_spectrum` は空だった。
+
+### 5.2 フィルタ
+
+`filter_features_by_params()` は元と同じピーク辞書を保持したリストを返す。
+
+| パラメータ | 意味 |
+|---|---|
+| `min_intensity` / `min_height` | `peak_height` の下限 |
+| `min_sn` | `S/N` の下限。S/Nが取得できないピークも除外 |
+
+### 5.3 `perform_pca_summary()`
+
+重要: **このPCAの行はサンプルではなくピーク**である。各ピークを `[RT, m/z, Height]` の3変数で標準化し、ピーク群の分布を2成分に射影する。サンプル間のオミクスPCAではない。
+
+返り値は `(summary, img_bytes, pca_result, pca_index, filtered_features)`。
+
+| 出力 | 意味 |
+|---|---|
+| `summary` | 下表の解析要約辞書 |
+| `img_bytes` | PCA散布図のPNGバイト列。点=ピーク、色=`m/z` |
+| `pca_result` | `[peak][PC1, PC2]` のスコア行列 |
+| `pca_index` | DataFrameの行インデックス。`filtered_features` と同順 |
+| `filtered_features` | フィルタ通過ピーク |
+
+`summary` の全キー:
+
+| キー | 意味 |
+|---|---|
+| `status` | `success` または `error` |
+| `message` | エラー時の理由 |
+| `total_peaks_initial` | フィルタ前ピーク数 |
+| `total_peaks_filtered` | フィルタ後ピーク数 |
+| `filter_params` | 実際に適用したフィルタ辞書 |
+| `explained_variance.PC1/PC2` | 説明分散比の百分率文字列 |
+| `pca_equation` | 表示用の一般式 `X = T P^T + E` |
+| `sn_summary.available_fraction` | フィルタ後ピークのうちS/Nを取得できた割合 0..1 |
+| `sn_summary.count_with_sn` | S/Nを取得できたピーク数 |
+| `sn_summary.min/median/max` | S/Nの最小・中央値・最大値 |
+| `loadings.PC1_main_factor` | PC1で絶対Loadingが最大の変数名 |
+| `loadings.PC2_main_factor` | PC2で絶対Loadingが最大の変数名 |
+| `loadings.weights.PC1/PC2.RT` | RTのLoading係数 |
+| `loadings.weights.PC1/PC2.m/z` | m/zのLoading係数 |
+| `loadings.weights.PC1/PC2.Height` | HeightのLoading係数 |
+| `top_contributors.PC1/PC2` | 各PCの**スコア絶対値**が大きいピーク。変数Loading上位ではない |
+
+実測では `pca_result` は 404×2、説明分散比は PC1=49.06%、PC2=32.65% だった。
+
+`top_contributors` / `get_top_contributors()` の1項目:
+
+| キー | 意味 |
+|---|---|
+| `id` | PAI2ピークID |
+| `name` | 候補化合物名 |
+| `score` | 指定PC上のピークスコア。絶対値で順位付けするため正負の両方が入る |
+| `m/z` | ピーク m/z（小数4桁丸め） |
+| `height` | ピーク高さ |
+| `signal_to_noise` | S/N |
+| `rt` | RT（小数2桁丸め） |
+
+### 5.4 `inspect_metabolite_details()`
+
+成功時は `{"status":"success", "matches":[...], "note":...}` を返す。`metabolite_name` は大文字小文字を無視した部分一致で、複数件返り得る。
+
+| `matches[]` キー | 意味 |
+|---|---|
+| `id` | PAI2ピークID |
+| `name` | 候補化合物名 |
+| `m/z` | ピーク m/z |
+| `rt` | ピーク頂点RT |
+| `height` | ピーク高さ |
+| `area` | ピーク面積 |
+| `signal_to_noise` | S/N |
+| `has_msms_like_fields` | キー名に `msms`、`fragment`、`spectrum` のいずれかを含むフィールドが存在するか。**実スペクトルが非空かは判定しない** |
+| `formula` | 分子式 |
+| `adduct` | 付加体 |
+| `comment` | コメント |
+
+検索条件なしは `status=error`、該当なしは `status=not_found` となる。
+
+## 6. DCL (`test_dcl.py`)
+
+### 6.1 `deserialize_dcl()`
+
+型は `list[dict]`。**1要素は1 MSDecResult、すなわち1プリカーサーピークに対応するデコンボリューション済みMS/MS結果**である。実測は404件で、同名PAI2の404ピークと件数が一致した。
+
+| キー | 型 | 意味 |
+|---|---|---|
+| `dcl_index` | int | DCL内の0始まり順序。PAI2のリスト順序/MasterPeakIDに対応する設計 |
+| `scan_id` | int | MSDec結果のスキャンID |
+| `raw_spec_id` | int | 元のraw spectrum ID。PAI2の `ms2_raw_id` と対応し得る |
+| `precursor_mz` | float | プリカーサーイオン m/z |
+| `ion_mode` | int | 生のイオンモード列挙値。`0=Positive`, `1=Negative`, `2=Both` |
+| `rt` | float | プリカーサーピークRT（min） |
+| `model_peak_height` | float | デコンボリューションモデルピーク高さ |
+| `signal_to_noise` | float | DCL scoring blockのS/N。PAI2のピーク検出S/Nとは別フィールド |
+| `estimated_noise` | float | DCL scoring blockの推定ノイズ |
+| `n_msms_peaks` | int | 元スペクトルに格納されたフラグメントピーク数 |
+| `msms_spectrum` | list[list] | `[fragment_mz, intensity]` のリスト |
+
+`include_spectrum=false` では `msms_spectrum=[]` だが、`n_msms_peaks` は元の本数を保持する。`top_n_peaks=N` では `msms_spectrum` だけを強度上位N本に縮め、m/z昇順に戻す。したがって **`len(msms_spectrum)` と `n_msms_peaks` は一致しないことがある**。
+
+実測先頭結果は `precursor_mz=298.94518`, `rt=1.652`, `raw_spec_id=3675`, `n_msms_peaks=507` だった。`top_n_peaks=5` ではスペクトル配列のみ5本となった。
+
+### 6.2 `summarize_dcl()`
+
+| キー | 意味 |
+|---|---|
+| `total_results` | MSDecResult総数 |
+| `with_msms` | `n_msms_peaks > 0` の件数 |
+| `msms_rate_pct` | `with_msms / total_results * 100` |
+| `msms_peak_count_median` | MS/MS保有結果におけるフラグメント数中央値。偶数件でも中央2値平均ではなく上側の中央要素 |
+| `msms_peak_count_max` | フラグメント数最大値 |
+| `precursor_mz_range` | 正の precursor m/z の `(min, max)`。小数4桁丸め |
+| `rt_range` | RT の `(min, max)`。小数2桁丸め |
+| `error` | 空入力時のメッセージ |
+
+実測では404件中264件がMS/MSを持ち、保有率65.3%、フラグメント数中央値128、最大4345だった。
+
+### 6.3 検索とPAI2への付与
+
+`get_msms_by_precursor()` は `abs(result.precursor_mz - query) <= tol`、任意で `abs(result.rt - query_rt) <= rt_tol`、かつ `n_msms_peaks > 0` のDCL辞書をそのまま返す。
+
+`attach_msms_to_features()` は同じリスト位置の PAI2 と DCL を対応付け、m/z差が `mz_tol` 以下ならPAI2辞書へ次を追加/上書きする。
+
+| 追加キー | 意味 |
+|---|---|
+| `msms_spectrum` | DCL由来フラグメント配列 |
+| `n_msms_peaks` | DCLに記録された元フラグメント数 |
+| `msms_peak_count` | `n_msms_peaks` と同じ値 |
+
+関数の返り値は、付与に成功したうち `n_msms_peaks > 0` だったピーク数である。
+
+## 7. EIC/AEF (`test_eic_aef.py`)
+
+### 7.1 `parse_eic_aef_css1()` のスポット出力
+
+型は `list[dict]`。**1要素は1アラインメントスポットのEIC集合**で、`samples` に各測定ファイルのクロマトグラム要約を持つ。実測は714スポット、各60サンプルだった。
+
+| キー | 型 | 意味 |
+|---|---|---|
+| `spot_id` | int | ファイル中の0始まりスポット順序。今回のデータではARF/ARF2のID順と対応 |
+| `rt` | float | スポット代表RT（min） |
+| `ri` | float | スポット代表RI。LCデータでは0のことがある |
+| `mz` | float | スポット代表 m/z |
+| `drift` | float | スポット代表ドリフト時間。未使用時は `-1` |
+| `main_type` | int | 横軸種別の列挙値。実測値0はRT主軸を表す |
+| `num_samples` | int | このスポットに格納されたサンプル数 |
+| `samples` | list[dict] | サンプル別EIC要約。リスト長は通常 `num_samples` |
+
+### 7.2 `samples[]` の全フィールド
+
+**1要素は「1スポット × 1測定ファイル」のEIC**である。
+
+| キー | 型 | 意味 |
+|---|---|---|
+| `file_id` | int | データセット内の測定ファイルID |
+| `peak_top` | float | ピーク頂点の**横軸座標**。今回の `main_type=0` データではRT（min）。**強度ではない** |
+| `num_peaks` | int | EICに格納されたクロマトグラム点数。名称はピーク数に見えるがデータ点数 |
+| `mean_intensity` | float | 全クロマトグラム点の強度算術平均 |
+| `max_intensity` | float | 全クロマトグラム点の最大強度 |
+| `chromatogram` | list[tuple] | `include_chromatogram=true` のときだけ追加される `(horizontal_coordinate, intensity)` 点列。長さは `num_peaks` |
+
+実測先頭サンプルは `peak_top=7.91410`, `num_peaks=48`, `mean_intensity=792.0`, `max_intensity=1317.9375` だった。先頭クロマトグラム点は `(7.52727, 659.4375)` である。
+
+注意: バイナリにはピーク左端・右端座標もあるが、現パーサーは読み進めるだけで出力辞書には含めない。
+
+### 7.3 `summarize_eic_data()`
+
+| キー | 意味 |
+|---|---|
+| `total_spots` | EICスポット総数 |
+| `rt_range` | スポット代表RTの `(min, max)` |
+| `mz_range` | スポット代表 m/z の `(min, max)` |
+| `total_samples` | 全スポットの `num_samples` 合計。ユニークサンプル数ではない |
+| `total_peaks` | 全 `samples[].num_peaks` の合計。実際には全クロマトグラム点数 |
+| `peak_top_mean` | 全サンプルのピーク頂点横軸座標の平均。強度平均ではない |
+| `peak_top_max` | 全サンプルのピーク頂点横軸座標の最大。最大強度ではない |
+| `unique_file_ids` | 出現した `file_id` の昇順リスト。長さがユニークサンプル数 |
+
+実測は714スポット、42,840スポット-サンプル組、4,716,148クロマトグラム点だった。
+
+### 7.4 検索・ランキング出力
+
+`search_eic_by_mz_range()` と `search_eic_by_rt_range()` は条件に合う**元のスポット辞書全体**を返す。境界値を含む。
+
+`top_eic_spots_by_peak_top()` の1行:
+
+| キー | 意味 |
+|---|---|
+| `spot_id` | スポットID |
+| `rt` | スポット代表RT |
+| `mz` | スポット代表 m/z |
+| `num_samples` | サンプル数 |
+| `max_peak_top` | サンプル間で最大のピーク頂点横軸座標 |
+
+**現関数名・MCP表示は強度ランキングのように見えるが、実際には `peak_top` 座標の降順である。今回のLCデータでは概ね遅いRTのスポットが上位になる。強度上位を求める場合は `max_intensity` を使う別ロジックが必要である。**
+
+## 8. MCPツールの外部出力
+
+`server.py` は上記の構造化結果を主にMarkdown/JSON文字列へ整形する。LLMは表示文ではなく、次の意味を基準に解釈する。
+
+### 8.1 `arf_parser()` / `arf_re_pca()`
+
+返り値はテキスト1件を含む `list`。総スポット数、Class ID分布、タグファイル対応数、タグ別件数、総サンプル別レコード数、平均サンプル数/スポット、PCA行列形状、PC1/PC2説明分散比、スコアプロット用JSON、Loading上位を含む。`class_ids` を指定すると、選択したClass IDに属するサンプル行だけを残してPCAを実行する。複数Class IDはOR条件で、照合は大文字小文字を区別しない。`arf_list_classes()` は `.mddata` のパスとClass ID別サンプル数をJSONで返す。`arf_list_tags()` は現在のARFセッションについてタグ定義、サンプルファイル対応数、タグ付与数をJSONで返す。
+
+スコアプロット用JSON:
+
+| キー | 意味 |
+|---|---|
+| `title` | 図タイトル |
+| `x_axis` | PC1名と説明分散率 |
+| `y_axis` | PC2名と説明分散率 |
+| `data[]` | 1サンプル1点 |
+| `data[].sample` | サンプル名 |
+| `data[].pc1` | PC1スコア |
+| `data[].pc2` | PC2スコア |
+
+### 8.2 `arf2_parser()`
+
+返り値はテキスト1件を含む `list`。`total_spots`, `annotated_count`, `annotation_rate`, RT/m/z範囲、強度中央値、イオンモード、S/N中央値、Ontology上位を自然言語で表示する。個々の22列は返さず、セッション内部に保持する。
+
+### 8.3 `pai2_parser()` と関連ツール
+
+`pai2_parser()` は `[text_report, Image]` を返す。`text_report` のJSONは 5.3節の `summary`、`Image` はピークPCA散布図PNGである。`pai2_get_top_metabolites()` は5.3節の contributor 配列をJSON文字列で返す。`pai2_inspect_metabolite_details()` は5.4節の辞書をJSON文字列で返す。`pai2_update_analysis_filter()` は適用した `min_intensity`/`min_sn`、フィルタ前後件数、データ損失率、PC1/PC2説明分散率、前回からのPC1説明分散率変化、フィルタ後のPC1スコア絶対値上位5ピークをテキストで返す。
+
+### 8.4 `eicaef_parser()` と関連ツール
+
+`eicaef_parser()` は7.3節の要約をJSON文字列として返す。m/z/RT検索の各表示行は `spot_id`, `rt`, `mz`, `num_samples` を持つ。`eicaef_top_peak_tops()` はさらに `max_peak_top` を表示するが、7.4節のとおり強度ではなく横軸座標である。
+
+DCLパーサーは現時点で独立したMCPツールとして公開されていない。
+
+## 9. LLM解釈時の必須注意事項
+
+1. `Name` が存在しても確定同定とは限らない。空文字、`Unknown`、`no MS2:`、`low score:`を区別する。
+2. `Ontology` は化合物名ではなく分類クラスである。空文字と文字列 `Unknown` も区別する。
+3. ARFの1行はサンプル別ピーク、ARF2の1行は全サンプル統合スポットであり、同じ「1行」でも粒度が違う。
+4. ARFの `IsGapFilled=true` は実測ピークではなく補間値である。検出率や存在判定では別扱いする。
+5. ARFの `HeightAverage` は現実装ではグループ先頭値であり、名前どおりの再計算平均ではない。統合統計にはARF2側を優先する。
+6. ARF要約の `named_compounds` は空文字も数えるため、注釈率には使わない。
+7. PAI2のPCAはピークを行とする3変数PCAで、サンプル間比較ではない。`top_contributors` はPC Loadingではなくピークスコア絶対値上位である。
+8. PAI2の `has_msms=true` は取得参照があることを示すだけで、PAI2内 `msms_spectrum` が非空とは限らない。実スペクトルはDCLを参照する。
+9. DCLの `n_msms_peaks` は元本数であり、`top_n_peaks` 適用後の配列長とは異なり得る。
+10. EICの `peak_top` は強度ではなく頂点座標である。強度は `max_intensity`、平均強度は `mean_intensity` を使う。
+11. `total_samples` はEIC全スポットにわたるサンプルエントリ総数であり、ユニークサンプル数は `len(unique_file_ids)` である。
+12. m/zとRTの微小差はファイル形式の浮動小数精度、代表値の定義、アラインメント処理に由来し得る。厳密一致ではなく許容差を用いる。
+
+## 10. 実測サマリー
+
+| 形式 | 実測結果 |
+|---|---|
+| ARF | 714スポット、60サンプル、42,840サンプル別行、既定PCA行列60×714 |
+| ARF2 | 714スポット、22列、注釈済み497件、Negative 714件 |
+| PAI2 | 404ピーク、25キー、S/N取得率100%、PCAスコア404×2 |
+| DCL | 404 MSDecResult、MS/MS保有264件（65.3%） |
+| EIC/AEF | 714スポット、60ユニークファイル、42,840サンプルエントリ、4,716,148クロマトグラム点 |
