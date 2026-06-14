@@ -2,10 +2,10 @@
 	"servers": {
 		"ms-data-parser": {
 			"type": "stdio",
-			"command": "C:\\Users\\yuu18\\OneDrive\\Desktop\\homework1_260408\\.venv-1\\Scripts\\python.exe",
+			"command": "${workspaceFolder}\\.venv-1\\Scripts\\python.exe",
 			"args": [
 				"-u",
-        		"C:\\Users\\yuu18\\OneDrive\\Desktop\\homework1_260408\\server.py"
+				"${workspaceFolder}\\server.py"
 			]
 		}
 	},

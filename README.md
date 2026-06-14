@@ -166,7 +166,17 @@ Available MCP tools include:
 - `eicaef_search_by_mz_range(file_path=None, min_mz=0.0, max_mz=1000.0, max_results=20)` - Search EIC spots by m/z range.
 - `eicaef_search_by_rt_range(file_path=None, min_rt=0.0, max_rt=20.0, max_results=20)` - Search EIC spots by retention-time range.
 
-The server also exposes MCP **resources**: `lipidmix://docs/output-format` (authoritative parser output reference), `lipidmix://knowledge/index` and `lipidmix://playbook/index` (dynamic, one line per note), and `lipidmix://{knowledge,playbook}/expand/{slug}` (a note plus its 1-hop `[[link]]` neighbors within a structural budget).
+Objective lifecycle and gap-driven literature discovery (see `docs/HISTRY.md`):
+
+- `record_objective(analysis_id, dataset, polarity, groups, comparison, sub_questions, biological_context="", ...)` - Record the user-confirmed experimental objective and its sub-questions under `analyses/`.
+- `update_objective(analysis_id, confirmed_objective=None, biological_context=None, status=None, add_subquestions=None)` - Update the objective or append an emergent sub-question.
+- `knowledge_coverage(analysis_id)` - Classify each sub-question as COVERED / WEAK / GAP against `knowledge/` (annotates ones already searched).
+- `paper_search(query, max_results=10)` - Search Europe PMC (peer-reviewed, abstracts), filtering retractions and duplicates. Queries must be user-confirmed first.
+- `ingest_stage(title, abstract, source, found_for, query, ...)` - Quarantine a relevant hit as a speculative note under `knowledge/_inbox`.
+- `log_search(analysis_id, subquestion, query, hits, promoted=0)` - Record a search attempt (prevents re-searching the same gap).
+- `ingest_review_queue()` / `ingest_promote(slug, claim_strength, links=None)` / `ingest_reject(slug)` - Human review gate; promotion is the only way an `_inbox` note becomes trusted knowledge.
+
+The server also exposes MCP **resources**: `lipidmix://docs/output-format` (authoritative parser output reference), `lipidmix://knowledge/index` and `lipidmix://playbook/index` (dynamic, one line per note), `lipidmix://{knowledge,playbook}/expand/{slug}` (a note plus its 1-hop `[[link]]` neighbors within a structural budget), and `lipidmix://knowledge/inbox` (pending discovery notes awaiting review).
 
 MS-DIAL tag filtering supports `any`, `all`, `none`, and `not_all`. Use
 `tag_scope="sample_peak"` for the per-sample `*_tags.xml` files generated next

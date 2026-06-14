@@ -549,3 +549,128 @@ def reject(slug: str, knowledge_dir: str | Path) -> bool:
         src.unlink()
         return True
     return False
+
+
+# ======================================================================
+# objective レコード（analyses/）のライフサイクル
+# ======================================================================
+# 小問は本文の "- Q1: ..." 形式（ラベル Q1,Q2... は found_for/search_log と統一）。
+# 探索ログ(search_log)は frontmatter ではなく本文 "## 探索ログ（search_log）" 節に
+# "- Q2 | date | query | hits=.. | promoted=.." 形式で持つ（クエリのカンマ等で
+# frontmatter インラインリストが壊れるのを避けるため）。
+
+_OBJ_SUBQ_RE = re.compile(r"-\s*Q(\d+)\s*[:：]\s*(.+)")
+_OBJ_LOG_RE = re.compile(r"-\s*(Q\d+)\s*\|\s*(.+)")
+_SUBQ_HEADER = "## 派生する小問（関連性ゲートの照合対象）"
+_EMERGENT_HEADER = "## 創発的に追記された小問"
+_SEARCHLOG_HEADER = "## 探索ログ（search_log）"
+_PLACEHOLDERS = {"（なし）", "（記載なし）", "（未確認。確認後に記入）"}
+
+
+def parse_objective(path: str | Path) -> tuple[dict, list[tuple[str, str]], str]:
+    """objective を (meta, [(label, text), ...], body) で返す。label は "Q1" など。"""
+    text = Path(path).read_text(encoding="utf-8")
+    meta, body = parse_frontmatter(text)
+    subqs = [(f"Q{m.group(1)}", m.group(2).strip()) for m in _OBJ_SUBQ_RE.finditer(body)]
+    return meta, subqs, body
+
+
+def searched_labels(path: str | Path) -> dict[str, str]:
+    """探索ログ節から {label: ログ行} を返す（churn 防止の突合用）。"""
+    _meta, body = parse_frontmatter(Path(path).read_text(encoding="utf-8"))
+    result: dict[str, str] = {}
+    for raw in body.splitlines():
+        m = _OBJ_LOG_RE.match(raw.strip())
+        if m:
+            result.setdefault(m.group(1), raw.strip())
+    return result
+
+
+def build_objective_body(
+    confirmed_objective: str, sub_questions: list[str], evidence: list[str] | None = None
+) -> str:
+    lines = ["## 確定目的", confirmed_objective.strip() if confirmed_objective else "（未確認。確認後に記入）", ""]
+    lines.append("## 推測の根拠（データ特徴）")
+    lines.extend([f"- {e}" for e in evidence] if evidence else ["（記載なし）"])
+    lines += ["", _SUBQ_HEADER]
+    for i, question in enumerate(sub_questions, 1):
+        lines.append(f"- Q{i}: {question}")
+    lines += ["", _EMERGENT_HEADER, "（なし）", "", _SEARCHLOG_HEADER, "（なし）"]
+    return "\n".join(lines)
+
+
+def write_objective(
+    analyses_dir: str | Path,
+    analysis_id: str,
+    meta_fields: dict,
+    sub_questions: list[str],
+    evidence: list[str] | None = None,
+) -> Path:
+    """objective レコードを analyses/<analysis_id>.md として書き出す。"""
+    meta = {"type": "objective", "analysis_id": analysis_id}
+    meta.update(meta_fields)
+    meta.setdefault("status", "active")
+    meta["confirmed"] = bool(meta.get("confirmed_objective"))
+    body = build_objective_body(meta.get("confirmed_objective", ""), sub_questions, evidence)
+    return write_note(analyses_dir, analysis_id, meta, body)
+
+
+def update_objective_meta(path: str | Path, updates: dict) -> Path:
+    """frontmatter のみ更新し本文は温存する。"""
+    path = Path(path)
+    meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+    meta.update(updates)
+    if "confirmed_objective" in updates:
+        meta["confirmed"] = bool(updates["confirmed_objective"])
+    return write_note(path.parent, path.stem, meta, body)
+
+
+def _append_under_section(body: str, header: str, new_line: str) -> str:
+    """指定セクション末尾に行を追記（プレースホルダは除去）。無ければ末尾に新設。"""
+    lines = body.splitlines()
+    out: list[str] = []
+    inserted = False
+    i = 0
+    while i < len(lines):
+        out.append(lines[i])
+        if not inserted and lines[i].strip() == header:
+            j = i + 1
+            section: list[str] = []
+            while j < len(lines) and not lines[j].startswith("## "):
+                section.append(lines[j])
+                j += 1
+            cleaned = [s for s in section if s.strip() not in _PLACEHOLDERS]
+            while cleaned and cleaned[-1].strip() == "":
+                cleaned.pop()
+            cleaned.append(new_line)
+            cleaned.append("")
+            out.extend(cleaned)
+            inserted = True
+            i = j
+            continue
+        i += 1
+    if not inserted:
+        out += ["", header, new_line, ""]
+    return "\n".join(out)
+
+
+def append_search_log(path: str | Path, label: str, date: str, query: str, hits, promoted) -> Path:
+    """探索ログ節に1件追記する（churn 防止の記録）。"""
+    path = Path(path)
+    meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+    safe_query = str(query).replace("|", "/").replace("\n", " ").strip()
+    line = f"- {label} | {date} | {safe_query} | hits={hits} | promoted={promoted}"
+    new_body = _append_under_section(body, _SEARCHLOG_HEADER, line)
+    return write_note(path.parent, path.stem, meta, new_body)
+
+
+def add_subquestions(path: str | Path, texts: list[str]) -> Path:
+    """創発的な小問を採番（既存 Q の最大+1）して本文に追記する。"""
+    path = Path(path)
+    meta, subqs, body = parse_objective(path)
+    next_n = (max(int(label[1:]) for label, _ in subqs) if subqs else 0) + 1
+    new_body = body
+    for text in texts:
+        new_body = _append_under_section(new_body, _EMERGENT_HEADER, f"- Q{next_n}: {text}")
+        next_n += 1
+    return write_note(path.parent, path.stem, meta, new_body)
