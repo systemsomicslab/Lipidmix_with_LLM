@@ -604,6 +604,39 @@ def list_reports() -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
+    """直近のセッションPCA結果からPNGを生成し reports/figures/ に保存する。
+
+    arf_parser / arf_re_pca / pai2_parser 等でPCAを実行した後に呼ぶ。返り値の相対パスを
+    write_report の本文に `![PCA](figures/<analysis_id>_pca.png)` として埋め込める。
+    """
+    plot = getattr(session, "last_pca_plot", None)
+    if not plot or not plot.get("points"):
+        return "先に arf_parser / arf_re_pca / pai2_parser 等でPCAを実行してください（PCA結果がありません）。"
+
+    slug = knowledge_store.make_slug(analysis_id)
+    reports_dir = _resolve_report_dir()
+    figures_dir = reports_dir / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    xs, ys, labels, x_label, y_label, plot_title = _pca_scatter_arrays(plot)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(xs, ys, alpha=0.6)
+    for x, y, label in zip(xs, ys, labels):
+        if label:
+            ax.annotate(str(label), (x, y), fontsize=8)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(title or plot_title)
+    out_path = figures_dir / f"{slug}_pca.png"
+    fig.savefig(out_path, format="png", bbox_inches="tight")
+    plt.close(fig)
+
+    rel = f"figures/{out_path.name}"
+    return f"PCA図を保存: {out_path}\n本文に ![PCA]({rel}) で埋め込めます。"
+
+
 # --- ステート保持クラス ---
 class AnalysisSession:
     def __init__(self):

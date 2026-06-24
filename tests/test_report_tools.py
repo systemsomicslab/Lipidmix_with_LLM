@@ -149,5 +149,45 @@ class PcaPlotHelperTests(unittest.TestCase):
             server.session.last_pca_plot = saved
 
 
+class SavePcaFigureTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self._saved_data_dir = server.DATA_DIR
+        server.DATA_DIR = self.tmp
+        self._saved_env = os.environ.get("LIPIDMIX_REPORTS_DIR")
+        os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "reports_fallback")
+        self._saved_plot = server.session.last_pca_plot
+
+    def tearDown(self):
+        server.DATA_DIR = self._saved_data_dir
+        server.session.last_pca_plot = self._saved_plot
+        if self._saved_env is None:
+            os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
+        else:
+            os.environ["LIPIDMIX_REPORTS_DIR"] = self._saved_env
+        self._tmp.cleanup()
+
+    def test_save_pca_figure_writes_png_and_returns_relpath(self):
+        server.session.last_pca_plot = {
+            "title": "T", "x_label": "PC1", "y_label": "PC2",
+            "points": [
+                {"x": 1.0, "y": 2.0, "label": "s1"},
+                {"x": -1.0, "y": 0.5, "label": "s2"},
+            ],
+        }
+        msg = server.save_pca_figure("a-1")
+        png = self.tmp / "reports" / "figures" / "a-1_pca.png"
+        self.assertTrue(png.is_file())
+        self.assertIn("figures/a-1_pca.png", msg)
+
+    def test_save_pca_figure_guidance_when_no_plot(self):
+        server.session.last_pca_plot = None
+        msg = server.save_pca_figure("a-1")
+        self.assertIn("PCA", msg)
+        self.assertFalse((self.tmp / "reports" / "figures").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
