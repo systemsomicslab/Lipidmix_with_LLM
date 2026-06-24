@@ -62,11 +62,14 @@ class ReportToolTests(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self._saved_data_dir = server.DATA_DIR
         server.DATA_DIR = self.tmp
-        self._saved_env = os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
+        self._saved_env = os.environ.get("LIPIDMIX_REPORTS_DIR")
+        os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "reports_fallback")
 
     def tearDown(self):
         server.DATA_DIR = self._saved_data_dir
-        if self._saved_env is not None:
+        if self._saved_env is None:
+            os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
+        else:
             os.environ["LIPIDMIX_REPORTS_DIR"] = self._saved_env
         self._tmp.cleanup()
 
