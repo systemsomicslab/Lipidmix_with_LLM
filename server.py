@@ -545,6 +545,65 @@ def ingest_reject(slug: str) -> str:
     return f"却下（破棄）: {slug}" if ok else f"_inbox に見つかりません: {slug}"
 
 
+# --- 解析・解釈レポート（reports/<analysis_id>.md） ---
+@mcp.tool()
+def write_report(
+    analysis_id: str,
+    dataset: str,
+    body: str,
+    status: str = "draft",
+    knowledge_refs: list[str] | None = None,
+) -> str:
+    """解析・解釈レポートを reports/<analysis_id>.md に上書き保存する（成果物＋記録）。
+
+    body は frontmatter を含まない Markdown 本文。推奨セクション見出し:
+    `## 目的` / `## 実施した解析` / `## 主要な所見` / `## 解釈` /
+    `## 注意点・コンフリクト` / `## 結論`。所見が増えたら本文を作り直して再度呼ぶ
+    （ファイルは毎回上書き）。引用した knowledge/playbook の slug を knowledge_refs に渡す。
+    書き込み先は解析フォルダ配下 reports/、不可なら LIPIDMIX_REPORTS_DIR（既定 <project>/reports）。
+    """
+    slug = knowledge_store.make_slug(analysis_id)
+    reports_dir = _resolve_report_dir()
+    meta = _build_report_meta(analysis_id, dataset, status, knowledge_refs)
+    path = knowledge_store.write_note(reports_dir, slug, meta, body)
+    return f"レポートを保存: {path}（status={status}）。read_report('{analysis_id}') で読み戻せます。"
+
+
+@mcp.tool()
+def read_report(analysis_id: str) -> str:
+    """過去レポートを読み戻す（解析フォルダ→退避先の順に探索）。セッション継続用。"""
+    slug = knowledge_store.make_slug(analysis_id)
+    for directory in _report_dir_candidates():
+        path = directory / f"{slug}.md"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    return f"レポートが見つかりません: {analysis_id}（write_report で作成してください）"
+
+
+@mcp.tool()
+def list_reports() -> str:
+    """既存レポートの1行索引（analysis_id / date / status）を返す。"""
+    lines = ["# レポート一覧"]
+    seen: set[str] = set()
+    for directory in _report_dir_candidates():
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.md")):
+            meta, _body = knowledge_store.parse_frontmatter(path.read_text(encoding="utf-8"))
+            if meta.get("type") != "report":
+                continue
+            aid = str(meta.get("analysis_id", path.stem))
+            if aid in seen:
+                continue
+            seen.add(aid)
+            lines.append(
+                f"- {aid} | date={meta.get('date', '?')} | status={meta.get('status', '?')}"
+            )
+    if len(lines) == 1:
+        lines.append("（レポートはまだありません）")
+    return "\n".join(lines)
+
+
 # --- ステート保持クラス ---
 class AnalysisSession:
     def __init__(self):
