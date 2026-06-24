@@ -648,6 +648,21 @@ class AnalysisSession:
         self.filtered_features = filtered_features
         self.pca_result = pca_result
         self.last_pca_summary = summary
+        ev = summary.get("explained_variance", {}) if isinstance(summary, dict) else {}
+        coords = pca_result
+        points = []
+        try:
+            if getattr(coords, "shape", (0, 0))[1] >= 2:
+                for i in range(len(coords)):
+                    points.append({"x": float(coords[i][0]), "y": float(coords[i][1]), "label": None})
+        except (IndexError, TypeError):
+            points = []
+        self.last_pca_plot = {
+            "title": "PCA (pai2 peak-level)",
+            "x_label": f"PC1 ({ev.get('PC1', '')})",
+            "y_label": f"PC2 ({ev.get('PC2', '')})",
+            "points": points,
+        }
         self.pca_index = pca_index
         return summary, img_bytes
 
@@ -1264,6 +1279,10 @@ def arf_parser(
                 "各点には `sample` の名前をラベルとして表示するか、ホバー時に確認できるようにしてください。\n"
             ),
         )
+        _remember_arf_pca_plot(
+            pca_result, sample_names,
+            title=f"PCA Score Plot ({Path(file_path).name})",
+        )
 
         # Loadings 寄与上位（test_arf の構造化関数 + 共通整形ヘルパー）
         loading_features = get_pca_loading_features(
@@ -1396,6 +1415,10 @@ def arf_re_pca(
                 "\n#### 📊 PCA スコアプロット用データ (フィルタ再計算後)\n"
                 "以下のJSONデータを用いて、見やすいインタラクティブな散布図（Scatter Plot）を構築してください。\n"
             ),
+        )
+        _remember_arf_pca_plot(
+            pca_result, sample_names,
+            title="PCA Score Plot (arf_re_pca)",
         )
 
         # 4. Loadings 寄与上位（メタデータは大元の session.features から取得し index ずれを防止）
