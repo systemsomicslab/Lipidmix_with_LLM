@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+from datetime import date as _date
 from pathlib import Path
 import io
 from mcp.server.fastmcp import FastMCP, Image
@@ -62,6 +63,44 @@ def _state_dir(env_var: str, default_name: str) -> Path:
     target = Path(override).expanduser() if override else BASE_DIR / default_name
     target.mkdir(parents=True, exist_ok=True)
     return target
+
+
+def _dir_is_writable(directory: Path) -> bool:
+    """ディレクトリを作成し、プローブファイルの書き込み/削除で書き込み可否を判定する。"""
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / ".write_probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _first_writable_dir(candidates: list[Path]) -> Path:
+    """候補を順に試し、最初に書き込み可能なディレクトリを返す。無ければ OSError。"""
+    for cand in candidates:
+        if _dir_is_writable(cand):
+            return cand
+    raise OSError(
+        "レポートの書き込み先がありません: "
+        + ", ".join(str(c) for c in candidates)
+        + "（LIPIDMIX_REPORTS_DIR に書き込み可能なパスを設定してください）"
+    )
+
+
+def _build_report_meta(
+    analysis_id: str, dataset: str, status: str, knowledge_refs: list[str] | None
+) -> dict:
+    """レポートの frontmatter メタを組み立てる。"""
+    return {
+        "type": "report",
+        "analysis_id": analysis_id,
+        "dataset": dataset,
+        "date": _date.today().isoformat(),
+        "status": status,
+        "knowledge_refs": knowledge_refs or [],
+    }
 
 
 # 蓄積ノートの置き場（再利用コーパス）。analyses/ はセッション固有なので分離。
@@ -161,6 +200,18 @@ mcp = FastMCP(
 from data_config import get_data_dir
 # データ探索先。環境変数 LIPIDMIX_DATA_DIR で上書き可（既定: <project>/data）
 DATA_DIR = get_data_dir()
+
+
+def _report_dir_candidates() -> list[Path]:
+    """レポート書き込み先候補。解析フォルダ配下 reports/ を優先、次に退避先。"""
+    override = os.environ.get("LIPIDMIX_REPORTS_DIR")
+    fallback = Path(override).expanduser() if override else BASE_DIR / "reports"
+    return [DATA_DIR / "reports", fallback]
+
+
+def _resolve_report_dir() -> Path:
+    """書き込み可能なレポートディレクトリを返す（解析フォルダ→退避先）。"""
+    return _first_writable_dir(_report_dir_candidates())
 
 
 @mcp.resource(
