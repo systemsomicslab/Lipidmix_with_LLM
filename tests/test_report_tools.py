@@ -114,5 +114,40 @@ class ReportToolTests(unittest.TestCase):
         self.assertIn("まだありません", listing)
 
 
+class PcaPlotHelperTests(unittest.TestCase):
+    def test_pca_scatter_arrays_extracts_points(self):
+        plot = {
+            "title": "T",
+            "x_label": "PC1 (50.00%)",
+            "y_label": "PC2 (30.00%)",
+            "points": [
+                {"x": 1.0, "y": 2.0, "label": "s1"},
+                {"x": -1.0, "y": 0.5, "label": "s2"},
+            ],
+        }
+        xs, ys, labels, x_label, y_label, title = server._pca_scatter_arrays(plot)
+        self.assertEqual(xs, [1.0, -1.0])
+        self.assertEqual(ys, [2.0, 0.5])
+        self.assertEqual(labels, ["s1", "s2"])
+        self.assertEqual(x_label, "PC1 (50.00%)")
+        self.assertEqual(title, "T")
+
+    def test_remember_arf_pca_plot_builds_session_state(self):
+        saved = server.session.last_pca_plot
+        try:
+            server._remember_arf_pca_plot(
+                {"components": [[1.0, 2.0], [3.0, 4.0]],
+                 "explained_variance_ratio": [0.5, 0.3]},
+                ["s1", "s2"],
+                "PCA Score Plot (x.arf)",
+            )
+            plot = server.session.last_pca_plot
+            self.assertEqual(plot["title"], "PCA Score Plot (x.arf)")
+            self.assertEqual(plot["points"][0], {"x": 1.0, "y": 2.0, "label": "s1"})
+            self.assertIn("50.00%", plot["x_label"])
+        finally:
+            server.session.last_pca_plot = saved
+
+
 if __name__ == "__main__":
     unittest.main()

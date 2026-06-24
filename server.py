@@ -618,6 +618,7 @@ class AnalysisSession:
         self.arf_tag_index = None
         self.arf_class_index = None
         self.current_tag_directory = None
+        self.last_pca_plot = None  # 直近PCAの描画用データ（save_pca_figure が参照）
 
     def apply_filter(self, filter_params: dict | None = None):
         """現データに対して動的にフィルタを適用する。"""
@@ -1018,6 +1019,36 @@ def pai2_update_analysis_filter(min_intensity: float = 0.0, min_sn: float = 0.0)
     parts.append(json.dumps(top_list, indent=2, ensure_ascii=False))
 
     return "\n".join(parts)
+
+
+def _pca_scatter_arrays(plot: dict):
+    """session.last_pca_plot から散布図用の配列とラベルを取り出す（純ロジック）。"""
+    points = plot.get("points", [])
+    xs = [float(p["x"]) for p in points]
+    ys = [float(p["y"]) for p in points]
+    labels = [p.get("label") for p in points]
+    return (
+        xs, ys, labels,
+        plot.get("x_label", "PC1"),
+        plot.get("y_label", "PC2"),
+        plot.get("title", "PCA"),
+    )
+
+
+def _remember_arf_pca_plot(pca_result: dict, sample_names: list[str], title: str) -> None:
+    """ARF系PCAのサンプル別スコアを session.last_pca_plot に保存する。"""
+    coords = pca_result.get("components", [])
+    evr = pca_result["explained_variance_ratio"]
+    points = []
+    for i, name in enumerate(sample_names):
+        if i < len(coords) and len(coords[i]) >= 2:
+            points.append({"x": float(coords[i][0]), "y": float(coords[i][1]), "label": name})
+    session.last_pca_plot = {
+        "title": title,
+        "x_label": f"PC1 ({evr[0] * 100:.2f}%)",
+        "y_label": f"PC2 ({evr[1] * 100:.2f}%)",
+        "points": points,
+    }
 
 
 def _format_pca_plot_block(pca_result: dict, sample_names: list[str], title: str, intro: str) -> str:
