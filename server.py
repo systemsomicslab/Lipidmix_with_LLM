@@ -653,8 +653,9 @@ class AnalysisSession:
         points = []
         try:
             if getattr(coords, "shape", (0, 0))[1] >= 2:
-                for i in range(len(coords)):
-                    points.append({"x": float(coords[i][0]), "y": float(coords[i][1]), "label": None})
+                xs = coords[:, 0].tolist()
+                ys = coords[:, 1].tolist()
+                points = [{"x": x, "y": y, "label": None} for x, y in zip(xs, ys)]
         except (IndexError, TypeError):
             points = []
         self.last_pca_plot = {
