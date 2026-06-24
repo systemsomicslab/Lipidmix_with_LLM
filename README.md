@@ -176,6 +176,13 @@ Objective lifecycle and gap-driven literature discovery (see `docs/HISTRY.md`):
 - `log_search(analysis_id, subquestion, query, hits, promoted=0)` - Record a search attempt (prevents re-searching the same gap).
 - `ingest_review_queue()` / `ingest_promote(slug, claim_strength, links=None)` / `ingest_reject(slug)` - Human review gate; promotion is the only way an `_inbox` note becomes trusted knowledge.
 
+Analysis/interpretation report recording:
+
+- `write_report(analysis_id, dataset, body, status="draft", knowledge_refs=None)` - Overwrite the analysis/interpretation report at `<analysis-folder>/reports/<analysis_id>.md` (falls back to `LIPIDMIX_REPORTS_DIR`, default `<project>/reports`, when the data folder is read-only). `body` is the Markdown body; recommended sections are `## 目的` / `## 実施した解析` / `## 主要な所見` / `## 解釈` / `## 注意点・コンフリクト` / `## 結論`. Keyed by `analysis_id` to the objective record.
+- `read_report(analysis_id)` - Read back a past report (analysis folder then fallback) for session continuity.
+- `list_reports()` - One-line index (analysis_id / date / status) of existing reports.
+- `save_pca_figure(analysis_id, title=None)` - Render the latest session PCA result to `reports/figures/<analysis_id>_pca.png` and return a relative path to embed in the report body as `![PCA](figures/<analysis_id>_pca.png)`.
+
 The server also exposes MCP **resources**: `lipidmix://docs/output-format` (authoritative parser output reference), `lipidmix://knowledge/index` and `lipidmix://playbook/index` (dynamic, one line per note), `lipidmix://{knowledge,playbook}/expand/{slug}` (a note plus its 1-hop `[[link]]` neighbors within a structural budget), and `lipidmix://knowledge/inbox` (pending discovery notes awaiting review).
 
 MS-DIAL tag filtering supports `any`, `all`, `none`, and `not_all`. Use
