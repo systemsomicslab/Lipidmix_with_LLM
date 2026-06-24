@@ -561,8 +561,25 @@ def write_report(
     `## 注意点・コンフリクト` / `## 結論`。所見が増えたら本文を作り直して再度呼ぶ
     （ファイルは毎回上書き）。引用した knowledge/playbook の slug を knowledge_refs に渡す。
     書き込み先は解析フォルダ配下 reports/、不可なら LIPIDMIX_REPORTS_DIR（既定 <project>/reports）。
+
+    analysis_id はファイル名 slug の元になるため ASCII で一意に。別IDが同一slugに潰れて既存
+    レポートを上書きしそうな場合は保存を中止して通知する（objectiveレコードと同じIDを推奨）。
     """
     slug = knowledge_store.make_slug(analysis_id)
+    # slug衝突ガード: 別の analysis_id が同一ファイル名に潰れる場合は、既存レポートを
+    # 黙って上書きせず中止する（同一IDの上書きは意図どおり許可）。非ASCII/記号違いのIDで起きうる。
+    for directory in _report_dir_candidates():
+        existing = directory / f"{slug}.md"
+        if existing.is_file():
+            ex_meta, _ = knowledge_store.parse_frontmatter(existing.read_text(encoding="utf-8"))
+            ex_id = str(ex_meta.get("analysis_id", ""))
+            if ex_id and ex_id != analysis_id:
+                return (
+                    f"slug衝突のため中止: analysis_id '{analysis_id}' はファイル名 '{slug}.md' に潰れますが、"
+                    f"そこには別の '{ex_id}' のレポートが既にあります（{existing}）。"
+                    "上書きを避けました。ASCIIで一意な analysis_id を指定してください。"
+                )
+            break  # 同一ID → 上書きしてよい
     reports_dir = _resolve_report_dir()
     meta = _build_report_meta(analysis_id, dataset, status, knowledge_refs)
     path = knowledge_store.write_note(reports_dir, slug, meta, body)
@@ -571,20 +588,28 @@ def write_report(
 
 @mcp.tool()
 def read_report(analysis_id: str) -> str:
-    """過去レポートを読み戻す（解析フォルダ→退避先の順に探索）。セッション継続用。"""
+    """過去レポートを読み戻す（候補ディレクトリ横断で最新更新のものを返す）。セッション継続用。
+
+    解析フォルダ配下と退避先の両方に同名レポートが残る場合（書き込み可否が途中で変化した等）、
+    古い方を返さないよう mtime が最新のファイルを採用する。
+    """
     slug = knowledge_store.make_slug(analysis_id)
-    for directory in _report_dir_candidates():
-        path = directory / f"{slug}.md"
-        if path.is_file():
-            return path.read_text(encoding="utf-8")
-    return f"レポートが見つかりません: {analysis_id}（write_report で作成してください）"
+    matches = [d / f"{slug}.md" for d in _report_dir_candidates()]
+    matches = [p for p in matches if p.is_file()]
+    if not matches:
+        return f"レポートが見つかりません: {analysis_id}（write_report で作成してください）"
+    newest = max(matches, key=lambda p: p.stat().st_mtime)
+    return newest.read_text(encoding="utf-8")
 
 
 @mcp.tool()
 def list_reports() -> str:
-    """既存レポートの1行索引（analysis_id / date / status）を返す。"""
-    lines = ["# レポート一覧"]
-    seen: set[str] = set()
+    """既存レポートの1行索引（analysis_id / date / status）を返す。
+
+    候補ディレクトリ横断で同一 analysis_id が重複する場合は mtime が最新の1件を採用する。
+    """
+    # analysis_id -> (mtime, 表示行)。最新更新の行を残す。
+    best: dict[str, tuple[float, str]] = {}
     for directory in _report_dir_candidates():
         if not directory.is_dir():
             continue
@@ -593,12 +618,13 @@ def list_reports() -> str:
             if meta.get("type") != "report":
                 continue
             aid = str(meta.get("analysis_id", path.stem))
-            if aid in seen:
-                continue
-            seen.add(aid)
-            lines.append(
-                f"- {aid} | date={meta.get('date', '?')} | status={meta.get('status', '?')}"
-            )
+            line = f"- {aid} | date={meta.get('date', '?')} | status={meta.get('status', '?')}"
+            mtime = path.stat().st_mtime
+            if aid not in best or mtime > best[aid][0]:
+                best[aid] = (mtime, line)
+    lines = ["# レポート一覧"]
+    for aid, (_mtime, line) in sorted(best.items()):
+        lines.append(line)
     if len(lines) == 1:
         lines.append("（レポートはまだありません）")
     return "\n".join(lines)

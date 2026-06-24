@@ -189,5 +189,80 @@ class SavePcaFigureTests(unittest.TestCase):
         self.assertFalse((self.tmp / "reports" / "figures").exists())
 
 
+class ReportEdgeCaseTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self._saved_data_dir = server.DATA_DIR
+        server.DATA_DIR = self.tmp
+        self._saved_env = os.environ.get("LIPIDMIX_REPORTS_DIR")
+        os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "reports_fallback")
+
+    def tearDown(self):
+        server.DATA_DIR = self._saved_data_dir
+        if self._saved_env is None:
+            os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
+        else:
+            os.environ["LIPIDMIX_REPORTS_DIR"] = self._saved_env
+        self._tmp.cleanup()
+
+    def test_write_report_refuses_slug_collision_with_different_id(self):
+        # Both analysis_ids collapse to the same slug.
+        slug = knowledge_store.make_slug("Group A vs B")
+        self.assertEqual(slug, knowledge_store.make_slug("group-a-vs-b"))
+
+        server.write_report("Group A vs B", "DS", "## 目的\nfirst")
+        msg = server.write_report("group-a-vs-b", "DS", "## 目的\nsecond")
+
+        self.assertIn("衝突", msg)
+        # The original report must be intact (not overwritten).
+        path = self.tmp / "reports" / f"{slug}.md"
+        meta, body = knowledge_store.parse_frontmatter(path.read_text(encoding="utf-8"))
+        self.assertEqual(meta["analysis_id"], "Group A vs B")
+        self.assertIn("first", body)
+        self.assertNotIn("second", body)
+
+    def test_write_report_same_id_still_overwrites(self):
+        # Regression: the collision guard must NOT block same-id overwrites.
+        server.write_report("a-1", "DS", "## 目的\n古い")
+        msg = server.write_report("a-1", "DS", "## 目的\n新しい", status="final")
+        self.assertIn("保存", msg)
+        path = self.tmp / "reports" / "a-1.md"
+        meta, body = knowledge_store.parse_frontmatter(path.read_text(encoding="utf-8"))
+        self.assertEqual(meta["status"], "final")
+        self.assertIn("新しい", body)
+        self.assertNotIn("古い", body)
+
+    def _write_report_file(self, directory, slug, analysis_id, marker, status, mtime):
+        import os as _os
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{slug}.md"
+        path.write_text(
+            f"---\ntype: report\nanalysis_id: {analysis_id}\ndate: 2026-06-24\n"
+            f"status: {status}\n---\n\n## 結論\n{marker}\n",
+            encoding="utf-8",
+        )
+        _os.utime(path, (mtime, mtime))
+        return path
+
+    def test_read_report_prefers_newest_across_candidates(self):
+        slug = knowledge_store.make_slug("a-1")
+        self._write_report_file(self.tmp / "reports", slug, "a-1", "OLD primary", "draft", 1000)
+        self._write_report_file(self.tmp / "reports_fallback", slug, "a-1", "NEW fallback", "final", 2000)
+        text = server.read_report("a-1")
+        self.assertIn("NEW fallback", text)
+        self.assertNotIn("OLD primary", text)
+
+    def test_list_reports_dedupes_keeping_newest(self):
+        slug = knowledge_store.make_slug("a-1")
+        self._write_report_file(self.tmp / "reports", slug, "a-1", "old", "draft", 1000)
+        self._write_report_file(self.tmp / "reports_fallback", slug, "a-1", "new", "final", 2000)
+        listing = server.list_reports()
+        self.assertEqual(listing.count("a-1"), 1)
+        self.assertIn("status=final", listing)
+        self.assertNotIn("status=draft", listing)
+
+
 if __name__ == "__main__":
     unittest.main()
