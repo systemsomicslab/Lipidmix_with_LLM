@@ -630,8 +630,10 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
     ax.set_ylabel(y_label)
     ax.set_title(title or plot_title)
     out_path = figures_dir / f"{slug}_pca.png"
-    fig.savefig(out_path, format="png", bbox_inches="tight")
-    plt.close(fig)
+    try:
+        fig.savefig(out_path, format="png", bbox_inches="tight")
+    finally:
+        plt.close(fig)
 
     rel = f"figures/{out_path.name}"
     return f"PCA図を保存: {out_path}\n本文に ![PCA]({rel}) で埋め込めます。"
