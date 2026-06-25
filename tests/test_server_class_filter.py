@@ -98,10 +98,39 @@ class ServerClassFilterTests(unittest.TestCase):
         rows = self.session.filtered_features[0]["AlignedPeakProperties"]
         self.assertEqual([row[1] for row in rows], ["sample_treated"])
 
+    def test_arf_re_pca_plot_includes_group_label(self):
+        self.session.current_file_path = "test.arf"
+        with patch.object(server, "_filter_arf_spots", return_value=self.session.features):
+            result = server.arf_re_pca(group_levels=["control"])
+        self.assertIn('"group": "control"', result[0])
+        self.assertIn('"group": "other"', result[0])
+
     def test_arf_list_classes_returns_counts(self):
         self.session.current_file_path = "test.arf"
         payload = json.loads(server.arf_list_classes())
         self.assertEqual(payload["class_counts"], {"control": 1, "treated": 1})
+
+    def test_arf_list_classes_returns_factor_vocabulary(self):
+        self.session.current_file_path = "test.arf"
+        payload = json.loads(server.arf_list_classes())
+        self.assertEqual(set(payload["factors_by_position"]["0"]), {"control", "treated"})
+
+    def test_arf_parser_plot_includes_group_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arf_path = Path(tmp) / "test.arf"
+            arf_path.touch()
+            result = server.arf_parser(str(arf_path))
+        self.assertIn('"group": "control"', result[0])
+        self.assertIn('"group": "treated"', result[0])
+
+    def test_arf_parser_group_levels_collapse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arf_path = Path(tmp) / "test.arf"
+            arf_path.touch()
+            result = server.arf_parser(str(arf_path), group_levels=["control"])
+        # control -> "control"; treated has no listed level -> "other"
+        self.assertIn('"group": "control"', result[0])
+        self.assertIn('"group": "other"', result[0])
 
 
 if __name__ == "__main__":

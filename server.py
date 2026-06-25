@@ -20,6 +20,7 @@ import test_arf
 import knowledge_store
 import paper_ingest
 from msdial_classes import (
+    assign_sample_groups,
     attach_class_ids_to_spots,
     discover_arf_class_index,
     filter_arf_by_class_ids,
@@ -1204,14 +1205,23 @@ def _pca_scatter_arrays(plot: dict):
     )
 
 
-def _remember_arf_pca_plot(pca_result: dict, sample_names: list[str], title: str) -> None:
+def _remember_arf_pca_plot(
+    pca_result: dict,
+    sample_names: list[str],
+    title: str,
+    groups: dict[str, str | None] | None = None,
+) -> None:
     """ARF系PCAのサンプル別スコアを session.last_pca_plot に保存する。"""
     coords = pca_result.get("components", [])
     evr = pca_result["explained_variance_ratio"]
+    groups = groups or {}
     points = []
     for i, name in enumerate(sample_names):
         if i < len(coords) and len(coords[i]) >= 2:
-            points.append({"x": float(coords[i][0]), "y": float(coords[i][1]), "label": name})
+            point = {"x": float(coords[i][0]), "y": float(coords[i][1]), "label": name}
+            if groups.get(name) is not None:
+                point["group"] = groups[name]
+            points.append(point)
     session.last_pca_plot = {
         "title": title,
         "x_label": f"PC1 ({evr[0] * 100:.2f}%)",
@@ -1220,17 +1230,27 @@ def _remember_arf_pca_plot(pca_result: dict, sample_names: list[str], title: str
     }
 
 
-def _format_pca_plot_block(pca_result: dict, sample_names: list[str], title: str, intro: str) -> str:
+def _format_pca_plot_block(
+    pca_result: dict,
+    sample_names: list[str],
+    title: str,
+    intro: str,
+    groups: dict[str, str | None] | None = None,
+) -> str:
     """PCAスコアプロット用のJSONとLLMへの描画指示テキストを生成する（arf_parser/arf_re_pca共通）。"""
     components_coords = pca_result.get("components", [])
+    groups = groups or {}
     plot_data_points = []
     if len(components_coords) > 0 and len(components_coords[0]) >= 2:
         for i, name in enumerate(sample_names):
-            plot_data_points.append({
+            point = {
                 "sample": name,
                 "pc1": components_coords[i][0],
                 "pc2": components_coords[i][1],
-            })
+            }
+            if groups.get(name) is not None:
+                point["group"] = groups[name]
+            plot_data_points.append(point)
     evr = pca_result["explained_variance_ratio"]
     plot_json_data = {
         "title": title,
@@ -1275,6 +1295,21 @@ def _format_arf_tag_summary(tag_index: dict | None) -> str:
     )
 
 
+def _class_factors_by_position(class_ids) -> dict[str, list[str]]:
+    """Class ID を `_` で分割し、位置(因子)ごとの値トークン語彙を集計する。
+
+    例: {Cerebellum_gf_AIN, Hippocampus_spf_HFD, ...} →
+        {"0": ["Cerebellum", "Hippocampus"], "1": ["gf", "spf"], "2": ["AIN", "HFD"]}
+    部分指定（class_ids / group_levels）に使える有効トークンの発見を助ける。
+    """
+    by_position: dict[int, set[str]] = {}
+    for class_id in class_ids:
+        for position, token in enumerate(str(class_id).split("_")):
+            if token:
+                by_position.setdefault(position, set()).add(token)
+    return {str(position): sorted(tokens) for position, tokens in sorted(by_position.items())}
+
+
 def _format_arf_class_summary(class_index: dict | None) -> str:
     if not class_index:
         return "- **Class IDメタデータ**: `.mddata` は見つかりませんでした。\n"
@@ -1289,8 +1324,14 @@ def _format_arf_class_summary(class_index: dict | None) -> str:
 def _format_arf_class_filter(stats: dict | None) -> str:
     if not stats or not stats.get("requested_class_ids"):
         return ""
+    matched = stats.get("matched_class_ids") or []
+    # 部分指定が複数クラスに展開された場合は、実際にマッチしたClass IDも明示する。
+    matched_line = ""
+    if matched and list(matched) != list(stats["requested_class_ids"]):
+        matched_line = f"- **Class IDフィルタ展開先**: `{', '.join(matched)}`\n"
     return (
         f"- **Class IDフィルタ**: `{', '.join(stats['requested_class_ids'])}`\n"
+        f"{matched_line}"
         f"- **Class IDフィルタ後**: スポット {stats['after_spots']}/{stats['before_spots']}, "
         f"サンプル別ピーク {stats['after_sample_peaks']}/{stats['before_sample_peaks']}, "
         f"メタデータ未対応サンプル {stats.get('missing_samples', 0)} 件\n"
@@ -1330,9 +1371,11 @@ def arf_list_classes() -> str:
         or not str(session.current_file_path or "").lower().endswith(".arf")
     ):
         return "先に arf_parser を実行してARFデータとClass IDメタデータを読み込んでください。"
+    class_counts = session.arf_class_index.get("class_counts", {})
     return json.dumps({
         "mddata_path": session.arf_class_index["mddata_path"],
-        "class_counts": session.arf_class_index.get("class_counts", {}),
+        "class_counts": class_counts,
+        "factors_by_position": _class_factors_by_position(class_counts.keys()),
     }, ensure_ascii=False, indent=2)
 
 
@@ -1351,6 +1394,7 @@ def arf_parser(
     missing_sample_policy: str = "error",
     class_ids: list[str] | None = None,
     class_missing_sample_policy: str = "error",
+    group_levels: list[str] | None = None,
 ) -> list:
     """
     .arf ファイルに対応する解析用関数
@@ -1369,8 +1413,13 @@ def arf_parser(
     - tag_scope: sample_peak（サンプル別Peak ID）または alignment_spot（MasterAlignmentID）
     - tag_directory: [任意] *_tags.xml の探索先。既定はARFと同じディレクトリ
     - missing_sample_policy: タグファイル未対応サンプルの扱い。error/exclude/untagged（既定 error）
-    - class_ids: [任意] MS-DIALのFile property settingで設定したClass IDのリスト。複数指定はOR条件
+    - class_ids: [任意] Class ID の指定リスト。各要素は `_` 区切りの部分指定が可能で、
+      指定した全トークンを含む Class ID に一致する（要素内AND・順不同）。要素間はOR。
+      例: `["gf"]`=gfを含む全クラス、`["Cerebellum_gf"]`=両方を含むクラス、完全一致も可。
     - class_missing_sample_policy: Class IDメタデータ未対応サンプルの扱い。error/exclude（既定 error）
+    - group_levels: [任意] PCA点の色分け因子の値トークン（例: `["gf","spf"]`）。
+      未指定なら各サンプルの完全Class IDで色分け。指定するとその因子だけで統合し、
+      該当しないサンプルは "other" 群になる。
     """
 
     file_path = resolve_arf_file_path(file_path)
@@ -1423,6 +1472,11 @@ def arf_parser(
         # PCA実行（log_transform は任意のlog10変換）
         pca_result = run_pca(matrix, n_components=components, log_transform=log_transform)
 
+        # サンプル別の群ラベル（既定=完全Class ID、group_levels 指定時はその因子で統合）
+        sample_groups = assign_sample_groups(
+            sample_names, session.arf_class_index, group_levels,
+        )
+
         # PCAスコアプロット用データ（共通ヘルパー）
         plot_instruction_text = _format_pca_plot_block(
             pca_result, sample_names,
@@ -1431,11 +1485,14 @@ def arf_parser(
                 "\n#### 📊 PCA スコアプロット用データ\n"
                 "以下のJSONデータを用いて、見やすい散布図（Scatter Plot）を描画してください。\n"
                 "各点には `sample` の名前をラベルとして表示するか、ホバー時に確認できるようにしてください。\n"
+                "`group` フィールドがある場合は、群ごとに色分け（凡例付き）して群間比較が分かるようにしてください。\n"
             ),
+            groups=sample_groups,
         )
         _remember_arf_pca_plot(
             pca_result, sample_names,
             title=f"PCA Score Plot ({Path(file_path).name})",
+            groups=sample_groups,
         )
 
         # Loadings 寄与上位（test_arf の構造化関数 + 共通整形ヘルパー）
@@ -1486,6 +1543,7 @@ def arf_re_pca(
     missing_sample_policy: str = "error",
     class_ids: list[str] | None = None,
     class_missing_sample_policy: str = "error",
+    group_levels: list[str] | None = None,
 ) -> list:
     """
     ARFデータに対して、強度閾値(min_intensity)や特定のアノテーションキーワード（例: 'PC', 'TG' などの脂質クラス）
@@ -1504,8 +1562,10 @@ def arf_re_pca(
     - tag_mode: any/all/none/not_all のいずれか
     - tag_scope: sample_peak または alignment_spot
     - missing_sample_policy: タグファイル未対応サンプルの扱い。error/exclude/untagged（既定 error）
-    - class_ids: [任意] MS-DIALのFile property settingで設定したClass IDのリスト。複数指定はOR条件
+    - class_ids: [任意] Class ID の指定リスト。各要素は `_` 区切りの部分指定が可能で、
+      指定した全トークンを含む Class ID に一致する（要素内AND・順不同）。要素間はOR。完全一致も可。
     - class_missing_sample_policy: Class IDメタデータ未対応サンプルの扱い。error/exclude（既定 error）
+    - group_levels: [任意] PCA点の色分け因子の値トークン（例: `["gf","spf"]`）。未指定なら完全Class IDで色分け。
     """
     if session.features is None:
         return ["先に arf_parser を実行してデータを読み込んでください。"]
@@ -1561,6 +1621,11 @@ def arf_re_pca(
         pca_result = run_pca(matrix, n_components=components, log_transform=log_transform)
         session.pca_result = pca_result
 
+        # サンプル別の群ラベル（既定=完全Class ID、group_levels 指定時はその因子で統合）
+        sample_groups = assign_sample_groups(
+            sample_names, session.arf_class_index, group_levels,
+        )
+
         # 3. スコアプロット用データ（共通ヘルパー）
         plot_instruction_text = _format_pca_plot_block(
             pca_result, sample_names,
@@ -1568,11 +1633,14 @@ def arf_re_pca(
             intro=(
                 "\n#### 📊 PCA スコアプロット用データ (フィルタ再計算後)\n"
                 "以下のJSONデータを用いて、見やすいインタラクティブな散布図（Scatter Plot）を構築してください。\n"
+                "`group` フィールドがある場合は、群ごとに色分け（凡例付き）して群間比較が分かるようにしてください。\n"
             ),
+            groups=sample_groups,
         )
         _remember_arf_pca_plot(
             pca_result, sample_names,
             title="PCA Score Plot (arf_re_pca)",
+            groups=sample_groups,
         )
 
         # 4. Loadings 寄与上位（メタデータは大元の session.features から取得し index ずれを防止）

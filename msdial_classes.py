@@ -166,6 +166,84 @@ def attach_class_ids_to_spots(features: list[dict], class_index: dict | None) ->
     return features
 
 
+def _class_tokens(class_id) -> set[str]:
+    """Split a Class ID into its underscore-delimited factor tokens (casefold)."""
+    return {token for token in str(class_id).casefold().split("_") if token}
+
+
+def expand_class_specs(
+    specs: list[str],
+    available_class_ids: list[str],
+) -> dict[str, list[str]]:
+    """Expand each (possibly partial) Class spec to the matching full Class IDs.
+
+    A spec is split into underscore-delimited tokens; a Class ID matches when it
+    contains ALL of the spec's tokens (order-independent AND). A full exact Class
+    ID therefore matches only itself. Each spec must match at least one Class ID
+    or a ValueError is raised.
+
+    Returns a mapping {original_spec: [matched_class_id, ...]} (original casing
+    preserved for both keys and values).
+    """
+    result: dict[str, list[str]] = {}
+    for spec in specs:
+        spec_str = str(spec).strip()
+        if not spec_str:
+            continue
+        spec_tokens = _class_tokens(spec_str)
+        matched = [
+            class_id
+            for class_id in available_class_ids
+            if spec_tokens <= _class_tokens(class_id)
+        ]
+        if not matched:
+            raise ValueError(
+                f"No Class ID matched spec '{spec_str}'. "
+                f"Available: {', '.join(str(c) for c in available_class_ids)}"
+            )
+        result[spec] = matched
+    return result
+
+
+def assign_sample_groups(
+    sample_names: list[str],
+    class_index: dict | None,
+    group_levels: list[str] | None = None,
+) -> dict[str, str | None]:
+    """Map each PCA sample name to a group label for coloring.
+
+    - Without ``group_levels``: the group is the sample's full Class ID.
+    - With ``group_levels`` (factor value tokens, e.g. ["gf", "spf"]): the group
+      is whichever listed token the sample's Class ID contains. A sample matching
+      no listed level becomes "other"; a sample matching two or more raises a
+      ValueError (the levels are not mutually exclusive).
+    - Samples with no resolvable Class ID (or no metadata at all) get ``None``.
+    """
+    levels = [str(level).strip() for level in group_levels or [] if str(level).strip()]
+    groups: dict[str, str | None] = {}
+    for name in sample_names:
+        if class_index is None:
+            groups[name] = None
+            continue
+        record = resolve_sample_class(class_index, None, name)
+        if record is None:
+            groups[name] = None
+            continue
+        class_id = record["class_id"]
+        if not levels:
+            groups[name] = class_id
+            continue
+        tokens = _class_tokens(class_id)
+        hits = [level for level in levels if level.casefold() in tokens]
+        if len(hits) > 1:
+            raise ValueError(
+                f"Class ID '{class_id}' matches multiple group_levels "
+                f"({', '.join(hits)}); levels must be mutually exclusive."
+            )
+        groups[name] = hits[0] if hits else "other"
+    return groups
+
+
 def filter_arf_by_class_ids(
     features: list[dict],
     class_index: dict | None,
@@ -173,12 +251,18 @@ def filter_arf_by_class_ids(
     *,
     missing_sample_policy: str = "error",
 ) -> tuple[list[dict], dict]:
-    """Keep only sample rows whose AnalysisFileClass is selected."""
-    requested = {str(value).casefold() for value in class_ids or [] if str(value).strip()}
+    """Keep only sample rows whose AnalysisFileClass is selected.
+
+    ``class_ids`` accepts partial factor specs (token-subset AND within a spec,
+    OR across specs); each spec is expanded to the matching full Class IDs via
+    :func:`expand_class_specs`.
+    """
+    specs = [str(value) for value in class_ids or [] if str(value).strip()]
     before_rows = _count_rows(features)
-    if not requested:
+    if not specs:
         return features, {
             "requested_class_ids": [],
+            "matched_class_ids": [],
             "before_spots": len(features),
             "after_spots": len(features),
             "before_sample_peaks": before_rows,
@@ -189,16 +273,10 @@ def filter_arf_by_class_ids(
     if missing_sample_policy not in {"error", "exclude"}:
         raise ValueError("missing_sample_policy must be 'error' or 'exclude'")
 
-    available = {
-        str(record["class_id"]).casefold(): str(record["class_id"])
-        for record in class_index["records"]
-    }
-    unknown = sorted(requested - set(available))
-    if unknown:
-        raise ValueError(
-            f"Unknown Class ID(s): {', '.join(unknown)}. "
-            f"Available: {', '.join(available.values())}"
-        )
+    available_class_ids = sorted({str(record["class_id"]) for record in class_index["records"]})
+    expanded = expand_class_specs(specs, available_class_ids)  # 一致ゼロは ValueError
+    matched_class_ids = sorted({cid for ids in expanded.values() for cid in ids})
+    selected = {cid.casefold() for cid in matched_class_ids}
 
     filtered = []
     missing_samples = set()
@@ -210,7 +288,7 @@ def filter_arf_by_class_ids(
             if record is None:
                 missing_samples.add(file_name or str(file_id))
                 continue
-            if str(record["class_id"]).casefold() in requested:
+            if str(record["class_id"]).casefold() in selected:
                 kept_rows.append(row)
         if kept_rows:
             copied = spot.copy()
@@ -224,7 +302,8 @@ def filter_arf_by_class_ids(
         )
 
     return filtered, {
-        "requested_class_ids": [available[key] for key in sorted(requested)],
+        "requested_class_ids": specs,
+        "matched_class_ids": matched_class_ids,
         "before_spots": len(features),
         "after_spots": len(filtered),
         "before_sample_peaks": before_rows,

@@ -161,10 +161,10 @@ Available MCP tools include:
 - `pai2_get_top_metabolites(top_n=10)` - Return top PCA contributors from the latest `.pai2` analysis.
 - `pai2_inspect_metabolite_details(metabolite_id=None, metabolite_name=None)` - Inspect a cached `.pai2` metabolite by ID or name.
 - `pai2_update_analysis_filter(min_intensity=0.0, min_sn=0.0)` - Re-filter cached `.pai2` features and rerun PCA.
-- `arf_parser(..., class_ids=None, tag_labels=None, ...)` - Parse `.arf`, auto-load adjacent `.mddata` and tag sidecars, optionally filter samples by Class ID, and build a PCA matrix.
-- `arf_list_classes()` - List Class ID values and sample counts discovered from the cached ARF dataset's `.mddata`.
+- `arf_parser(..., class_ids=None, group_levels=None, tag_labels=None, ...)` - Parse `.arf`, auto-load adjacent `.mddata` and tag sidecars, optionally filter samples by Class ID (partial factor specs allowed), color PCA points by group, and build a PCA matrix.
+- `arf_list_classes()` - List Class ID values, sample counts, and the per-position factor-value vocabulary (`factors_by_position`) discovered from the cached ARF dataset's `.mddata`.
 - `arf_list_tags()` - List discovered tag definitions, matched sample files, and tag assignment counts for the cached `.arf` session.
-- `arf_re_pca(..., class_ids=None, tag_labels=None, ...)` - Rerun PCA with intensity, annotation, Class ID, and MS-DIAL tag filters.
+- `arf_re_pca(..., class_ids=None, group_levels=None, tag_labels=None, ...)` - Rerun PCA with intensity, annotation, Class ID (partial factor specs), and MS-DIAL tag filters, coloring points by group.
 - `arf2_parser(file_path=None)` - Parse and summarize `.arf2`.
 - `eicaef_parser(file_path=None)` - Parse and summarize `.EIC.aef`.
 - `eicaef_top_peak_tops(file_path=None, top_n=20)` - Return EIC spots ranked by peak-top intensity.
@@ -203,9 +203,24 @@ or `"untagged"` to treat them explicitly as having no selected tags.
 
 Class ID filtering uses the user-defined values from MS-DIAL's
 `Option > File property setting > Class ID`. Call `arf_list_classes()` after
-loading an ARF to inspect available values, then pass one or more values with
-`class_ids=["control"]` or `class_ids=["control", "LPS"]`. Multiple values are
-combined with OR. Matching is case-insensitive and sample counts are not fixed.
+loading an ARF to inspect available values (it also returns `factors_by_position`,
+the per-position factor-value vocabulary, to help compose partial specs).
+
+Class IDs are treated as compound, underscore-delimited factors (e.g.
+`Cerebellum_gf_AIN` → tokens `Cerebellum`, `gf`, `AIN`). Each entry in `class_ids`
+may be a **partial spec**: it matches any Class ID that contains all of the spec's
+tokens (AND within a spec, order-independent). Entries are combined with OR, and an
+exact full Class ID still matches only itself. Examples: `class_ids=["gf"]` selects
+every `*_gf_*` class, `class_ids=["Cerebellum_gf"]` selects `Cerebellum_gf_*`, and
+`class_ids=["Cerebellum_gf", "Hippocampus_gf"]` ORs the two. Matching is
+case-insensitive; a spec that matches nothing raises an error.
+
+For between-group comparison, PCA points are colored by group. By default the group
+is the sample's full Class ID; pass `group_levels=["gf", "spf"]` to collapse the
+coloring onto a single factor (samples matching none of the levels become `other`;
+matching two or more raises an error). Selection (`class_ids`) and grouping
+(`group_levels`) are independent, so e.g. `class_ids=["Cerebellum"],
+group_levels=["gf", "spf"]` compares gf vs spf within the cerebellum subset.
 
 ## Command-line examples
 
