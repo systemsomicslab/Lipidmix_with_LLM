@@ -148,9 +148,14 @@ python server.py
 
 The server looks for example inputs in the repository `data/` directory unless a tool call provides an explicit file path.
 
+For team use, keep this server local on each member's machine and point only
+`LIPIDMIX_KNOWLEDGE_DIR` at the shared NAS knowledge folder. See
+[`DEPLOY.md`](DEPLOY.md) and
+[`docs/local_shared_knowledge_setup.md`](docs/local_shared_knowledge_setup.md).
+
 Available MCP tools include:
 
-- `load_dataset(directory=None)` - Entry point. Given an MS-DIAL output folder, runs the standard initial analysis (arf2 overview -> arf PCA), auto-selecting the latest `*PeakProperties.arf` when duplicates exist, and primes the session.
+- `load_dataset(directory=None)` - Entry point. Given an MS-DIAL output folder, runs the standard initial analysis (arf2 overview -> arf PCA), auto-selecting the latest `*PeakProperties.arf` when duplicates exist, and primes the session. When the folder mixes files from several MS-DIAL runs (multiple dates/batches), every resolver auto-selects the **latest batch** by the `AlignmentResult_<timestamp>` embedded in the filenames (across `.arf`/`.arf2`/`.pai2`/`.aef`); `load_dataset` reports which batch it chose and skips older ones.
 - `list_data_files(extension=None, directory=None)` - List files in the given `directory` (defaults to the configured data directory: `LIPIDMIX_DATA_DIR` or `<project>/data`), optionally filtered by extension.
 - `pai2_parser(file_path, filter_threshold=None)` - Parse `.pai2`, run PCA summary generation, and cache the parsed session.
 - `pai2_get_top_metabolites(top_n=10)` - Return top PCA contributors from the latest `.pai2` analysis.

@@ -130,5 +130,123 @@ class PickLatestDuplicateTests(unittest.TestCase):
             self.assertTrue(resolved.endswith("newer.aef"))
 
 
+class LoadDatasetBatchAnnounceTests(unittest.TestCase):
+    """複数バッチ混在時に load_dataset が選択結果を明示すること。"""
+
+    def setUp(self):
+        self._orig_data_dir = server.DATA_DIR
+
+    def tearDown(self):
+        server.DATA_DIR = self._orig_data_dir
+
+    def _touch(self, directory: Path, name: str) -> None:
+        (directory / name).write_bytes(b"")
+
+    def test_announces_selected_latest_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._touch(directory, "AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf")
+            self._touch(directory, "AlignmentResult_2026_05_15_10_13_35.arf2")
+            self._touch(directory, "AlignmentResult_2026_06_01_09_00_00_PeakProperties.arf")
+            self._touch(directory, "AlignmentResult_2026_06_01_09_00_00.arf2")
+            out = server.load_dataset(directory=str(directory))
+            joined = "\n".join(str(x) for x in out)
+            # 検出した最新バッチのタイムスタンプを明示する
+            self.assertIn("2026_06_01_09_00_00", joined)
+            # 旧バッチをスキップした旨が分かる（バッチ数に言及）
+            self.assertIn("バッチ", joined)
+
+    def test_no_batch_note_for_single_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._touch(directory, "AlignmentResult_2026_06_01_09_00_00_PeakProperties.arf")
+            self._touch(directory, "AlignmentResult_2026_06_01_09_00_00.arf2")
+            out = server.load_dataset(directory=str(directory))
+            joined = "\n".join(str(x) for x in out)
+            self.assertNotIn("複数バッチ", joined)
+
+
+class SelectLatestBatchTests(unittest.TestCase):
+    """複数バッチ（処理タイムスタンプ）混在時に最新バッチだけを採用すること。"""
+
+    def test_keeps_only_latest_batch(self):
+        paths = [
+            "/d/AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf",
+            "/d/AlignmentResult_2026_05_15_10_13_35.arf2",
+            "/d/AlignmentResult_2026_06_01_09_00_00_PeakProperties.arf",
+            "/d/AlignmentResult_2026_06_01_09_00_00.arf2",
+        ]
+        selected = server._select_latest_batch(paths)
+        self.assertTrue(all("2026_06_01_09_00_00" in p for p in selected))
+        self.assertEqual(len(selected), 2)
+
+    def test_untimestamped_files_are_preserved(self):
+        paths = [
+            "/d/AlignmentResult_2026_05_15_10_13_35.arf2",
+            "/d/AlignmentResult_2026_06_01_09_00_00.arf2",
+            "/d/notes.aef",  # タイムスタンプ無し
+        ]
+        selected = server._select_latest_batch(paths)
+        self.assertIn("/d/notes.aef", selected)
+        self.assertIn("/d/AlignmentResult_2026_06_01_09_00_00.arf2", selected)
+        self.assertNotIn("/d/AlignmentResult_2026_05_15_10_13_35.arf2", selected)
+
+    def test_all_untimestamped_returns_all(self):
+        paths = ["/d/a.aef", "/d/b.aef"]
+        self.assertEqual(set(server._select_latest_batch(paths)), set(paths))
+
+
+class ResolvePai2LatestBatchTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_data_dir = server.DATA_DIR
+
+    def tearDown(self):
+        server.DATA_DIR = self._orig_data_dir
+
+    def _touch(self, directory: Path, name: str) -> None:
+        (directory / name).write_bytes(b"")
+
+    def test_resolve_pai2_picks_latest_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._touch(directory, "AlignmentResult_2026_05_15_10_13_35.pai2")
+            self._touch(directory, "AlignmentResult_2026_06_01_09_00_00.pai2")
+            server.DATA_DIR = directory
+            resolved = server.resolve_pai2_file_path()
+            self.assertIsNotNone(resolved)
+            self.assertTrue(resolved.endswith("2026_06_01_09_00_00.pai2"))
+
+    def test_resolve_pai2_explicit_path_is_respected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._touch(directory, "AlignmentResult_2026_05_15_10_13_35.pai2")
+            explicit = str(directory / "AlignmentResult_2026_05_15_10_13_35.pai2")
+            self.assertEqual(server.resolve_pai2_file_path(explicit), explicit)
+
+
+class ResolveArfCrossBatchTests(unittest.TestCase):
+    """旧バッチの PeakProperties.arf があっても最新バッチの方を選ぶこと。"""
+
+    def setUp(self):
+        self._orig_data_dir = server.DATA_DIR
+
+    def tearDown(self):
+        server.DATA_DIR = self._orig_data_dir
+
+    def _touch(self, directory: Path, name: str) -> None:
+        (directory / name).write_bytes(b"")
+
+    def test_arf_picks_peakproperties_from_latest_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._touch(directory, "AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf")
+            self._touch(directory, "AlignmentResult_2026_05_15_10_13_35_DriftSpots.arf")
+            self._touch(directory, "AlignmentResult_2026_06_01_09_00_00_PeakProperties.arf")
+            self._touch(directory, "AlignmentResult_2026_06_01_09_00_00_DriftSpots.arf")
+            server.DATA_DIR = directory
+            resolved = server.resolve_arf_file_path()
+            self.assertTrue(resolved.endswith("2026_06_01_09_00_00_PeakProperties.arf"))
+
+
 if __name__ == "__main__":
     unittest.main()

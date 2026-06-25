@@ -127,6 +127,13 @@ selecting PeakProperties.arf over DriftSpots.arf) and primes the session. Its
 output (group structure, lipid classes, polarity) is exactly the material for
 GATEWAY step 1 below.
 
+MIXED-DATE FOLDERS ARE FINE — a folder may contain files from several MS-DIAL
+processing runs (multiple dates/batches). This is NOT a blocker and must not be
+treated as unanalyzable: every file resolver auto-selects the LATEST batch (by the
+`AlignmentResult_<timestamp>` embedded in the filenames) across all file types
+(.arf/.arf2/.pai2/.aef). `load_dataset` reports which batch it selected. Proceed
+with analysis; only ask the user if they explicitly want an older batch.
+
 GATEWAY — before proposing any interpretation or analysis workflow, in order:
 
 1. CONFIRM THE OBJECTIVE (mandatory). From the deterministic parser output
@@ -820,6 +827,70 @@ def _pick_latest(paths: list[str]) -> str | None:
     return max(paths, key=_recency_key)
 
 
+def _batch_key(path: str) -> str:
+    """ファイル名に埋め込まれた処理タイムスタンプ（＝バッチ識別子）を返す。
+
+    MS-DIAL は1回の処理で生成する全ファイルに同一の `AlignmentResult_<timestamp>`
+    接頭辞を付ける。そのタイムスタンプ（無ければ12-14桁連番）を正規化して返す。
+    どちらも持たないファイルは空文字（＝バッチ不明）となる。mtime は見ない
+    （コピーでも保たれるファイル名側の識別子だけでバッチを束ねるため）。
+    """
+    name = os.path.basename(path)
+    match = _ALIGNMENT_TIMESTAMP_RE.search(name)
+    if match:
+        return match.group(1).replace("_", "")
+    compact = _COMPACT_TIMESTAMP_RE.search(name)
+    return compact.group(1) if compact else ""
+
+
+def _select_latest_batch(paths: list[str]) -> list[str]:
+    """複数バッチ（処理タイムスタンプ）が混在する場合に最新バッチへ絞る。
+
+    - 埋め込みタイムスタンプを持つファイルがあれば、その最大値に一致する
+      ファイル群だけを残す（＝旧バッチを除外）。
+    - タイムスタンプを持たないファイルはバッチ判定不能なので除外せず温存する
+      （誤って解析対象を失わない安全側）。
+    - 全ファイルが無タイムスタンプなら全件そのまま返す（現状互換）。
+    """
+    if not paths:
+        return []
+    keyed = [(p, _batch_key(p)) for p in paths]
+    timestamps = [k for _, k in keyed if k]
+    if not timestamps:
+        return list(paths)
+    latest = max(timestamps)
+    return [p for p, k in keyed if k == latest or not k]
+
+
+def _describe_batch_selection(directory: Path) -> str | None:
+    """フォルダ内に複数バッチが混在する場合、最新バッチを自動選択した旨の注記を返す。
+
+    バッチが1つ（または判別不能）なら None を返し、注記を出さない。
+    """
+    try:
+        names = [f.name for f in directory.iterdir() if f.is_file()]
+    except OSError:
+        return None
+    # 正規化キー -> 表示用タイムスタンプ（アンダースコア付きの読みやすい形）
+    display: dict[str, str] = {}
+    for name in names:
+        match = _ALIGNMENT_TIMESTAMP_RE.search(name)
+        if match:
+            display[match.group(1).replace("_", "")] = match.group(1)
+            continue
+        compact = _COMPACT_TIMESTAMP_RE.search(name)
+        if compact:
+            display.setdefault(compact.group(1), compact.group(1))
+    if len(display) <= 1:
+        return None
+    latest_key = max(display)
+    n_old = len(display) - 1
+    return (
+        f"🗂️ フォルダ内に複数バッチ（{len(display)} 件の処理タイムスタンプ）を検出しました。"
+        f"最新バッチ **{display[latest_key]}** を自動選択し、旧バッチ {n_old} 件はスキップします。"
+    )
+
+
 def resolve_arf_file_path(file_path: str | None = None) -> str | None:
     """.arfファイルのパスを解決するヘルパー。
 
@@ -838,6 +909,8 @@ def resolve_arf_file_path(file_path: str | None = None) -> str | None:
     real_paths = [p for p in file_paths if os.path.isfile(p)]
     if not real_paths:
         return None
+    # 複数日付（複数バッチ）が混在していれば最新バッチに絞る。
+    real_paths = _select_latest_batch(real_paths)
     # 重複（旧版/新版）があれば最新版を選ぶ。PeakProperties を優先したうえで最新を採用。
     preferred = [p for p in real_paths if p.lower().endswith("peakproperties.arf")]
     if preferred:
@@ -856,6 +929,7 @@ def resolve_arf2_file_path(file_path: str | None = None) -> str | None:
     real_paths = [p for p in file_paths if os.path.isfile(p)]
     if not real_paths:
         return None
+    real_paths = _select_latest_batch(real_paths)  # 複数バッチ混在時は最新バッチへ
     return _pick_latest(real_paths)  # 重複時は最新版
 
 
@@ -870,6 +944,25 @@ def resolve_eicaef_file_path(file_path: str | None = None) -> str | None:
     real_paths = [p for p in file_paths if os.path.isfile(p)]
     if not real_paths:
         return None
+    real_paths = _select_latest_batch(real_paths)  # 複数バッチ混在時は最新バッチへ
+    return _pick_latest(real_paths)  # 重複時は最新版
+
+
+def resolve_pai2_file_path(file_path: str | None = None) -> str | None:
+    """.pai2ファイルのパスを解決するヘルパー。
+
+    複数日付（複数バッチ）が混在していても最新バッチの .pai2 を自動選択する。
+    """
+    if file_path and os.path.exists(file_path):
+        return file_path
+
+    file_paths = list_data_files(extension=".pai2")
+    if not file_paths or not isinstance(file_paths, list):
+        return None
+    real_paths = [p for p in file_paths if os.path.isfile(p)]
+    if not real_paths:
+        return None
+    real_paths = _select_latest_batch(real_paths)  # 複数バッチ混在時は最新バッチへ
     return _pick_latest(real_paths)  # 重複時は最新版
 
 
@@ -910,6 +1003,10 @@ def load_dataset(directory: str | None = None) -> list:
        PeakProperties.arf が併存する場合は、解析に使う **PeakProperties.arf を自動選択** します。
     以降の `arf_list_classes` / `arf_re_pca` 等はこのセッション状態をそのまま利用できます。
 
+    複数日付（複数回のMS-DIAL処理＝複数バッチ）のファイルが混在していても解析は
+    止まりません。ファイル名の `AlignmentResult_<timestamp>` を見て **最新バッチを
+    自動選択** し、選択結果を出力に明示します（旧バッチはスキップ）。
+
     - directory: MS-DIAL出力フォルダのパス。省略時は既定のデータディレクトリ
       (環境変数 LIPIDMIX_DATA_DIR または <project>/data) を使用します。
       明示した場合は以降のツールの既定探索先もこのフォルダに更新されます。
@@ -932,6 +1029,10 @@ def load_dataset(directory: str | None = None) -> list:
         "この出力（群構造・脂質クラス・極性など）は、解釈に進む前の『実験目的の推測とユーザー確認』"
         "（GATEWAY手順1）の材料になります。"
     ]
+
+    batch_note = _describe_batch_selection(DATA_DIR)
+    if batch_note:
+        outputs.append(batch_note)
 
     if arf2_path:
         outputs.extend(arf2_parser(file_path=arf2_path))
@@ -960,11 +1061,9 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> list:
     3. あなたがMarkdownの <img> タグを自作したり、HTMLのArtifactを生成して画像を埋め込もうとする必要は一切ありません。また、「画像を表示しますか？」といった確認をユーザーに挟むことも絶対に禁止します。
     4. ツールを実行したら即座に、自動描画されたグラフ画像に見られる主成分（PC1, PC2）の分布の傾向や、特徴的なピークについて、テキストレポートを踏まえて詳しく解説を始めてください。
     """
-    if not file_path or not os.path.exists(file_path):
-        file_paths = list_data_files(extension=".pai2")
-        if not file_paths or "が存在しません" in file_paths[0]:
-            return ["データディレクトリに .pai2 ファイルが見つかりませんでした。"]
-        file_path = file_paths[0]  # 最初の .pai2 ファイルを使用
+    file_path = resolve_pai2_file_path(file_path)
+    if not file_path:
+        return ["データディレクトリに .pai2 ファイルが見つかりませんでした。"]
 
     if filter_threshold is None:
         filter_threshold = 0.0
@@ -991,16 +1090,9 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> list:
         pca_index = session.pca_index
         
         
-        output_image_path = DATA_DIR / "pca_plot_latest.png"
-        with open(output_image_path, "wb") as img_file:
-            img_file.write(img_bytes)
+        # Keep the PCA plot in the MCP response only. This avoids writing into
+        # DATA_DIR, which may be a read-only local or NAS data folder.
 
-        
-        if os.name == 'nt':  # Windows環境の場合のみ実行
-            # os.startfile はバックグラウンドで非同期でOS標準ビューアーを立ち上げるため、
-            # MCPサーバー側の処理やタイムアウトを一切邪魔しません
-            os.startfile(str(output_image_path.absolute()))
-        
         # FastMCP の Image クラスでラップして返す
         mcp_image = Image(data=img_bytes, format="png")
         
