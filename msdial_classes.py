@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 import io
 from pathlib import Path
+import re
 import zipfile
 
 import lz4.block
@@ -14,6 +15,8 @@ from msdial_tags import normalize_sample_name
 
 
 MSGPACK_LZ4_BLOCK_TYPE = 99
+_ALIGNMENT_TIMESTAMP_RE = re.compile(r"(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})")
+_COMPACT_TIMESTAMP_RE = re.compile(r"(\d{12,14})")
 
 # MsdialDataStorageBase MessagePack keys.
 ANALYSIS_FILES_INDEX = 0
@@ -75,13 +78,13 @@ def resolve_mddata_path(
     directory = source.parent if source.suffix else source
     direct = sorted(directory.glob("*.mddata"))
     if direct:
-        return _select_single_dataset(direct, directory)
+        return _select_single_dataset(direct, source)
 
     projects = sorted(directory.glob("*.mdproject"))
     project_candidates = []
     for project in projects:
         project_candidates.extend(_mddata_paths_from_project(project))
-    return _select_single_dataset(project_candidates, directory)
+    return _select_single_dataset(project_candidates, source)
 
 
 def parse_analysis_file_classes(mddata_path: str | Path) -> list[dict]:
@@ -365,12 +368,33 @@ def _select_single_dataset(candidates, source: Path) -> Path | None:
     unique = sorted({Path(candidate).resolve() for candidate in candidates if Path(candidate).is_file()})
     if not unique:
         return None
-    if len(unique) > 1:
-        raise ValueError(
-            f"Multiple mddata files were found near {source}: "
-            + ", ".join(str(path) for path in unique)
-        )
-    return unique[0]
+    source_timestamp = _metadata_timestamp_key(source)
+    if source_timestamp:
+        not_newer_than_source = [
+            path for path in unique
+            if (candidate_timestamp := _metadata_timestamp_key(path))
+            and candidate_timestamp <= source_timestamp
+        ]
+        if not_newer_than_source:
+            return max(not_newer_than_source, key=_metadata_recency_key)
+    return max(unique, key=_metadata_recency_key)
+
+
+def _metadata_recency_key(path: Path) -> tuple[str, float]:
+    timestamp = _metadata_timestamp_key(path)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return timestamp, mtime
+
+
+def _metadata_timestamp_key(path: Path) -> str:
+    match = _ALIGNMENT_TIMESTAMP_RE.search(path.name)
+    if match:
+        return match.group(1).replace("_", "")
+    compact = _COMPACT_TIMESTAMP_RE.search(path.name)
+    return compact.group(1) if compact else ""
 
 
 def _arf_sample_identity(row: list) -> tuple[int | None, str | None]:

@@ -17,6 +17,7 @@ TAG_SUFFIX = "_tags"
 PEAK_PROPERTIES_SUFFIX = "_PeakProperties"
 PROCESSING_TIMESTAMP_DIGITS = 12
 _TIMESTAMP_SUFFIX = re.compile(rf"_\d{{{PROCESSING_TIMESTAMP_DIGITS}}}$")
+_COMPACT_TIMESTAMP_RE = re.compile(r"(\d{12,14})")
 
 # AlignmentChromPeakFeature MessagePack keys from the MS-DIAL schema.
 FILE_ID_INDEX = 0
@@ -140,6 +141,7 @@ def discover_arf_tag_index(
     exact_sample_names = _group_sample_names(sample_names, strip_processing_timestamp=False)
     relaxed_sample_names = _group_sample_names(sample_names, strip_processing_timestamp=True)
     sample_files: dict[str, dict] = {}
+    sample_tag_candidates: dict[str, list[Path]] = {}
     ignored_files: list[str] = []
     tag_paths = set(directory.glob(f"*{TAG_XML_SUFFIX}")) | set(directory.glob(f"*{TAG_SUFFIX}"))
     for tag_path in sorted(tag_paths):
@@ -157,13 +159,14 @@ def discover_arf_tag_index(
             sample_key = normalize_sample_name(
                 tag_path.name, strip_processing_timestamp=False,
             )
-        if sample_key in sample_files:
-            previous = sample_files[sample_key]["path"]
-            raise ValueError(
-                f"Multiple tag files resolve to sample '{sample_names.get(sample_key, sample_key)}': "
-                f"{previous}, {tag_path}"
-            )
-        parsed = parse_tag_file(tag_path)
+        sample_tag_candidates.setdefault(sample_key, []).append(tag_path)
+
+    duplicate_sample_tag_files: dict[str, list[str]] = {}
+    for sample_key, candidates in sorted(sample_tag_candidates.items()):
+        selected = _pick_latest_tag_path(candidates)
+        if len(candidates) > 1:
+            duplicate_sample_tag_files[sample_key] = [str(path) for path in sorted(candidates)]
+        parsed = parse_tag_file(selected)
         definitions.update(parsed["definitions"])
         sample_files[sample_key] = parsed
 
@@ -174,6 +177,7 @@ def discover_arf_tag_index(
         "alignment_file": str(alignment_path) if alignment_path else None,
         "alignment_peaks": alignment_peaks,
         "sample_files": sample_files,
+        "duplicate_sample_tag_files": duplicate_sample_tag_files,
         "arf_sample_names": sample_names,
         "ignored_files": ignored_files,
         "unmatched_arf_samples": sorted(set(sample_names) - set(sample_files)),
@@ -356,8 +360,23 @@ def summarize_tag_index(tag_index: dict) -> dict:
         "tagged_alignment_spots": len(alignment_peaks),
         "tagged_sample_peaks": sum(len(parsed["peaks"]) for parsed in sample_files.values()),
         "ignored_tag_files": len(tag_index.get("ignored_files", [])),
+        "duplicate_sample_tag_files": len(tag_index.get("duplicate_sample_tag_files", {})),
         "unmatched_arf_samples": len(tag_index.get("unmatched_arf_samples", [])),
     }
+
+
+def _tag_recency_key(path: Path) -> tuple[str, float]:
+    match = _COMPACT_TIMESTAMP_RE.search(path.name)
+    timestamp = match.group(1) if match else ""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return timestamp, mtime
+
+
+def _pick_latest_tag_path(paths: list[Path]) -> Path:
+    return max(paths, key=_tag_recency_key)
 
 
 def _collect_arf_sample_names(features: list[dict]) -> dict[str, str]:

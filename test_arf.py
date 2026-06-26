@@ -71,7 +71,12 @@ def _is_arf_feature_container(datas) -> bool:
     return len(nested_groups) >= max(10, len(first[2:]) // 2)
 
 
-def _convert_arf_peak_group(group: list, group_index: int | None = None) -> dict | None:
+def _convert_arf_peak_group(
+    group: list,
+    group_index: int | None = None,
+    source_block_index: int | None = None,
+    source_local_index: int | None = None,
+) -> dict | None:
     if not isinstance(group, list) or len(group) < 3 or not all(isinstance(row, list) for row in group):
         return None
 
@@ -87,6 +92,8 @@ def _convert_arf_peak_group(group: list, group_index: int | None = None) -> dict
         "Name": _decode(representative[24]) if len(representative) > 24 else None,
         "HeightAverage": representative[18] if len(representative) > 18 else None,
         "AlignedPeakProperties": group,
+        "SourceBlockIndex": source_block_index,
+        "SourceLocalIndex": source_local_index,
     }
 
 def make_loading_details(pca_result: dict, deserialized_list: list[dict], feature_names: list[str]) -> str:
@@ -169,11 +176,23 @@ def make_loading_details(pca_result: dict, deserialized_list: list[dict], featur
     return final_json
 
 
-def deserialize_lz4_packed_msgpack(data: bytes) -> list:
-    """LZ4圧縮されたMsgPackデータを解凍し、内部のリストを返します。"""
-    _header, compressed_data = msgpack.unpackb(data, raw=False)
+def _msgpack_stream(data: bytes):
+    return msgpack.Unpacker(
+        io.BytesIO(data),
+        raw=False,
+        strict_map_key=False,
+        max_buffer_size=1024 * 1024 * 1024,
+    )
+
+
+def _decode_lz4_msgpack_payload(compressed_data: bytes) -> list:
     stream = io.BytesIO(compressed_data)
-    unpacker = msgpack.Unpacker(stream, raw=False)
+    unpacker = msgpack.Unpacker(
+        stream,
+        raw=False,
+        strict_map_key=False,
+        max_buffer_size=1024 * 1024 * 1024,
+    )
     size = next(unpacker)
     read_size = unpacker.tell()
     decompressed_data = lz4.block.decompress(
@@ -181,36 +200,113 @@ def deserialize_lz4_packed_msgpack(data: bytes) -> list:
         uncompressed_size=size,
     )
 
+    return list(_msgpack_stream(decompressed_data))
+
+
+def _payload_from_top_level_object(obj):
+    if isinstance(obj, msgpack.ExtType):
+        return obj.data
+
+    if isinstance(obj, (list, tuple)) and len(obj) == 2:
+        _header, payload = obj
+        if isinstance(payload, msgpack.ExtType):
+            return payload.data
+        if isinstance(payload, (bytes, bytearray)):
+            return bytes(payload)
+
+    return None
+
+
+def _iter_lz4_msgpack_blocks(data: bytes):
+    for block_index, obj in enumerate(_msgpack_stream(data)):
+        payload = _payload_from_top_level_object(obj)
+        if payload is None:
+            print(
+                f"[WARNING] ARF top-level object {block_index} is not a supported LZ4 MessagePack block; skipped",
+                file=sys.stderr,
+            )
+            continue
+        yield block_index, _decode_lz4_msgpack_payload(payload)
+
+
+def _is_arf_feature_container_object(item) -> bool:
+    return (
+        isinstance(item, list)
+        and len(item) > 2
+        and isinstance(item[0], int)
+        and isinstance(item[1], int)
+    )
+
+
+def _iter_arf_peak_groups(data: bytes):
+    for block_index, items in _iter_lz4_msgpack_blocks(data):
+        if not items:
+            continue
+
+        first = items[0]
+        local_index = 0
+        if _is_arf_feature_container_object(first):
+            for group in first[2:]:
+                yield block_index, local_index, group
+                local_index += 1
+        else:
+            yield block_index, local_index, first
+            local_index += 1
+
+        for item in items[1:]:
+            if _is_arf_feature_container_object(item):
+                for group in item[2:]:
+                    yield block_index, local_index, group
+                    local_index += 1
+            else:
+                yield block_index, local_index, item
+                local_index += 1
+
+
+def deserialize_lz4_packed_msgpack(data: bytes) -> list:
+    """LZ4圧縮されたMsgPackデータを解凍し、内部のリストを返します。"""
     all_spots = []
-    inner_unpacker = msgpack.Unpacker(io.BytesIO(decompressed_data), raw=False, strict_map_key=False)
-    for spot in inner_unpacker:
-        all_spots.append(spot)
+    for _block_index, items in _iter_lz4_msgpack_blocks(data):
+        all_spots.extend(items)
     return all_spots
 
 
-def extract_arf_data(data) -> dict | None:
+def extract_arf_data(
+    data,
+    group_index: int | None = None,
+    source_block_index: int | None = None,
+    source_local_index: int | None = None,
+) -> dict | None:
     if isinstance(data, list) and len(data) >= 3 and all(isinstance(row, list) for row in data):
-        return _convert_arf_peak_group(data)
+        return _convert_arf_peak_group(
+            data,
+            group_index=group_index,
+            source_block_index=source_block_index,
+            source_local_index=source_local_index,
+        )
 
     # .arf ファイルのみを扱うため、他の形式はサポートしない
     return None
 
 
 def deserialize(file_like_object) -> list[dict]:
-    datas = deserialize_lz4_packed_msgpack(file_like_object.read())
+    data = file_like_object.read()
     results = []
 
-    if _is_arf_feature_container(datas):
-        first = datas[0]
-        for group_index, group in enumerate(first[2:] + datas[1:], start=0): # MessagePackの構造に応じて、最初の要素からピークグループを抽出
-            formatted = extract_arf_data(group)
-            if formatted is not None:
-                formatted["MasterAlignmentID"] = group_index
-                formatted["AlignmentID"] = group_index
-                results.append(formatted)
-        return results
-
-    # .arf ファイルのみを扱うため、他の形式はサポートしない
+    for group_index, (block_index, local_index, group) in enumerate(
+        _iter_arf_peak_groups(data),
+        start=0,
+    ):
+        formatted = extract_arf_data(
+            group,
+            group_index=group_index,
+            source_block_index=block_index,
+            source_local_index=local_index,
+        )
+        if formatted is not None:
+            formatted["MasterAlignmentID"] = group_index
+            formatted["AlignmentID"] = group_index
+            results.append(formatted)
     return results
 
 

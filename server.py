@@ -1321,6 +1321,19 @@ def _format_arf_class_summary(class_index: dict | None) -> str:
     )
 
 
+def _format_arf_parse_summary(features: list[dict]) -> str:
+    block_indices = {
+        spot.get("SourceBlockIndex")
+        for spot in features
+        if isinstance(spot, dict) and spot.get("SourceBlockIndex") is not None
+    }
+    if not block_indices:
+        return ""
+    block_count = len(block_indices)
+    mode = "multi-block stream" if block_count > 1 else "single block"
+    return f"- **ARF parse mode**: {mode}; decoded blocks={block_count}\n"
+
+
 def _format_arf_class_filter(stats: dict | None) -> str:
     if not stats or not stats.get("requested_class_ids"):
         return ""
@@ -1507,6 +1520,7 @@ def arf_parser(
         output_text = (
             f"### 📈 ARF 多変量PCA解析完了: {Path(file_path).name}\n"
             f"- **読み込んだ総スポット数**: {len(deserialized_and_formatted_data)}\n"
+            f"{_format_arf_parse_summary(deserialized_and_formatted_data)}"
             f"{_format_arf_class_summary(session.arf_class_index)}"
             f"{_format_arf_class_filter(class_filter_stats)}"
             f"{_format_arf_tag_summary(session.arf_tag_index)}"

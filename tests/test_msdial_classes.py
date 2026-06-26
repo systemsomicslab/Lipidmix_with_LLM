@@ -69,6 +69,33 @@ class MsdialClassTests(unittest.TestCase):
 
             self.assertEqual(resolve_mddata_path(mdproject), mddata.resolve())
 
+    def test_resolve_mddata_uses_latest_timestamp_when_multiple_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            older = directory / "Dataset_2024_06_13_03_04_16.mddata"
+            newer = directory / "Dataset_2026_06_17_00_34_26.mddata"
+            older.write_bytes(pack_msdial([[analysis_file_row(0, "sample_A", "old")], [], [], [], [], None, None, None, None]))
+            newer.write_bytes(pack_msdial([[analysis_file_row(0, "sample_A", "new")], [], [], [], [], None, None, None, None]))
+
+            self.assertEqual(resolve_mddata_path(directory), newer.resolve())
+            index = discover_arf_class_index(directory / "result_PeakProperties.arf")
+            self.assertEqual(index["mddata_path"], str(newer.resolve()))
+            self.assertEqual(index["class_counts"], {"new": 1})
+
+    def test_resolve_mddata_for_timestamped_arf_uses_latest_not_newer_dataset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            older = directory / "Dataset_2024_06_13_03_04_16.mddata"
+            newer = directory / "Dataset_2026_06_17_00_34_26.mddata"
+            older.write_bytes(pack_msdial([[analysis_file_row(0, "sample_A", "matching")], [], [], [], [], None, None, None, None]))
+            newer.write_bytes(pack_msdial([[analysis_file_row(0, "sample_A", "too_new")], [], [], [], [], None, None, None, None]))
+            arf_path = directory / "AlignmentResult_2024_06_13_09_21_45_PeakProperties.arf"
+            arf_path.touch()
+
+            self.assertEqual(resolve_mddata_path(arf_path), older.resolve())
+            index = discover_arf_class_index(arf_path)
+            self.assertEqual(index["class_counts"], {"matching": 1})
+
     def test_attach_and_filter_variable_sample_count(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
