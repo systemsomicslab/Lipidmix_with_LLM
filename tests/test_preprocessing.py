@@ -168,6 +168,15 @@ class TestImpute(unittest.TestCase):
         out, report = pp.impute(m, "none")
         self.assertTrue(np.isnan(out[0, 0]))
 
+    def test_all_nan_column_fills_zero(self):
+        # column 1 is entirely NaN -> fallback fill value is 0.0
+        m = np.array([[10.0, np.nan], [20.0, np.nan], [30.0, np.nan]])
+        out_hm, _ = pp.impute(m, "half_min")
+        self.assertTrue((out_hm[:, 1] == 0.0).all())
+        self.assertFalse(np.isnan(out_hm).any())
+        out_cm, _ = pp.impute(m, "column_mean")
+        self.assertTrue((out_cm[:, 1] == 0.0).all())
+
 
 if __name__ == "__main__":
     unittest.main()
