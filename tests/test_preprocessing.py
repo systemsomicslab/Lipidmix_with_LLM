@@ -156,5 +156,18 @@ class TestQcRsdFilter(unittest.TestCase):
         self.assertIn("caveat", report)
 
 
+class TestImpute(unittest.TestCase):
+    def test_half_min_fills_per_feature(self):
+        m = np.array([[10.0, np.nan], [20.0, 4.0], [30.0, 8.0]])
+        out, report = pp.impute(m, "half_min")
+        self.assertAlmostEqual(out[0, 1], 2.0)  # half of column-1 min (4) = 2
+        self.assertFalse(np.isnan(out).any())
+
+    def test_none_keeps_nan(self):
+        m = np.array([[np.nan, 1.0]])
+        out, report = pp.impute(m, "none")
+        self.assertTrue(np.isnan(out[0, 0]))
+
+
 if __name__ == "__main__":
     unittest.main()

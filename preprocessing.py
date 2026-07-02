@@ -192,3 +192,33 @@ def qc_rsd_filter(matrix, roles, sample_names, max_rsd=0.30):
         rsd = np.where(mean > 0, sd / mean, np.inf)
     keep = rsd <= max_rsd
     return keep, {"removed": int((~keep).sum()), "max_rsd": max_rsd}
+
+
+def impute(matrix, method="half_min"):
+    """行列生成後に残る欠損 (NaN) を補完する。
+
+    half_min=特徴量最小値の半分（既定）/ knn=sklearn KNNImputer /
+    column_mean=列平均（現行互換）/ none=補完しない。
+    """
+    matrix = np.asarray(matrix, dtype=float)
+    report = {"method": method, "missing": int(np.isnan(matrix).sum())}
+    if method == "none" or report["missing"] == 0:
+        return matrix, report
+    out = matrix.copy()
+    if method == "half_min":
+        col_min = np.nanmin(np.where(np.isnan(out), np.inf, out), axis=0)
+        col_min = np.where(np.isfinite(col_min), col_min, 0.0)
+        fill = col_min / 2.0
+        idx = np.where(np.isnan(out))
+        out[idx] = np.take(fill, idx[1])
+    elif method == "column_mean":
+        col_mean = np.nanmean(out, axis=0)
+        col_mean = np.where(np.isfinite(col_mean), col_mean, 0.0)
+        idx = np.where(np.isnan(out))
+        out[idx] = np.take(col_mean, idx[1])
+    elif method == "knn":
+        from sklearn.impute import KNNImputer
+        out = KNNImputer(n_neighbors=min(5, max(1, out.shape[0] - 1))).fit_transform(out)
+    else:
+        raise ValueError(f"unknown imputation method: {method!r}")
+    return out, report
