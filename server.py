@@ -47,7 +47,9 @@ from test_pai2 import (
     filter_features_by_params,
     inspect_metabolite_details,
     get_top_contributors,
+    get_signal_to_noise,
 )
+import peak_verification as pv
 
 BASE_DIR = Path(__file__).parent
 OUTPUT_FORMAT_DOC = BASE_DIR / "docs" / "output_format.md"
@@ -1138,6 +1140,122 @@ def pai2_inspect_metabolite_details(metabolite_id: str | None = None, metabolite
         metabolite_name=metabolite_name,
     )
     return json.dumps(details, indent=2, ensure_ascii=False)
+
+
+def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
+    """1 feature の検証ドシエを組み立てる（決定的チェック + 生物学的妥当性の材料）。"""
+    name = feat.get("name") or ""
+    ontology = feat.get("ontology") or ""
+    formula = feat.get("formula")
+    adduct = feat.get("adduct")
+    observed_mz = feat.get("m/z")
+    ion_mode = feat.get("ion_mode")
+    ion_mode_name = ion_mode.name if hasattr(ion_mode, "name") else str(ion_mode)
+    rt = (feat.get("time") or {}).get("rt")
+    sn = get_signal_to_noise(feat)
+
+    mass_error = pv.mass_error_ppm(observed_mz, formula, adduct)
+    adduct_check = pv.adduct_consistency(adduct, ion_mode_name, ontology)
+    class_token = pv.extract_class_token(name, ontology)
+    caveats = pv.ether_caveats(name, ontology)
+
+    if name.strip():
+        cov = knowledge_store.coverage([f"{name} {ontology}"], KNOWLEDGE_DIR, vocab)
+        matches_info = next(iter(cov.values()))["matches"]
+        candidate_slugs = [m["slug"] for m in matches_info]
+        bio = {
+            "class_token": class_token,
+            "vocab_hits": pv.vocab_hits(class_token, vocab),
+            "candidate_knowledge_slugs": candidate_slugs,
+            "caveats": caveats,
+        }
+        instruction = (
+            "candidate_knowledge_slugs を knowledge_expand で裏取りし、この試料系に"
+            "この脂質種が生物学的に妥当か・表記の落とし穴に当たらないかを判断して"
+            "総合判定せよ。"
+        )
+    else:
+        bio = {
+            "class_token": None,
+            "vocab_hits": [],
+            "candidate_knowledge_slugs": [],
+            "caveats": ["アノテーション無しにつき生物学的妥当性は判定不可。"],
+        }
+        instruction = "アノテーションが無いため分析化学的事実のみで判断せよ。"
+
+    return {
+        "status": "success",
+        "identity": {
+            "id": feat.get("id"),
+            "name": name or None,
+            "ontology": ontology or None,
+            "formula": formula,
+            "adduct": adduct,
+            "observed_mz": observed_mz,
+            "rt": rt,
+            "ion_mode": ion_mode_name,
+            "signal_to_noise": sn,
+        },
+        "analytical_checks": {
+            "mass_error": mass_error,
+            "adduct_consistency": adduct_check,
+        },
+        "biological_plausibility": bio,
+        "llm_decision": {
+            "instruction": instruction,
+            "deterministic_summary": (
+                f"mass_error={mass_error['band']}, adduct={adduct_check['band']}"
+            ),
+        },
+    }
+
+
+@mcp.tool()
+def verify_peak_annotation(
+    metabolite_id: str | None = None, metabolite_name: str | None = None
+) -> str:
+    """指定した1ピークのアノテーションが生化学的に妥当かを検証するドシエを返す。
+
+    分析化学的な同定確度（精密質量誤差ppm・アダクト/イオンモード整合）を決定的に
+    判定し、生物学的妥当性は関連 knowledge slug を添えて LLM の判断に委ねる。
+    先に pai2_parser でデータを読み込むこと。metabolite_id か metabolite_name の
+    いずれかを指定する。
+    """
+    if session.filtered_features is None:
+        return json.dumps(
+            {"status": "error", "message": "先に pai2_parser を実行してデータを読み込んでください。"},
+            ensure_ascii=False,
+            indent=2,
+        )
+    if metabolite_id is None and metabolite_name is None:
+        return json.dumps(
+            {"status": "error", "message": "metabolite_id か metabolite_name のいずれかを指定してください。"},
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    matches = []
+    for feat in session.filtered_features:
+        if metabolite_id is not None and str(feat.get("id")) == str(metabolite_id):
+            matches.append(feat)
+        elif (
+            metabolite_name is not None
+            and isinstance(feat.get("name"), str)
+            and metabolite_name.lower() in feat.get("name", "").lower()
+        ):
+            matches.append(feat)
+
+    if not matches:
+        return json.dumps(
+            {"status": "not_found", "message": "指定された代謝物がフィルタ済みデータ内に見つかりませんでした。"},
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    vocab = knowledge_store.load_vocab(KNOWLEDGE_DIR)
+    dossiers = [_build_verification_dossier(feat, vocab) for feat in matches]
+    payload = dossiers[0] if len(dossiers) == 1 else {"status": "success", "matches": dossiers}
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
