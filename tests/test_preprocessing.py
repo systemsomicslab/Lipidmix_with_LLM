@@ -110,5 +110,29 @@ class TestBlankFilter(unittest.TestCase):
         self.assertIn("caveat", report)
 
 
+class TestDriftCorrect(unittest.TestCase):
+    def test_linear_drift_flattened(self):
+        # feature drifts linearly with run order across QC; correction should
+        # bring QC intensities close to a constant level.
+        order = [1, 2, 3, 4, 5, 6]
+        names = [f"n{i}" for i in order]
+        roles = {n: ("qc" if i % 2 == 1 else "sample") for n, i in zip(names, order)}
+        run_order = dict(zip(names, order))
+        base = np.array([o * 10.0 for o in order])  # 10,20,30,40,50,60
+        m = base.reshape(-1, 1)
+        out, report = pp.qc_drift_correct(m, roles, names, run_order, min_qc=3)
+        qc_vals = [out[i, 0] for i, n in enumerate(names) if roles[n] == "qc"]
+        self.assertLess(np.std(qc_vals), np.std([10, 30, 50]))
+        self.assertEqual(report["status"], "applied")
+
+    def test_no_run_order_skips(self):
+        m = np.array([[1.0], [2.0]])
+        names = ["a", "b"]
+        roles = {"a": "qc", "b": "sample"}
+        out, report = pp.qc_drift_correct(m, roles, names, {"a": None, "b": None})
+        np.testing.assert_array_equal(out, m)
+        self.assertEqual(report["status"], "skipped")
+
+
 if __name__ == "__main__":
     unittest.main()

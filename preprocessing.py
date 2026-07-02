@@ -121,3 +121,56 @@ def normalize(
     scaled = matrix / factors[:, None]
     report["factors_finite"] = int(np.isfinite(factors).sum())
     return scaled, factors, report
+
+
+def _moving_median(values, window=5):
+    """奇数窓の移動中央値（端は縮小窓）。numpy のみで LOESS 相当の平滑化。"""
+    n = len(values)
+    half = window // 2
+    smoothed = np.empty(n)
+    for i in range(n):
+        lo, hi = max(0, i - half), min(n, i + half + 1)
+        smoothed[i] = np.nanmedian(values[lo:hi])
+    return smoothed
+
+
+def qc_drift_correct(matrix, roles, sample_names, run_order, min_qc=4, window=5):
+    """QC を注入順に平滑化した系統ドリフトで、特徴量ごとに全サンプルを補正する。
+
+    注入順が取れない、または QC が min_qc 未満なら未実施（skipped）。
+    プールQC が層別と疑われる場合の警告は呼び出し側（server）で付す。
+    """
+    matrix = np.asarray(matrix, dtype=float)
+    orders = np.array([run_order.get(n) for n in sample_names], dtype=object)
+    have_order = np.array([o is not None for o in orders])
+    qc_mask = np.array([roles.get(n) == "qc" and run_order.get(n) is not None
+                        for n in sample_names])
+    if not have_order.all() or qc_mask.sum() < min_qc:
+        return matrix, {
+            "status": "skipped",
+            "caveat": "注入順が欠落、または QC が不足のためドリフト補正は未実施。",
+            "qc_used": int(qc_mask.sum()),
+        }
+
+    order_int = np.array([int(o) for o in orders])
+    qc_order = order_int[qc_mask]
+    sort = np.argsort(qc_order)
+    qc_order_sorted = qc_order[sort]
+    n_qc = qc_mask.sum()
+    # 窓サイズをQCサンプル数以下に制限し、奇数を保証
+    eff_window = min(window, int(n_qc))
+    if eff_window % 2 == 0:
+        eff_window = max(1, eff_window - 1)
+    corrected = matrix.copy()
+    for j in range(matrix.shape[1]):
+        qc_vals = matrix[qc_mask, j][sort]
+        trend = _moving_median(qc_vals, eff_window)
+        global_level = np.nanmedian(qc_vals)
+        if not np.isfinite(global_level) or global_level == 0:
+            continue
+        # 全サンプル注入順に対しトレンドを内挿し、補正係数=global_level/trend を適用
+        interp_trend = np.interp(order_int, qc_order_sorted, trend)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            factor = np.where(interp_trend > 0, global_level / interp_trend, 1.0)
+        corrected[:, j] = matrix[:, j] * factor
+    return corrected, {"status": "applied", "qc_used": int(qc_mask.sum())}
