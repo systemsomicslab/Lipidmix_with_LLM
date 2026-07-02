@@ -24,7 +24,7 @@ knowledge ポインタ / LLM=解釈・判断」（`knowledge_store.py` 冒頭コ
 
 ### v1 に含める
 - 新ツール `verify_peak_annotation(metabolite_id | metabolite_name)`。
-- 入口は **ID/名称による単一ピック検証**（`inspect_metabolite_details` と同じ照合）。
+- 入口は **ID/名称による単一ピーク検証**（`inspect_metabolite_details` と同じ照合）。
 - 対象は現在ロード中の **pai2 データ**（`session.filtered_features`）。pai2 の feature は
   formula / adduct / ontology / ion_mode / m-z を既に保持する。
 - 分析化学チェック: **精密質量誤差 (ppm)** と **アダクト/イオンモード整合**。
