@@ -110,3 +110,72 @@ def mass_error_ppm(
         "ppm": round(ppm, 2),
         "band": _band_for_ppm(ppm, pass_ppm, borderline_ppm),
     }
+
+
+# --- クラス別の典型アダクト（助言のみ。判定はしない） ---
+CLASS_TYPICAL_ADDUCTS: dict[str, list[str]] = {
+    "pc": ["[M+H]+", "[M+HCOO]-", "[M+CH3COO]-"],
+    "lpc": ["[M+H]+", "[M+HCOO]-"],
+    "sm": ["[M+H]+", "[M+HCOO]-"],
+    "pe": ["[M+H]+", "[M-H]-"],
+    "pg": ["[M-H]-", "[M+NH4]+"],
+    "pi": ["[M-H]-", "[M+NH4]+"],
+    "ps": ["[M-H]-", "[M+H]+"],
+    "tg": ["[M+NH4]+", "[M+Na]+"],
+    "dg": ["[M+NH4]+", "[M+Na]+", "[M+H]+"],
+    "cer": ["[M+H]+", "[M-H]-", "[M+HCOO]-"],
+    "che": ["[M+NH4]+", "[M+Na]+"],
+    "ce": ["[M+NH4]+", "[M+Na]+"],
+    "fa": ["[M-H]-"],
+}
+
+
+def _class_key(ontology: str | None) -> str | None:
+    if not ontology:
+        return None
+    token = ontology.strip().lower()
+    if token in CLASS_TYPICAL_ADDUCTS:
+        return token
+    head = token.split()[0] if token.split() else token
+    return head if head in CLASS_TYPICAL_ADDUCTS else None
+
+
+def adduct_consistency(adduct, ion_mode, ontology=None) -> dict:
+    """アダクトの電荷符号と実測極性の整合を判定し、クラス典型性を助言する。
+
+    極性一致は決定的に PASS/FAIL。クラス典型性は助言のみで band には影響しない。
+    """
+    entry = ADDUCT_SHIFTS.get(adduct) if adduct else None
+    if entry is None:
+        return {
+            "polarity_ok": None,
+            "band": "UNKNOWN",
+            "class_typical": None,
+            "advisory": "アダクトが不明または未対応のため整合判定不可。",
+        }
+
+    sign = entry[0]
+    mode = str(ion_mode).strip().lower()
+    is_positive = mode.startswith("pos")
+    is_negative = mode.startswith("neg")
+    polarity_ok = (sign == "+" and is_positive) or (sign == "-" and is_negative)
+    band = "PASS" if polarity_ok else "FAIL"
+
+    key = _class_key(ontology)
+    if key is None:
+        class_typical = None
+        advisory = "クラス未知のため典型アダクト助言なし。"
+    else:
+        typical = CLASS_TYPICAL_ADDUCTS[key]
+        class_typical = adduct in typical
+        if class_typical:
+            advisory = f"{key.upper()} で {adduct} は典型的。"
+        else:
+            advisory = f"{key.upper()} の典型は {', '.join(typical)}（{adduct} は非典型だが誤りとは限らない）。"
+
+    return {
+        "polarity_ok": polarity_ok,
+        "band": band,
+        "class_typical": class_typical,
+        "advisory": advisory,
+    }

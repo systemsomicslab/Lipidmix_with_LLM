@@ -71,5 +71,33 @@ class AdductMassErrorTests(unittest.TestCase):
         self.assertEqual(result["band"], "UNKNOWN")
 
 
+class AdductConsistencyTests(unittest.TestCase):
+    def test_polarity_match_positive(self):
+        result = pv.adduct_consistency("[M+H]+", "Positive", "PC")
+        self.assertTrue(result["polarity_ok"])
+        self.assertEqual(result["band"], "PASS")
+        self.assertTrue(result["class_typical"])
+
+    def test_polarity_mismatch(self):
+        result = pv.adduct_consistency("[M+H]+", "Negative", "PC")
+        self.assertFalse(result["polarity_ok"])
+        self.assertEqual(result["band"], "FAIL")
+
+    def test_class_atypical_adduct_is_advisory_not_fail(self):
+        result = pv.adduct_consistency("[M+Na]+", "Positive", "PC")
+        self.assertTrue(result["polarity_ok"])
+        self.assertEqual(result["band"], "PASS")
+        self.assertFalse(result["class_typical"])
+
+    def test_unknown_class_gives_none_typical(self):
+        result = pv.adduct_consistency("[M+H]+", "Positive", "ZZZ")
+        self.assertIsNone(result["class_typical"])
+
+    def test_unknown_adduct_is_unknown_band(self):
+        result = pv.adduct_consistency("Unknown", "Positive", "PC")
+        self.assertEqual(result["band"], "UNKNOWN")
+        self.assertIsNone(result["polarity_ok"])
+
+
 if __name__ == "__main__":
     unittest.main()
