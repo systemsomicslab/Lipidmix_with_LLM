@@ -165,6 +165,9 @@ Available MCP tools include:
 - `arf_list_classes()` - List Class ID values, sample counts, and the per-position factor-value vocabulary (`factors_by_position`) discovered from the cached ARF dataset's `.mddata`.
 - `arf_list_tags()` - List discovered tag definitions, matched sample files, and tag assignment counts for the cached `.arf` session.
 - `arf_re_pca(..., class_ids=None, group_levels=None, tag_labels=None, ...)` - Rerun PCA with intensity, annotation, Class ID (partial factor specs), and MS-DIAL tag filters, coloring points by group.
+- `arf_list_sample_roles()` - Classify the cached ARF's samples into `sample`/`qc`/`blank` roles (from filename and Class ID tokens) before applying any preprocessing.
+- `arf_preprocess(normalize="none", blank_min_fold=None, drift_correct=False, max_qc_rsd=None, impute="half_min", props=None)` - Apply an opt-in QC/normalization/imputation recipe to the loaded ARF matrix and cache the result as `session.feature_matrix` for downstream PCA/differential analysis.
+- `arf_pca_preprocessed(components=None, top_features=10, log_transform=False, group_levels=None)` - Run PCA on the preprocessed matrix produced by `arf_preprocess` (independent of the raw-matrix `arf_parser`/`arf_re_pca` path).
 - `arf2_parser(file_path=None)` - Parse and summarize `.arf2`.
 - `eicaef_parser(file_path=None)` - Parse and summarize `.EIC.aef`.
 - `eicaef_top_peak_tops(file_path=None, top_n=20)` - Return EIC spots ranked by peak-top intensity.

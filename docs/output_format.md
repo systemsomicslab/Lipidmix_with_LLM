@@ -540,3 +540,31 @@ DCLパーサーは現時点で独立したMCPツールとして公開されて�
 | PAI2 | 404ピーク、25キー、S/N取得率100%、PCAスコア404×2 |
 | DCL | 404 MSDecResult、MS/MS保有264件（65.3%） |
 | EIC/AEF | 714スポット、60ユニークファイル、42,840サンプルエントリ、4,716,148クロマトグラム点 |
+
+## 11. 前処理・QC（P2a）
+
+`preprocessing.py`（MCP非依存の純ロジック層）と `server.py` の `arf_list_sample_roles()` / `arf_preprocess()` / `arf_pca_preprocessed()` が、ARFロード後のサンプル×特徴量行列に対する前処理・QCを担う。既定では**何も適用されない（opt-in）**。生行列を消費する `arf_parser`/`arf_re_pca` の既定挙動は変えない。
+
+### 11.1 役割検出（sample/qc/blank）
+
+`preprocessing.detect_sample_roles()` が、ファイル名と Class ID を `_` 区切りでトークン化し、大小無視で `qc`/`blank` トークンと照合してサンプルを `sample`/`qc`/`blank` に分類する（`blank` を `qc` より優先評価）。`arf_list_sample_roles()` はこの分類結果と役割別件数を、前処理適用前の確認用にJSONで返す。
+
+### 11.2 前処理レシピ（`arf_preprocess`）
+
+`arf_preprocess(normalize, blank_min_fold, drift_correct, max_qc_rsd, impute, props)` が、`preprocessing.preprocess()` に処理を委譲し、以下の順で適用する。
+
+1. **ブランク除去**（`blank_min_fold` 指定時）: 生体試料平均 が `blank_min_fold` × ブランク平均 未満の特徴量を背景として除去。ブランク/生体試料のどちらかが無ければ未実施（caveat）。
+2. **正規化**（`normalize="tic"|"median"|"pqn"|"none"`）: 行（サンプル）ごとのスケーリング。`tic`=行総和、`median`=行中央値、`pqn`=Probabilistic Quotient Normalization（参照はQC中央値、QCが無ければ全サンプル中央値）。
+3. **QC-RLSCドリフト補正**（`drift_correct=True` 指定時）: QCを注入順（`analytical_order`、`.mddata` 由来）に並べ移動中央値で平滑化した系統ドリフトで、特徴量ごとに全サンプルを補正する。**注入順が全サンプルで取得できない、またはQCが最小数未満なら未実施**（caveat）。
+4. **QC RSDフィルタ**（`max_qc_rsd` 指定時）: QC群での相対標準偏差（SD/mean）が閾値を超える特徴量を除去。QCが無い/不足なら未実施（caveat）。
+5. **欠損補完**（`impute="half_min"|"knn"|"column_mean"|"none"`、既定 `half_min`）: 行列生成後に残るNaNを補完。`half_min`=特徴量最小値の半分（既定）、`knn`=sklearn `KNNImputer`、`column_mean`=列平均（旧実装互換）、`none`=補完しない。
+
+処理結果は `session.feature_matrix`（前処理後行列）・`session.pp_sample_names`・`session.pp_feature_names`・`session.sample_meta`・`session.preprocessing_recipe` に保存され、以降の `arf_pca_preprocessed()` や将来の差次的解析（P2b）はこの前処理後行列を消費する。適用したレシピそのものが `session.preprocessing_recipe` に記録され、`arf_pca_preprocessed()` の出力にも「前処理レシピ」として明示される。
+
+### 11.3 caveatの扱い
+
+QC/ブランク/注入順のいずれかが欠けているためにスキップされたステップは、無言で無視されるのではなく `report["caveats"]`（`arf_preprocess()` のJSON応答）に文言として残る（例:「注入順が欠落、または QC が不足のためドリフト補正は未実施。」）。プールQCが複数バッチ/層に分かれている場合も、全体一律のドリフト補正が近似である旨の追加caveatが付く。LLMはこれらのcaveatを解釈結果や報告書の注意点として引用すべきである。
+
+### 11.4 `arf_pca_preprocessed()`
+
+前処理後行列が無い（`session.feature_matrix is None`）場合はエラーメッセージ1件を返す。あれば `test_arf.run_pca` でPCAを実行し、`arf_parser`/`arf_re_pca` と同じ整形ヘルパー（スコアプロット用JSON、Loadings上位）を使って結果を返す。出力テキストの構造・キー意味は8.1節のスコアプロット用JSONと同一。既定の `arf_parser`/`arf_re_pca` 経路とは完全に独立しており、`arf_preprocess()` を実行しない限り既存の解析結果には影響しない。

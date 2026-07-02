@@ -29,5 +29,28 @@ class TestPreprocessTools(unittest.TestCase):
         self.assertEqual(server.session.preprocessing_recipe["normalize"], "median")
 
 
+class TestPcaPreprocessed(unittest.TestCase):
+    def setUp(self):
+        server.session = server.AnalysisSession()
+
+    def test_requires_preprocessed_matrix(self):
+        out = server.arf_pca_preprocessed()
+        self.assertIn("前処理", out[0])
+
+    def test_runs_pca_on_preprocessed_matrix(self):
+        import numpy as np
+        server.session.feature_matrix = np.array(
+            [[1.0, 2.0, 3.0], [2.0, 1.0, 0.0], [3.0, 3.0, 3.0], [0.0, 1.0, 2.0]])
+        server.session.pp_sample_names = ["a", "b", "c", "d"]
+        server.session.pp_feature_names = ["Spot_0_height", "Spot_1_height", "Spot_2_height"]
+        server.session.arf_class_index = None
+        server.session.features = []  # get_pca_loading_features tolerates empty spots
+        server.session.preprocessing_recipe = {"normalize": "median"}
+        self.assertTrue(server._pp_has_preprocessed())
+        out = server.arf_pca_preprocessed()
+        self.assertIn("PCA", out[0])
+        self.assertIn("前処理レシピ", out[0])
+
+
 if __name__ == "__main__":
     unittest.main()

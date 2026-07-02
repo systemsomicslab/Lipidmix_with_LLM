@@ -1626,6 +1626,58 @@ def arf_preprocess(
     return json.dumps(report, ensure_ascii=False, indent=2)
 
 
+def _pp_has_preprocessed() -> bool:
+    return getattr(session, "feature_matrix", None) is not None
+
+
+@mcp.tool()
+def arf_pca_preprocessed(
+    components: int | None = None,
+    top_features: int = 10,
+    log_transform: bool = False,
+    group_levels: list[str] | None = None,
+) -> list:
+    """arf_preprocess で用意した前処理後行列で PCA を実行する。
+
+    通常の arf_parser 経路（生行列）とは独立で、既定挙動を変えない。
+    """
+    if not _pp_has_preprocessed():
+        return ["前処理後の行列がありません。先に arf_preprocess を実行してください。"]
+    from test_arf import run_pca, get_pca_loading_features
+    matrix = session.feature_matrix
+    sample_names = session.pp_sample_names
+    feature_names = session.pp_feature_names
+    try:
+        pca_result = run_pca(matrix, n_components=components, log_transform=log_transform)
+    except Exception as exc:
+        return [f"PCA 実行に失敗しました: {exc}"]
+
+    sample_groups = assign_sample_groups(sample_names, session.arf_class_index, group_levels)
+    plot_block = _format_pca_plot_block(
+        pca_result, sample_names,
+        title="PCA (preprocessed ARF)",
+        intro="\n#### 📊 PCA スコアプロット用データ（前処理後）\n",
+        groups=sample_groups,
+    )
+    _remember_arf_pca_plot(pca_result, sample_names,
+                           title="PCA (preprocessed ARF)", groups=sample_groups)
+    loading_features = get_pca_loading_features(
+        pca_result, session.features or [], feature_names, top_n=top_features,
+    )
+    loadings_block = _format_pca_loadings_md(
+        loading_features, header="#### 📊 PCA Loadings 寄与度分析（前処理後）\n",
+    )
+    text = (
+        f"### 📈 前処理後 ARF PCA 解析\n"
+        f"- **前処理レシピ**: {session.preprocessing_recipe}\n"
+        f"- **PCA入力行列の形状**: {tuple(matrix.shape)} (サンプル数 x 特徴量数)\n"
+        f"- **PC1 説明分散比**: {pca_result['explained_variance_ratio'][0]*100:.2f}%\n"
+        f"- **PC2 説明分散比**: {pca_result['explained_variance_ratio'][1]*100:.2f}%\n"
+        f"{plot_block}{loadings_block}"
+    )
+    return [text]
+
+
 @mcp.tool()
 def arf_parser(
     file_path: str | None = None,
