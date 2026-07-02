@@ -222,3 +222,62 @@ def impute(matrix, method="half_min"):
     else:
         raise ValueError(f"unknown imputation method: {method!r}")
     return out, report
+
+
+def preprocess(matrix, sample_names, roles, run_order, recipe):
+    """順序: ブランク除去 → 正規化 → ドリフト補正 → QC RSD フィルタ → 補完。
+
+    列（特徴量）を落とすステップはマスクを蓄積し、最後にまとめて適用する。
+    """
+    matrix = np.asarray(matrix, dtype=float)
+    n_features = matrix.shape[1]
+    keep = np.ones(n_features, dtype=bool)
+    applied: list[str] = []
+    caveats: list[str] = []
+    steps: dict = {}
+
+    if recipe.get("blank_min_fold") is not None:
+        mask, rep = blank_filter(matrix, roles, sample_names, recipe["blank_min_fold"])
+        keep &= mask
+        applied.append("blank_filter")
+        steps["blank_filter"] = rep
+        if "caveat" in rep:
+            caveats.append(rep["caveat"])
+
+    method = recipe.get("normalize", "none")
+    if method != "none":
+        matrix, _, rep = normalize(matrix, method, roles, sample_names)
+        applied.append("normalize")
+        steps["normalize"] = rep
+
+    if recipe.get("drift_correct"):
+        matrix, rep = qc_drift_correct(matrix, roles, sample_names, run_order)
+        applied.append("drift_correct")
+        steps["drift_correct"] = rep
+        if "caveat" in rep:
+            caveats.append(rep["caveat"])
+
+    if recipe.get("max_qc_rsd") is not None:
+        mask, rep = qc_rsd_filter(matrix, roles, sample_names, recipe["max_qc_rsd"])
+        keep &= mask
+        applied.append("qc_rsd_filter")
+        steps["qc_rsd_filter"] = rep
+        if "caveat" in rep:
+            caveats.append(rep["caveat"])
+
+    matrix = matrix[:, keep]
+    kept_idx = list(np.where(keep)[0])
+
+    impute_method = recipe.get("impute", "half_min")
+    matrix, rep = impute(matrix, impute_method)
+    applied.append("impute")
+    steps["impute"] = rep
+
+    report = {
+        "recipe_applied": applied,
+        "steps": steps,
+        "caveats": caveats,
+        "features_before": n_features,
+        "features_after": int(keep.sum()),
+    }
+    return matrix, kept_idx, report

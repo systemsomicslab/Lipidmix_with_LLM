@@ -178,5 +178,24 @@ class TestImpute(unittest.TestCase):
         self.assertTrue((out_cm[:, 1] == 0.0).all())
 
 
+class TestPreprocessOrchestration(unittest.TestCase):
+    def test_recipe_applied_order_and_caveats(self):
+        m = np.array([
+            [100.0, 10.0, 5.0],  # sample
+            [120.0, 90.0, 5.0],  # sample
+            [110.0, 50.0, 5.0],  # qc
+        ])
+        names = ["s1", "s2", "q1"]
+        roles = {"s1": "sample", "s2": "sample", "q1": "qc"}
+        run_order = {"s1": 1, "s2": 2, "q1": 3}
+        recipe = {"normalize": "median", "impute": "half_min",
+                  "drift_correct": True, "max_qc_rsd": 0.30}
+        out, kept_idx, report = pp.preprocess(m, names, roles, run_order, recipe)
+        self.assertIn("normalize", report["recipe_applied"])
+        # drift correction has only 1 QC -> skipped caveat present
+        self.assertTrue(any("ドリフト" in c for c in report["caveats"]))
+        self.assertEqual(out.shape[0], 3)
+
+
 if __name__ == "__main__":
     unittest.main()
