@@ -1551,6 +1551,81 @@ def arf_list_classes() -> str:
     }, ensure_ascii=False, indent=2)
 
 
+def _pp_build_matrix(features, props):
+    from test_arf import build_pca_matrix
+    return build_pca_matrix(features, use_properties=props)
+
+
+@mcp.tool()
+def arf_list_sample_roles() -> str:
+    """ロード済み ARF のサンプルを sample/qc/blank に分類して返す（前処理の適用前確認）。"""
+    if session.filtered_features is None:
+        return json.dumps({"status": "error",
+                           "message": "先に arf_parser で ARF を読み込んでください。"},
+                          ensure_ascii=False, indent=2)
+    _, sample_names, _ = _pp_build_matrix(session.filtered_features, ["height"])
+    meta = _build_sample_meta(sample_names, session.arf_class_index)
+    counts = {"sample": 0, "qc": 0, "blank": 0}
+    for m in meta.values():
+        counts[m["role"]] = counts.get(m["role"], 0) + 1
+    return json.dumps({"status": "success", "counts": counts, "samples": meta},
+                      ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def arf_preprocess(
+    normalize: str = "none",
+    blank_min_fold: float | None = None,
+    drift_correct: bool = False,
+    max_qc_rsd: float | None = None,
+    impute: str = "half_min",
+    props: list[str] | None = None,
+) -> str:
+    """ロード済み ARF 行列に前処理レシピを適用し、session を更新して報告を返す。
+
+    以降の PCA/差次的解析は session.feature_matrix（前処理後）を消費する。
+    """
+    if session.filtered_features is None:
+        return json.dumps({"status": "error",
+                           "message": "先に arf_parser で ARF を読み込んでください。"},
+                          ensure_ascii=False, indent=2)
+    props = props or ["height"]
+    matrix, sample_names, feature_names = _pp_build_matrix(session.filtered_features, props)
+    meta = _build_sample_meta(sample_names, session.arf_class_index)
+    roles = {n: meta[n]["role"] for n in sample_names}
+    run_order = {n: meta[n]["run_order"] for n in sample_names}
+
+    # プールQC が層別（複数 QC サブグループ）かの簡易警告材料
+    qc_batches = {meta[n]["batch"] for n in sample_names if meta[n]["role"] == "qc"}
+
+    recipe = {
+        "normalize": normalize,
+        "blank_min_fold": blank_min_fold,
+        "drift_correct": drift_correct,
+        "max_qc_rsd": max_qc_rsd,
+        "impute": impute,
+        "props": props,
+    }
+    import preprocessing
+    matrix2, kept_idx, report = preprocessing.preprocess(
+        matrix, sample_names, roles, run_order, recipe,
+    )
+    kept_feature_names = [feature_names[i] for i in kept_idx]
+    session.feature_matrix = matrix2
+    session.pp_sample_names = sample_names
+    session.pp_feature_names = kept_feature_names
+    session.sample_meta = meta
+    session.preprocessing_recipe = recipe
+    if len(qc_batches) > 1:
+        report.setdefault("caveats", []).append(
+            "プールQC が複数バッチ/層に分かれています。全体一律のドリフト補正は近似です。"
+        )
+    report["status"] = "success"
+    report["matrix_shape"] = list(matrix2.shape)
+    report["recipe"] = recipe
+    return json.dumps(report, ensure_ascii=False, indent=2)
+
+
 @mcp.tool()
 def arf_parser(
     file_path: str | None = None,
