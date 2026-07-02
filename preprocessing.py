@@ -56,7 +56,12 @@ def _reference_rows(matrix, roles, sample_names):
     return matrix, False
 
 
-def normalize(matrix, method, roles=None, sample_names=None):
+def normalize(
+    matrix,
+    method: str,
+    roles: dict[str, str] | None = None,
+    sample_names: list[str] | None = None,
+):
     """行（サンプル）ごとにスケーリングして測定量の系統差を補正する。
 
     tic=行総和, median=行中央値, pqn=Probabilistic Quotient Normalization
@@ -83,9 +88,10 @@ def normalize(matrix, method, roles=None, sample_names=None):
         raise ValueError(f"unknown normalization method: {method!r}")
 
     factors = np.where((factors == 0) | ~np.isfinite(factors), np.nan, factors)
-    scaled = matrix / factors[:, None]
-    # スケール後の全体水準を保つため参照係数の中央値を掛け戻す（TIC/median 用）
+    # スケール後の全体水準を保つため、TIC/median は除数そのものを参照係数の
+    # 中央値で正規化する（factors が実際に適用した除数と一致するようにする）。
     if method in ("tic", "median"):
-        scaled = scaled * np.nanmedian(factors)
+        factors = factors / np.nanmedian(factors)
+    scaled = matrix / factors[:, None]
     report["factors_finite"] = int(np.isfinite(factors).sum())
     return scaled, factors, report

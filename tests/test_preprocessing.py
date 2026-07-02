@@ -42,12 +42,50 @@ class TestNormalize(unittest.TestCase):
     def test_median_uses_row_median(self):
         m = np.array([[2.0, 4.0], [10.0, 20.0]])
         out, factors, report = pp.normalize(m, "median")
-        self.assertAlmostEqual(factors[0], 3.0)   # median(2,4)=3
-        self.assertAlmostEqual(factors[1], 15.0)  # median(10,20)=15
+        # raw row medians are 3.0 and 15.0; factors is normalized by their
+        # median, but the ratio between rows must be preserved.
+        self.assertAlmostEqual(factors[0] / factors[1], 3.0 / 15.0)
 
     def test_unknown_method_raises(self):
         with self.assertRaises(ValueError):
             pp.normalize(np.zeros((2, 2)), "bogus")
+
+    def test_tic_factors_match_applied_divisor(self):
+        m = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 9.0]])
+        out, factors, report = pp.normalize(m, "tic")
+        np.testing.assert_allclose(out, m / factors[:, None])
+
+    def test_median_factors_match_applied_divisor(self):
+        m = np.array([[2.0, 4.0], [10.0, 20.0], [1.0, 7.0]])
+        out, factors, report = pp.normalize(m, "median")
+        np.testing.assert_allclose(out, m / factors[:, None])
+
+    def test_pqn_uses_qc_reference_when_roles_provided(self):
+        m = np.array([
+            [2.0, 4.0],
+            [4.0, 8.0],
+            [1.0, 2.0],
+        ])
+        sample_names = ["s1_qc", "s2_qc", "s3_sample"]
+        roles = pp.detect_sample_roles(sample_names)
+        out, factors, report = pp.normalize(
+            m, "pqn", roles=roles, sample_names=sample_names
+        )
+        self.assertEqual(report["pqn_reference"], "qc_median")
+
+    def test_pqn_uses_all_sample_reference_without_roles(self):
+        m = np.array([[2.0, 4.0], [4.0, 8.0], [1.0, 2.0]])
+        out, factors, report = pp.normalize(m, "pqn")
+        self.assertEqual(report["pqn_reference"], "all_sample_median")
+
+    def test_pqn_handles_zero_in_reference_row_without_inf_or_crash(self):
+        # column 1's reference (median) is 0.0, which would otherwise cause
+        # a division-by-zero when computing quotients.
+        m = np.array([[2.0, 0.0], [4.0, 0.0], [1.0, 3.0]])
+        out, factors, report = pp.normalize(m, "pqn")
+        # the zero-reference column becomes NaN (not inf), other columns stay finite.
+        self.assertTrue(np.all(np.isfinite(out[:, 0])))
+        self.assertFalse(np.any(np.isinf(out)))
 
 
 if __name__ == "__main__":
