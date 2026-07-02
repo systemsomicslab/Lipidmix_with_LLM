@@ -99,5 +99,34 @@ class AdductConsistencyTests(unittest.TestCase):
         self.assertIsNone(result["polarity_ok"])
 
 
+class ClassTokenTests(unittest.TestCase):
+    def test_extract_class_token_prefers_ontology(self):
+        self.assertEqual(pv.extract_class_token("PC 34:1", "PC"), "pc")
+
+    def test_extract_class_token_falls_back_to_name(self):
+        self.assertEqual(pv.extract_class_token("TG 52:2", ""), "tg")
+
+    def test_extract_class_token_empty(self):
+        self.assertIsNone(pv.extract_class_token("", ""))
+
+    def test_ether_caveat_detected_for_o_prefix(self):
+        caveats = pv.ether_caveats("PE O-38:5", "PE")
+        self.assertTrue(caveats)
+        self.assertIn("P-/O-", caveats[0])
+
+    def test_ether_caveat_detected_for_p_prefix(self):
+        self.assertTrue(pv.ether_caveats("PC P-36:4", "PC"))
+
+    def test_no_ether_caveat_for_diacyl(self):
+        self.assertEqual(pv.ether_caveats("PC 34:1", "PC"), [])
+
+    def test_vocab_hits_match(self):
+        vocab = {"pc": ["phosphatidylcholine"], "tg": ["triacylglycerol"]}
+        self.assertEqual(pv.vocab_hits("pc", vocab), ["phosphatidylcholine"])
+
+    def test_vocab_hits_none_token(self):
+        self.assertEqual(pv.vocab_hits(None, {"pc": ["x"]}), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -179,3 +179,34 @@ def adduct_consistency(adduct, ion_mode, ontology=None) -> dict:
         "class_typical": class_typical,
         "advisory": advisory,
     }
+
+
+_ETHER_RE = re.compile(r"\b[POpo]-")
+
+
+def extract_class_token(name: str | None, ontology: str | None) -> str | None:
+    """脂質クラストークン（小文字）を返す。ontology 優先、無ければ name 先頭語。"""
+    for source in (ontology, name):
+        if source and source.strip():
+            head = source.strip().lower().split()[0]
+            if head:
+                return head
+    return None
+
+
+def ether_caveats(name: str | None, ontology: str | None) -> list[str]:
+    """エーテル脂質（P-/O- 表記）に該当する場合、注意ノートへのリンクを返す。"""
+    text = f"{name or ''} {ontology or ''}"
+    if _ETHER_RE.search(text):
+        return [
+            "エーテル脂質の P-/O- 表記混同に注意（[[pe-p-vs-pe-o-annotation]]）。"
+            "P- は酸化ストレス仮説 [[plasmalogen-oxidation]] に関与するが O- は別物。"
+        ]
+    return []
+
+
+def vocab_hits(class_token: str | None, vocab: dict[str, list[str]]) -> list[str]:
+    """クラストークンに対応する語彙同義語を返す（無ければ空）。"""
+    if not class_token:
+        return []
+    return list(vocab.get(class_token, []))
