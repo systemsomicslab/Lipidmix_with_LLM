@@ -98,6 +98,12 @@ class AdductConsistencyTests(unittest.TestCase):
         self.assertEqual(result["band"], "UNKNOWN")
         self.assertIsNone(result["polarity_ok"])
 
+    def test_unrecognized_ion_mode_is_unknown_not_fail(self):
+        result = pv.adduct_consistency("[M+H]+", "Both", "PC")
+        self.assertEqual(result["band"], "UNKNOWN")
+        self.assertIsNone(result["polarity_ok"])
+        self.assertTrue(result["class_typical"])  # class advisory still computed
+
 
 class ClassTokenTests(unittest.TestCase):
     def test_extract_class_token_prefers_ontology(self):

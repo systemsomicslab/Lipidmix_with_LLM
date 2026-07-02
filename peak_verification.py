@@ -158,8 +158,7 @@ def adduct_consistency(adduct, ion_mode, ontology=None) -> dict:
     mode = str(ion_mode).strip().lower()
     is_positive = mode.startswith("pos")
     is_negative = mode.startswith("neg")
-    polarity_ok = (sign == "+" and is_positive) or (sign == "-" and is_negative)
-    band = "PASS" if polarity_ok else "FAIL"
+    mode_known = is_positive or is_negative
 
     key = _class_key(ontology)
     if key is None:
@@ -172,6 +171,18 @@ def adduct_consistency(adduct, ion_mode, ontology=None) -> dict:
             advisory = f"{key.upper()} で {adduct} は典型的。"
         else:
             advisory = f"{key.upper()} の典型は {', '.join(typical)}（{adduct} は非典型だが誤りとは限らない）。"
+
+    if not mode_known:
+        advisory = advisory + f" （ion_mode={ion_mode!r} が正/負極性として認識できないため極性整合を判定できませんでした。）"
+        return {
+            "polarity_ok": None,
+            "band": "UNKNOWN",
+            "class_typical": class_typical,
+            "advisory": advisory,
+        }
+
+    polarity_ok = (sign == "+" and is_positive) or (sign == "-" and is_negative)
+    band = "PASS" if polarity_ok else "FAIL"
 
     return {
         "polarity_ok": polarity_ok,
