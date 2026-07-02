@@ -48,3 +48,65 @@ def parse_formula(formula: str) -> dict[str, int]:
 def monoisotopic_mass(counts: dict[str, int]) -> float:
     """元素カウントから中性モノアイソトピック質量を返す。未知元素は ``KeyError``。"""
     return sum(ELEMENT_MASSES[element] * n for element, n in counts.items())
+
+
+# --- アダクト表（singly charged; m/z = neutral + delta） ---
+ADDUCT_SHIFTS: dict[str, tuple[str, float]] = {
+    "[M+H]+": ("+", PROTON_MASS),
+    "[M+NH4]+": ("+", 18.03382555),
+    "[M+Na]+": ("+", 22.9892207),
+    "[M-H2O+H]+": ("+", -17.00328823),
+    "[M-H]-": ("-", -1.00727646),
+    "[M+HCOO]-": ("-", 44.99820286),
+    "[M+CH3COO]-": ("-", 59.01385292),
+    "[M+Cl]-": ("-", 34.96940129),
+}
+
+
+def adduct_mz(neutral_mass: float, adduct: str) -> float | None:
+    """中性質量とアダクトから 1価イオンの m/z を返す。未知アダクトは ``None``。"""
+    entry = ADDUCT_SHIFTS.get(adduct)
+    if entry is None:
+        return None
+    return neutral_mass + entry[1]
+
+
+def _band_for_ppm(ppm: float, pass_ppm: float, borderline_ppm: float) -> str:
+    magnitude = abs(ppm)
+    if magnitude <= pass_ppm:
+        return "PASS"
+    if magnitude <= borderline_ppm:
+        return "BORDERLINE"
+    return "FAIL"
+
+
+def mass_error_ppm(
+    observed_mz,
+    formula,
+    adduct,
+    *,
+    pass_ppm: float = 5.0,
+    borderline_ppm: float = 10.0,
+) -> dict:
+    """実測 m/z と 分子式+アダクト の理論 m/z から ppm 誤差と帯を返す。
+
+    分子式/アダクトが欠落・不明・解釈不能なら ``band="UNKNOWN"`` を返し例外は送出しない。
+    """
+    unknown = {"theoretical_mz": None, "ppm": None, "band": "UNKNOWN"}
+    if observed_mz is None or not formula or formula == "Unknown":
+        return unknown
+    if not adduct or adduct == "Unknown":
+        return unknown
+    try:
+        neutral = monoisotopic_mass(parse_formula(formula))
+    except (ValueError, KeyError):
+        return unknown
+    theoretical = adduct_mz(neutral, adduct)
+    if theoretical is None or theoretical == 0:
+        return unknown
+    ppm = (float(observed_mz) - theoretical) / theoretical * 1e6
+    return {
+        "theoretical_mz": round(theoretical, 4),
+        "ppm": round(ppm, 2),
+        "band": _band_for_ppm(ppm, pass_ppm, borderline_ppm),
+    }
