@@ -134,5 +134,27 @@ class TestDriftCorrect(unittest.TestCase):
         self.assertEqual(report["status"], "skipped")
 
 
+class TestQcRsdFilter(unittest.TestCase):
+    def test_high_rsd_feature_removed(self):
+        # col0: stable in QC (keep). col1: highly variable in QC (remove).
+        m = np.array([
+            [100.0, 10.0],   # qc
+            [101.0, 90.0],   # qc
+            [ 99.0, 50.0],   # qc
+            [ 50.0, 40.0],   # sample (ignored for RSD)
+        ])
+        names = ["q1", "q2", "q3", "s1"]
+        roles = {"q1": "qc", "q2": "qc", "q3": "qc", "s1": "sample"}
+        mask, report = pp.qc_rsd_filter(m, roles, names, max_rsd=0.30)
+        self.assertTrue(mask[0])
+        self.assertFalse(mask[1])
+
+    def test_no_qc_keeps_all_with_caveat(self):
+        m = np.array([[1.0, 2.0]])
+        mask, report = pp.qc_rsd_filter(m, {"s1": "sample"}, ["s1"])
+        self.assertTrue(mask.all())
+        self.assertIn("caveat", report)
+
+
 if __name__ == "__main__":
     unittest.main()

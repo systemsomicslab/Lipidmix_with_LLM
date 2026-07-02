@@ -174,3 +174,21 @@ def qc_drift_correct(matrix, roles, sample_names, run_order, min_qc=4, window=5)
             factor = np.where(interp_trend > 0, global_level / interp_trend, 1.0)
         corrected[:, j] = matrix[:, j] * factor
     return corrected, {"status": "applied", "qc_used": int(qc_mask.sum())}
+
+
+def qc_rsd_filter(matrix, roles, sample_names, max_rsd=0.30):
+    """QC 群での相対標準偏差 (SD/mean) が max_rsd を超える特徴量を除去する。"""
+    matrix = np.asarray(matrix, dtype=float)
+    n_features = matrix.shape[1]
+    qc = _rows_for_role(matrix, roles, sample_names, "qc")
+    if qc is None or qc.shape[0] < 2:
+        return np.ones(n_features, dtype=bool), {
+            "removed": 0,
+            "caveat": "QC が無い/不足のため RSD フィルタは未実施。",
+        }
+    mean = np.nanmean(qc, axis=0)
+    sd = np.nanstd(qc, axis=0, ddof=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rsd = np.where(mean > 0, sd / mean, np.inf)
+    keep = rsd <= max_rsd
+    return keep, {"removed": int((~keep).sum()), "max_rsd": max_rsd}
