@@ -88,5 +88,27 @@ class TestNormalize(unittest.TestCase):
         self.assertFalse(np.any(np.isinf(out)))
 
 
+class TestBlankFilter(unittest.TestCase):
+    def test_background_feature_removed(self):
+        # col0: sample >> blank (keep). col1: sample ~ blank (remove).
+        m = np.array([
+            [100.0, 10.0],  # sample
+            [120.0, 11.0],  # sample
+            [5.0, 9.0],     # blank
+        ])
+        roles = {"s1": "sample", "s2": "sample", "b1": "blank"}
+        names = ["s1", "s2", "b1"]
+        mask, report = pp.blank_filter(m, roles, names, min_fold=3.0)
+        self.assertTrue(mask[0])
+        self.assertFalse(mask[1])
+        self.assertEqual(report["removed"], 1)
+
+    def test_no_blank_keeps_all_with_caveat(self):
+        m = np.array([[1.0, 2.0]])
+        mask, report = pp.blank_filter(m, {"s1": "sample"}, ["s1"])
+        self.assertTrue(mask.all())
+        self.assertIn("caveat", report)
+
+
 if __name__ == "__main__":
     unittest.main()

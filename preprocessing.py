@@ -56,6 +56,32 @@ def _reference_rows(matrix, roles, sample_names):
     return matrix, False
 
 
+def _rows_for_role(matrix, roles, sample_names, role):
+    """指定ロールに該当する行のインデックスを抽出し、対応する行部分行列を返す。"""
+    idx = [i for i, n in enumerate(sample_names) if roles.get(n) == role]
+    return matrix[idx] if idx else None
+
+
+def blank_filter(matrix, roles, sample_names, min_fold=3.0):
+    """生体試料平均 < min_fold × ブランク平均 の特徴量を背景として除去する。"""
+    matrix = np.asarray(matrix, dtype=float)
+    n_features = matrix.shape[1]
+    blanks = _rows_for_role(matrix, roles, sample_names, "blank")
+    samples = _rows_for_role(matrix, roles, sample_names, "sample")
+    if blanks is None or samples is None:
+        return np.ones(n_features, dtype=bool), {
+            "removed": 0,
+            "caveat": "ブランクまたは生体試料が無いため背景除去は未実施。",
+        }
+    blank_mean = np.nanmean(blanks, axis=0)
+    sample_mean = np.nanmean(samples, axis=0)
+    # ブランクがゼロの特徴量は常に keep（除算回避）
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(blank_mean > 0, sample_mean / blank_mean, np.inf)
+    keep = ratio >= min_fold
+    return keep, {"removed": int((~keep).sum()), "min_fold": min_fold}
+
+
 def normalize(
     matrix,
     method: str,
