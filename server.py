@@ -19,6 +19,7 @@ import pandas as pd
 import test_arf
 import knowledge_store
 import paper_ingest
+import preprocessing
 from msdial_classes import (
     assign_sample_groups,
     attach_class_ids_to_spots,
@@ -29,6 +30,7 @@ from msdial_tags import (
     attach_tags_to_spots,
     discover_arf_tag_index,
     filter_arf_by_tags,
+    normalize_sample_name,
 )
 from test_arf2 import (
     deserialize,
@@ -676,6 +678,38 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
 
 
 # --- ステート保持クラス ---
+_BATCH_DATE_RE = re.compile(r"(\d{8})")
+
+
+def _build_sample_meta(sample_names, class_index):
+    """サンプル名から role/group/run_order/batch を組み立てる。"""
+    class_ids = {}
+    orders = {}
+    if class_index:
+        by_name = {}
+        for rec in class_index.get("records", []):
+            key = normalize_sample_name(rec.get("file_name"), strip_processing_timestamp=False)
+            if key:
+                by_name[key] = rec
+        for name in sample_names:
+            rec = by_name.get(normalize_sample_name(name, strip_processing_timestamp=False))
+            if rec:
+                class_ids[name] = rec.get("class_id") or ""
+                orders[name] = rec.get("analytical_order")
+    roles = preprocessing.detect_sample_roles(sample_names, class_ids)
+    groups = assign_sample_groups(sample_names, class_index, None)
+    meta = {}
+    for name in sample_names:
+        m = _BATCH_DATE_RE.search(name)
+        meta[name] = {
+            "role": roles.get(name, "sample"),
+            "group": groups.get(name),
+            "run_order": orders.get(name),
+            "batch": m.group(1) if m else None,
+        }
+    return meta
+
+
 class AnalysisSession:
     def __init__(self):
         self.current_file_path = None
@@ -690,6 +724,13 @@ class AnalysisSession:
         self.arf_class_index = None
         self.current_tag_directory = None
         self.last_pca_plot = None  # 直近PCAの描画用データ（save_pca_figure が参照）
+
+        # --- P2a 前処理用の正準行列とサンプルメタ ---
+        self.feature_matrix = None       # 前処理後のサンプル×特徴量行列
+        self.pp_sample_names = None
+        self.pp_feature_names = None
+        self.sample_meta = {}            # {sample_name: {role, group, run_order, batch}}
+        self.preprocessing_recipe = {}   # 直近適用した前処理レシピ（空=未適用）
 
     def apply_filter(self, filter_params: dict | None = None):
         """現データに対して動的にフィルタを適用する。"""
