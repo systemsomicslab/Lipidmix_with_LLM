@@ -34,5 +34,26 @@ class TestArfDifferential(unittest.TestCase):
         self.assertTrue(any("バッチ" in c or "交絡" in c for c in out["caveats"]))
 
 
+class TestSaveVolcano(unittest.TestCase):
+    def setUp(self):
+        server.session = server.AnalysisSession()
+
+    def test_requires_last_differential(self):
+        out = server.save_volcano_figure("A1")
+        self.assertIn("error", out.lower())
+
+    def test_writes_png(self):
+        server.session.last_differential = {
+            "kind": "two_group", "a": "A", "b": "B",
+            "volcano": [
+                {"feature": "f0", "log2fc": 2.0, "neg_log10_p": 3.0, "sig": "up"},
+                {"feature": "f1", "log2fc": -2.0, "neg_log10_p": 3.0, "sig": "down"},
+                {"feature": "f2", "log2fc": 0.0, "neg_log10_p": 0.1, "sig": "ns"},
+            ],
+        }
+        rel = server.save_volcano_figure("A1")
+        self.assertIn("volcano", rel)
+
+
 if __name__ == "__main__":
     unittest.main()

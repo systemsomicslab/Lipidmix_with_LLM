@@ -568,3 +568,28 @@ QC/ブランク/注入順のいずれかが欠けているためにスキップ�
 ### 11.4 `arf_pca_preprocessed()`
 
 前処理後行列が無い（`session.feature_matrix is None`）場合はエラーメッセージ1件を返す。あれば `test_arf.run_pca` でPCAを実行し、`arf_parser`/`arf_re_pca` と同じ整形ヘルパー（スコアプロット用JSON、Loadings上位）を使って結果を返す。出力テキストの構造・キー意味は8.1節のスコアプロット用JSONと同一。既定の `arf_parser`/`arf_re_pca` 経路とは完全に独立しており、`arf_preprocess()` を実行しない限り既存の解析結果には影響しない。
+
+## 12. 差次的解析（P2b）
+
+`differential.py`（MCP非依存の純ロジック層）と `server.py` の `arf_differential()` / `save_volcano_figure()` が、前処理後のサンプル×特徴量行列に対する群間比較を担う。既定挙動・既存ツールは不変で、明示呼び出し時のみ作用する。
+
+### 12.1 群ラベルの由来
+
+群ラベルは `session.sample_meta[<sample>]["group"]`（ファイル名由来の factor トークン / Class ID 機構、`msdial_classes.assign_sample_groups`）から取得する。バッチは同 `sample_meta` の `batch`（ファイル名中の8桁日付）。`arf_differential()` は `session.feature_matrix`（前処理後行列）を消費し、無ければエラーを返す（先に `arf_preprocess()` が必要）。
+
+### 12.2 統計
+
+- **2群比較**（`group_a` と `group_b` を指定）: 特徴量ごとに Welch t 検定（等分散を仮定しない）と log2 fold change を計算する。`log2fc = log2((mean_a + 擬似カウント) / (mean_b + 擬似カウント))`（**正=群Aで高い**、擬似カウント既定1.0でゼロ割回避）。小n・分散0・全欠損は `p=NaN`。
+- **一元配置ANOVA**（`group_factor` のみ指定）: その factor の全水準で特徴量ごとに F 統計量と p 値を計算する（3群以上）。
+- **多重検定補正**: いずれも Benjamini-Hochberg で `p → q`（FDR）を付与（NaN は補正から除外し位置は保持）。p値は scipy があれば正確（無ければ近似フォールバック）。
+- **volcano**: 2群比較のみ。各点は `feature` / `log2fc` / `neg_log10_p` / `sig`（`up`=q≤閾値かつlog2fc≥+閾値 / `down`=q≤閾値かつlog2fc≤−閾値 / `ns`）。`save_volcano_figure(analysis_id, title=None)` が直近結果を `reports/figures/<analysis_id>_volcano.png` に描画する。
+
+### 12.3 必須caveat
+
+`arf_differential()` の応答 `caveats` には、該当時に以下を前景化する（無言で握りつぶさない）:
+
+1. **交絡（群⟂バッチ）**: 各群が単一バッチに偏る場合、「処理効果と測定バッチを分離できない」旨を警告（`check_confounding`）。例: `2_lipidome_lcms/NEG` は control/LPS=20220901・ILG/G_uralensis=20220902 で交絡。
+2. **正規化状態**: `session.preprocessing_recipe` に正規化が含まれなければ「未正規化データの log2FC は測定量差を含み得る」と警告。
+3. **小n**: いずれかの群の反復数が4未満なら検出力の限界を注記。
+
+LLMはこれらを解釈結果・報告書の注意点として必ず引用すること。統計値は「事実」だが、交絡・小nの下での因果的解釈は保留し、人間の判断に委ねる（既存の分業に整合）。

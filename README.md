@@ -168,6 +168,7 @@ Available MCP tools include:
 - `arf_list_sample_roles()` - Classify the cached ARF's samples into `sample`/`qc`/`blank` roles (from filename and Class ID tokens) before applying any preprocessing.
 - `arf_preprocess(normalize="none", blank_min_fold=None, drift_correct=False, max_qc_rsd=None, impute="half_min", props=None)` - Apply an opt-in QC/normalization/imputation recipe to the loaded ARF matrix and cache the result as `session.feature_matrix` for downstream PCA/differential analysis.
 - `arf_pca_preprocessed(components=None, top_features=10, log_transform=False, group_levels=None)` - Run PCA on the preprocessed matrix produced by `arf_preprocess` (independent of the raw-matrix `arf_parser`/`arf_re_pca` path).
+- `arf_differential(group_factor=None, group_a=None, group_b=None, q_threshold=0.05, log2fc_threshold=1.0)` - Differential analysis over the preprocessed matrix: two-group Welch t-test + log2 fold change when `group_a`/`group_b` are given, else one-way ANOVA over `group_factor` levels. Adds BH-FDR, volcano points, and mandatory caveats (group⟂batch confounding, small n, normalization status).
 - `arf2_parser(file_path=None)` - Parse and summarize `.arf2`.
 - `eicaef_parser(file_path=None)` - Parse and summarize `.EIC.aef`.
 - `eicaef_top_peak_tops(file_path=None, top_n=20)` - Return EIC spots ranked by peak-top intensity.
@@ -190,6 +191,7 @@ Analysis/interpretation report recording:
 - `read_report(analysis_id)` - Read back a past report (analysis folder then fallback) for session continuity.
 - `list_reports()` - One-line index (analysis_id / date / status) of existing reports.
 - `save_pca_figure(analysis_id, title=None)` - Render the latest session PCA result to `reports/figures/<analysis_id>_pca.png` and return a relative path to embed in the report body as `![PCA](figures/<analysis_id>_pca.png)`.
+- `save_volcano_figure(analysis_id, title=None)` - Render the latest two-group differential result (`arf_differential`) as a volcano plot to `reports/figures/<analysis_id>_volcano.png` and return a relative path to embed as `![volcano](figures/<analysis_id>_volcano.png)`.
 
 The server also exposes MCP **resources**: `lipidmix://docs/output-format` (authoritative parser output reference), `lipidmix://knowledge/index` and `lipidmix://playbook/index` (dynamic, one line per note), `lipidmix://{knowledge,playbook}/expand/{slug}` (a note plus its 1-hop `[[link]]` neighbors within a structural budget), and `lipidmix://knowledge/inbox` (pending discovery notes awaiting review).
 
