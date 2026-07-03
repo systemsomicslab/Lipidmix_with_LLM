@@ -21,6 +21,7 @@ import knowledge_store
 import paper_ingest
 import preprocessing
 import differential
+import lipid_identity
 from msdial_classes import (
     assign_sample_groups,
     attach_class_ids_to_spots,
@@ -1232,6 +1233,17 @@ def pai2_inspect_metabolite_details(metabolite_id: str | None = None, metabolite
     return json.dumps(details, indent=2, ensure_ascii=False)
 
 
+_IDENTITY_TABLES = None
+
+
+def _identity_tables():
+    """同梱の RefMet/LIPID MAPS 対応表を1回だけ読み込みキャッシュする。"""
+    global _IDENTITY_TABLES
+    if _IDENTITY_TABLES is None:
+        _IDENTITY_TABLES = lipid_identity.load_reference_tables()
+    return _IDENTITY_TABLES
+
+
 def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
     """1 feature の検証ドシエを組み立てる（決定的チェック + 生物学的妥当性の材料）。"""
     name = feat.get("name") or ""
@@ -1273,6 +1285,12 @@ def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
         }
         instruction = "アノテーションが無いため分析化学的事実のみで判断せよ。"
 
+    identity_block = lipid_identity.build_identity_block(
+        feat, _identity_tables(),
+        mass_error_band=mass_error["band"],
+        adduct_band=adduct_check["band"],
+    )
+
     return {
         "status": "success",
         "identity": {
@@ -1291,6 +1309,7 @@ def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
             "adduct_consistency": adduct_check,
         },
         "biological_plausibility": bio,
+        "identity_normalization": identity_block,
         "llm_decision": {
             "instruction": instruction,
             "deterministic_summary": (
@@ -2135,6 +2154,40 @@ def arf2_parser(file_path: str | None = None) -> list:
         import traceback
         return [f"ARF2解析中にエラーが発生しました: {str(e)}\n{traceback.format_exc()}"]
 
+
+@mcp.tool()
+def arf2_annotate_identities(file_path: str | None = None, max_rows: int = 50) -> str:
+    """指定/自動解決の ARF2 スポット注釈を GOSLIN 正規化・RefMet/LIPID MAPS ID・
+    MSI レベルで一括標準化して返す（オフライン、上位 max_rows 件）。
+
+    ARF2 には MS/MS 取得フラグ・精密質量誤差が無いため、MSI は保守的にクラス上限で
+    評価する（`has_msms=False`, バンドは UNKNOWN）。より確度の高い MSI 評価は個別ピークの
+    `verify_peak_annotation`（精密質量・アダクト整合を含むドシエ）を参照。
+    """
+    path = resolve_arf2_file_path(file_path)
+    if not path:
+        return json.dumps({"status": "error", "message": ".arf2 が見つかりません。"},
+                          ensure_ascii=False, indent=2)
+    from test_arf2 import deserialize as arf2_deserialize
+    with open(path, "rb") as fh:
+        spots = arf2_deserialize(io.BytesIO(fh.read()))
+    tables = _identity_tables()
+    rows = []
+    for spot in spots[:max_rows]:
+        raw_name = spot.get("Name") or ""
+        name = "" if raw_name.strip().lower() == "unknown" else raw_name
+        feat = {"name": name, "ontology": spot.get("Ontology") or "",
+                "has_msms": False}
+        # ARF2 に MS/MS 取得フラグは無いため has_msms=False（MSI は保守的にクラス上限）
+        block = lipid_identity.build_identity_block(
+            feat, tables, mass_error_band="UNKNOWN", adduct_band="UNKNOWN")
+        rows.append({"MasterAlignmentID": spot.get("MasterAlignmentID"),
+                     "name": feat["name"], "normalized": block["goslin"]["normalized"],
+                     "refmet": block["reference"]["refmet_name"],
+                     "lipid_maps_category": block["reference"]["lipid_maps_category"],
+                     "msi_level": block["msi"]["level"]})
+    return json.dumps({"status": "success", "count": len(rows), "rows": rows},
+                      ensure_ascii=False, indent=2)
 
 
 @mcp.tool()

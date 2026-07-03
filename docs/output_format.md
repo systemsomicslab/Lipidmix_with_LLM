@@ -593,3 +593,35 @@ QC/ブランク/注入順のいずれかが欠けているためにスキップ�
 3. **小n**: いずれかの群の反復数が4未満なら検出力の限界を注記。
 
 LLMはこれらを解釈結果・報告書の注意点として必ず引用すること。統計値は「事実」だが、交絡・小nの下での因果的解釈は保留し、人間の判断に委ねる（既存の分業に整合）。
+
+## 13. 同定信頼度・標準化（P2c）
+
+`lipid_identity.py`（MCP非依存の純ロジック層、**完全オフライン**）と `peak_verification.py` の拡張が、脂質同定名の標準化と信頼度レベルの推定を担う。外部識別子の取得はネットワークを一切使わず、`pygoslin`（同梱・純Python）と同梱 TSV 表のみで行う。既存ツール・既定挙動・`verify_peak_annotation` の既存キーは不変で、新データは新ブロックに追加する。
+
+### 13.1 GOSLIN 名正規化（`normalize_lipid_name`）
+
+`pygoslin` で脂質ショートハンド名を正規化し、`normalized`（正規化名）/ `level`（構造レベル: SPECIES/MOLECULAR_SPECIES など）/ `lipid_maps_category` / `parse_ok`（失敗時 False＋`error`）を返す。`pygoslin` 未導入や解析不能でも例外を投げず `parse_ok=False` を返す（グレースフルデグレード）。
+
+**プラズマローゲン注意**: pygoslin は species レベルで `PC P-34:0` を `PC O-34:1` に**同一化**する（P-/O- エーテルの曖昧性）。P- と O- を区別したい場合は正規化名ではなく `peak_verification.ether_caveats()` の caveat（[[pe-p-vs-pe-o-annotation]] / [[plasmalogen-oxidation]] に直結）に依拠すること。
+
+### 13.2 同梱マッピング表（`load_reference_tables` / `map_to_reference`）
+
+`reference/lipidmaps_classes.tsv`（クラス→LIPID MAPS カテゴリ/メインクラス）と `reference/refmet_map.tsv`（クラス→RefMet 名）は**キュレート済みの部分集合**（一般的な脂質クラスを網羅）。クラストークンで写像し、`matched`（bool）/ `lipid_maps_category` / `lipid_maps_main_class` / `refmet_name` / `caveat` を返す。表に無いクラスは `matched=False`＋caveat「同梱マッピング表に無いため ID 未付与」を返し、**推測はしない**。
+
+### 13.3 MSI レベル推定（`msi_level`、ヒューリスティック）
+
+決定論的シグナル（名称の有無・MS/MS取得・精密質量誤差バンド・アダクト整合バンド）を組み合わせて MSI 同定信頼度を推定する。`level`（2/3/4）/ `label` / `rationale` / `heuristic=True` を返す。
+
+- **Level 2**（putative annotated compound）: 名称あり＋MS/MS取得＋精密質量整合（PASS）＋アダクト非FAIL。
+- **Level 3**（putative class-level）: クラス（ontology）は判別できるが上記を満たさない。
+- **Level 4**（unknown）: 名称・クラスとも無し。
+- **Level 1（標準品照合）は決して主張しない**。返り値の `heuristic=True` が示すとおり、これは決定論的推定であって同定の確定ではない。
+
+### 13.4 統合ツール
+
+- `verify_peak_annotation` のドシエに `identity_normalization` ブロック（`goslin` / `reference` / `msi` / `class_token`）を追加。既存の `analytical_checks`（精密質量誤差・アダクト整合）から算出したバンドを MSI 推定に流用する（質量・アダクトロジックの二重化を回避）。
+- `arf2_annotate_identities(file_path=None, max_rows=50)`: ARF2 スポットカタログの注釈を一括で正規化・ID/レベル付与し、上位 `max_rows` 件を返す。**ARF2 には MS/MS 取得フラグ・精密質量誤差が無いため MSI は保守的にクラス上限で評価**（`has_msms=False`、バンド UNKNOWN）。より確度の高い MSI 評価は個別ピークの `verify_peak_annotation` を用いること。
+
+### 13.5 アダクト/元素表の拡張（`peak_verification.py`）
+
+`ADDUCT_SHIFTS` を `(sign, shift, charge, n_mol)` の4タプル化し、多量体 `[2M-H]-`・多価 `[M-2H]2-`・`[M+FA-H]-`（`[M+HCOO]-` の別名）を追加。`adduct_mz` は `m/z = (n_mol×neutral + shift) / charge` で多量体・多価に対応する（既存1価アダクトの数値挙動は不変）。元素表に D(²H)/F/Br/¹³C を追加（標識・ハロゲン対応）。CCS/RT 参照照合・同位体パターン照合は参照表未同梱のため v1 対象外。

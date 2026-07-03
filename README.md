@@ -170,6 +170,7 @@ Available MCP tools include:
 - `arf_pca_preprocessed(components=None, top_features=10, log_transform=False, group_levels=None)` - Run PCA on the preprocessed matrix produced by `arf_preprocess` (independent of the raw-matrix `arf_parser`/`arf_re_pca` path).
 - `arf_differential(group_factor=None, group_a=None, group_b=None, q_threshold=0.05, log2fc_threshold=1.0)` - Differential analysis over the preprocessed matrix: two-group Welch t-test + log2 fold change when `group_a`/`group_b` are given, else one-way ANOVA over `group_factor` levels. Adds BH-FDR, volcano points, and mandatory caveats (group⟂batch confounding, small n, normalization status).
 - `arf2_parser(file_path=None)` - Parse and summarize `.arf2`.
+- `arf2_annotate_identities(file_path=None, max_rows=50)` - Offline identity standardization for the ARF2 spot catalog: GOSLIN-normalized name, bundled RefMet name / LIPID MAPS category, and a conservative MSI level per spot. (`verify_peak_annotation` also gains an `identity_normalization` block combining GOSLIN + reference mapping + an MSI-level heuristic that never asserts Level 1.)
 - `eicaef_parser(file_path=None)` - Parse and summarize `.EIC.aef`.
 - `eicaef_top_peak_tops(file_path=None, top_n=20)` - Return EIC spots ranked by peak-top intensity.
 - `eicaef_search_by_mz_range(file_path=None, min_mz=0.0, max_mz=1000.0, max_results=20)` - Search EIC spots by m/z range.
