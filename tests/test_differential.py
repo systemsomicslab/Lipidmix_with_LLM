@@ -58,5 +58,27 @@ class TestAnova(unittest.TestCase):
         self.assertEqual(res[0]["n_groups"], 3)
 
 
+class TestVolcanoAndConfound(unittest.TestCase):
+    def test_add_fdr_and_volcano_flags(self):
+        results = [
+            {"feature": "f0", "log2fc": 2.0, "p": 0.001, "mean_a": 4, "mean_b": 1},
+            {"feature": "f1", "log2fc": -3.0, "p": 0.002, "mean_a": 1, "mean_b": 8},
+            {"feature": "f2", "log2fc": 0.1, "p": 0.9, "mean_a": 1, "mean_b": 1},
+        ]
+        withq = diff.add_fdr(results)
+        self.assertIn("q", withq[0])
+        pts = diff.volcano_data(withq, q_thr=0.05, log2fc_thr=1.0)
+        flags = {p["feature"]: p["sig"] for p in pts}
+        self.assertEqual(flags["f0"], "up")
+        self.assertEqual(flags["f1"], "down")
+        self.assertEqual(flags["f2"], "ns")
+
+    def test_confounding_detected(self):
+        groups = ["ctrl", "ctrl", "trt", "trt"]
+        batches = ["d1", "d1", "d2", "d2"]  # group perfectly aligns with batch
+        out = diff.check_confounding(groups, batches)
+        self.assertTrue(out["confounded"])
+
+
 if __name__ == "__main__":
     unittest.main()

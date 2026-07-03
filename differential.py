@@ -123,3 +123,64 @@ def one_way_anova(matrix, feature_names, group_labels):
         f, p, k = _one_way_f(groups)
         results.append({"feature": name, "F": f, "p": p, "n_groups": k})
     return results
+
+
+def add_fdr(results):
+    """results の p 列に BH-FDR を適用し、各要素に q を付与する。"""
+    qs = bh_fdr([r["p"] for r in results])
+    for r, q in zip(results, qs):
+        r["q"] = q
+    return results
+
+
+def volcano_data(results, q_thr=0.05, log2fc_thr=1.0):
+    """volcano 用の点列（log2fc, -log10 p, 有意フラグ up/down/ns）を返す。"""
+    points = []
+    for r in results:
+        p = r.get("p")
+        q = r.get("q", p)
+        fc = r.get("log2fc")
+        neg_log10_p = (-math.log10(p)) if (p is not None and math.isfinite(p) and p > 0) else math.nan
+        sig = "ns"
+        if q is not None and math.isfinite(q) and q <= q_thr and fc is not None and math.isfinite(fc):
+            if fc >= log2fc_thr:
+                sig = "up"
+            elif fc <= -log2fc_thr:
+                sig = "down"
+        points.append({"feature": r["feature"], "log2fc": fc,
+                       "neg_log10_p": neg_log10_p, "sig": sig})
+    return points
+
+
+def check_confounding(group_labels, batch_labels):
+    """各群が単一バッチに偏るか（群 ⟂ バッチの交絡）を判定する。"""
+    if not batch_labels or all(b is None for b in batch_labels):
+        return {"confounded": False, "detail": "バッチ情報が無いため交絡判定不可。"}
+    by_group: dict[str, set] = {}
+    for g, b in zip(group_labels, batch_labels):
+        by_group.setdefault(g, set()).add(b)
+    single = {g: next(iter(bs)) for g, bs in by_group.items() if len(bs) == 1}
+    confounded = len(single) == len(by_group) and len(set(single.values())) > 1
+    if confounded:
+        detail = "各群が単一バッチに対応し、処理効果と測定バッチを分離できません: " + \
+                 ", ".join(f"{g}->{b}" for g, b in single.items())
+    else:
+        detail = "群とバッチは交絡していません（または部分的）。"
+    return {"confounded": confounded, "detail": detail}
+
+
+def summarize_two_group(results, q_thr=0.05, log2fc_thr=1.0, top_n=15):
+    """2群比較結果の有意 up/down 件数と上位特徴量を要約する。"""
+    tested = [r for r in results if r.get("p") is not None and math.isfinite(r["p"])]
+
+    def is_sig(r):
+        q = r.get("q", r.get("p"))
+        return q is not None and math.isfinite(q) and q <= q_thr and \
+            r.get("log2fc") is not None and abs(r["log2fc"]) >= log2fc_thr
+
+    sig = [r for r in tested if is_sig(r)]
+    n_up = sum(1 for r in sig if r["log2fc"] >= log2fc_thr)
+    n_down = sum(1 for r in sig if r["log2fc"] <= -log2fc_thr)
+    top = sorted(sig, key=lambda r: r.get("q", r.get("p", 1.0)))[:top_n]
+    return {"n_tested": len(tested), "n_significant": len(sig),
+            "n_up": n_up, "n_down": n_down, "top": top}
