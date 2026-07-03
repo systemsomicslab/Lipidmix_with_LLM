@@ -80,3 +80,46 @@ def two_group_test(matrix, feature_names, group_labels, group_a, group_b,
             "log2fc": fc, "t": t, "p": p,
         })
     return results
+
+
+def _one_way_f(groups):
+    """一元配置 ANOVA の F 統計量と p 値（scipy があれば使用）。"""
+    groups = [g[np.isfinite(g)] for g in groups]
+    groups = [g for g in groups if g.size >= 2]
+    k = len(groups)
+    if k < 2:
+        return math.nan, math.nan, k
+    grand = np.concatenate(groups)
+    n = grand.size
+    grand_mean = grand.mean()
+    ss_between = sum(g.size * (g.mean() - grand_mean) ** 2 for g in groups)
+    ss_within = sum(((g - g.mean()) ** 2).sum() for g in groups)
+    df_b, df_w = k - 1, n - k
+    if df_w <= 0 or ss_within == 0:
+        return math.nan, math.nan, k
+    f = (ss_between / df_b) / (ss_within / df_w)
+    try:
+        from scipy import stats
+        p = stats.f.sf(f, df_b, df_w)
+    except Exception:
+        # 近似フォールバック: F を chi2 近似（df_b * F ~ chi2(df_b)）
+        x = df_b * f
+        # 生存関数の粗い近似（df_b<=~6 で妥当）。scipy 推奨。
+        p = math.exp(-x / 2.0) * sum((x / 2.0) ** i / math.factorial(i)
+                                     for i in range(int(df_b // 2) + 1))
+        p = min(max(p, 0.0), 1.0)
+    return f, p, k
+
+
+def one_way_anova(matrix, feature_names, group_labels):
+    """factor の全水準について特徴量ごとに一元配置 ANOVA を実行する。"""
+    matrix = np.asarray(matrix, dtype=float)
+    labels = np.asarray(group_labels)
+    levels = [lv for lv in sorted(set(labels.tolist())) if lv is not None]
+    results = []
+    for j, name in enumerate(feature_names):
+        col = matrix[:, j]
+        groups = [col[labels == lv] for lv in levels]
+        f, p, k = _one_way_f(groups)
+        results.append({"feature": name, "F": f, "p": p, "n_groups": k})
+    return results

@@ -45,5 +45,18 @@ class TestTwoGroup(unittest.TestCase):
         self.assertTrue(math.isnan(res[0]["p"]))
 
 
+class TestAnova(unittest.TestCase):
+    def test_three_group_difference(self):
+        matrix = np.array([
+            [1.0], [1.1], [0.9],     # G1
+            [5.0], [5.1], [4.9],     # G2
+            [9.0], [9.2], [8.8],     # G3
+        ])
+        labels = ["G1"] * 3 + ["G2"] * 3 + ["G3"] * 3
+        res = diff.one_way_anova(matrix, ["f0"], labels)
+        self.assertLess(res[0]["p"], 0.01)
+        self.assertEqual(res[0]["n_groups"], 3)
+
+
 if __name__ == "__main__":
     unittest.main()
