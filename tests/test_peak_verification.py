@@ -134,6 +134,28 @@ class ClassTokenTests(unittest.TestCase):
         self.assertEqual(pv.vocab_hits(None, {"pc": ["x"]}), [])
 
 
+class TestExpandedTables(unittest.TestCase):
+    def test_dimer_adduct_mz(self):
+        # [2M-H]- : (2*neutral - proton) / 1
+        neutral = 100.0
+        mz = pv.adduct_mz(neutral, "[2M-H]-")
+        self.assertAlmostEqual(mz, 2 * 100.0 - pv.PROTON_MASS, places=4)
+
+    def test_doubly_charged_divides(self):
+        neutral = 800.0
+        mz = pv.adduct_mz(neutral, "[M-2H]2-")
+        self.assertAlmostEqual(mz, (800.0 - 2 * pv.PROTON_MASS) / 2, places=4)
+
+    def test_new_elements_present(self):
+        for el in ("D", "F", "Br", "C13"):
+            self.assertIn(el, pv.ELEMENT_MASSES)
+
+    def test_singly_charged_unchanged(self):
+        # 既存の1価挙動が数値的に不変であることを保証。
+        self.assertAlmostEqual(pv.adduct_mz(500.0, "[M+H]+"), 500.0 + pv.PROTON_MASS, places=6)
+        self.assertAlmostEqual(pv.adduct_mz(500.0, "[M+HCOO]-"), 500.0 + 44.99820286, places=6)
+
+
 import json
 import tempfile
 from pathlib import Path

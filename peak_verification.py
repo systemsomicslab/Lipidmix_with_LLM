@@ -23,6 +23,10 @@ ELEMENT_MASSES: dict[str, float] = {
     "Na": 22.98976928,
     "Cl": 34.96885271,
     "K": 38.9637069,
+    "D": 2.0141017779,
+    "F": 18.9984031627,
+    "Br": 78.9183376,
+    "C13": 13.0033548378,
 }
 
 _FORMULA_TOKEN_RE = re.compile(r"([A-Z][a-z]?)(\d*)")
@@ -50,25 +54,33 @@ def monoisotopic_mass(counts: dict[str, int]) -> float:
     return sum(ELEMENT_MASSES[element] * n for element, n in counts.items())
 
 
-# --- アダクト表（singly charged; m/z = neutral + delta） ---
-ADDUCT_SHIFTS: dict[str, tuple[str, float]] = {
-    "[M+H]+": ("+", PROTON_MASS),
-    "[M+NH4]+": ("+", 18.03382555),
-    "[M+Na]+": ("+", 22.9892207),
-    "[M-H2O+H]+": ("+", -17.00328823),
-    "[M-H]-": ("-", -1.00727646),
-    "[M+HCOO]-": ("-", 44.99820286),
-    "[M+CH3COO]-": ("-", 59.01385292),
-    "[M+Cl]-": ("-", 34.96940129),
+# --- アダクト表（(sign, shift, charge, n_mol); m/z = (n_mol*neutral + shift) / charge） ---
+# sign はインデックス0のまま（adduct_consistency が entry[0] を参照）。多量体・多価に対応。
+ADDUCT_SHIFTS: dict[str, tuple[str, float, int, int]] = {
+    "[M+H]+": ("+", PROTON_MASS, 1, 1),
+    "[M+NH4]+": ("+", 18.03382555, 1, 1),
+    "[M+Na]+": ("+", 22.9892207, 1, 1),
+    "[M-H2O+H]+": ("+", -17.00328823, 1, 1),
+    "[M-H]-": ("-", -1.00727646, 1, 1),
+    "[M+HCOO]-": ("-", 44.99820286, 1, 1),
+    "[M+FA-H]-": ("-", 44.99820286, 1, 1),  # [M+HCOO]- の別名
+    "[M+CH3COO]-": ("-", 59.01385292, 1, 1),
+    "[M+Cl]-": ("-", 34.96940129, 1, 1),
+    "[2M-H]-": ("-", -1.00727646, 1, 2),
+    "[M-2H]2-": ("-", -2 * PROTON_MASS, 2, 1),
 }
 
 
 def adduct_mz(neutral_mass: float, adduct: str) -> float | None:
-    """中性質量とアダクトから 1価イオンの m/z を返す。未知アダクトは ``None``。"""
+    """中性質量とアダクトから観測 m/z を返す。未知アダクトは ``None``。
+
+    m/z = (n_mol * neutral + shift) / charge。多量体（[2M-H]-）・多価（[M-2H]2-）に対応。
+    """
     entry = ADDUCT_SHIFTS.get(adduct)
     if entry is None:
         return None
-    return neutral_mass + entry[1]
+    sign, shift, charge, n_mol = entry
+    return (n_mol * neutral_mass + shift) / charge
 
 
 def _band_for_ppm(ppm: float, pass_ppm: float, borderline_ppm: float) -> str:
