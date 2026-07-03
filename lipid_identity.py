@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import peak_verification as pv
+
 
 def normalize_lipid_name(name: str) -> dict:
     """脂質ショートハンド名を GOSLIN で正規化する（オフライン）。
@@ -112,3 +114,22 @@ def msi_level(*, name, ontology, has_msms, mass_error_band, adduct_band) -> dict
                 "heuristic": True}
     return {"level": 4, "label": "unknown",
             "rationale": "名称・クラスとも無し。", "heuristic": True}
+
+
+def build_identity_block(feature, tables, *, mass_error_band, adduct_band):
+    """1 feature の同定標準化ブロック（GOSLIN + reference + MSI）を組み立てる。
+
+    feature は pai2/arf2 のキー name / ontology / has_msms を用いる。
+    """
+    name = feature.get("name") or ""
+    ontology = feature.get("ontology") or ""
+    has_msms = bool(feature.get("has_msms"))
+    class_token = pv.extract_class_token(name, ontology)
+    goslin = normalize_lipid_name(name) if name.strip() else {
+        "parse_ok": False, "normalized": None, "level": None,
+        "lipid_maps_category": None, "error": "no name"}
+    reference = map_to_reference(class_token, tables)
+    msi = msi_level(name=name, ontology=ontology, has_msms=has_msms,
+                    mass_error_band=mass_error_band, adduct_band=adduct_band)
+    return {"class_token": class_token, "goslin": goslin,
+            "reference": reference, "msi": msi}

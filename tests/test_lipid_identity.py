@@ -67,5 +67,18 @@ class TestMsiLevel(unittest.TestCase):
         self.assertNotEqual(out["level"], 1)
 
 
+class TestIdentityBlock(unittest.TestCase):
+    def test_block_has_all_sections(self):
+        tables = li.load_reference_tables("reference")
+        feat = {"name": "PC 34:1", "ontology": "PC", "has_msms": True}
+        block = li.build_identity_block(feat, tables,
+                                        mass_error_band="PASS", adduct_band="PASS")
+        self.assertIn("goslin", block)
+        self.assertIn("reference", block)
+        self.assertIn("msi", block)
+        self.assertEqual(block["msi"]["level"], 2)
+        self.assertTrue(block["reference"]["matched"])
+
+
 if __name__ == "__main__":
     unittest.main()
