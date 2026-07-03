@@ -29,5 +29,20 @@ class TestNormalizeLipidName(unittest.TestCase):
         self.assertIsNotNone(out.get("error"))
 
 
+class TestReferenceMapping(unittest.TestCase):
+    def setUp(self):
+        self.tables = li.load_reference_tables("reference")
+
+    def test_known_class_maps(self):
+        out = li.map_to_reference("pc", self.tables)
+        self.assertTrue(out["matched"])
+        self.assertEqual(out["lipid_maps_category"], "GP")
+
+    def test_unknown_class_has_caveat(self):
+        out = li.map_to_reference("zzz", self.tables)
+        self.assertFalse(out["matched"])
+        self.assertIsNotNone(out["caveat"])
+
+
 if __name__ == "__main__":
     unittest.main()

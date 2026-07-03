@@ -1,0 +1,17 @@
+class_token	lipid_maps_category	lipid_maps_main_class
+fa	FA	Fatty Acids and Conjugates
+pc	GP	Glycerophosphocholines
+lpc	GP	Glycerophosphocholines
+pe	GP	Glycerophosphoethanolamines
+lpe	GP	Glycerophosphoethanolamines
+pg	GP	Glycerophosphoglycerols
+pi	GP	Glycerophosphoinositols
+ps	GP	Glycerophosphoserines
+tg	GL	Triradylglycerols
+dg	GL	Diradylglycerols
+mg	GL	Monoradylglycerols
+cer	SP	Ceramides
+sm	SP	Phosphosphingolipids
+hexcer	SP	Neutral glycosphingolipids
+ce	ST	Sterol esters
+che	ST	Sterol esters
