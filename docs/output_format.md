@@ -563,7 +563,13 @@ DCLパーサーは現時点で独立したMCPツールとして公開されて�
 
 ### 11.3 caveatの扱い
 
-QC/ブランク/注入順のいずれかが欠けているためにスキップされたステップは、無言で無視されるのではなく `report["caveats"]`（`arf_preprocess()` のJSON応答）に文言として残る（例:「注入順が欠落、または QC が不足のためドリフト補正は未実施。」）。プールQCが複数バッチ/層に分かれている場合も、全体一律のドリフト補正が近似である旨の追加caveatが付く。LLMはこれらのcaveatを解釈結果や報告書の注意点として引用すべきである。
+QC/ブランク/注入順のいずれかが欠けているためにスキップされたステップは、無言で無視されるのではなく `report["caveats"]`（`arf_preprocess()` のJSON応答）に文言として残る（例:「注入順が欠落、または QC が不足のためドリフト補正は未実施。」）。LLMはこれらのcaveatを解釈結果や報告書の注意点として引用すべきである。追加で前景化される caveat:
+
+- **プールQC の層別**: QC が複数バッチ（日付）に分かれる場合に加え、**QC 試料名の層別**（部位別 QC 等。`preprocessing.detect_qc_strata` が `20240311_QC_Cerebellum_ICR_NEG_1` → `cerebellum_icr` のように日付/`qc`/極性/数字を除いた残りで判定）も検出し、「全 QC を1系列扱いするドリフト補正/RSD は近似」と警告する。実測 `20240314_brain/NEG` は 5 部位（cerebellum/hippocampus/medulla/olfactory/striatum）に層別。
+- **正規化での試料脱落**: `normalize` の `unscaled_samples`（係数0/非有限で未正規化残置した試料数）に対応する caveat（§11.2）。
+- **過度な特徴量除去**: フィルタ後に残存0件なら「全特徴が除去（閾値が厳しすぎる可能性、解析不能）」、特徴量の90%超が除去なら残存割合を注記する。除去総数は `report["features_removed_total"]`（= before − after）で参照する。**各 `steps[*]["removed"]` はフィルタごとの独立マスク件数で重複し得るため加算しないこと**（blank と qc_rsd の removed 合計が総数を超えることがある）。
+
+なお `load_dataset` の複数バッチ告知は、解析対象である **`.arf`/`.arf2` のバッチ**にのみ基づく（`.mddata`/`.mdproject`/`.msp2`/`.pai2` 等も `AlignmentResult` 形式のタイムスタンプを持つため、拡張子で限定しないと告知バッチが実際に解析する `.arf` とズレる）。
 
 ### 11.4 `arf_pca_preprocessed()`
 

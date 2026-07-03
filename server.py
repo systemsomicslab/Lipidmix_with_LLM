@@ -965,16 +965,19 @@ def _describe_batch_selection(directory: Path) -> str | None:
         names = [f.name for f in directory.iterdir() if f.is_file()]
     except OSError:
         return None
+    # 解析対象は .arf/.arf2 のみ。プロジェクト/メタ(.mddata/.mdproject/.msp2)や
+    # per-sample(.pai2/.dcl)も AlignmentResult 形式のタイムスタンプを持つため、
+    # 拡張子で解析対象に限定しないと告知バッチが実際に解析する .arf バッチとズレる
+    # （例: POS で .mddata の 2026_06_17 を告知するが解析 .arf は 2024_06_13）。
     # 正規化キー -> 表示用タイムスタンプ（アンダースコア付きの読みやすい形）
     display: dict[str, str] = {}
     for name in names:
+        low = name.lower()
+        if not (low.endswith(".arf") or low.endswith(".arf2")):
+            continue
         match = _ALIGNMENT_TIMESTAMP_RE.search(name)
         if match:
             display[match.group(1).replace("_", "")] = match.group(1)
-            continue
-        compact = _COMPACT_TIMESTAMP_RE.search(name)
-        if compact:
-            display.setdefault(compact.group(1), compact.group(1))
     if len(display) <= 1:
         return None
     latest_key = max(display)
@@ -1665,6 +1668,8 @@ def arf_preprocess(
 
     # プールQC が層別（複数 QC サブグループ）かの簡易警告材料
     qc_batches = {meta[n]["batch"] for n in sample_names if meta[n]["role"] == "qc"}
+    # バッチ(日付)だけでなく QC 試料名の層別（部位別 QC 等）も検出する。
+    qc_strata = preprocessing.detect_qc_strata(sample_names, roles)
 
     recipe = {
         "normalize": normalize,
@@ -1674,7 +1679,6 @@ def arf_preprocess(
         "impute": impute,
         "props": props,
     }
-    import preprocessing
     matrix2, kept_idx, report = preprocessing.preprocess(
         matrix, sample_names, roles, run_order, recipe,
     )
@@ -1687,6 +1691,12 @@ def arf_preprocess(
     if len(qc_batches) > 1:
         report.setdefault("caveats", []).append(
             "プールQC が複数バッチ/層に分かれています。全体一律のドリフト補正は近似です。"
+        )
+    if len(qc_strata) > 1:
+        labels = ", ".join(sorted(s for s in qc_strata if s))
+        report.setdefault("caveats", []).append(
+            f"プールQC が層別（{len(qc_strata)} サブグループ{f': {labels}' if labels else ''}）"
+            "と検出されました。全 QC を1系列として扱うドリフト補正/RSD フィルタは近似です。"
         )
     report["status"] = "success"
     report["matrix_shape"] = list(matrix2.shape)

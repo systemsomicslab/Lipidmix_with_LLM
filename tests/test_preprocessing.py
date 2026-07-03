@@ -3,6 +3,46 @@ import numpy as np
 import preprocessing as pp
 
 
+class TestDetectQcStrata(unittest.TestCase):
+    def test_detects_region_stratified_qc(self):
+        # real brain naming: QC is stratified by tissue region
+        names = ["20240311_QC_Cerebellum_ICR_NEG_1",
+                 "20240311_QC_Hippocampus_ICR_NEG_2",
+                 "20240311_Cerebellum_gf_NC_1_NEG"]
+        roles = pp.detect_sample_roles(names)
+        strata = pp.detect_qc_strata(names, roles)
+        self.assertGreater(len(strata), 1)
+
+    def test_uniform_qc_is_single_stratum(self):
+        names = ["20220901_QC_1_NEG", "20220901_QC_2_NEG", "20220901_ctrl_1_NEG"]
+        roles = pp.detect_sample_roles(names)
+        strata = pp.detect_qc_strata(names, roles)
+        self.assertLessEqual(len(strata), 1)
+
+
+class TestPreprocessReportClarity(unittest.TestCase):
+    def test_reports_total_features_removed(self):
+        m = np.array([[1.0, 2.0, 3.0, 4.0], [1.5, 2.5, 3.5, 4.5]])
+        names = ["s1", "s2"]
+        roles = {"s1": "sample", "s2": "sample"}
+        order = {"s1": 1, "s2": 2}
+        _, _, rep = pp.preprocess(m, names, roles, order, {"impute": "none"})
+        self.assertEqual(rep["features_removed_total"],
+                         rep["features_before"] - rep["features_after"])
+
+    def test_warns_when_all_features_removed(self):
+        # QC has variance in every feature -> max_qc_rsd=0.0 removes them all
+        m = np.array([[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [5.0, 6.0, 7.0], [6.0, 7.0, 8.0]])
+        names = ["a_qc", "b_qc", "c", "d"]
+        roles = pp.detect_sample_roles(names)
+        order = {n: i for i, n in enumerate(names)}
+        _, _, rep = pp.preprocess(m, names, roles, order,
+                                  {"max_qc_rsd": 0.0, "impute": "none"})
+        self.assertEqual(rep["features_after"], 0)
+        self.assertTrue(any("残存" in c or "除去" in c for c in rep["caveats"]),
+                        f"expected extreme-removal caveat, got {rep['caveats']}")
+
+
 class TestDetectSampleRoles(unittest.TestCase):
     def test_qc_and_blank_detected_from_filename(self):
         names = [

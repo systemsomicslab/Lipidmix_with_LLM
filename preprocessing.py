@@ -7,12 +7,17 @@ knowledge_store.py / peak_verification.py と同じく MCP に依存しない純
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 
 DEFAULT_ROLE_TOKENS: dict[str, set[str]] = {
     "qc": {"qc"},
     "blank": {"blank"},
 }
+
+# QC 層別キーの算出で除くトークン（極性）。日付/純数字/QC 自体は別途除外。
+_POLARITY_TOKENS = {"neg", "pos"}
 
 
 def _segments(text: str) -> set[str]:
@@ -45,6 +50,32 @@ def detect_sample_roles(
         else:
             roles[name] = "sample"
     return roles
+
+
+def detect_qc_strata(sample_names: list[str], roles: dict[str, str]) -> set[str]:
+    """QC 試料名から層別サブグループのキー集合を返す。
+
+    日付(8桁)・`qc`・極性(neg/pos)・純数字(反復や連番タイムスタンプ)トークンを
+    除いた残りを層識別子とする。例: `20240311_QC_Cerebellum_ICR_NEG_1` → `cerebellum_icr`。
+    層が2つ以上なら「プールQC が層別」と判断でき、全 QC を1系列扱いするドリフト補正/
+    RSD が近似になる旨の caveat を出す材料になる（設計 §3.4）。
+    """
+    strata: set[str] = set()
+    for name in sample_names:
+        if roles.get(name) != "qc":
+            continue
+        toks = []
+        for tok in str(name).split("_"):
+            if not tok:
+                continue
+            low = tok.lower()
+            if low == "qc" or low in _POLARITY_TOKENS:
+                continue
+            if re.fullmatch(r"\d{8}", tok) or tok.isdigit():  # 日付 / 反復・連番
+                continue
+            toks.append(low)
+        strata.add("_".join(toks))
+    return strata
 
 
 def _reference_rows(matrix, roles, sample_names):
@@ -284,6 +315,20 @@ def preprocess(matrix, sample_names, roles, run_order, recipe):
         if "caveat" in rep:
             caveats.append(rep["caveat"])
 
+    features_after = int(keep.sum())
+    # 特徴量フィルタが過度（閾値が厳しすぎる等）で解析不能になる場合を前景化する。
+    # なお steps[*]["removed"] は各フィルタ独立のマスク件数で重複し得るため加算不可。
+    # 実際に落ちた総数は features_removed_total（before-after）を参照すること。
+    if n_features and features_after == 0:
+        caveats.append(
+            "すべての特徴量がフィルタで除去されました（残存0件）。閾値（max_qc_rsd 等）が"
+            "厳しすぎる可能性があります。差次的解析/PCA は実行できません。")
+    elif n_features and features_after < 0.1 * n_features:
+        pct = 100.0 * (1.0 - features_after / n_features)
+        caveats.append(
+            f"特徴量の {pct:.0f}% が除去され {features_after}/{n_features} 件のみ残存しました。"
+            "フィルタ閾値（max_qc_rsd/blank_min_fold）の見直しを検討してください。")
+
     matrix = matrix[:, keep]
     kept_idx = list(np.where(keep)[0])
 
@@ -297,6 +342,7 @@ def preprocess(matrix, sample_names, roles, run_order, recipe):
         "steps": steps,
         "caveats": caveats,
         "features_before": n_features,
-        "features_after": int(keep.sum()),
+        "features_after": features_after,
+        "features_removed_total": n_features - features_after,
     }
     return matrix, kept_idx, report

@@ -156,6 +156,28 @@ class LoadDatasetBatchAnnounceTests(unittest.TestCase):
             # 旧バッチをスキップした旨が分かる（バッチ数に言及）
             self.assertIn("バッチ", joined)
 
+    def test_batch_note_matches_analyzed_arf_not_persample_files(self):
+        # A newer per-sample file (.pai2 with a compact 12-digit timestamp) must
+        # NOT be announced as the selected batch. The note must name the latest
+        # ALIGNMENT (.arf/.arf2) batch that is actually resolved and analyzed.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._touch(directory, "AlignmentResult_2024_06_12_18_21_56_PeakProperties.arf")
+            self._touch(directory, "AlignmentResult_2024_06_12_18_21_56.arf2")
+            self._touch(directory, "AlignmentResult_2024_06_13_09_21_45_PeakProperties.arf")
+            self._touch(directory, "AlignmentResult_2024_06_13_09_21_45.arf2")
+            # newer per-sample processing produced only .pai2 (compact ts), no .arf
+            self._touch(directory, "sample_x_NEG_202606171407.pai2")
+            # project/metadata files carry an AlignmentResult-style timestamp too,
+            # but are not analyzable matrices and must be ignored.
+            self._touch(directory, "Dataset_2026_06_17_00_34_26.mddata")
+            self._touch(directory, "2026_06_17_00_33_16.mdproject")
+            note = server._describe_batch_selection(directory)
+            self.assertIsNotNone(note)
+            self.assertIn("2024_06_13_09_21_45", note)
+            self.assertNotIn("202606171407", note)
+            self.assertNotIn("2026_06_17", note)
+
     def test_no_batch_note_for_single_batch(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
