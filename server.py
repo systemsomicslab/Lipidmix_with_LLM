@@ -20,6 +20,7 @@ import test_arf
 import knowledge_store
 import paper_ingest
 import preprocessing
+import differential
 from msdial_classes import (
     assign_sample_groups,
     attach_class_ids_to_spots,
@@ -1977,6 +1978,70 @@ def arf_re_pca(
         import traceback
         return [f"ARF再PCA実行中にエラーが発生しました: {str(e)}\n{traceback.format_exc()}"]
 
+
+@mcp.tool()
+def arf_differential(
+    group_factor: str | None = None,
+    group_a: str | None = None,
+    group_b: str | None = None,
+    q_threshold: float = 0.05,
+    log2fc_threshold: float = 1.0,
+) -> str:
+    """前処理後行列で差次的解析を行う。group_a/group_b 指定時は2群 Welch、
+    group_factor のみ指定時はその因子の全水準で一元配置 ANOVA。
+
+    先に arf_preprocess を実行して session.feature_matrix を用意すること
+    （未実行なら未正規化 caveat 付きで生行列にフォールバックする）。
+    """
+    matrix = getattr(session, "feature_matrix", None)
+    if matrix is None:
+        return json.dumps({"status": "error",
+                           "message": "先に arf_preprocess を実行してください（前処理後行列が必要）。"},
+                          ensure_ascii=False, indent=2)
+    sample_names = session.pp_sample_names
+    feature_names = session.pp_feature_names
+    meta = session.sample_meta or {}
+    group_labels = [(meta.get(n) or {}).get("group") for n in sample_names]
+    batch_labels = [(meta.get(n) or {}).get("batch") for n in sample_names]
+
+    caveats: list[str] = []
+    recipe = session.preprocessing_recipe or {}
+    if recipe.get("normalize", "none") == "none":
+        caveats.append("正規化が未適用のため log2FC は測定量差を含み得ます（arf_preprocess の normalize を検討）。")
+
+    conf = differential.check_confounding(group_labels, batch_labels)
+    if conf["confounded"]:
+        caveats.append("交絡: " + conf["detail"])
+
+    if group_a is not None and group_b is not None:
+        results = differential.two_group_test(matrix, feature_names, group_labels, group_a, group_b)
+        results = differential.add_fdr(results)
+        summary = differential.summarize_two_group(results, q_threshold, log2fc_threshold)
+        volcano = differential.volcano_data(results, q_threshold, log2fc_threshold)
+        n_a = group_labels.count(group_a)
+        n_b = group_labels.count(group_b)
+        if min(n_a, n_b) < 4:
+            caveats.append(f"小n（{group_a}={n_a}, {group_b}={n_b}）につき検出力が限られます。")
+        session.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
+                                     "results": results, "volcano": volcano}
+        payload = {"status": "success", "kind": "two_group",
+                   "group_a": group_a, "group_b": group_b,
+                   "summary": summary, "volcano": volcano, "caveats": caveats}
+    elif group_factor is not None:
+        results = differential.one_way_anova(matrix, feature_names, group_labels)
+        results = differential.add_fdr(results)
+        sig = [r for r in results if r.get("q") is not None and math.isfinite(r["q"]) and r["q"] <= q_threshold]
+        session.last_differential = {"kind": "anova", "results": results, "volcano": []}
+        payload = {"status": "success", "kind": "anova",
+                   "n_tested": sum(1 for r in results if r["p"] is not None and math.isfinite(r["p"])),
+                   "n_significant": len(sig),
+                   "top": sorted(sig, key=lambda r: r["q"])[:15],
+                   "caveats": caveats}
+    else:
+        return json.dumps({"status": "error",
+                           "message": "group_a+group_b（2群）か group_factor（ANOVA）のいずれかを指定してください。"},
+                          ensure_ascii=False, indent=2)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
