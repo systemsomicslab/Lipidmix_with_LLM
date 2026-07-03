@@ -87,3 +87,28 @@ def map_to_reference(class_token, tables) -> dict:
         "refmet_name": rm["refmet_name"] if rm else None,
         "caveat": None,
     }
+
+
+def msi_level(*, name, ontology, has_msms, mass_error_band, adduct_band) -> dict:
+    """決定論的シグナルから MSI 同定信頼度レベルを推定する（ヒューリスティック）。
+
+    Level 1（標準品照合）は主張しない。
+    - 2: 名称あり かつ MS/MS取得 かつ 精密質量整合（putative annotated compound）
+    - 3: クラス（ontology）は分かるが上記を満たさない（putative class）
+    - 4: 名称もクラスも無い（unknown）
+    """
+    has_name = bool(name and str(name).strip())
+    has_class = bool(ontology and str(ontology).strip() and str(ontology).strip() != "Unknown")
+    mass_ok = mass_error_band == "PASS"
+    adduct_ok = adduct_band in ("PASS", "UNKNOWN")  # FAIL は同定を疑う
+
+    if has_name and has_msms and mass_ok and adduct_ok:
+        return {"level": 2, "label": "putative annotated compound",
+                "rationale": "名称あり＋MS/MS取得＋精密質量整合。標準品照合ではないため Level 2。",
+                "heuristic": True}
+    if has_class:
+        return {"level": 3, "label": "putative class-level",
+                "rationale": "クラス（ontology）は判別できるが MS/MS または質量整合が不十分。",
+                "heuristic": True}
+    return {"level": 4, "label": "unknown",
+            "rationale": "名称・クラスとも無し。", "heuristic": True}

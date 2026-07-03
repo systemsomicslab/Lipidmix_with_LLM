@@ -44,5 +44,28 @@ class TestReferenceMapping(unittest.TestCase):
         self.assertIsNotNone(out["caveat"])
 
 
+class TestMsiLevel(unittest.TestCase):
+    def test_msms_plus_mass_ok_is_level2(self):
+        out = li.msi_level(name="PC 34:1", ontology="PC", has_msms=True,
+                           mass_error_band="PASS", adduct_band="PASS")
+        self.assertEqual(out["level"], 2)
+        self.assertTrue(out["heuristic"])
+
+    def test_class_only_is_level3(self):
+        out = li.msi_level(name="", ontology="PC", has_msms=False,
+                           mass_error_band="UNKNOWN", adduct_band="UNKNOWN")
+        self.assertEqual(out["level"], 3)
+
+    def test_unknown_is_level4(self):
+        out = li.msi_level(name="", ontology="", has_msms=False,
+                           mass_error_band="UNKNOWN", adduct_band="UNKNOWN")
+        self.assertEqual(out["level"], 4)
+
+    def test_never_level1(self):
+        out = li.msi_level(name="PC 34:1", ontology="PC", has_msms=True,
+                           mass_error_band="PASS", adduct_band="PASS")
+        self.assertNotEqual(out["level"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
