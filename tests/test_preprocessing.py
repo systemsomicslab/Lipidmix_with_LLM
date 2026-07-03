@@ -87,6 +87,35 @@ class TestNormalize(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(out[:, 0])))
         self.assertFalse(np.any(np.isinf(out)))
 
+    def test_median_does_not_destroy_zero_median_samples(self):
+        # A sparse sample whose row median is 0 (>50% features undetected=0) must
+        # NOT be nuked to all-NaN; leave it unscaled and flag it in the report.
+        m = np.array([
+            [10.0, 12.0, 11.0, 9.0],  # dense: median 10.5
+            [0.0, 0.0, 0.0, 5.0],     # sparse: median 0 -> would divide by zero
+        ])
+        out, factors, report = pp.normalize(m, "median")
+        self.assertTrue(np.all(np.isfinite(out[1])),
+                        "zero-median sample must stay finite, not become NaN")
+        self.assertEqual(report["unscaled_samples"], 1)
+        self.assertIn("caveat", report)
+
+    def test_median_unscaled_sample_keeps_raw_values(self):
+        m = np.array([[10.0, 12.0, 11.0, 9.0], [0.0, 0.0, 0.0, 5.0]])
+        out, factors, report = pp.normalize(m, "median")
+        # degenerate sample gets factor 1.0 -> values unchanged
+        np.testing.assert_allclose(out[1], m[1])
+
+    def test_preprocess_flags_normalization_dropped_samples(self):
+        m = np.array([[10.0, 12.0, 11.0, 9.0], [0.0, 0.0, 0.0, 5.0]])
+        names = ["s1", "s2"]
+        roles = {"s1": "sample", "s2": "sample"}
+        order = {"s1": 1, "s2": 2}
+        _, _, report = pp.preprocess(
+            m, names, roles, order, {"normalize": "median", "impute": "none"})
+        self.assertTrue(any("正規化" in c for c in report["caveats"]),
+                        f"expected normalization caveat, got {report['caveats']}")
+
 
 class TestBlankFilter(unittest.TestCase):
     def test_background_feature_removed(self):

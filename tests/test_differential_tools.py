@@ -34,6 +34,38 @@ class TestArfDifferential(unittest.TestCase):
         self.assertTrue(any("バッチ" in c or "交絡" in c for c in out["caveats"]))
 
 
+class TestArfDifferentialDegenerate(unittest.TestCase):
+    def setUp(self):
+        server.session = server.AnalysisSession()
+
+    def _prime(self, groups, matrix=None):
+        n = len(groups)
+        if matrix is None:
+            matrix = np.arange(1, n * 2 + 1, dtype=float).reshape(n, 2)
+        server.session.feature_matrix = matrix
+        names = [f"s{i}" for i in range(n)]
+        server.session.pp_sample_names = names
+        server.session.pp_feature_names = ["f0", "f1"]
+        server.session.preprocessing_recipe = {"normalize": "median"}
+        server.session.sample_meta = {names[i]: {"group": groups[i]} for i in range(n)}
+
+    def test_empty_requested_group_is_flagged(self):
+        self._prime(["A", "A", "A"])  # no B members at all
+        out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertEqual(out["status"], "success")
+        self.assertTrue(any("B" in c for c in out["caveats"]),
+                        f"expected caveat naming empty group B, got {out['caveats']}")
+
+    def test_zero_testable_features_is_flagged(self):
+        # A and B each have 2 members but all values identical -> zero variance ->
+        # every feature p=NaN -> n_tested 0. Must warn, not read as "no differences".
+        self._prime(["A", "A", "B", "B"], matrix=np.ones((4, 2)))
+        out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertEqual(out["summary"]["n_tested"], 0)
+        self.assertTrue(any("検定" in c for c in out["caveats"]),
+                        f"expected zero-tested caveat, got {out['caveats']}")
+
+
 class TestSaveVolcano(unittest.TestCase):
     def setUp(self):
         server.session = server.AnalysisSession()

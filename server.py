@@ -2087,8 +2087,21 @@ def arf_differential(
         volcano = differential.volcano_data(results, q_threshold, log2fc_threshold)
         n_a = group_labels.count(group_a)
         n_b = group_labels.count(group_b)
-        if min(n_a, n_b) < 4:
+        if n_a < 2 or n_b < 2:
+            caveats.append(
+                f"群サイズ不足（{group_a}={n_a}, {group_b}={n_b}）: 各群 n>=2 が必要です。"
+                "群名の誤り、または前処理での試料脱落の可能性があります。")
+        elif min(n_a, n_b) < 4:
             caveats.append(f"小n（{group_a}={n_a}, {group_b}={n_b}）につき検出力が限られます。")
+        n_tested = summary["n_tested"]
+        if n_tested == 0:
+            caveats.append(
+                "検定可能な特徴が0件（全特徴で p=NaN）。群が空・分散0・または正規化で試料が"
+                "NaN化した可能性があります。『有意0件』を『群間差なし』と解釈しないでください。")
+        elif n_tested < 0.2 * len(feature_names):
+            caveats.append(
+                f"検定できた特徴は {n_tested}/{len(feature_names)} 件のみ（多くが p=NaN）。"
+                "群内 n 不足・分散0・欠損が多い可能性があります（前処理の見直しを検討）。")
         session.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
                                      "results": results, "volcano": volcano}
         payload = {"status": "success", "kind": "two_group",
@@ -2098,9 +2111,14 @@ def arf_differential(
         results = differential.one_way_anova(matrix, feature_names, group_labels)
         results = differential.add_fdr(results)
         sig = [r for r in results if r.get("q") is not None and math.isfinite(r["q"]) and r["q"] <= q_threshold]
+        n_tested = sum(1 for r in results if r["p"] is not None and math.isfinite(r["p"]))
+        if n_tested == 0:
+            caveats.append(
+                "検定可能な特徴が0件（全特徴で p=NaN）。水準が空・分散0・または正規化で試料が"
+                "NaN化した可能性があります。『有意0件』を『群間差なし』と解釈しないでください。")
         session.last_differential = {"kind": "anova", "results": results, "volcano": []}
         payload = {"status": "success", "kind": "anova",
-                   "n_tested": sum(1 for r in results if r["p"] is not None and math.isfinite(r["p"])),
+                   "n_tested": n_tested,
                    "n_significant": len(sig),
                    "top": sorted(sig, key=lambda r: r["q"])[:15],
                    "caveats": caveats}

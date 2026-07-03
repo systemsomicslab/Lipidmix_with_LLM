@@ -6,21 +6,51 @@ GOSLIN による脂質名正規化、同梱表による RefMet/LIPID MAPS ID 付
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import peak_verification as pv
 
 
+# MS-DIAL は Name に信頼度の限定子接頭辞を付ける（実データ NEG で 317/856=37%）。
+# 例: "no MS2: FA 5:0" / "low score: PC 35:2" / "w/o MS2:PC 34:1"。GOSLIN 解釈前に除く。
+_MSDIAL_QUALIFIER_RE = re.compile(
+    r'^\s*(?:no\s*ms2|w/?o\s*ms[12]|low\s*score|unsettled)\s*:\s*',
+    re.IGNORECASE,
+)
+
+
+def _clean_msdial_name(name: str):
+    """MS-DIAL の限定子接頭辞と候補区切り '|' を除き、GOSLIN が解釈できる単一の
+    脂質ショートハンドに整える。戻り値 (clean_name, stripped: bool)。"""
+    s = str(name).strip()
+    stripped = False
+    m = _MSDIAL_QUALIFIER_RE.match(s)
+    if m:
+        s = s[m.end():].strip()
+        stripped = True
+    if "|" in s:  # 複数候補（"Cer 24:1;O2|Cer 12:0;O2/12:1"）は先頭（species 表記）を採用
+        s = s.split("|", 1)[0].strip()
+        stripped = True
+    return s, stripped
+
+
 def normalize_lipid_name(name: str) -> dict:
     """脂質ショートハンド名を GOSLIN で正規化する（オフライン）。
 
+    先に MS-DIAL の限定子接頭辞（'no MS2:'/'low score:' 等）と候補区切り '|' を除く。
     pygoslin が無い/解析不能でも例外を投げず parse_ok=False を返す。
-    返り値: parse_ok / normalized / level / lipid_maps_category / error。
+    返り値: parse_ok / normalized / level / lipid_maps_category / stripped / error。
     """
     result = {"parse_ok": False, "normalized": None, "level": None,
-              "lipid_maps_category": None, "error": None}
+              "lipid_maps_category": None, "stripped": False, "error": None}
     if not name or not str(name).strip():
         result["error"] = "empty name"
+        return result
+    clean, stripped = _clean_msdial_name(name)
+    result["stripped"] = stripped
+    if not clean:
+        result["error"] = "empty after stripping qualifier"
         return result
     try:
         from pygoslin.parser.Parser import LipidParser
@@ -28,7 +58,7 @@ def normalize_lipid_name(name: str) -> dict:
         result["error"] = f"pygoslin unavailable: {exc}"
         return result
     try:
-        lipid = LipidParser().parse(str(name).strip())
+        lipid = LipidParser().parse(clean)
         result["parse_ok"] = True
         result["normalized"] = lipid.get_lipid_string()
         # 構造レベル（species/molecular species/sn-position 等）。版差に強い経路を優先。

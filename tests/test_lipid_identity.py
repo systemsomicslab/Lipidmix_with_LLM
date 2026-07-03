@@ -29,6 +29,39 @@ class TestNormalizeLipidName(unittest.TestCase):
         self.assertIsNotNone(out.get("error"))
 
 
+class TestQualifierPrefixStripping(unittest.TestCase):
+    # MS-DIAL prepends confidence qualifiers to Name (e.g. "no MS2: ", "low score: ");
+    # in the real brain NEG catalog 317/856 (37%) of annotations carry these and
+    # previously failed GOSLIN parsing. Strip them before parsing.
+    def test_strips_no_ms2_prefix(self):
+        out = li.normalize_lipid_name("no MS2: FA 18:1")
+        if (out.get("error") or "").startswith("pygoslin unavailable"):
+            self.skipTest("pygoslin not installed")
+        self.assertTrue(out["parse_ok"], out)
+        self.assertTrue(out["normalized"].upper().startswith("FA"))
+
+    def test_strips_low_score_prefix(self):
+        out = li.normalize_lipid_name("low score: PC 35:2")
+        if (out.get("error") or "").startswith("pygoslin unavailable"):
+            self.skipTest("pygoslin not installed")
+        self.assertTrue(out["parse_ok"], out)
+        self.assertTrue(out["normalized"].upper().startswith("PC"))
+
+    def test_takes_first_candidate_before_pipe(self):
+        out = li.normalize_lipid_name("low score: Cer 24:1;O2|Cer 12:0;O2/12:1")
+        if (out.get("error") or "").startswith("pygoslin unavailable"):
+            self.skipTest("pygoslin not installed")
+        self.assertTrue(out["parse_ok"], out)
+
+    def test_records_that_a_qualifier_was_stripped(self):
+        out = li.normalize_lipid_name("no MS2: FA 18:1")
+        self.assertTrue(out.get("stripped"))
+
+    def test_clean_name_reports_no_strip(self):
+        out = li.normalize_lipid_name("PC 34:1")
+        self.assertFalse(out.get("stripped"))
+
+
 class TestReferenceMapping(unittest.TestCase):
     def setUp(self):
         self.tables = li.load_reference_tables("reference")

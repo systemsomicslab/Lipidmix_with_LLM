@@ -113,13 +113,30 @@ def normalize(
     else:
         raise ValueError(f"unknown normalization method: {method!r}")
 
-    factors = np.where((factors == 0) | ~np.isfinite(factors), np.nan, factors)
+    # 正規化係数が0/非有限のサンプル（検出特徴が疎で行中央値=0 等）を検出する。
+    degenerate = (factors == 0) | ~np.isfinite(factors)
     # スケール後の全体水準を保つため、TIC/median は除数そのものを参照係数の
-    # 中央値で正規化する（factors が実際に適用した除数と一致するようにする）。
+    # 中央値で正規化する（有効な係数のみで参照を計算する）。
     if method in ("tic", "median"):
-        factors = factors / np.nanmedian(factors)
+        valid = factors[~degenerate]
+        ref = np.nanmedian(valid) if valid.size else 1.0
+        if not np.isfinite(ref) or ref == 0:
+            ref = 1.0
+        factors = factors / ref
+    # 退化サンプルは行全体を NaN 化して破棄せず、未正規化のまま残す（factor=1.0）。
+    # 旧実装は factor=NaN で行を全消去し、疎データで多数の試料を無言で失っていた。
+    factors = np.where(degenerate, 1.0, factors)
     scaled = matrix / factors[:, None]
-    report["factors_finite"] = int(np.isfinite(factors).sum())
+    n = matrix.shape[0]
+    report["factors_finite"] = int((~degenerate).sum())
+    report["n_samples"] = int(n)
+    if degenerate.any():
+        n_deg = int(degenerate.sum())
+        report["unscaled_samples"] = n_deg
+        report["caveat"] = (
+            f"{n_deg}/{n} 試料は正規化係数が0または非有限（検出特徴が疎で行中央値=0 等）の"
+            f"ため未正規化のまま残置しました（{method}）。該当試料の定量比較は測定量差を含み得ます。"
+        )
     return scaled, factors, report
 
 
@@ -249,6 +266,8 @@ def preprocess(matrix, sample_names, roles, run_order, recipe):
         matrix, _, rep = normalize(matrix, method, roles, sample_names)
         applied.append("normalize")
         steps["normalize"] = rep
+        if "caveat" in rep:
+            caveats.append(rep["caveat"])
 
     if recipe.get("drift_correct"):
         matrix, rep = qc_drift_correct(matrix, roles, sample_names, run_order)
