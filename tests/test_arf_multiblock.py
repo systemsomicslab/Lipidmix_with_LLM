@@ -4,7 +4,7 @@ import unittest
 import lz4.block
 import msgpack
 
-import test_arf
+import arf_reader
 
 
 def make_peak_row(file_id: int, sample_name: str, height: float, mz: float, rt: float) -> list:
@@ -58,7 +58,7 @@ class ArfMultiblockTests(unittest.TestCase):
     def test_deserialize_legacy_single_block_container(self):
         data = pack_legacy_block([[0, 0, make_group(1), make_group(2)]])
 
-        features = test_arf.deserialize(io.BytesIO(data))
+        features = arf_reader.deserialize(io.BytesIO(data))
 
         self.assertEqual(len(features), 2)
         self.assertEqual([spot["MasterAlignmentID"] for spot in features], [0, 1])
@@ -73,7 +73,7 @@ class ArfMultiblockTests(unittest.TestCase):
             + pack_ext_block([[0, 0, make_group(3)]])
         )
 
-        features = test_arf.deserialize(io.BytesIO(data))
+        features = arf_reader.deserialize(io.BytesIO(data))
 
         self.assertEqual(len(features), 3)
         self.assertEqual([spot["MasterAlignmentID"] for spot in features], [0, 1, 2])
@@ -84,10 +84,10 @@ class ArfMultiblockTests(unittest.TestCase):
     def test_deserialize_lz4_packed_msgpack_returns_raw_inner_objects(self):
         data = pack_ext_block([[0, 0, make_group(1)]]) + pack_ext_block([make_group(2)])
 
-        raw = test_arf.deserialize_lz4_packed_msgpack(data)
+        raw = arf_reader.deserialize_lz4_packed_msgpack(data)
 
         self.assertEqual(len(raw), 2)
-        self.assertTrue(test_arf._is_arf_feature_container_object(raw[0]))
+        self.assertTrue(arf_reader._is_arf_feature_container_object(raw[0]))
         self.assertEqual(raw[1][0][24], "PC 702.0000")
 
 

@@ -65,10 +65,10 @@ class ServerClassFilterTests(unittest.TestCase):
         self.session = FakeSession()
         self.patches = [
             patch.object(server, "session", self.session),
-            patch.object(server.test_arf, "extract_peak_properties", fake_extract_peak_properties),
-            patch.object(server.test_arf, "build_pca_matrix", fake_build_pca_matrix),
-            patch.object(server.test_arf, "run_pca", fake_run_pca),
-            patch.object(server.test_arf, "get_pca_loading_features", return_value=[]),
+            patch.object(server.arf_reader, "extract_peak_properties", fake_extract_peak_properties),
+            patch.object(server.arf_reader, "build_pca_matrix", fake_build_pca_matrix),
+            patch.object(server.arf_reader, "run_pca", fake_run_pca),
+            patch.object(server.arf_reader, "get_pca_loading_features", return_value=[]),
         ]
         for item in self.patches:
             item.start()

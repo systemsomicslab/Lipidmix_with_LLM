@@ -16,7 +16,7 @@ import csv
 import math
 import pandas as pd
 
-import test_arf
+import arf_reader
 import knowledge_store
 import paper_ingest
 import preprocessing
@@ -34,19 +34,19 @@ from msdial_tags import (
     filter_arf_by_tags,
     normalize_sample_name,
 )
-from test_arf2 import (
+from arf2_reader import (
     deserialize,
     summarize_arf2_data,
     generate_text_summary,
 )
-from test_eic_aef import (
+from eic_aef_reader import (
     parse_eic_aef_css1,
     summarize_eic_data,
     search_eic_by_mz_range,
     search_eic_by_rt_range,
     top_eic_spots_by_peak_top,
 )
-from test_pai2 import (
+from pai2_reader import (
     perform_pca_summary,
     filter_features_by_params,
     inspect_metabolite_details,
@@ -751,11 +751,14 @@ def _build_sample_meta(sample_names, class_index):
     meta = {}
     for name in sample_names:
         m = _BATCH_DATE_RE.search(name)
+        # バッチは MS-DIAL メタに専用項目が無いため、ファイル名中の8桁日付から推定する。
+        # 出所を batch_source に明示し、交絡判定の脆さ（名前依存）を下流で開示できるようにする。
         meta[name] = {
             "role": roles.get(name, "sample"),
             "group": groups.get(name),
             "run_order": orders.get(name),
             "batch": m.group(1) if m else None,
+            "batch_source": "filename_date" if m else None,
         }
     return meta
 
@@ -851,7 +854,7 @@ class AnalysisSession:
             # 【修正点】ファイルの拡張子を見て正しいパーサーを呼び分ける
             file_ext = str(file_path).lower()
             if file_ext.endswith('.arf'):
-                self.features = test_arf.deserialize(io.BytesIO(f.read()))
+                self.features = arf_reader.deserialize(io.BytesIO(f.read()))
                 self.arf_tag_index = discover_arf_tag_index(
                     file_path, self.features, tag_directory=tag_directory,
                 )
@@ -859,7 +862,7 @@ class AnalysisSession:
                 self.arf_class_index = discover_arf_class_index(file_path)
                 attach_class_ids_to_spots(self.features, self.arf_class_index)
             else:
-                self.features = deserialize(io.BytesIO(f.read())) # 元からインポートされている test_arf2 用
+                self.features = deserialize(io.BytesIO(f.read())) # 元からインポートされている arf2_reader 用
                 self.arf_tag_index = None
                 self.arf_class_index = None
                 
@@ -1165,7 +1168,7 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> list:
     if filter_threshold is None:
         filter_threshold = 0.0
 
-    from test_pai2 import test_pai2_deserialize_and_format, deserialize
+    from pai2_reader import test_pai2_deserialize_and_format, deserialize
 
     try:
         with open(file_path, 'rb') as f:
@@ -1213,7 +1216,7 @@ def pai2_get_top_metabolites(top_n: int = 10) -> str:
     if session.pca_result is None:
         return "先に analyze_pai2_pca を実行してください。"
     
-    from test_pai2 import get_top_contributors
+    from pai2_reader import get_top_contributors
 
     top_list = get_top_contributors(session.filtered_features, session.pca_result, top_n)
     return f"上位{top_n}件の代謝物:\n{json.dumps(top_list, indent=2, ensure_ascii=False)}"
@@ -1492,7 +1495,7 @@ def _format_pca_plot_block(
 
 
 def _format_pca_loadings_md(loading_features: list[dict], header: str) -> str:
-    """test_arf.get_pca_loading_features の構造化結果を Markdown 要約に整形する（共通）。"""
+    """arf_reader.get_pca_loading_features の構造化結果を Markdown 要約に整形する（共通）。"""
     text = header
     for pc in loading_features:
         text += f"\n##### 🔹 {pc['pc']} (説明分散比: {pc['var_ratio']:.2f}%)\n"
@@ -1623,7 +1626,7 @@ def arf_list_classes() -> str:
 
 
 def _pp_build_matrix(features, props):
-    from test_arf import build_pca_matrix
+    from arf_reader import build_pca_matrix
     return build_pca_matrix(features, use_properties=props)
 
 
@@ -1721,7 +1724,7 @@ def arf_pca_preprocessed(
     """
     if not _pp_has_preprocessed():
         return ["前処理後の行列がありません。先に arf_preprocess を実行してください。"]
-    from test_arf import run_pca, get_pca_loading_features
+    from arf_reader import run_pca, get_pca_loading_features
     matrix = session.feature_matrix
     sample_names = session.pp_sample_names
     feature_names = session.pp_feature_names
@@ -1804,7 +1807,7 @@ def arf_parser(
         return ["データディレクトリに .arf ファイルが見つかりませんでした。"]
 
     # 外部モジュールからのインポート
-    from test_arf import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
+    from arf_reader import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
 
     try:
         deserialized_and_formatted_data = session.load_data(file_path, tag_directory=tag_directory)
@@ -1872,7 +1875,7 @@ def arf_parser(
             groups=sample_groups,
         )
 
-        # Loadings 寄与上位（test_arf の構造化関数 + 共通整形ヘルパー）
+        # Loadings 寄与上位（arf_reader の構造化関数 + 共通整形ヘルパー）
         loading_features = get_pca_loading_features(
             pca_result, session.features, feature_names, top_n=top_features,
         )
@@ -1949,7 +1952,7 @@ def arf_re_pca(
         return ["先に arf_parser を実行してデータを読み込んでください。"]
         
     # 外部モジュールからのインポート
-    from test_arf import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
+    from arf_reader import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
 
     try:
         # 1. セッションの全データから条件に合うスポットを抽出（共通ヘルパー _filter_arf_spots を利用）
@@ -2063,12 +2066,17 @@ def arf_differential(
     group_b: str | None = None,
     q_threshold: float = 0.05,
     log2fc_threshold: float = 1.0,
+    log_transform: bool = True,
 ) -> str:
     """前処理後行列で差次的解析を行う。group_a/group_b 指定時は2群 Welch、
     group_factor のみ指定時はその因子の全水準で一元配置 ANOVA。
 
     先に arf_preprocess を実行して session.feature_matrix を用意すること
     （未実行なら未正規化 caveat 付きで生行列にフォールバックする）。
+
+    - log_transform: [既定 True] log2(x+1) 空間で検定する。MS 強度は対数正規に近く、
+      生強度での t 検定/ANOVA は正規性仮定を外れやすいため既定で有効。2群では log2FC も
+      log2 空間の群平均差（＝幾何平均比）になる。生スケールで検定したい場合のみ False。
     """
     matrix = getattr(session, "feature_matrix", None)
     if matrix is None:
@@ -2085,13 +2093,21 @@ def arf_differential(
     recipe = session.preprocessing_recipe or {}
     if recipe.get("normalize", "none") == "none":
         caveats.append("正規化が未適用のため log2FC は測定量差を含み得ます（arf_preprocess の normalize を検討）。")
+    if log_transform:
+        caveats.append("log2(x+1) 変換後に検定を実施（強度の歪みを補正）。log2FC は群平均の log2 差＝幾何平均比です。")
 
     conf = differential.check_confounding(group_labels, batch_labels)
+    batch_source = next((m.get("batch_source") for m in meta.values() if m.get("batch_source")), None)
+    src_note = "（バッチはファイル名の日付から推定。実バッチ設計と異なる場合あり）" \
+        if batch_source == "filename_date" else ""
     if conf["confounded"]:
-        caveats.append("交絡: " + conf["detail"])
+        caveats.append("交絡: " + conf["detail"] + src_note)
+    elif not conf.get("assessable", True):
+        caveats.append("交絡評価不可: " + conf["detail"] + src_note)
 
     if group_a is not None and group_b is not None:
-        results = differential.two_group_test(matrix, feature_names, group_labels, group_a, group_b)
+        results = differential.two_group_test(matrix, feature_names, group_labels,
+                                              group_a, group_b, log_transform=log_transform)
         results = differential.add_fdr(results)
         summary = differential.summarize_two_group(results, q_threshold, log2fc_threshold)
         volcano = differential.volcano_data(results, q_threshold, log2fc_threshold)
@@ -2118,7 +2134,8 @@ def arf_differential(
                    "group_a": group_a, "group_b": group_b,
                    "summary": summary, "volcano": volcano, "caveats": caveats}
     elif group_factor is not None:
-        results = differential.one_way_anova(matrix, feature_names, group_labels)
+        results = differential.one_way_anova(matrix, feature_names, group_labels,
+                                             log_transform=log_transform)
         results = differential.add_fdr(results)
         sig = [r for r in results if r.get("q") is not None and math.isfinite(r["q"]) and r["q"] <= q_threshold]
         n_tested = sum(1 for r in results if r["p"] is not None and math.isfinite(r["p"]))
@@ -2150,7 +2167,7 @@ def arf2_parser(file_path: str | None = None) -> list:
     if not file_path:
         return ["データディレクトリに .arf2 ファイルが見つかりませんでした。"]
 
-    from test_arf2 import deserialize, generate_text_summary, summarize_arf2_data
+    from arf2_reader import deserialize, generate_text_summary, summarize_arf2_data
     from pathlib import Path
     import json
 
@@ -2196,7 +2213,7 @@ def arf2_annotate_identities(file_path: str | None = None, max_rows: int = 50) -
     if not path:
         return json.dumps({"status": "error", "message": ".arf2 が見つかりません。"},
                           ensure_ascii=False, indent=2)
-    from test_arf2 import deserialize as arf2_deserialize
+    from arf2_reader import deserialize as arf2_deserialize
     with open(path, "rb") as fh:
         spots = arf2_deserialize(io.BytesIO(fh.read()))
     tables = _identity_tables()

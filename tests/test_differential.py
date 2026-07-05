@@ -78,6 +78,55 @@ class TestVolcanoAndConfound(unittest.TestCase):
         batches = ["d1", "d1", "d2", "d2"]  # group perfectly aligns with batch
         out = diff.check_confounding(groups, batches)
         self.assertTrue(out["confounded"])
+        self.assertTrue(out["assessable"])
+
+    def test_single_batch_is_not_assessable(self):
+        # only one batch present -> cannot assess confounding, must NOT read as "clean".
+        out = diff.check_confounding(["ctrl", "ctrl", "trt", "trt"],
+                                     ["d1", "d1", "d1", "d1"])
+        self.assertFalse(out["confounded"])
+        self.assertFalse(out["assessable"])
+
+    def test_no_batch_is_not_assessable(self):
+        out = diff.check_confounding(["ctrl", "trt"], [None, None])
+        self.assertFalse(out["assessable"])
+
+
+class TestLogTransform(unittest.TestCase):
+    def test_log_transform_uses_log_space_fold_change(self):
+        # B is ~5x A on the linear scale for f0.
+        matrix = np.array([
+            [10.0], [11.0], [9.5],
+            [50.0], [52.0], [48.0],
+        ])
+        labels = ["A", "A", "A", "B", "B", "B"]
+        res = diff.two_group_test(matrix, ["f0"], labels, "A", "B", log_transform=True)
+        # log2 space mean difference ~ log2(10/50) ~ -2.3; raw means still reported.
+        self.assertLess(res[0]["log2fc"], -2.0)
+        self.assertGreater(res[0]["mean_a"], 9.0)  # raw mean, not log mean
+        self.assertLess(res[0]["p"], 0.05)
+
+    def test_anova_log_transform_runs(self):
+        matrix = np.array([[1.0], [1.1], [0.9], [50.0], [55.0], [45.0]])
+        labels = ["G1", "G1", "G1", "G2", "G2", "G2"]
+        res = diff.one_way_anova(matrix, ["f0"], labels, log_transform=True)
+        self.assertLess(res[0]["p"], 0.05)
+
+
+class TestFallbackDistributions(unittest.TestCase):
+    """scipy 不在フォールバックが scipy と一致することを担保する（近似ではない）。"""
+
+    def test_t_sf_matches_scipy(self):
+        from scipy import stats
+        for t, df in [(2.5, 4.0), (1.1, 12.0), (3.3, 2.0), (0.5, 30.0)]:
+            expected = 2.0 * stats.t.sf(abs(t), df)
+            self.assertAlmostEqual(diff._t_sf_two_sided(t, df), expected, places=8)
+
+    def test_f_sf_matches_scipy_including_odd_df(self):
+        from scipy import stats
+        # odd df1 was the case the old chi2 series got wrong.
+        for f, d1, d2 in [(4.0, 3, 8), (2.0, 2, 10), (7.5, 5, 6), (1.5, 1, 20)]:
+            self.assertAlmostEqual(diff._f_sf(f, d1, d2), stats.f.sf(f, d1, d2), places=8)
 
 
 if __name__ == "__main__":

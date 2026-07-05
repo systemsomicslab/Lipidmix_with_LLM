@@ -9,7 +9,7 @@ bin/
 # 共有する。開発ログだけ個別に除外する（NAS配備時に欠落させないため）。
 docs/HISTRY.md
 docs/task.md
-_pycache_/
+__pycache__/
 obj/
 photos/
 workspace/

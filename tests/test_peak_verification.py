@@ -161,7 +161,7 @@ import tempfile
 from pathlib import Path
 
 import server
-from test_pai2 import IonMode
+from pai2_reader import IonMode
 
 
 def _feat(**over):
