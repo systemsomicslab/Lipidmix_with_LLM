@@ -498,7 +498,7 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
     arf_parser / arf_re_pca / pai2_parser 等でPCAを実行した後に呼ぶ。返り値の相対パスを
     write_report の本文に `![PCA](figures/<analysis_id>_pca.png)` として埋め込める。
     """
-    plot = getattr(session, "last_pca_plot", None)
+    plot = getattr(session_state.session, "last_pca_plot", None)
     if not plot or not plot.get("points"):
         return "先に arf_parser / arf_re_pca / pai2_parser 等でPCAを実行してください（PCA結果がありません）。"
 
@@ -531,11 +531,11 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
     """直近の差次的解析結果を volcano プロットとして
     reports/figures/<analysis_id>_volcano.png に保存し、相対パスを返す。
 
-    先に arf_differential（2群比較）を実行して session.last_differential の
+    先に arf_differential（2群比較）を実行して session_state.session.last_differential の
     volcano データを用意すること。返り値の相対パスは write_report の本文に
     `![volcano](figures/<analysis_id>_volcano.png)` として埋め込める。
     """
-    last = getattr(session, "last_differential", None)
+    last = getattr(session_state.session, "last_differential", None)
     if not last or not last.get("volcano"):
         return "[error] 直近の差次的解析（volcano データ）がありません。先に arf_differential を実行してください。"
 
@@ -567,167 +567,10 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
     return f"volcano図を保存: {out_path}\n本文に ![volcano]({rel}) で埋め込めます。"
 
 
-# --- ステート保持クラス ---
-_BATCH_DATE_RE = re.compile(r"(\d{8})")
-
-
-def _build_sample_meta(sample_names, class_index):
-    """サンプル名から role/group/run_order/batch を組み立てる。"""
-    class_ids = {}
-    orders = {}
-    if class_index:
-        by_name = {}
-        for rec in class_index.get("records", []):
-            key = normalize_sample_name(rec.get("file_name"), strip_processing_timestamp=False)
-            if key:
-                by_name[key] = rec
-        for name in sample_names:
-            rec = by_name.get(normalize_sample_name(name, strip_processing_timestamp=False))
-            if rec:
-                class_ids[name] = rec.get("class_id") or ""
-                orders[name] = rec.get("analytical_order")
-    roles = preprocessing.detect_sample_roles(sample_names, class_ids)
-    groups = assign_sample_groups(sample_names, class_index, None)
-    meta = {}
-    for name in sample_names:
-        m = _BATCH_DATE_RE.search(name)
-        # バッチは MS-DIAL メタに専用項目が無いため、ファイル名中の8桁日付から推定する。
-        # 出所を batch_source に明示し、交絡判定の脆さ（名前依存）を下流で開示できるようにする。
-        meta[name] = {
-            "role": roles.get(name, "sample"),
-            "group": groups.get(name),
-            "run_order": orders.get(name),
-            "batch": m.group(1) if m else None,
-            "batch_source": "filename_date" if m else None,
-        }
-    return meta
-
-
-class AnalysisSession:
-    def __init__(self):
-        self.current_file_path = None
-        self.features = None      # デシリアライズ済みの全データ
-        self.pca_result = None    # 直近のPCA計算結果
-        self.filtered_features = None # フィルタリング後のデータ
-        self.filter_params = {}   # 現在のフィルタ条件
-        self.last_pca_summary = None
-        self.current_aef_file_path = None
-        self.eic_features = None
-        self.arf_tag_index = None
-        self.arf_class_index = None
-        self.current_tag_directory = None
-        self.last_pca_plot = None  # 直近PCAの描画用データ（save_pca_figure が参照）
-
-        # --- P2a 前処理用の正準行列とサンプルメタ ---
-        self.feature_matrix = None       # 前処理後のサンプル×特徴量行列
-        self.pp_sample_names = None
-        self.pp_feature_names = None
-        self.sample_meta = {}            # {sample_name: {role, group, run_order, batch}}
-        self.preprocessing_recipe = {}   # 直近適用した前処理レシピ（空=未適用）
-
-    def apply_filter(self, filter_params: dict | None = None):
-        """現データに対して動的にフィルタを適用する。"""
-        if filter_params is None:
-            filter_params = {}
-        self.filter_params = filter_params
-        if self.features is None:
-            self.filtered_features = None
-            return None
-
-        self.filtered_features = filter_features_by_params(self.features, filter_params)
-        return self.filtered_features
-
-    def run_pca(self, filter_params: dict | None = None):
-        """フィルタリング条件を反映してPCAを再実行する。"""
-        if self.features is None:
-            raise ValueError("データが読み込まれていません。")
-        if filter_params is not None:
-            self.apply_filter(filter_params)
-        if self.filtered_features is None:
-            self.filtered_features = self.features
-
-        summary, img_bytes, pca_result, pca_index, filtered_features = perform_pca_summary(
-            self.filtered_features,
-            filter_params=self.filter_params,
-        )
-        self.filtered_features = filtered_features
-        self.pca_result = pca_result
-        self.last_pca_summary = summary
-        ev = summary.get("explained_variance", {}) if isinstance(summary, dict) else {}
-        coords = pca_result
-        points = []
-        try:
-            if getattr(coords, "shape", (0, 0))[1] >= 2:
-                xs = coords[:, 0].tolist()
-                ys = coords[:, 1].tolist()
-                points = [{"x": x, "y": y, "label": None} for x, y in zip(xs, ys)]
-        except (IndexError, TypeError):
-            points = []
-        self.last_pca_plot = {
-            "title": "PCA (pai2 peak-level)",
-            "x_label": f"PC1 ({ev.get('PC1', '')})",
-            "y_label": f"PC2 ({ev.get('PC2', '')})",
-            "points": points,
-        }
-        self.pca_index = pca_index
-        return summary, img_bytes
-
-    def load_data(self, file_path: str, tag_directory: str | None = None):
-        """ファイルパスが前回と異なる場合のみデシリアライズを実行する"""
-        if (
-            self.current_file_path == file_path
-            and self.features is not None
-            and self.current_tag_directory == tag_directory
-        ):
-            print(f"DEBUG: Cache hit for {file_path}", file=sys.stderr)
-            if str(file_path).lower().endswith('.arf'):
-                self.arf_tag_index = discover_arf_tag_index(
-                    file_path, self.features, tag_directory=tag_directory,
-                )
-                attach_tags_to_spots(self.features, self.arf_tag_index)
-                self.arf_class_index = discover_arf_class_index(file_path)
-                attach_class_ids_to_spots(self.features, self.arf_class_index)
-            return self.features
-
-        print(f"DEBUG: Loading/Deserializing {file_path}", file=sys.stderr)
-        with open(file_path, 'rb') as f:
-            # 【修正点】ファイルの拡張子を見て正しいパーサーを呼び分ける
-            file_ext = str(file_path).lower()
-            if file_ext.endswith('.arf'):
-                self.features = arf_reader.deserialize(io.BytesIO(f.read()))
-                self.arf_tag_index = discover_arf_tag_index(
-                    file_path, self.features, tag_directory=tag_directory,
-                )
-                attach_tags_to_spots(self.features, self.arf_tag_index)
-                self.arf_class_index = discover_arf_class_index(file_path)
-                attach_class_ids_to_spots(self.features, self.arf_class_index)
-            else:
-                self.features = deserialize(io.BytesIO(f.read())) # 元からインポートされている arf2_reader 用
-                self.arf_tag_index = None
-                self.arf_class_index = None
-                
-            self.current_file_path = file_path
-            self.current_tag_directory = tag_directory
-            # 新しいファイルを読み込んだら計算結果はリセット
-            self.pca_result = None
-            self.filtered_features = None
-
-        return self.features
-
-    def load_eic_data(self, file_path: str):
-        """ファイルパスが前回と異なる場合のみEICデータを解析する"""
-        if self.current_aef_file_path == file_path and self.eic_features is not None:
-            print(f"DEBUG: Cache hit for EIC {file_path}", file=sys.stderr)
-            return self.eic_features
-
-        print(f"DEBUG: Loading/Parsing EIC {file_path}", file=sys.stderr)
-        self.eic_features = parse_eic_aef_css1(file_path, include_chromatogram=False)
-        self.current_aef_file_path = file_path
-        return self.eic_features
-
-# インスタンスを1つ作成（サーバー起動中に保持される）
-session = AnalysisSession()
-
+import session_state
+from session_state import AnalysisSession, _build_sample_meta
+# session は全ツール共有の可変シングルトン。参照は session_state.session（動的）で行い、
+# スナップショット束縛（from session_state import session）は作らない。
 
 # MS-DIALのアライメント結果ファイル名に埋め込まれる処理タイムスタンプ。
 # 例: AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf
@@ -1020,13 +863,13 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> list:
         assert len(deserialized_and_formatted_data) > 0
         assert isinstance(deserialized_and_formatted_data[0], dict)
 
-        session.features = deserialized_and_formatted_data
-        session.current_file_path = file_path
-        session.apply_filter({"min_intensity": filter_threshold})
-        summary, img_bytes = session.run_pca()
+        session_state.session.features = deserialized_and_formatted_data
+        session_state.session.current_file_path = file_path
+        session_state.session.apply_filter({"min_intensity": filter_threshold})
+        summary, img_bytes = session_state.session.run_pca()
 
-        pca_result = session.pca_result
-        pca_index = session.pca_index
+        pca_result = session_state.session.pca_result
+        pca_index = session_state.session.pca_index
         
         
         # Keep the PCA plot in the MCP response only. This avoids writing into
@@ -1052,12 +895,12 @@ def pai2_get_top_metabolites(top_n: int = 10) -> str:
     """
     pai2ファイルの直近のPCA解析結果から、主成分に寄与している上位の代謝物リストを返します。
     """
-    if session.pca_result is None:
+    if session_state.session.pca_result is None:
         return "先に analyze_pai2_pca を実行してください。"
     
     from pai2_reader import get_top_contributors
 
-    top_list = get_top_contributors(session.filtered_features, session.pca_result, top_n)
+    top_list = get_top_contributors(session_state.session.filtered_features, session_state.session.pca_result, top_n)
     return f"上位{top_n}件の代謝物:\n{json.dumps(top_list, indent=2, ensure_ascii=False)}"
 
 
@@ -1067,11 +910,11 @@ def pai2_inspect_metabolite_details(metabolite_id: str | None = None, metabolite
 
     返り値には signal_to_noise フィールドが含まれます。
     """
-    if session.filtered_features is None:
+    if session_state.session.filtered_features is None:
         return "先に pai2_parser を実行してデータを読み込んでください。"
 
     details = inspect_metabolite_details(
-        session.filtered_features,
+        session_state.session.filtered_features,
         metabolite_id=metabolite_id,
         metabolite_name=metabolite_name,
     )
@@ -1175,7 +1018,7 @@ def verify_peak_annotation(
     先に pai2_parser でデータを読み込むこと。metabolite_id か metabolite_name の
     いずれかを指定する。
     """
-    if session.filtered_features is None:
+    if session_state.session.filtered_features is None:
         return json.dumps(
             {"status": "error", "message": "先に pai2_parser を実行してデータを読み込んでください。"},
             ensure_ascii=False,
@@ -1189,7 +1032,7 @@ def verify_peak_annotation(
         )
 
     matches = []
-    for feat in session.filtered_features:
+    for feat in session_state.session.filtered_features:
         if metabolite_id is not None and str(feat.get("id")) == str(metabolite_id):
             matches.append(feat)
         elif (
@@ -1215,14 +1058,14 @@ def verify_peak_annotation(
 @mcp.tool()
 def pai2_update_analysis_filter(min_intensity: float = 0.0, min_sn: float = 0.0) -> str:
     """min_intensity / min_sn を更新してPCAを再実行する。"""
-    if session.features is None:
+    if session_state.session.features is None:
         return "先に pai2_parser を実行してデータを読み込んでください。"
 
-    old_count = len(session.filtered_features or session.features)
+    old_count = len(session_state.session.filtered_features or session_state.session.features)
     old_pc1 = None
-    if session.last_pca_summary and session.last_pca_summary.get("explained_variance"):
+    if session_state.session.last_pca_summary and session_state.session.last_pca_summary.get("explained_variance"):
         try:
-            old_pc1 = float(session.last_pca_summary["explained_variance"]["PC1"].strip("%")) / 100.0
+            old_pc1 = float(session_state.session.last_pca_summary["explained_variance"]["PC1"].strip("%")) / 100.0
         except Exception:
             old_pc1 = None
 
@@ -1230,9 +1073,9 @@ def pai2_update_analysis_filter(min_intensity: float = 0.0, min_sn: float = 0.0)
     if min_sn:
         new_filter["min_sn"] = min_sn
 
-    session.apply_filter(new_filter)
-    summary, img_bytes = session.run_pca()
-    new_count = len(session.filtered_features or [])
+    session_state.session.apply_filter(new_filter)
+    summary, img_bytes = session_state.session.run_pca()
+    new_count = len(session_state.session.filtered_features or [])
 
     parts = [
         f"フィルタ更新: min_intensity={min_intensity}, min_sn={min_sn}",
@@ -1257,14 +1100,14 @@ def pai2_update_analysis_filter(min_intensity: float = 0.0, min_sn: float = 0.0)
             pass
 
     parts.append("フィルタ後の上位寄与代謝物:")
-    top_list = get_top_contributors(session.filtered_features, session.pca_result, top_n=5)
+    top_list = get_top_contributors(session_state.session.filtered_features, session_state.session.pca_result, top_n=5)
     parts.append(json.dumps(top_list, indent=2, ensure_ascii=False))
 
     return "\n".join(parts)
 
 
 def _pca_scatter_arrays(plot: dict):
-    """session.last_pca_plot から散布図用の配列とラベルを取り出す（純ロジック）。"""
+    """session_state.session.last_pca_plot から散布図用の配列とラベルを取り出す（純ロジック）。"""
     points = plot.get("points", [])
     xs = [float(p["x"]) for p in points]
     ys = [float(p["y"]) for p in points]
@@ -1283,7 +1126,7 @@ def _remember_arf_pca_plot(
     title: str,
     groups: dict[str, str | None] | None = None,
 ) -> None:
-    """ARF系PCAのサンプル別スコアを session.last_pca_plot に保存する。"""
+    """ARF系PCAのサンプル別スコアを session_state.session.last_pca_plot に保存する。"""
     coords = pca_result.get("components", [])
     evr = pca_result["explained_variance_ratio"]
     groups = groups or {}
@@ -1294,7 +1137,7 @@ def _remember_arf_pca_plot(
             if groups.get(name) is not None:
                 point["group"] = groups[name]
             points.append(point)
-    session.last_pca_plot = {
+    session_state.session.last_pca_plot = {
         "title": title,
         "x_label": f"PC1 ({evr[0] * 100:.2f}%)",
         "y_label": f"PC2 ({evr[1] * 100:.2f}%)",
@@ -1439,26 +1282,26 @@ def _format_arf_tag_filter(stats: dict | None) -> str:
 def arf_list_tags() -> str:
     """List MS-DIAL tags discovered for the currently loaded ARF dataset."""
     if (
-        session.features is None
-        or session.arf_tag_index is None
-        or not str(session.current_file_path or "").lower().endswith(".arf")
+        session_state.session.features is None
+        or session_state.session.arf_tag_index is None
+        or not str(session_state.session.current_file_path or "").lower().endswith(".arf")
     ):
         return "先に arf_parser を実行してARFデータとタグファイルを読み込んでください。"
-    return json.dumps(session.arf_tag_index.get("summary", {}), ensure_ascii=False, indent=2)
+    return json.dumps(session_state.session.arf_tag_index.get("summary", {}), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
 def arf_list_classes() -> str:
     """List MS-DIAL Class ID values available for the current ARF dataset."""
     if (
-        session.features is None
-        or session.arf_class_index is None
-        or not str(session.current_file_path or "").lower().endswith(".arf")
+        session_state.session.features is None
+        or session_state.session.arf_class_index is None
+        or not str(session_state.session.current_file_path or "").lower().endswith(".arf")
     ):
         return "先に arf_parser を実行してARFデータとClass IDメタデータを読み込んでください。"
-    class_counts = session.arf_class_index.get("class_counts", {})
+    class_counts = session_state.session.arf_class_index.get("class_counts", {})
     return json.dumps({
-        "mddata_path": session.arf_class_index["mddata_path"],
+        "mddata_path": session_state.session.arf_class_index["mddata_path"],
         "class_counts": class_counts,
         "factors_by_position": _class_factors_by_position(class_counts.keys()),
     }, ensure_ascii=False, indent=2)
@@ -1472,12 +1315,12 @@ def _pp_build_matrix(features, props):
 @mcp.tool()
 def arf_list_sample_roles() -> str:
     """ロード済み ARF のサンプルを sample/qc/blank に分類して返す（前処理の適用前確認）。"""
-    if session.filtered_features is None:
+    if session_state.session.filtered_features is None:
         return json.dumps({"status": "error",
                            "message": "先に arf_parser で ARF を読み込んでください。"},
                           ensure_ascii=False, indent=2)
-    _, sample_names, _ = _pp_build_matrix(session.filtered_features, ["height"])
-    meta = _build_sample_meta(sample_names, session.arf_class_index)
+    _, sample_names, _ = _pp_build_matrix(session_state.session.filtered_features, ["height"])
+    meta = _build_sample_meta(sample_names, session_state.session.arf_class_index)
     counts = {"sample": 0, "qc": 0, "blank": 0}
     for m in meta.values():
         counts[m["role"]] = counts.get(m["role"], 0) + 1
@@ -1496,15 +1339,15 @@ def arf_preprocess(
 ) -> str:
     """ロード済み ARF 行列に前処理レシピを適用し、session を更新して報告を返す。
 
-    以降の PCA/差次的解析は session.feature_matrix（前処理後）を消費する。
+    以降の PCA/差次的解析は session_state.session.feature_matrix（前処理後）を消費する。
     """
-    if session.filtered_features is None:
+    if session_state.session.filtered_features is None:
         return json.dumps({"status": "error",
                            "message": "先に arf_parser で ARF を読み込んでください。"},
                           ensure_ascii=False, indent=2)
     props = props or ["height"]
-    matrix, sample_names, feature_names = _pp_build_matrix(session.filtered_features, props)
-    meta = _build_sample_meta(sample_names, session.arf_class_index)
+    matrix, sample_names, feature_names = _pp_build_matrix(session_state.session.filtered_features, props)
+    meta = _build_sample_meta(sample_names, session_state.session.arf_class_index)
     roles = {n: meta[n]["role"] for n in sample_names}
     run_order = {n: meta[n]["run_order"] for n in sample_names}
 
@@ -1525,11 +1368,11 @@ def arf_preprocess(
         matrix, sample_names, roles, run_order, recipe,
     )
     kept_feature_names = [feature_names[i] for i in kept_idx]
-    session.feature_matrix = matrix2
-    session.pp_sample_names = sample_names
-    session.pp_feature_names = kept_feature_names
-    session.sample_meta = meta
-    session.preprocessing_recipe = recipe
+    session_state.session.feature_matrix = matrix2
+    session_state.session.pp_sample_names = sample_names
+    session_state.session.pp_feature_names = kept_feature_names
+    session_state.session.sample_meta = meta
+    session_state.session.preprocessing_recipe = recipe
     if len(qc_batches) > 1:
         report.setdefault("caveats", []).append(
             "プールQC が複数バッチ/層に分かれています。全体一律のドリフト補正は近似です。"
@@ -1547,7 +1390,7 @@ def arf_preprocess(
 
 
 def _pp_has_preprocessed() -> bool:
-    return getattr(session, "feature_matrix", None) is not None
+    return getattr(session_state.session, "feature_matrix", None) is not None
 
 
 @mcp.tool()
@@ -1564,15 +1407,15 @@ def arf_pca_preprocessed(
     if not _pp_has_preprocessed():
         return ["前処理後の行列がありません。先に arf_preprocess を実行してください。"]
     from arf_reader import run_pca, get_pca_loading_features
-    matrix = session.feature_matrix
-    sample_names = session.pp_sample_names
-    feature_names = session.pp_feature_names
+    matrix = session_state.session.feature_matrix
+    sample_names = session_state.session.pp_sample_names
+    feature_names = session_state.session.pp_feature_names
     try:
         pca_result = run_pca(matrix, n_components=components, log_transform=log_transform)
     except Exception as exc:
         return [f"PCA 実行に失敗しました: {exc}"]
 
-    sample_groups = assign_sample_groups(sample_names, session.arf_class_index, group_levels)
+    sample_groups = assign_sample_groups(sample_names, session_state.session.arf_class_index, group_levels)
     plot_block = _format_pca_plot_block(
         pca_result, sample_names,
         title="PCA (preprocessed ARF)",
@@ -1582,14 +1425,14 @@ def arf_pca_preprocessed(
     _remember_arf_pca_plot(pca_result, sample_names,
                            title="PCA (preprocessed ARF)", groups=sample_groups)
     loading_features = get_pca_loading_features(
-        pca_result, session.features or [], feature_names, top_n=top_features,
+        pca_result, session_state.session.features or [], feature_names, top_n=top_features,
     )
     loadings_block = _format_pca_loadings_md(
         loading_features, header="#### 📊 PCA Loadings 寄与度分析（前処理後）\n",
     )
     text = (
         f"### 📈 前処理後 ARF PCA 解析\n"
-        f"- **前処理レシピ**: {session.preprocessing_recipe}\n"
+        f"- **前処理レシピ**: {session_state.session.preprocessing_recipe}\n"
         f"- **PCA入力行列の形状**: {tuple(matrix.shape)} (サンプル数 x 特徴量数)\n"
         f"- **PC1 説明分散比**: {pca_result['explained_variance_ratio'][0]*100:.2f}%\n"
         f"- **PC2 説明分散比**: {pca_result['explained_variance_ratio'][1]*100:.2f}%\n"
@@ -1649,13 +1492,13 @@ def arf_parser(
     from arf_reader import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
 
     try:
-        deserialized_and_formatted_data = session.load_data(file_path, tag_directory=tag_directory)
+        deserialized_and_formatted_data = session_state.session.load_data(file_path, tag_directory=tag_directory)
         if not isinstance(deserialized_and_formatted_data, list):
             return ["デシリアライズ結果がリストではありません。"]
 
         analysis_data, tag_filter_stats = filter_arf_by_tags(
             deserialized_and_formatted_data,
-            session.arf_tag_index or {},
+            session_state.session.arf_tag_index or {},
             tag_labels,
             mode=tag_mode,
             scope=tag_scope,
@@ -1666,13 +1509,13 @@ def arf_parser(
 
         analysis_data, class_filter_stats = filter_arf_by_class_ids(
             analysis_data,
-            session.arf_class_index,
+            session_state.session.arf_class_index,
             class_ids,
             missing_sample_policy=class_missing_sample_policy,
         )
         if not analysis_data:
             return ["指定されたClass IDに一致するARFサンプルが見つかりませんでした。arf_list_classes で利用可能なClass IDと件数を確認してください。"]
-        session.filtered_features = analysis_data
+        session_state.session.filtered_features = analysis_data
 
         peak_df = extract_peak_properties(analysis_data)
         avg_samples = 0
@@ -1693,7 +1536,7 @@ def arf_parser(
 
         # サンプル別の群ラベル（既定=完全Class ID、group_levels 指定時はその因子で統合）
         sample_groups = assign_sample_groups(
-            sample_names, session.arf_class_index, group_levels,
+            sample_names, session_state.session.arf_class_index, group_levels,
         )
 
         # PCAスコアプロット用データ（共通ヘルパー）
@@ -1716,7 +1559,7 @@ def arf_parser(
 
         # Loadings 寄与上位（arf_reader の構造化関数 + 共通整形ヘルパー）
         loading_features = get_pca_loading_features(
-            pca_result, session.features, feature_names, top_n=top_features,
+            pca_result, session_state.session.features, feature_names, top_n=top_features,
         )
         loadings_summary_text = _format_pca_loadings_md(
             loading_features, header="#### 📊 PCA Loadings 寄与度分析 (各極値トップ件数)\n",
@@ -1727,9 +1570,9 @@ def arf_parser(
             f"### 📈 ARF 多変量PCA解析完了: {Path(file_path).name}\n"
             f"- **読み込んだ総スポット数**: {len(deserialized_and_formatted_data)}\n"
             f"{_format_arf_parse_summary(deserialized_and_formatted_data)}"
-            f"{_format_arf_class_summary(session.arf_class_index)}"
+            f"{_format_arf_class_summary(session_state.session.arf_class_index)}"
             f"{_format_arf_class_filter(class_filter_stats)}"
-            f"{_format_arf_tag_summary(session.arf_tag_index)}"
+            f"{_format_arf_tag_summary(session_state.session.arf_tag_index)}"
             f"{_format_arf_tag_filter(tag_filter_stats)}"
             f"- **抽出された総ピークレコード数**: {len(peak_df)}\n"
             f"- **平均サンプル数/スポット**: {avg_samples:.2f}\n"
@@ -1787,7 +1630,7 @@ def arf_re_pca(
     - class_missing_sample_policy: Class IDメタデータ未対応サンプルの扱い。error/exclude（既定 error）
     - group_levels: [任意] PCA点の色分け因子の値トークン（例: `["gf","spf"]`）。未指定なら完全Class IDで色分け。
     """
-    if session.features is None:
+    if session_state.session.features is None:
         return ["先に arf_parser を実行してデータを読み込んでください。"]
         
     # 外部モジュールからのインポート
@@ -1795,11 +1638,11 @@ def arf_re_pca(
 
     try:
         # 1. セッションの全データから条件に合うスポットを抽出（共通ヘルパー _filter_arf_spots を利用）
-        filtered_spots = _filter_arf_spots(session.features, min_intensity, annotation_keyword)
+        filtered_spots = _filter_arf_spots(session_state.session.features, min_intensity, annotation_keyword)
 
         filtered_spots, tag_filter_stats = filter_arf_by_tags(
             filtered_spots,
-            session.arf_tag_index or {},
+            session_state.session.arf_tag_index or {},
             tag_labels,
             mode=tag_mode,
             scope=tag_scope,
@@ -1808,7 +1651,7 @@ def arf_re_pca(
 
         filtered_spots, class_filter_stats = filter_arf_by_class_ids(
             filtered_spots,
-            session.arf_class_index,
+            session_state.session.arf_class_index,
             class_ids,
             missing_sample_policy=class_missing_sample_policy,
         )
@@ -1825,7 +1668,7 @@ def arf_re_pca(
             ]
 
         # フィルタリング後のデータをセッションの状態に反映
-        session.filtered_features = filtered_spots
+        session_state.session.filtered_features = filtered_spots
         
         # 統計情報の計算
         peak_df = extract_peak_properties(filtered_spots)
@@ -1839,11 +1682,11 @@ def arf_re_pca(
             return ["[ERROR] フィルタ後のデータから PCA 用行列を構築できませんでした。データ数が少なすぎる可能性があります。"]
 
         pca_result = run_pca(matrix, n_components=components, log_transform=log_transform)
-        session.pca_result = pca_result
+        session_state.session.pca_result = pca_result
 
         # サンプル別の群ラベル（既定=完全Class ID、group_levels 指定時はその因子で統合）
         sample_groups = assign_sample_groups(
-            sample_names, session.arf_class_index, group_levels,
+            sample_names, session_state.session.arf_class_index, group_levels,
         )
 
         # 3. スコアプロット用データ（共通ヘルパー）
@@ -1863,9 +1706,9 @@ def arf_re_pca(
             groups=sample_groups,
         )
 
-        # 4. Loadings 寄与上位（メタデータは大元の session.features から取得し index ずれを防止）
+        # 4. Loadings 寄与上位（メタデータは大元の session_state.session.features から取得し index ずれを防止）
         loading_features = get_pca_loading_features(
-            pca_result, session.features, feature_names, top_n=top_features,
+            pca_result, session_state.session.features, feature_names, top_n=top_features,
         )
         loadings_summary_text = _format_pca_loadings_md(
             loading_features, header=f"#### 📊 PCA Loadings 寄与度分析 (各極値トップ {top_features} 件)\n",
@@ -1875,13 +1718,13 @@ def arf_re_pca(
         pc2_var = pca_result['explained_variance_ratio'][1] * 100
 
         # 5. レポート全体の結合
-        file_name = Path(session.current_file_path).name if session.current_file_path else "Unknown"
+        file_name = Path(session_state.session.current_file_path).name if session_state.session.current_file_path else "Unknown"
         output_text = (
             f"### 🔄 ARF フィルタ適用・PCA再計算完了: {file_name}\n"
             f"- **適用フィルタ条件**: 強度最小値=`{min_intensity}`, アノテーションキーワード=`'{annotation_keyword or '指定なし'}'`\n"
             f"{_format_arf_class_filter(class_filter_stats)}"
             f"{_format_arf_tag_filter(tag_filter_stats)}"
-            f"- **フィルタ後の有効スポット数**: `{len(filtered_spots)}` / {len(session.features)} (データ残存率: {len(filtered_spots)/len(session.features)*100:.1f}%)\n"
+            f"- **フィルタ後の有効スポット数**: `{len(filtered_spots)}` / {len(session_state.session.features)} (データ残存率: {len(filtered_spots)/len(session_state.session.features)*100:.1f}%)\n"
             f"- **抽出された総ピークレコード数**: {len(peak_df)}\n"
             f"- **平均サンプル数/スポット**: {avg_samples:.2f}\n"
             f"- **PCA入力行列の形状**: {matrix.shape} (サンプル数 x 特徴量数)\n"
@@ -1910,26 +1753,26 @@ def arf_differential(
     """前処理後行列で差次的解析を行う。group_a/group_b 指定時は2群 Welch、
     group_factor のみ指定時はその因子の全水準で一元配置 ANOVA。
 
-    先に arf_preprocess を実行して session.feature_matrix を用意すること
+    先に arf_preprocess を実行して session_state.session.feature_matrix を用意すること
     （未実行なら未正規化 caveat 付きで生行列にフォールバックする）。
 
     - log_transform: [既定 True] log2(x+1) 空間で検定する。MS 強度は対数正規に近く、
       生強度での t 検定/ANOVA は正規性仮定を外れやすいため既定で有効。2群では log2FC も
       log2 空間の群平均差（＝幾何平均比）になる。生スケールで検定したい場合のみ False。
     """
-    matrix = getattr(session, "feature_matrix", None)
+    matrix = getattr(session_state.session, "feature_matrix", None)
     if matrix is None:
         return json.dumps({"status": "error",
                            "message": "先に arf_preprocess を実行してください（前処理後行列が必要）。"},
                           ensure_ascii=False, indent=2)
-    sample_names = session.pp_sample_names
-    feature_names = session.pp_feature_names
-    meta = session.sample_meta or {}
+    sample_names = session_state.session.pp_sample_names
+    feature_names = session_state.session.pp_feature_names
+    meta = session_state.session.sample_meta or {}
     group_labels = [(meta.get(n) or {}).get("group") for n in sample_names]
     batch_labels = [(meta.get(n) or {}).get("batch") for n in sample_names]
 
     caveats: list[str] = []
-    recipe = session.preprocessing_recipe or {}
+    recipe = session_state.session.preprocessing_recipe or {}
     if recipe.get("normalize", "none") == "none":
         caveats.append("正規化が未適用のため log2FC は測定量差を含み得ます（arf_preprocess の normalize を検討）。")
     if log_transform:
@@ -1967,7 +1810,7 @@ def arf_differential(
             caveats.append(
                 f"検定できた特徴は {n_tested}/{len(feature_names)} 件のみ（多くが p=NaN）。"
                 "群内 n 不足・分散0・欠損が多い可能性があります（前処理の見直しを検討）。")
-        session.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
+        session_state.session.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
                                      "results": results, "volcano": volcano}
         payload = {"status": "success", "kind": "two_group",
                    "group_a": group_a, "group_b": group_b,
@@ -1982,7 +1825,7 @@ def arf_differential(
             caveats.append(
                 "検定可能な特徴が0件（全特徴で p=NaN）。水準が空・分散0・または正規化で試料が"
                 "NaN化した可能性があります。『有意0件』を『群間差なし』と解釈しないでください。")
-        session.last_differential = {"kind": "anova", "results": results, "volcano": []}
+        session_state.session.last_differential = {"kind": "anova", "results": results, "volcano": []}
         payload = {"status": "success", "kind": "anova",
                    "n_tested": n_tested,
                    "n_significant": len(sig),
@@ -2022,8 +1865,8 @@ def arf2_parser(file_path: str | None = None) -> list:
         text_summary = generate_text_summary(deserialized_data)
         
         # 将来の検索やフィルタリング用に、カタログデータをセッションに保持しておく
-        session.current_file_path = file_path
-        session.features = deserialized_data 
+        session_state.session.current_file_path = file_path
+        session_state.session.features = deserialized_data 
 
         output_text = (
             f"### 📂 ARF2 カタログデータのパース完了: {Path(file_path).name}\n"
@@ -2085,7 +1928,7 @@ def eicaef_parser(file_path: str | None = None) -> str:
         return "データディレクトリに .aef ファイルが見つかりませんでした。"
 
     try:
-        parsed = session.load_eic_data(file_path)
+        parsed = session_state.session.load_eic_data(file_path)
         if not isinstance(parsed, list):
             return "EIC解析結果がリストではありません。"
 
@@ -2112,7 +1955,7 @@ def eicaef_top_peak_tops(file_path: str | None = None, top_n: int = 20) -> str:
         return "データディレクトリに .aef ファイルが見つかりませんでした。"
 
     try:
-        parsed = session.load_eic_data(file_path)
+        parsed = session_state.session.load_eic_data(file_path)
         if not isinstance(parsed, list):
             return "EIC解析結果がリストではありません。"
 
@@ -2141,7 +1984,7 @@ def eicaef_search_by_mz_range(file_path: str | None = None, min_mz: float = 0.0,
         return "データディレクトリに .aef ファイルが見つかりませんでした。"
 
     try:
-        parsed = session.load_eic_data(file_path)
+        parsed = session_state.session.load_eic_data(file_path)
         if not isinstance(parsed, list):
             return "EIC解析結果がリストではありません。"
 
@@ -2172,7 +2015,7 @@ def eicaef_search_by_rt_range(file_path: str | None = None, min_rt: float = 0.0,
         return "データディレクトリに .aef ファイルが見つかりませんでした。"
 
     try:
-        parsed = session.load_eic_data(file_path)
+        parsed = session_state.session.load_eic_data(file_path)
         if not isinstance(parsed, list):
             return "EIC解析結果がリストではありません。"
 

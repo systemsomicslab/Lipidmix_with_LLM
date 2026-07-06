@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 import server
+import session_state
 
 
 def make_class_index() -> dict:
@@ -64,7 +65,7 @@ class ServerClassFilterTests(unittest.TestCase):
     def setUp(self):
         self.session = FakeSession()
         self.patches = [
-            patch.object(server, "session", self.session),
+            patch.object(session_state, "session", self.session),
             patch.object(server.arf_reader, "extract_peak_properties", fake_extract_peak_properties),
             patch.object(server.arf_reader, "build_pca_matrix", fake_build_pca_matrix),
             patch.object(server.arf_reader, "run_pca", fake_run_pca),

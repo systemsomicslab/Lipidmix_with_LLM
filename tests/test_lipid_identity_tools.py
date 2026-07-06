@@ -2,11 +2,12 @@ import json
 import unittest
 
 import server
+import session_state
 
 
 class TestVerifyHasIdentityBlock(unittest.TestCase):
     def setUp(self):
-        server.session = server.AnalysisSession()
+        session_state.session = server.AnalysisSession()
 
     def test_dossier_includes_identity_normalization(self):
         feat = {"id": 1, "name": "PC 34:1", "ontology": "PC",

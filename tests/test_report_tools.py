@@ -6,6 +6,7 @@ import matplotlib
 matplotlib.use("Agg")  # import server が pyplot を読む前にヘッドレス指定
 
 import server
+import session_state
 import mcp_core
 import knowledge_store
 
@@ -134,7 +135,7 @@ class PcaPlotHelperTests(unittest.TestCase):
         self.assertEqual(title, "T")
 
     def test_remember_arf_pca_plot_builds_session_state(self):
-        saved = server.session.last_pca_plot
+        saved = session_state.session.last_pca_plot
         try:
             server._remember_arf_pca_plot(
                 {"components": [[1.0, 2.0], [3.0, 4.0]],
@@ -142,12 +143,12 @@ class PcaPlotHelperTests(unittest.TestCase):
                 ["s1", "s2"],
                 "PCA Score Plot (x.arf)",
             )
-            plot = server.session.last_pca_plot
+            plot = session_state.session.last_pca_plot
             self.assertEqual(plot["title"], "PCA Score Plot (x.arf)")
             self.assertEqual(plot["points"][0], {"x": 1.0, "y": 2.0, "label": "s1"})
             self.assertIn("50.00%", plot["x_label"])
         finally:
-            server.session.last_pca_plot = saved
+            session_state.session.last_pca_plot = saved
 
 
 class SavePcaFigureTests(unittest.TestCase):
@@ -159,11 +160,11 @@ class SavePcaFigureTests(unittest.TestCase):
         mcp_core.DATA_DIR = self.tmp
         self._saved_env = os.environ.get("LIPIDMIX_REPORTS_DIR")
         os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "reports_fallback")
-        self._saved_plot = server.session.last_pca_plot
+        self._saved_plot = session_state.session.last_pca_plot
 
     def tearDown(self):
         mcp_core.DATA_DIR = self._saved_data_dir
-        server.session.last_pca_plot = self._saved_plot
+        session_state.session.last_pca_plot = self._saved_plot
         if self._saved_env is None:
             os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
         else:
@@ -171,7 +172,7 @@ class SavePcaFigureTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_save_pca_figure_writes_png_and_returns_relpath(self):
-        server.session.last_pca_plot = {
+        session_state.session.last_pca_plot = {
             "title": "T", "x_label": "PC1", "y_label": "PC2",
             "points": [
                 {"x": 1.0, "y": 2.0, "label": "s1"},
@@ -184,7 +185,7 @@ class SavePcaFigureTests(unittest.TestCase):
         self.assertIn("figures/a-1_pca.png", msg)
 
     def test_save_pca_figure_guidance_when_no_plot(self):
-        server.session.last_pca_plot = None
+        session_state.session.last_pca_plot = None
         msg = server.save_pca_figure("a-1")
         self.assertIn("PCA", msg)
         self.assertFalse((self.tmp / "reports" / "figures").exists())

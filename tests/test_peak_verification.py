@@ -161,6 +161,7 @@ import tempfile
 from pathlib import Path
 
 import server
+import session_state
 from pai2_reader import IonMode
 
 
@@ -182,34 +183,34 @@ def _feat(**over):
 
 class VerifyPeakToolTests(unittest.TestCase):
     def setUp(self):
-        self._orig_features = server.session.filtered_features
+        self._orig_features = session_state.session.filtered_features
         self._orig_knowledge = server.KNOWLEDGE_DIR
         self._tmp = tempfile.TemporaryDirectory()
         server.KNOWLEDGE_DIR = Path(self._tmp.name) / "knowledge"
         server.KNOWLEDGE_DIR.mkdir()
 
     def tearDown(self):
-        server.session.filtered_features = self._orig_features
+        session_state.session.filtered_features = self._orig_features
         server.KNOWLEDGE_DIR = self._orig_knowledge
         self._tmp.cleanup()
 
     def test_error_when_not_loaded(self):
-        server.session.filtered_features = None
+        session_state.session.filtered_features = None
         out = json.loads(server.verify_peak_annotation(metabolite_id="1"))
         self.assertEqual(out["status"], "error")
 
     def test_error_when_no_selector(self):
-        server.session.filtered_features = [_feat()]
+        session_state.session.filtered_features = [_feat()]
         out = json.loads(server.verify_peak_annotation())
         self.assertEqual(out["status"], "error")
 
     def test_not_found(self):
-        server.session.filtered_features = [_feat()]
+        session_state.session.filtered_features = [_feat()]
         out = json.loads(server.verify_peak_annotation(metabolite_id="999"))
         self.assertEqual(out["status"], "not_found")
 
     def test_success_shape_and_bands(self):
-        server.session.filtered_features = [_feat()]
+        session_state.session.filtered_features = [_feat()]
         out = json.loads(server.verify_peak_annotation(metabolite_id="1"))
         self.assertEqual(out["status"], "success")
         self.assertEqual(out["identity"]["name"], "PC 34:1")
@@ -219,12 +220,12 @@ class VerifyPeakToolTests(unittest.TestCase):
         self.assertIn("class_token", out["biological_plausibility"])
 
     def test_unknown_formula_degrades_to_unknown_band(self):
-        server.session.filtered_features = [_feat(formula="Unknown")]
+        session_state.session.filtered_features = [_feat(formula="Unknown")]
         out = json.loads(server.verify_peak_annotation(metabolite_id="1"))
         self.assertEqual(out["analytical_checks"]["mass_error"]["band"], "UNKNOWN")
 
     def test_ether_caveat_surfaced(self):
-        server.session.filtered_features = [_feat(name="PE O-38:5", ontology="PE", id=2)]
+        session_state.session.filtered_features = [_feat(name="PE O-38:5", ontology="PE", id=2)]
         out = json.loads(server.verify_peak_annotation(metabolite_id="2"))
         self.assertTrue(out["biological_plausibility"]["caveats"])
 
@@ -237,7 +238,7 @@ class VerifyPeakToolTests(unittest.TestCase):
             "tags: [annotation, plasmalogen]\n---\n\n本文\n",
             encoding="utf-8",
         )
-        server.session.filtered_features = [_feat(name="PE 38:5", ontology="PE", id=3)]
+        session_state.session.filtered_features = [_feat(name="PE 38:5", ontology="PE", id=3)]
         out = json.loads(server.verify_peak_annotation(metabolite_id="3"))
         self.assertIn(
             "pe-p-vs-pe-o-annotation",
@@ -245,7 +246,7 @@ class VerifyPeakToolTests(unittest.TestCase):
         )
 
     def test_multiple_matches_wrapped(self):
-        server.session.filtered_features = [_feat(id=1), _feat(id=2)]
+        session_state.session.filtered_features = [_feat(id=1), _feat(id=2)]
         out = json.loads(server.verify_peak_annotation(metabolite_name="PC"))
         self.assertEqual(out["status"], "success")
         self.assertIn("matches", out)
