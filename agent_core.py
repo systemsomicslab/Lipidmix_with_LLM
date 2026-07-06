@@ -6,8 +6,11 @@ MCP サーバと phase_router は無改変で import する。ツール実行は
 Ollama 非依存でテストできる。
 """
 import json
+import os
 from dataclasses import dataclass
 from typing import Callable
+
+import httpx
 
 import phase_router
 from phase_router import RouterState
@@ -47,6 +50,27 @@ def execute_tool(name: str, args: dict) -> str:
     if isinstance(result, str):
         return result
     return json.dumps(result, ensure_ascii=False)
+
+
+AGENT_MODEL = os.environ.get("LIPIDMIX_AGENT_MODEL", "qwen3:14b")
+
+
+def ollama_chat(messages: list, tools: list) -> dict:
+    """Ollama /api/chat に tools 付きで問い合わせ、message dict を返す。
+
+    httpx 例外はここでは捕えず呼び出し側（run_turn 直下の REPL）に委ねる。
+    """
+    payload = {
+        "model": AGENT_MODEL,
+        "messages": messages,
+        "tools": tools,
+        "stream": False,
+        "think": False,
+        "options": {"temperature": 0},
+    }
+    resp = httpx.post(phase_router.OLLAMA_URL, json=payload, timeout=300)
+    resp.raise_for_status()
+    return resp.json()["message"]
 
 
 DEFAULT_SYSTEM = (
