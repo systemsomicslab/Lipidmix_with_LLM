@@ -9,6 +9,7 @@ import pandas as pd
 
 import server
 import session_state
+import path_resolvers
 
 
 def make_class_index() -> dict:
@@ -91,7 +92,7 @@ class ServerClassFilterTests(unittest.TestCase):
 
     def test_arf_re_pca_combines_class_filter_with_other_filters(self):
         self.session.current_file_path = "test.arf"
-        with patch.object(server, "_filter_arf_spots", return_value=self.session.features):
+        with patch.object(path_resolvers, "_filter_arf_spots", return_value=self.session.features):
             result = server.arf_re_pca(class_ids=["treated"])
 
         self.assertIn("Class IDフィルタ**: `treated`", result[0])
@@ -101,7 +102,7 @@ class ServerClassFilterTests(unittest.TestCase):
 
     def test_arf_re_pca_plot_includes_group_label(self):
         self.session.current_file_path = "test.arf"
-        with patch.object(server, "_filter_arf_spots", return_value=self.session.features):
+        with patch.object(path_resolvers, "_filter_arf_spots", return_value=self.session.features):
             result = server.arf_re_pca(group_levels=["control"])
         self.assertIn('"group": "control"', result[0])
         self.assertIn('"group": "other"', result[0])
