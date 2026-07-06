@@ -6,9 +6,12 @@
 1点のみ（DI）で、テストはフェイクを注入して Ollama 非依存で検証する。
 """
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Callable
+
+import httpx
 
 # フェーズ → そのフェーズで露出するツール名。全35ツールの厳密な分割
 # （tests/test_phase_router.py の test_partition_is_exact が保証）。
@@ -112,3 +115,59 @@ def route(
 
     tool_names = _dedup(PHASES[phase] + CORE_TOOLS)
     return RouteResult(phase=phase, tool_names=tool_names, reason=reason)
+
+
+OLLAMA_URL = os.environ.get("LIPIDMIX_OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
+CLASSIFIER_MODEL = os.environ.get("LIPIDMIX_ROUTER_MODEL", "qwen3:14b")
+
+# 分類器プロンプト用の各フェーズ一行説明（キーは ANALYSIS_PHASES と一致させる）。
+PHASE_DESCRIPTIONS: dict[str, str] = {
+    "OBJECTIVE": "解析目的の記録・更新、知識カバレッジ(GAP)の確認",
+    "ARF": "ARFアライメント行列のPCA・前処理・差次的解析・クラス/タグ/ロール一覧",
+    "ARF2": "ARF2オーバービューのパースと identity 注釈",
+    "PAI2": "PAI2ピークレベルのパース・上位代謝物・詳細確認・フィルタ更新",
+    "EIC": "EIC/AEFクロマトのパース・m/z/RT範囲検索・ピークトップ",
+    "LITERATURE": "文献検索(Europe PMC)と知識ノートのステージ/レビュー/昇格/却下",
+    "FIGURES": "PCA/ボルケーノ図の保存・レポート執筆・ピークアノテーション検証",
+}
+
+
+def _parse_phase(text: str, candidates: list[str]) -> str | None:
+    """LLM 応答から既知フェーズ名を抽出する。完全一致 → 埋め込み一致の順。"""
+    stripped = text.strip().upper()
+    for c in candidates:
+        if c.upper() == stripped:
+            return c
+    for c in candidates:
+        if re.search(rf"\b{re.escape(c)}\b", text, re.IGNORECASE):
+            return c
+    return None
+
+
+def ollama_classify_fn(query: str, candidate_phases: list[str]) -> str:
+    """既定 classify_fn。qwen3:14b(think OFF, temp0) にフェーズを1つ選ばせる。
+
+    パースできなければ空文字を返し、route 側のフォールバックに委ねる。
+    """
+    listing = "\n".join(
+        f"- {p}: {PHASE_DESCRIPTIONS[p]}" for p in candidate_phases
+    )
+    system = (
+        "あなたはMS-DIALリピドミクス解析のルータです。ユーザーのクエリが属する"
+        "解析フェーズを、次の候補からちょうど1つ選び、フェーズ名のみを大文字で"
+        "答えてください（説明は不要）。\n" + listing
+    )
+    payload = {
+        "model": CLASSIFIER_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": query},
+        ],
+        "stream": False,
+        "think": False,
+        "options": {"temperature": 0},
+    }
+    resp = httpx.post(OLLAMA_URL, json=payload, timeout=120)
+    resp.raise_for_status()
+    content = resp.json()["message"].get("content") or ""
+    return _parse_phase(content, candidate_phases) or ""

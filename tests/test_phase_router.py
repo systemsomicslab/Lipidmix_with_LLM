@@ -30,6 +30,28 @@ class TestPhaseCoverage(unittest.TestCase):
         self.assertEqual(set(pr.ANALYSIS_PHASES), set(pr.PHASES) - {"ENTRY"})
 
 
+class TestParsePhase(unittest.TestCase):
+    cands = ["ARF", "PAI2", "EIC", "LITERATURE"]
+
+    def test_exact_match(self):
+        self.assertEqual(pr._parse_phase("PAI2", self.cands), "PAI2")
+
+    def test_whitespace_and_case(self):
+        self.assertEqual(pr._parse_phase("  pai2\n", self.cands), "PAI2")
+
+    def test_embedded_name(self):
+        self.assertEqual(
+            pr._parse_phase("このクエリのフェーズは LITERATURE です", self.cands),
+            "LITERATURE",
+        )
+
+    def test_unknown_returns_none(self):
+        self.assertIsNone(pr._parse_phase("わからない", self.cands))
+
+    def test_descriptions_cover_analysis_phases(self):
+        self.assertEqual(set(pr.PHASE_DESCRIPTIONS), set(pr.ANALYSIS_PHASES))
+
+
 class TestRoute(unittest.TestCase):
     @staticmethod
     def _fake(ret, spy=None):
