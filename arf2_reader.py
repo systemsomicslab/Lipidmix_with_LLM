@@ -1,4 +1,4 @@
-# test_arf2.py
+# arf2_reader.py
 import io
 import msgpack
 import lz4.block

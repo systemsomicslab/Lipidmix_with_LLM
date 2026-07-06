@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 
 import server
+import session_state
+import path_resolvers
 
 
 def make_class_index() -> dict:
@@ -64,11 +66,11 @@ class ServerClassFilterTests(unittest.TestCase):
     def setUp(self):
         self.session = FakeSession()
         self.patches = [
-            patch.object(server, "session", self.session),
-            patch.object(server.test_arf, "extract_peak_properties", fake_extract_peak_properties),
-            patch.object(server.test_arf, "build_pca_matrix", fake_build_pca_matrix),
-            patch.object(server.test_arf, "run_pca", fake_run_pca),
-            patch.object(server.test_arf, "get_pca_loading_features", return_value=[]),
+            patch.object(session_state, "session", self.session),
+            patch.object(server.arf_reader, "extract_peak_properties", fake_extract_peak_properties),
+            patch.object(server.arf_reader, "build_pca_matrix", fake_build_pca_matrix),
+            patch.object(server.arf_reader, "run_pca", fake_run_pca),
+            patch.object(server.arf_reader, "get_pca_loading_features", return_value=[]),
         ]
         for item in self.patches:
             item.start()
@@ -90,7 +92,7 @@ class ServerClassFilterTests(unittest.TestCase):
 
     def test_arf_re_pca_combines_class_filter_with_other_filters(self):
         self.session.current_file_path = "test.arf"
-        with patch.object(server, "_filter_arf_spots", return_value=self.session.features):
+        with patch.object(path_resolvers, "_filter_arf_spots", return_value=self.session.features):
             result = server.arf_re_pca(class_ids=["treated"])
 
         self.assertIn("Class IDフィルタ**: `treated`", result[0])
@@ -98,10 +100,39 @@ class ServerClassFilterTests(unittest.TestCase):
         rows = self.session.filtered_features[0]["AlignedPeakProperties"]
         self.assertEqual([row[1] for row in rows], ["sample_treated"])
 
+    def test_arf_re_pca_plot_includes_group_label(self):
+        self.session.current_file_path = "test.arf"
+        with patch.object(path_resolvers, "_filter_arf_spots", return_value=self.session.features):
+            result = server.arf_re_pca(group_levels=["control"])
+        self.assertIn('"group": "control"', result[0])
+        self.assertIn('"group": "other"', result[0])
+
     def test_arf_list_classes_returns_counts(self):
         self.session.current_file_path = "test.arf"
         payload = json.loads(server.arf_list_classes())
         self.assertEqual(payload["class_counts"], {"control": 1, "treated": 1})
+
+    def test_arf_list_classes_returns_factor_vocabulary(self):
+        self.session.current_file_path = "test.arf"
+        payload = json.loads(server.arf_list_classes())
+        self.assertEqual(set(payload["factors_by_position"]["0"]), {"control", "treated"})
+
+    def test_arf_parser_plot_includes_group_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arf_path = Path(tmp) / "test.arf"
+            arf_path.touch()
+            result = server.arf_parser(str(arf_path))
+        self.assertIn('"group": "control"', result[0])
+        self.assertIn('"group": "treated"', result[0])
+
+    def test_arf_parser_group_levels_collapse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arf_path = Path(tmp) / "test.arf"
+            arf_path.touch()
+            result = server.arf_parser(str(arf_path), group_levels=["control"])
+        # control -> "control"; treated has no listed level -> "other"
+        self.assertIn('"group": "control"', result[0])
+        self.assertIn('"group": "other"', result[0])
 
 
 if __name__ == "__main__":

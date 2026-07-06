@@ -1,0 +1,17 @@
+class_token	refmet_name
+fa	Fatty acids
+pc	Phosphatidylcholines
+lpc	Lysophosphatidylcholines
+pe	Phosphatidylethanolamines
+lpe	Lysophosphatidylethanolamines
+pg	Phosphatidylglycerols
+pi	Phosphatidylinositols
+ps	Phosphatidylserines
+tg	Triacylglycerols
+dg	Diacylglycerols
+mg	Monoacylglycerols
+cer	Ceramides
+sm	Sphingomyelins
+hexcer	Hexosylceramides
+ce	Cholesteryl esters
+che	Cholesteryl esters

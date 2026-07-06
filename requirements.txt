@@ -5,4 +5,7 @@ numpy
 matplotlib
 pandas
 scikit-learn
+scipy
+pygoslin
 httpx
+plotly

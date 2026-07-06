@@ -282,6 +282,23 @@ class PromoteRejectTests(unittest.TestCase):
             self.assertFalse(reject("missing", directory))
 
 
+class NoteLockTests(unittest.TestCase):
+    def test_write_note_removes_lock_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            ks_write_note(directory, "note", {"type": "knowledge"}, "body")
+            self.assertTrue((directory / "note.md").is_file())
+            self.assertFalse((directory / knowledge_store.LOCK_FILENAME).exists())
+
+    def test_directory_lock_times_out_when_already_locked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / knowledge_store.LOCK_FILENAME).write_text("held", encoding="utf-8")
+            with self.assertRaises(TimeoutError):
+                with knowledge_store._directory_lock(directory, timeout=0.01):
+                    pass
+
+
 class DumpFrontmatterTests(unittest.TestCase):
     def test_roundtrip_scalar_list_nested(self):
         meta = {

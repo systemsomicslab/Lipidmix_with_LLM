@@ -197,16 +197,28 @@ class MsdialTagsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Ambiguous timestamp-stripped"):
                 discover_arf_tag_index(arf_path, features)
 
-    def test_duplicate_files_for_one_sample_fail(self):
+    def test_duplicate_files_for_one_sample_uses_latest_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             arf_path = directory / "AlignmentResult_1_PeakProperties.arf"
             arf_path.touch()
             features = [{"AlignedPeakProperties": [[0, "sample_A", 10]]}]
-            write_tags(directory / "sample_A_tags.xml", "")
-            write_tags(directory / "sample_A_202605151012_tags.xml", "")
-            with self.assertRaisesRegex(ValueError, "Multiple tag files"):
-                discover_arf_tag_index(arf_path, features)
+            write_tags(directory / "sample_A_202501010101_tags.xml", "")
+            write_tags(
+                directory / "sample_A_202605151012_tags.xml",
+                '<Peak Id="10"><Tag>1</Tag></Peak>',
+            )
+
+            index = discover_arf_tag_index(arf_path, features)
+
+            self.assertEqual(index["summary"]["duplicate_sample_tag_files"], 1)
+            self.assertTrue(
+                index["sample_files"]["sample_a"]["path"].endswith(
+                    "sample_A_202605151012_tags.xml"
+                )
+            )
+            attach_tags_to_spots(features, index)
+            self.assertEqual(features[0]["SamplePeakTags"][0]["Tags"], ["Confirmed"])
 
     def test_custom_tag_directory_applies_to_alignment_file(self):
         with tempfile.TemporaryDirectory() as tmp:

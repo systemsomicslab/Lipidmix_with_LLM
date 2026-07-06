@@ -16,9 +16,12 @@ frontmatter、ドリフトゼロ）。関連ノートの取得は ``[[link]]`` �
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import re
+import time
 
 # --- 構造予算（サーバが機械強制する上限） ---
 MAX_HOP = 1            # 展開は直接リンク先までの1ホップ
@@ -329,8 +332,55 @@ def dump_frontmatter(meta: dict) -> str:
     return "\n".join(lines)
 
 
-def write_note(directory: str | Path, slug: str, meta: dict, body: str) -> Path:
-    """frontmatter 付きノートを書き出す（ディレクトリは必要なら作成）。"""
+LOCK_FILENAME = ".lipidmix.lock"
+LOCK_TIMEOUT_SECONDS = 10.0
+LOCK_POLL_SECONDS = 0.1
+
+
+@contextmanager
+def _directory_lock(directory: str | Path, timeout: float = LOCK_TIMEOUT_SECONDS):
+    """Serialize note writes in one directory using an atomic lock file."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    lock_path = directory / LOCK_FILENAME
+    deadline = time.monotonic() + timeout
+    fd: int | None = None
+    while fd is None:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"pid={os.getpid()}\n".encode("utf-8"))
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for note lock: {lock_path}")
+            time.sleep(LOCK_POLL_SECONDS)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+@contextmanager
+def _directory_locks(directories):
+    """Acquire multiple directory locks in a stable order."""
+    unique = sorted({str(Path(directory)) for directory in directories})
+    stack = []
+    try:
+        for directory in unique:
+            lock = _directory_lock(directory)
+            lock.__enter__()
+            stack.append(lock)
+        yield
+    finally:
+        while stack:
+            stack.pop().__exit__(None, None, None)
+
+
+def _write_note_unlocked(directory: str | Path, slug: str, meta: dict, body: str) -> Path:
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{slug}.md"
@@ -339,6 +389,13 @@ def write_note(directory: str | Path, slug: str, meta: dict, body: str) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def write_note(directory: str | Path, slug: str, meta: dict, body: str) -> Path:
+    """frontmatter 付きノートを書き出す（ディレクトリは必要なら作成）。"""
+    directory = Path(directory)
+    with _directory_lock(directory):
+        return _write_note_unlocked(directory, slug, meta, body)
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -529,26 +586,31 @@ def build_inbox_index(knowledge_dir: str | Path) -> str:
 
 def promote(slug: str, knowledge_dir: str | Path, claim_strength: str | None = None) -> Path:
     """``_inbox/<slug>.md`` を ``knowledge/<slug>.md`` へ昇格（status除去・強度設定可）。"""
-    src = inbox_dir(knowledge_dir) / f"{slug}.md"
-    if not src.is_file():
-        raise FileNotFoundError(f"inbox note not found: {slug}")
-    meta, body = parse_frontmatter(src.read_text(encoding="utf-8"))
-    meta.pop("status", None)
-    meta.setdefault("type", "knowledge")
-    if claim_strength:
-        meta["claim_strength"] = claim_strength
-    dest = write_note(knowledge_dir, slug, meta, body)
-    src.unlink()
-    return dest
+    knowledge_dir = Path(knowledge_dir)
+    inbox = inbox_dir(knowledge_dir)
+    src = inbox / f"{slug}.md"
+    with _directory_locks([knowledge_dir, inbox]):
+        if not src.is_file():
+            raise FileNotFoundError(f"inbox note not found: {slug}")
+        meta, body = parse_frontmatter(src.read_text(encoding="utf-8"))
+        meta.pop("status", None)
+        meta.setdefault("type", "knowledge")
+        if claim_strength:
+            meta["claim_strength"] = claim_strength
+        dest = _write_note_unlocked(knowledge_dir, slug, meta, body)
+        src.unlink()
+        return dest
 
 
 def reject(slug: str, knowledge_dir: str | Path) -> bool:
     """``_inbox/<slug>.md`` を破棄する。存在しなければ False。"""
-    src = inbox_dir(knowledge_dir) / f"{slug}.md"
-    if src.is_file():
-        src.unlink()
-        return True
-    return False
+    inbox = inbox_dir(knowledge_dir)
+    src = inbox / f"{slug}.md"
+    with _directory_lock(inbox):
+        if src.is_file():
+            src.unlink()
+            return True
+        return False
 
 
 # ======================================================================
