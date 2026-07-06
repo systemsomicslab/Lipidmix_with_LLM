@@ -13,7 +13,7 @@ import knowledge_store
 import peak_verification as pv
 import session_state
 from pai2_reader import get_signal_to_noise
-from mcp_core import KNOWLEDGE_DIR
+import mcp_core
 
 
 _IDENTITY_TABLES = None
@@ -45,7 +45,7 @@ def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
     caveats = pv.ether_caveats(name, ontology)
 
     if name.strip():
-        cov = knowledge_store.coverage([f"{name} {ontology}"], KNOWLEDGE_DIR, vocab)
+        cov = knowledge_store.coverage([f"{name} {ontology}"], mcp_core.KNOWLEDGE_DIR, vocab)
         matches_info = next(iter(cov.values()))["matches"]
         candidate_slugs = [m["slug"] for m in matches_info]
         bio = {

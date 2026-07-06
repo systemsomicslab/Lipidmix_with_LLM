@@ -161,6 +161,7 @@ import tempfile
 from pathlib import Path
 
 import server
+import mcp_core
 import session_state
 from pai2_reader import IonMode
 
@@ -184,14 +185,14 @@ def _feat(**over):
 class VerifyPeakToolTests(unittest.TestCase):
     def setUp(self):
         self._orig_features = session_state.session.filtered_features
-        self._orig_knowledge = server.KNOWLEDGE_DIR
+        self._orig_knowledge = mcp_core.KNOWLEDGE_DIR
         self._tmp = tempfile.TemporaryDirectory()
-        server.KNOWLEDGE_DIR = Path(self._tmp.name) / "knowledge"
-        server.KNOWLEDGE_DIR.mkdir()
+        mcp_core.KNOWLEDGE_DIR = Path(self._tmp.name) / "knowledge"
+        mcp_core.KNOWLEDGE_DIR.mkdir()
 
     def tearDown(self):
         session_state.session.filtered_features = self._orig_features
-        server.KNOWLEDGE_DIR = self._orig_knowledge
+        mcp_core.KNOWLEDGE_DIR = self._orig_knowledge
         self._tmp.cleanup()
 
     def test_error_when_not_loaded(self):
@@ -230,7 +231,7 @@ class VerifyPeakToolTests(unittest.TestCase):
         self.assertTrue(out["biological_plausibility"]["caveats"])
 
     def test_candidate_slugs_from_knowledge(self):
-        note = server.KNOWLEDGE_DIR / "pe-p-vs-pe-o-annotation.md"
+        note = mcp_core.KNOWLEDGE_DIR / "pe-p-vs-pe-o-annotation.md"
         note.write_text(
             "---\ntype: knowledge\n"
             "description: PE の P-/O- 表記の混同に注意\n"

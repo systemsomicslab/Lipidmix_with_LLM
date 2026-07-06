@@ -469,7 +469,7 @@ def verify_peak_annotation(
             indent=2,
         )
 
-    vocab = knowledge_store.load_vocab(KNOWLEDGE_DIR)
+    vocab = knowledge_store.load_vocab(mcp_core.KNOWLEDGE_DIR)
     dossiers = [_build_verification_dossier(feat, vocab) for feat in matches]
     payload = dossiers[0] if len(dossiers) == 1 else {"status": "success", "matches": dossiers}
     return json.dumps(payload, ensure_ascii=False, indent=2)

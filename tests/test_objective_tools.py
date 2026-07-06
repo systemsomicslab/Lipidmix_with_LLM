@@ -6,6 +6,7 @@ from pathlib import Path
 
 import knowledge_store as ks
 import server
+import mcp_core
 
 
 class ObjectiveStoreTests(unittest.TestCase):
@@ -68,18 +69,18 @@ class ObjectiveStoreTests(unittest.TestCase):
 
 class ObjectiveServerToolTests(unittest.TestCase):
     def setUp(self):
-        self._orig_analyses = server.ANALYSES_DIR
-        self._orig_knowledge = server.KNOWLEDGE_DIR
+        self._orig_analyses = mcp_core.ANALYSES_DIR
+        self._orig_knowledge = mcp_core.KNOWLEDGE_DIR
         self._tmp = tempfile.TemporaryDirectory()
         base = Path(self._tmp.name)
-        server.ANALYSES_DIR = base / "analyses"
-        server.KNOWLEDGE_DIR = base / "knowledge"
-        server.ANALYSES_DIR.mkdir()
-        server.KNOWLEDGE_DIR.mkdir()
+        mcp_core.ANALYSES_DIR = base / "analyses"
+        mcp_core.KNOWLEDGE_DIR = base / "knowledge"
+        mcp_core.ANALYSES_DIR.mkdir()
+        mcp_core.KNOWLEDGE_DIR.mkdir()
 
     def tearDown(self):
-        server.ANALYSES_DIR = self._orig_analyses
-        server.KNOWLEDGE_DIR = self._orig_knowledge
+        mcp_core.ANALYSES_DIR = self._orig_analyses
+        mcp_core.KNOWLEDGE_DIR = self._orig_knowledge
         self._tmp.cleanup()
 
     def test_record_then_coverage_then_log_churn(self):

@@ -8,7 +8,8 @@ from pathlib import Path
 
 import knowledge_store
 import paper_ingest
-from mcp_core import mcp, ANALYSES_DIR, KNOWLEDGE_DIR
+import mcp_core
+from mcp_core import mcp
 
 __all__ = [
     "record_objective",
@@ -25,11 +26,11 @@ __all__ = [
 
 def _resolve_objective_file(analysis_id: str) -> Path | None:
     """analyses/ から analysis_id 一致（frontmatter優先、無ければファイル名stem）を探す。"""
-    direct = ANALYSES_DIR / f"{analysis_id}.md"
+    direct = mcp_core.ANALYSES_DIR / f"{analysis_id}.md"
     if direct.is_file():
         return direct
-    if ANALYSES_DIR.is_dir():
-        for path in sorted(ANALYSES_DIR.glob("*.md")):
+    if mcp_core.ANALYSES_DIR.is_dir():
+        for path in sorted(mcp_core.ANALYSES_DIR.glob("*.md")):
             meta, _ = knowledge_store.parse_frontmatter(path.read_text(encoding="utf-8"))
             if str(meta.get("analysis_id", "")) == analysis_id:
                 return path
@@ -64,7 +65,7 @@ def record_objective(
         "confirmed_objective": confirmed_objective,
         "expected_biology": expected_biology or [],
     }
-    path = knowledge_store.write_objective(ANALYSES_DIR, analysis_id, meta_fields, sub_questions)
+    path = knowledge_store.write_objective(mcp_core.ANALYSES_DIR, analysis_id, meta_fields, sub_questions)
     return (
         f"objective を記録: {path.name}（confirmed={bool(confirmed_objective)}, "
         f"小問{len(sub_questions)}件）。knowledge_coverage('{analysis_id}') で GAP を確認。"
@@ -133,7 +134,7 @@ def knowledge_coverage(analysis_id: str) -> str:
         return f"小問(Q1..Qn)がありません: {path.name}（record_objective で sub_questions を渡す）"
 
     searched = knowledge_store.searched_labels(path)
-    cov = knowledge_store.coverage([text for _label, text in subqs], KNOWLEDGE_DIR)
+    cov = knowledge_store.coverage([text for _label, text in subqs], mcp_core.KNOWLEDGE_DIR)
     lines = [
         f"# カバレッジ: {analysis_id}",
         "GAP かつ未探索の小問が自動探索候補。COVERED は該当ノートを expand して真偽検証すること。",
@@ -164,7 +165,7 @@ def paper_search(query: str, max_results: int = 10) -> str:
         return candidates[0]["error"]
     candidates = paper_ingest.check_retraction(candidates)
     candidates = paper_ingest.deduplicate(
-        candidates, paper_ingest.existing_identifiers(KNOWLEDGE_DIR)
+        candidates, paper_ingest.existing_identifiers(mcp_core.KNOWLEDGE_DIR)
     )
     if not candidates:
         return (
@@ -203,7 +204,7 @@ def ingest_stage(
     """
     try:
         path = paper_ingest.stage_note(
-            KNOWLEDGE_DIR,
+            mcp_core.KNOWLEDGE_DIR,
             title=title,
             abstract=abstract,
             source=source,
@@ -223,7 +224,7 @@ def ingest_stage(
 @mcp.tool()
 def ingest_review_queue() -> str:
     """_inbox の保留中ノートを analysis_id×Qi でグルーピングして返す。"""
-    return knowledge_store.build_inbox_index(KNOWLEDGE_DIR)
+    return knowledge_store.build_inbox_index(mcp_core.KNOWLEDGE_DIR)
 
 
 @mcp.tool()
@@ -234,7 +235,7 @@ def ingest_promote(slug: str, claim_strength: str = "suggested", links: list[str
     関連ノートへの [[link]] を本文末尾に追記する。
     """
     try:
-        dest = knowledge_store.promote(slug, KNOWLEDGE_DIR, claim_strength=claim_strength)
+        dest = knowledge_store.promote(slug, mcp_core.KNOWLEDGE_DIR, claim_strength=claim_strength)
     except FileNotFoundError:
         return f"_inbox に見つかりません: {slug}"
     if links:
@@ -250,5 +251,5 @@ def ingest_promote(slug: str, claim_strength: str = "suggested", links: list[str
 @mcp.tool()
 def ingest_reject(slug: str) -> str:
     """_inbox の保留ノートを破棄する。"""
-    ok = knowledge_store.reject(slug, KNOWLEDGE_DIR)
+    ok = knowledge_store.reject(slug, mcp_core.KNOWLEDGE_DIR)
     return f"却下（破棄）: {slug}" if ok else f"_inbox に見つかりません: {slug}"

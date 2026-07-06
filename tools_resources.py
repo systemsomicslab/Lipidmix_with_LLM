@@ -5,7 +5,8 @@ index・expand、knowledge inbox。
 `import tools_resources` するだけでよい。tools_* / server は import しない。
 """
 import knowledge_store
-from mcp_core import mcp, OUTPUT_FORMAT_DOC, KNOWLEDGE_DIR, PLAYBOOK_DIR
+import mcp_core
+from mcp_core import mcp, OUTPUT_FORMAT_DOC, PLAYBOOK_DIR
 
 
 @mcp.resource(
@@ -44,7 +45,7 @@ def output_format_reference() -> str:
 )
 def knowledge_index() -> str:
     """論文由来の宣言的知識ノートの1行索引を返す。"""
-    return knowledge_store.build_index(KNOWLEDGE_DIR, "knowledge")
+    return knowledge_store.build_index(mcp_core.KNOWLEDGE_DIR, "knowledge")
 
 
 @mcp.resource(
@@ -74,7 +75,7 @@ def playbook_index() -> str:
 )
 def knowledge_expand(slug: str) -> str:
     """knowledge ノートを1ホップ展開して予算内で返す。"""
-    return knowledge_store.expand(slug, [KNOWLEDGE_DIR, PLAYBOOK_DIR])
+    return knowledge_store.expand(slug, [mcp_core.KNOWLEDGE_DIR, PLAYBOOK_DIR])
 
 
 @mcp.resource(
@@ -89,7 +90,7 @@ def knowledge_expand(slug: str) -> str:
 )
 def playbook_expand(slug: str) -> str:
     """playbook ノートを1ホップ展開して予算内で返す。"""
-    return knowledge_store.expand(slug, [PLAYBOOK_DIR, KNOWLEDGE_DIR])
+    return knowledge_store.expand(slug, [PLAYBOOK_DIR, mcp_core.KNOWLEDGE_DIR])
 
 
 @mcp.resource(
@@ -104,4 +105,4 @@ def playbook_expand(slug: str) -> str:
 )
 def knowledge_inbox() -> str:
     """_inbox の保留中ノートを found_for/query/score 付きで一覧する。"""
-    return knowledge_store.build_inbox_index(KNOWLEDGE_DIR)
+    return knowledge_store.build_inbox_index(mcp_core.KNOWLEDGE_DIR)
