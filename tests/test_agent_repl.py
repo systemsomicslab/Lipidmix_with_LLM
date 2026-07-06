@@ -16,3 +16,8 @@ class TestSafeClassify(unittest.TestCase):
         with mock.patch.object(agent_repl.phase_router, "ollama_classify_fn",
                                return_value="ARF"):
             self.assertEqual(agent_repl.safe_classify("q", ["ARF"]), "ARF")
+
+    def test_returns_empty_on_malformed_response(self):
+        with mock.patch.object(agent_repl.phase_router, "ollama_classify_fn",
+                               side_effect=KeyError("message")):
+            self.assertEqual(agent_repl.safe_classify("q", ["ARF"]), "")

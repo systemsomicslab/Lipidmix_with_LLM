@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 
 import phase_router
 from phase_router import RouterState
@@ -29,6 +30,12 @@ class TestExecuteTool(unittest.TestCase):
 
     def test_bad_kwarg_exception_is_caught(self):
         out = json.loads(ac.execute_tool("arf_list_classes", {"unexpected_kw": 1}))
+        self.assertEqual(out["status"], "error")
+
+    def test_non_serializable_return_is_caught(self):
+        # 非JSON直列化な戻り値でも raise せず error JSON を返す（never-raises 契約）
+        with mock.patch.object(ac.server, "arf_list_classes", return_value=object()):
+            out = json.loads(ac.execute_tool("arf_list_classes", {}))
         self.assertEqual(out["status"], "error")
 
 

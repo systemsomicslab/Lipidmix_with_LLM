@@ -17,7 +17,7 @@ def safe_classify(query: str, candidates: list) -> str:
     """route 用分類器。Ollama transport 例外時は "" を返し route のフォールバックに委ねる。"""
     try:
         return phase_router.ollama_classify_fn(query, candidates)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, KeyError, ValueError):
         return ""
 
 
@@ -57,7 +57,7 @@ def main() -> None:
             break
         try:
             answer = agent.run_turn(query, state, conversation)
-        except httpx.HTTPError:
+        except (httpx.HTTPError, KeyError, ValueError):
             print("Ollamaに接続できません（起動とモデルを確認してください）")
             continue
         print(f"[{state.last_phase}] {answer}")

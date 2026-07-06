@@ -45,11 +45,11 @@ def execute_tool(name: str, args: dict) -> str:
         return json.dumps({"status": "error", "error": f"not callable: {name}"}, ensure_ascii=False)
     try:
         result = fn(**args)
-    except Exception as e:  # ツール実行時の例外はモデルに見せてループ継続させる
+        if isinstance(result, str):
+            return result
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:  # ツール実行時・戻り値直列化時の例外はモデルに見せてループ継続させる
         return json.dumps({"status": "error", "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
-    if isinstance(result, str):
-        return result
-    return json.dumps(result, ensure_ascii=False)
 
 
 AGENT_MODEL = os.environ.get("LIPIDMIX_AGENT_MODEL", "qwen3:14b")
