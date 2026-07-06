@@ -7,7 +7,6 @@
     .venv-1/Scripts/python.exe phase_router_eval.py
 """
 import asyncio
-import json
 
 import httpx
 

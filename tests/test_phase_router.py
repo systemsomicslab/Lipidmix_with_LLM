@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest import mock
 
 import server
 import phase_router as pr
@@ -115,3 +116,16 @@ class TestRoute(unittest.TestCase):
         st = pr.RouterState(dataset_loaded=False)
         res = pr.route("フォルダを読み込んで", st, self._fake(""))
         self.assertEqual(len(res.tool_names), len(set(res.tool_names)))
+
+
+class TestOllamaClassifyPayload(unittest.TestCase):
+    def test_payload_fixes_think_temp_and_model(self):
+        fake = mock.Mock()
+        fake.json.return_value = {"message": {"content": "ARF"}}
+        with mock.patch.object(pr.httpx, "post", return_value=fake) as post:
+            out = pr.ollama_classify_fn("差次的解析して", ["ARF", "PAI2"])
+        self.assertEqual(out, "ARF")
+        payload = post.call_args.kwargs["json"]
+        self.assertIs(payload["think"], False)
+        self.assertEqual(payload["options"]["temperature"], 0)
+        self.assertEqual(payload["model"], pr.CLASSIFIER_MODEL)

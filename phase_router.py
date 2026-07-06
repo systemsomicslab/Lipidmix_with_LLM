@@ -107,7 +107,7 @@ def route(
             phase, reason = kw, "keyword"
         else:
             candidate = classify_fn(query, list(ANALYSIS_PHASES))
-            if candidate in PHASES:
+            if candidate in ANALYSIS_PHASES:
                 phase, reason = candidate, "llm"
             else:
                 phase = state.last_phase or "ENTRY"
