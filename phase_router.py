@@ -6,6 +6,10 @@
 1点のみ（DI）で、テストはフェイクを注入して Ollama 非依存で検証する。
 """
 
+import re
+from dataclasses import dataclass
+from typing import Callable
+
 # フェーズ → そのフェーズで露出するツール名。全35ツールの厳密な分割
 # （tests/test_phase_router.py の test_partition_is_exact が保証）。
 PHASES: dict[str, list[str]] = {
@@ -40,3 +44,71 @@ CORE_TOOLS: list[str] = ["load_dataset", "list_data_files", "list_reports"]
 
 # LLM 分類の候補集合（ENTRY は状態ゲートで扱うので除外）。
 ANALYSIS_PHASES: list[str] = [p for p in PHASES if p != "ENTRY"]
+
+# 高精度・低誤爆のトークンだけを短絡に使う（曖昧語は入れない）。
+KEYWORD_RULES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\.pai2\b|pai2", re.IGNORECASE), "PAI2"),
+    (re.compile(r"m/?z\b|\bEIC\b|\.aef\b|\bAEF\b", re.IGNORECASE), "EIC"),
+    (re.compile(r"Europe ?PMC|PMC|文献|論文|paper", re.IGNORECASE), "LITERATURE"),
+]
+
+
+@dataclass
+class RouterState:
+    """Agent が保持する軽量ビュー。route はこれを読むだけで書き換えない。"""
+    dataset_loaded: bool
+    last_phase: str | None = None
+
+
+@dataclass
+class RouteResult:
+    phase: str
+    tool_names: list[str]
+    reason: str  # "gate" | "keyword" | "llm" | "fallback"
+
+
+def _match_keyword(query: str) -> str | None:
+    for pattern, phase in KEYWORD_RULES:
+        if pattern.search(query):
+            return phase
+    return None
+
+
+def _dedup(seq: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def route(
+    query: str,
+    state: RouterState,
+    classify_fn: Callable[[str, list[str]], str],
+) -> RouteResult:
+    """クエリを1フェーズへ振り分け、露出ツール名（フェーズ＋コア、dedup）を返す。
+
+    1. 状態ゲート: dataset 未ロードなら必ず ENTRY（LLM を呼ばない）。
+    2. キーワード短絡: 明示的トークンにヒットしたらそのフェーズ（LLM を呼ばない）。
+    3. LLM分類: 曖昧な時だけ classify_fn に解析7フェーズから1つ選ばせる。
+    4. フォールバック: 分類が既知フェーズ名でなければ last_phase（無ければ ENTRY）。
+    """
+    if not state.dataset_loaded:
+        phase, reason = "ENTRY", "gate"
+    else:
+        kw = _match_keyword(query)
+        if kw is not None:
+            phase, reason = kw, "keyword"
+        else:
+            candidate = classify_fn(query, list(ANALYSIS_PHASES))
+            if candidate in PHASES:
+                phase, reason = candidate, "llm"
+            else:
+                phase = state.last_phase or "ENTRY"
+                reason = "fallback"
+
+    tool_names = _dedup(PHASES[phase] + CORE_TOOLS)
+    return RouteResult(phase=phase, tool_names=tool_names, reason=reason)
