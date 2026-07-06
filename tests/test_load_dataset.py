@@ -13,14 +13,15 @@ from pathlib import Path
 import tempfile
 
 import server
+import mcp_core
 
 
 class ResolveArfPreferenceTests(unittest.TestCase):
     def setUp(self):
-        self._orig_data_dir = server.DATA_DIR
+        self._orig_data_dir = mcp_core.DATA_DIR
 
     def tearDown(self):
-        server.DATA_DIR = self._orig_data_dir
+        mcp_core.DATA_DIR = self._orig_data_dir
 
     def _touch(self, directory: Path, name: str) -> None:
         (directory / name).write_bytes(b"")  # 中身は不要（パス解決のみ検証）
@@ -30,7 +31,7 @@ class ResolveArfPreferenceTests(unittest.TestCase):
             directory = Path(tmp)
             self._touch(directory, "Sample_DriftSpots.arf")
             self._touch(directory, "Sample_PeakProperties.arf")
-            server.DATA_DIR = directory
+            mcp_core.DATA_DIR = directory
             resolved = server.resolve_arf_file_path()
             self.assertIsNotNone(resolved)
             self.assertTrue(resolved.lower().endswith("peakproperties.arf"))
@@ -39,7 +40,7 @@ class ResolveArfPreferenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             self._touch(directory, "Sample_DriftSpots.arf")
-            server.DATA_DIR = directory
+            mcp_core.DATA_DIR = directory
             resolved = server.resolve_arf_file_path()
             self.assertTrue(resolved.lower().endswith("driftspots.arf"))
 
@@ -53,10 +54,10 @@ class ResolveArfPreferenceTests(unittest.TestCase):
 
 class LoadDatasetTests(unittest.TestCase):
     def setUp(self):
-        self._orig_data_dir = server.DATA_DIR
+        self._orig_data_dir = mcp_core.DATA_DIR
 
     def tearDown(self):
-        server.DATA_DIR = self._orig_data_dir
+        mcp_core.DATA_DIR = self._orig_data_dir
 
     def test_registered_as_tool(self):
         tools = asyncio.run(server.mcp.list_tools())
@@ -74,17 +75,17 @@ class LoadDatasetTests(unittest.TestCase):
             self.assertIn(".arf2 ファイルが見つかりませんでした", joined)
             self.assertIn(".arf", joined)
             # 既定探索先が指定フォルダに更新される
-            self.assertEqual(str(server.DATA_DIR), tmp)
+            self.assertEqual(str(mcp_core.DATA_DIR), tmp)
 
 
 class PickLatestDuplicateTests(unittest.TestCase):
     """同種ファイルが重複（旧版/新版）する場合に最新版を選ぶこと。"""
 
     def setUp(self):
-        self._orig_data_dir = server.DATA_DIR
+        self._orig_data_dir = mcp_core.DATA_DIR
 
     def tearDown(self):
-        server.DATA_DIR = self._orig_data_dir
+        mcp_core.DATA_DIR = self._orig_data_dir
 
     def _touch(self, directory: Path, name: str, mtime: float | None = None) -> Path:
         path = directory / name
@@ -98,7 +99,7 @@ class PickLatestDuplicateTests(unittest.TestCase):
             directory = Path(tmp)
             self._touch(directory, "AlignmentResult_2026_05_15_10_13_35.arf2")
             self._touch(directory, "AlignmentResult_2026_06_01_09_00_00.arf2")
-            server.DATA_DIR = directory
+            mcp_core.DATA_DIR = directory
             resolved = server.resolve_arf2_file_path()
             self.assertTrue(resolved.endswith("2026_06_01_09_00_00.arf2"))
 
@@ -116,7 +117,7 @@ class PickLatestDuplicateTests(unittest.TestCase):
                 "AlignmentResult_2026_06_01_09_00_00_PeakProperties.arf",
                 mtime=1_000_000_000,  # わざと古い mtime
             )
-            server.DATA_DIR = directory
+            mcp_core.DATA_DIR = directory
             resolved = server.resolve_arf_file_path()
             self.assertTrue(resolved.endswith("2026_06_01_09_00_00_PeakProperties.arf"))
 
@@ -125,7 +126,7 @@ class PickLatestDuplicateTests(unittest.TestCase):
             directory = Path(tmp)
             self._touch(directory, "older.aef", mtime=1_000_000_000)
             self._touch(directory, "newer.aef", mtime=2_000_000_000)
-            server.DATA_DIR = directory
+            mcp_core.DATA_DIR = directory
             resolved = server.resolve_eicaef_file_path()
             self.assertTrue(resolved.endswith("newer.aef"))
 
@@ -134,10 +135,10 @@ class LoadDatasetBatchAnnounceTests(unittest.TestCase):
     """複数バッチ混在時に load_dataset が選択結果を明示すること。"""
 
     def setUp(self):
-        self._orig_data_dir = server.DATA_DIR
+        self._orig_data_dir = mcp_core.DATA_DIR
 
     def tearDown(self):
-        server.DATA_DIR = self._orig_data_dir
+        mcp_core.DATA_DIR = self._orig_data_dir
 
     def _touch(self, directory: Path, name: str) -> None:
         (directory / name).write_bytes(b"")
@@ -220,10 +221,10 @@ class SelectLatestBatchTests(unittest.TestCase):
 
 class ResolvePai2LatestBatchTests(unittest.TestCase):
     def setUp(self):
-        self._orig_data_dir = server.DATA_DIR
+        self._orig_data_dir = mcp_core.DATA_DIR
 
     def tearDown(self):
-        server.DATA_DIR = self._orig_data_dir
+        mcp_core.DATA_DIR = self._orig_data_dir
 
     def _touch(self, directory: Path, name: str) -> None:
         (directory / name).write_bytes(b"")
@@ -233,7 +234,7 @@ class ResolvePai2LatestBatchTests(unittest.TestCase):
             directory = Path(tmp)
             self._touch(directory, "AlignmentResult_2026_05_15_10_13_35.pai2")
             self._touch(directory, "AlignmentResult_2026_06_01_09_00_00.pai2")
-            server.DATA_DIR = directory
+            mcp_core.DATA_DIR = directory
             resolved = server.resolve_pai2_file_path()
             self.assertIsNotNone(resolved)
             self.assertTrue(resolved.endswith("2026_06_01_09_00_00.pai2"))
@@ -250,10 +251,10 @@ class ResolveArfCrossBatchTests(unittest.TestCase):
     """旧バッチの PeakProperties.arf があっても最新バッチの方を選ぶこと。"""
 
     def setUp(self):
-        self._orig_data_dir = server.DATA_DIR
+        self._orig_data_dir = mcp_core.DATA_DIR
 
     def tearDown(self):
-        server.DATA_DIR = self._orig_data_dir
+        mcp_core.DATA_DIR = self._orig_data_dir
 
     def _touch(self, directory: Path, name: str) -> None:
         (directory / name).write_bytes(b"")
@@ -265,7 +266,7 @@ class ResolveArfCrossBatchTests(unittest.TestCase):
             self._touch(directory, "AlignmentResult_2026_05_15_10_13_35_DriftSpots.arf")
             self._touch(directory, "AlignmentResult_2026_06_01_09_00_00_PeakProperties.arf")
             self._touch(directory, "AlignmentResult_2026_06_01_09_00_00_DriftSpots.arf")
-            server.DATA_DIR = directory
+            mcp_core.DATA_DIR = directory
             resolved = server.resolve_arf_file_path()
             self.assertTrue(resolved.endswith("2026_06_01_09_00_00_PeakProperties.arf"))
 

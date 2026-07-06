@@ -6,6 +6,7 @@ import matplotlib
 matplotlib.use("Agg")  # import server が pyplot を読む前にヘッドレス指定
 
 import server
+import mcp_core
 import knowledge_store
 
 
@@ -60,13 +61,13 @@ class ReportToolTests(unittest.TestCase):
         import tempfile
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
-        self._saved_data_dir = server.DATA_DIR
-        server.DATA_DIR = self.tmp
+        self._saved_data_dir = mcp_core.DATA_DIR
+        mcp_core.DATA_DIR = self.tmp
         self._saved_env = os.environ.get("LIPIDMIX_REPORTS_DIR")
         os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "reports_fallback")
 
     def tearDown(self):
-        server.DATA_DIR = self._saved_data_dir
+        mcp_core.DATA_DIR = self._saved_data_dir
         if self._saved_env is None:
             os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
         else:
@@ -154,14 +155,14 @@ class SavePcaFigureTests(unittest.TestCase):
         import tempfile
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
-        self._saved_data_dir = server.DATA_DIR
-        server.DATA_DIR = self.tmp
+        self._saved_data_dir = mcp_core.DATA_DIR
+        mcp_core.DATA_DIR = self.tmp
         self._saved_env = os.environ.get("LIPIDMIX_REPORTS_DIR")
         os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "reports_fallback")
         self._saved_plot = server.session.last_pca_plot
 
     def tearDown(self):
-        server.DATA_DIR = self._saved_data_dir
+        mcp_core.DATA_DIR = self._saved_data_dir
         server.session.last_pca_plot = self._saved_plot
         if self._saved_env is None:
             os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
@@ -194,13 +195,13 @@ class ReportEdgeCaseTests(unittest.TestCase):
         import tempfile
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
-        self._saved_data_dir = server.DATA_DIR
-        server.DATA_DIR = self.tmp
+        self._saved_data_dir = mcp_core.DATA_DIR
+        mcp_core.DATA_DIR = self.tmp
         self._saved_env = os.environ.get("LIPIDMIX_REPORTS_DIR")
         os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "reports_fallback")
 
     def tearDown(self):
-        server.DATA_DIR = self._saved_data_dir
+        mcp_core.DATA_DIR = self._saved_data_dir
         if self._saved_env is None:
             os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
         else:
