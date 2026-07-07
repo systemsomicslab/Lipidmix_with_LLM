@@ -488,19 +488,17 @@ ARFサンプルとの結合は `FileID` を優先し、欠損時は正規化し�
 
 ### 8.1 `arf_parser()` / `arf_re_pca()`
 
-返り値はテキスト1件を含む `list`。総スポット数、Class ID分布、タグファイル対応数、タグ別件数、総サンプル別レコード数、平均サンプル数/スポット、PCA行列形状、PC1/PC2説明分散比、スコアプロット用JSON、Loading上位を含む。`class_ids` を指定すると、選択したClass IDに属するサンプル行だけを残してPCAを実行する。複数Class IDはOR条件で、照合は大文字小文字を区別しない。`arf_list_classes()` は `.mddata` のパスとClass ID別サンプル数をJSONで返す。`arf_list_tags()` は現在のARFセッションについてタグ定義、サンプルファイル対応数、タグ付与数をJSONで返す。
+返り値はテキスト1件を含む `list`。総スポット数、Class ID分布、タグファイル対応数、タグ別件数、総サンプル別レコード数、平均サンプル数/スポット、PCA行列形状、PC1/PC2説明分散比、PCAスコア要約（群別サンプル数・図示note、点列は非同梱）、Loading上位を含む。`class_ids` を指定すると、選択したClass IDに属するサンプル行だけを残してPCAを実行する。複数Class IDはOR条件で、照合は大文字小文字を区別しない。`arf_list_classes()` は `.mddata` のパスとClass ID別サンプル数をJSONで返す。`arf_list_tags()` は現在のARFセッションについてタグ定義、サンプルファイル対応数、タグ付与数をJSONで返す。
 
-スコアプロット用JSON:
+PCAスコア要約（散布図の点列は非同梱＝`save_pca_figure` で図示。全点列は
+`session.last_pca_plot` に保持され図ツールが参照する）:
 
-| キー | 意味 |
+| キー/行 | 意味 |
 |---|---|
-| `title` | 図タイトル |
-| `x_axis` | PC1名と説明分散率 |
-| `y_axis` | PC2名と説明分散率 |
-| `data[]` | 1サンプル1点 |
-| `data[].sample` | サンプル名 |
-| `data[].pc1` | PC1スコア |
-| `data[].pc2` | PC2スコア |
+| タイトル行 | 図タイトル |
+| `PC1 (x%) × PC2 (y%)` | PC1/PC2 説明分散率 |
+| 群別サンプル数 | 群ラベルがあれば `群=件数` を列挙、無ければ総サンプル数 |
+| 図示note | `save_pca_figure` で散布図を生成する旨 |
 
 ### 8.2 `arf2_parser()`
 

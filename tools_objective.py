@@ -153,6 +153,9 @@ def knowledge_coverage(analysis_id: str) -> str:
     return "\n".join(lines)
 
 
+PAPER_ABSTRACT_CAP = 500  # payload 内の抄録上限。全文は ingest_stage 時に再提示される。
+
+
 @mcp.tool()
 def paper_search(query: str, max_results: int = 10) -> str:
     """Europe PMC を検索し、撤回除外・重複除外した候補を返す（ユーザー確認済みクエリ前提）。
@@ -183,7 +186,10 @@ def paper_search(query: str, max_results: int = 10) -> str:
         citation = " ".join(str(x) for x in (cand.get("journal", "?"), cand.get("year", "")) if x).strip()
         out.append(f"## {cand['title']}")
         out.append(f"- source(citation用): {citation}; DOI: {cand.get('doi') or '(none)'}; PMID: {cand.get('pmid')}")
-        out.append(f"- abstract: {cand['abstract']}")
+        abstract = cand.get("abstract") or ""
+        if len(abstract) > PAPER_ABSTRACT_CAP:
+            abstract = abstract[:PAPER_ABSTRACT_CAP] + "…（截断）"
+        out.append(f"- abstract: {abstract}")
         out.append("")
     return "\n".join(out)
 

@@ -150,6 +150,39 @@ class PcaPlotHelperTests(unittest.TestCase):
         finally:
             session_state.session.last_pca_plot = saved
 
+    def test_format_pca_plot_block_omits_points_keeps_summary(self):
+        import tool_helpers
+        block = tool_helpers._format_pca_plot_block(
+            {"components": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]],
+             "explained_variance_ratio": [0.24, 0.15]},
+            ["s1", "s2", "s3", "s4"],
+            title="PCA Score Plot (x.arf)",
+            intro="\n#### 📊 PCA スコア要約\n",
+            groups={"s1": "A", "s2": "A", "s3": "B", "s4": "B"},
+        )
+        # 散布図の per-sample 点列は非同梱
+        self.assertNotIn('"pc1"', block)
+        self.assertNotIn('"sample"', block)
+        self.assertNotIn("```json", block)
+        # 結論・群別サンプル数・図示 note は残る
+        self.assertIn("24.00%", block)
+        self.assertIn("15.00%", block)
+        self.assertIn("A=2", block)
+        self.assertIn("B=2", block)
+        self.assertIn("save_pca_figure", block)
+
+    def test_format_pca_plot_block_no_groups_shows_total(self):
+        import tool_helpers
+        block = tool_helpers._format_pca_plot_block(
+            {"components": [[1.0, 2.0], [3.0, 4.0]],
+             "explained_variance_ratio": [0.5, 0.3]},
+            ["s1", "s2"],
+            title="T",
+            intro="\n#### PCA\n",
+        )
+        self.assertIn("サンプル数: 2", block)
+        self.assertNotIn('"pc1"', block)
+
 
 class SavePcaFigureTests(unittest.TestCase):
     def setUp(self):

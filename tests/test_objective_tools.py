@@ -3,10 +3,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import knowledge_store as ks
 import server
 import mcp_core
+import paper_ingest
 
 
 class ObjectiveStoreTests(unittest.TestCase):
@@ -109,6 +111,30 @@ class ObjectiveServerToolTests(unittest.TestCase):
     def test_missing_objective_message(self):
         self.assertIn("見つかりません", server.knowledge_coverage("nope"))
         self.assertIn("見つかりません", server.log_search("nope", "Q1", "q", 0, 0))
+
+
+class PaperSearchSlimTests(unittest.TestCase):
+    def test_paper_search_caps_abstract_and_keeps_titles(self):
+        fake = [
+            {"title": "T1", "abstract": "L" * 1200, "journal": "J",
+             "year": 2024, "doi": "d1", "pmid": "1"},
+            {"title": "T2", "abstract": "short abstract", "journal": "J",
+             "year": 2024, "doi": "d2", "pmid": "2"},
+        ]
+        with mock.patch.object(paper_ingest, "search_europepmc", lambda q, n: fake), \
+             mock.patch.object(paper_ingest, "check_retraction", lambda c: c), \
+             mock.patch.object(paper_ingest, "deduplicate", lambda c, e: c):
+            out = server.paper_search("q", max_results=5)
+        # 全候補の title は残る（breadth 保持）
+        self.assertIn("## T1", out)
+        self.assertIn("## T2", out)
+        # 長い抄録は上限＋截断マーカー、短い抄録はそのまま
+        self.assertIn("…（截断）", out)
+        self.assertIn("short abstract", out)
+        for line in out.splitlines():
+            if line.startswith("- abstract:"):
+                self.assertLessEqual(
+                    len(line), len("- abstract: ") + 500 + len("…（截断）"))
 
 
 if __name__ == "__main__":

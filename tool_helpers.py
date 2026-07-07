@@ -5,7 +5,6 @@ ARF 要約整形、identity 正規化、検証ドシエ、前処理行列ビル�
 peak_verification（いずれも下位レイヤ）。tools_* / server は import しない。
 session への参照は session_state.session（動的）で行う。
 """
-import json
 from pathlib import Path
 
 import lipid_identity
@@ -148,28 +147,28 @@ def _format_pca_plot_block(
     intro: str,
     groups: dict[str, str | None] | None = None,
 ) -> str:
-    """PCAスコアプロット用のJSONとLLMへの描画指示テキストを生成する（arf_parser/arf_re_pca共通）。"""
-    components_coords = pca_result.get("components", [])
+    """PCAスコアの要約ヘッダ＋群別サンプル数＋図示noteを返す（散布図点列は非同梱）。
+
+    散布図の全点列は session_state.session.last_pca_plot に別途保存され
+    （_remember_arf_pca_plot）、save_pca_figure が図示する。ここに点列を埋め込むと
+    8000字切り詰めで末尾の loadings が消えるため、要約のみを返す（差次スリムと同型）。
+    """
     groups = groups or {}
-    plot_data_points = []
-    if len(components_coords) > 0 and len(components_coords[0]) >= 2:
-        for i, name in enumerate(sample_names):
-            point = {
-                "sample": name,
-                "pc1": components_coords[i][0],
-                "pc2": components_coords[i][1],
-            }
-            if groups.get(name) is not None:
-                point["group"] = groups[name]
-            plot_data_points.append(point)
     evr = pca_result["explained_variance_ratio"]
-    plot_json_data = {
-        "title": title,
-        "x_axis": f"PC1 ({evr[0] * 100:.2f}%)",
-        "y_axis": f"PC2 ({evr[1] * 100:.2f}%)",
-        "data": plot_data_points,
-    }
-    return intro + f"```json\n{json.dumps(plot_json_data, indent=2, ensure_ascii=False)}\n```\n"
+    lines = [
+        intro.rstrip("\n"),
+        f"- {title}",
+        f"- PC1 ({evr[0] * 100:.2f}%) × PC2 ({evr[1] * 100:.2f}%)",
+    ]
+    labeled = [groups[n] for n in sample_names if groups.get(n) is not None]
+    if labeled:
+        from collections import Counter
+        counts = ", ".join(f"{g}={c}" for g, c in sorted(Counter(labeled).items()))
+        lines.append(f"- 群別サンプル数: {counts}")
+    else:
+        lines.append(f"- サンプル数: {len(sample_names)}")
+    lines.append("- 散布図の点列は本要約に非同梱。save_pca_figure で図示できます。")
+    return "\n".join(lines) + "\n"
 
 
 def _format_pca_loadings_md(loading_features: list[dict], header: str) -> str:
