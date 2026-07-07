@@ -1,5 +1,6 @@
 # tests/test_interp_eval.py
 import unittest
+from unittest import mock
 
 import interp_eval as ie
 
@@ -119,6 +120,28 @@ class TestAggregate(unittest.TestCase):
         self.assertEqual(agg["overall"]["qwen25_7b"], {"win": 0, "loss": 1, "tie": 0})
         self.assertEqual(agg["by_axis"]["hallucination"]["qwen3_off"], 1)
         self.assertEqual(agg["by_phase_axis"]["PCA|completeness"]["qwen3_off"], 1)
+
+
+class TestOllamaGenerate(unittest.TestCase):
+    def test_posts_without_tools_and_returns_content(self):
+        captured = {}
+
+        class FakeResp:
+            def raise_for_status(self): pass
+            def json(self): return {"message": {"content": "解釈テキスト"}}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["payload"] = json
+            return FakeResp()
+
+        with mock.patch("interp_eval.httpx.post", side_effect=fake_post):
+            out = ie.ollama_generate([{"role": "user", "content": "x"}],
+                                     model="qwen3:14b", think=True)
+        self.assertEqual(out, "解釈テキスト")
+        self.assertNotIn("tools", captured["payload"])
+        self.assertEqual(captured["payload"]["model"], "qwen3:14b")
+        self.assertTrue(captured["payload"]["think"])
+        self.assertEqual(captured["payload"]["options"]["temperature"], 0)
 
 
 if __name__ == "__main__":

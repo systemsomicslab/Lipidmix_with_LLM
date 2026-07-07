@@ -2,10 +2,13 @@
 
 I/O オーケストレーションは interp_eval_run.py、ケース定義は interp_eval_cases.py。
 """
+import httpx
 import itertools
 import random
 from collections import Counter
 from dataclasses import dataclass, field
+
+import phase_router
 
 AXES = ["hallucination", "accuracy", "completeness", "utility", "language"]
 PHASE_LABELS = ["PCA", "DIFFERENTIAL", "QC", "IDENTITY", "LITERATURE"]
@@ -141,3 +144,18 @@ def aggregate(verdicts, model_keys):
                 slot = by_phase_axis.setdefault(key, {m: 0 for m in model_keys})
                 slot[winner] += 1
     return {"overall": overall, "by_axis": by_axis, "by_phase_axis": by_phase_axis}
+
+
+def ollama_generate(messages, model, think, url=None, timeout=300):
+    """解釈のみ（tools なし）で Ollama に問い合わせ、content を返す。"""
+    url = url or phase_router.OLLAMA_URL
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "think": think,
+        "options": {"temperature": 0},
+    }
+    resp = httpx.post(url, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()["message"].get("content") or ""
