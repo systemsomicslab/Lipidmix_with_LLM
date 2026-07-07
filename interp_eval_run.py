@@ -38,6 +38,9 @@ def do_freeze():
         out = ""
         for step in case.pipeline:
             out = ac.execute_tool(step.name, step.args)
+        # 実運用の run_turn はツール出力を _truncate(8000) してからモデルに渡すため、
+        # 解釈を実挙動と一致させ、かつ文脈窓超過を防ぐため凍結側でも同じ切り詰めを適用する。
+        out = ac._truncate(out)
         last = case.pipeline[-1]
         fc = ie.FrozenCase(case.id, case.phase_label, case.mode, case.query,
                            last.name, last.args, out)
