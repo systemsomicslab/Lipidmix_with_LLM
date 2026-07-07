@@ -11,11 +11,31 @@ LIMIT = 8000
 
 
 def main() -> int:
+    if not CASES:
+        print("ERROR: CASES is empty")
+        return 1
+
     buried = []
     for case in CASES:
+        if not case.pipeline:
+            print(f"{case.id:20s} ERROR: empty pipeline")
+            buried.append(case.id)
+            continue
+
         last_out = None
-        for step in case.pipeline:
-            last_out = execute_tool(step.name, step.args)
+        try:
+            for step in case.pipeline:
+                last_out = execute_tool(step.name, step.args)
+        except Exception as e:
+            print(f"{case.id:20s} ERROR: {e}")
+            buried.append(case.id)
+            continue
+
+        if last_out is None:
+            print(f"{case.id:20s} ERROR: no output from pipeline")
+            buried.append(case.id)
+            continue
+
         n = len(last_out)
         after = len(_truncate(last_out))
         flag = "BURIED" if n > LIMIT else "ok"
