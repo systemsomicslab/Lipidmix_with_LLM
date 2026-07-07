@@ -87,7 +87,9 @@ def do_sheet():
                          "A": ak["A"], "B": ak["B"]}
         lines += [
             f"## item {n} / {it['phase_label']} / {it['mode']}",
-            "", "### ツール結果（根拠）", "```", fc.tool_output[:4000], "```", "",
+            # 凍結出力は freeze で既に _truncate(8000) 済み＝モデルが見た全量。審判にも
+            # 同一全量を見せる（[:4000] だと審判の根拠がモデル入力の半分になり誤判定を招く）。
+            "", "### ツール結果（根拠）", "```", fc.tool_output, "```", "",
             "### 出力A", it["a_text"], "", "### 出力B", it["b_text"], "",
             "### 採点（5軸 hallucination/accuracy/completeness/utility/language ＋ overall、"
             "各 A|B|tie）", "",
