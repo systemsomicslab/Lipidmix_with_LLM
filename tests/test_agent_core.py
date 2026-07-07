@@ -230,6 +230,22 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(out, "ローカル文献解釈")
         self.assertEqual(state.last_arm, "local")
 
+    def test_cloud_parse_error_falls_back_to_local(self):
+        def interp_fn(messages):
+            raise IndexError("empty choices")
+        chat = self._chat_from([
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"function": {"name": "arf_re_pca", "arguments": {}}}]},
+            {"role": "assistant", "content": "ローカル解釈"},
+        ])
+        ex = self._recording_execute()
+        state = RouterState(dataset_loaded=True)
+        conv = []
+        out = self._agent(chat, ex, interp_fn=interp_fn).run_turn("PCAを解釈して", state, conv)
+        self.assertEqual(out, "ローカル解釈")
+        self.assertEqual(state.last_arm, "local")
+        self.assertEqual(conv[-1], {"role": "assistant", "content": "ローカル解釈"})
+
     def test_high_value_without_interp_fn_stays_local(self):
         chat = self._chat_from([
             {"role": "assistant", "content": "",

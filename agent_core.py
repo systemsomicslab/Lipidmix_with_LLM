@@ -136,8 +136,8 @@ class Agent:
                             conversation.append({"role": "assistant", "content": cloud})
                             state.last_arm = "cloud"
                             return cloud
-                    except (httpx.HTTPError, RuntimeError, KeyError, ValueError):
-                        pass  # クラウド失敗 → ローカル最終散文へフォールバック
+                    except (httpx.HTTPError, RuntimeError, KeyError, ValueError, IndexError, TypeError):
+                        pass  # クラウド失敗（transport/parse）→ ローカル最終散文へフォールバック
                 conversation.append({"role": "assistant", "content": local_content})
                 state.last_arm = "local"
                 return local_content
