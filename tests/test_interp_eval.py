@@ -43,5 +43,26 @@ class TestValidateCases(unittest.TestCase):
         self.assertTrue(any("no_such_tool" in e for e in errs))
 
 
+class TestBuildInterpMessages(unittest.TestCase):
+    def _frozen(self):
+        return ie.FrozenCase("pca_neg", "PCA", "NEG", "PCAを解釈して",
+                             "arf_re_pca", {"top_features": 10}, '{"pc1": 42.0}')
+
+    def test_shape_and_roles(self):
+        msgs = ie.build_interp_messages("SYS", self._frozen())
+        self.assertEqual([m["role"] for m in msgs],
+                         ["system", "user", "assistant", "tool"])
+        self.assertEqual(msgs[0]["content"], "SYS")
+        self.assertEqual(msgs[1]["content"], "PCAを解釈して")
+
+    def test_tool_call_and_result_wired(self):
+        msgs = ie.build_interp_messages("SYS", self._frozen())
+        call = msgs[2]["tool_calls"][0]["function"]
+        self.assertEqual(call["name"], "arf_re_pca")
+        self.assertEqual(call["arguments"], {"top_features": 10})
+        self.assertEqual(msgs[3]["content"], '{"pc1": 42.0}')
+        self.assertEqual(msgs[3]["tool_name"], "arf_re_pca")
+
+
 if __name__ == "__main__":
     unittest.main()

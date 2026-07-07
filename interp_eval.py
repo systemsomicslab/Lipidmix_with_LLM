@@ -61,3 +61,14 @@ def validate_cases(cases, allowed_tools):
             if step.name not in allowed_tools:
                 errors.append(f"許可外ツール {step.name}（{c.id}）")
     return errors
+
+
+def build_interp_messages(system_prompt, frozen):
+    """凍結ケースから『ツール結果まで済んだ会話』を組み、続きに解釈だけ出させる。"""
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": frozen.query},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": frozen.tool_name, "arguments": frozen.tool_args}}]},
+        {"role": "tool", "content": frozen.tool_output, "tool_name": frozen.tool_name},
+    ]
