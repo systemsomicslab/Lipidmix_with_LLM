@@ -50,16 +50,15 @@ def validate_cases(cases, allowed_tools):
     ids = [c.id for c in cases]
     for dup in [i for i, n in Counter(ids).items() if n > 1]:
         errors.append(f"ID 重複: {dup}")
-    seen = set()
+    present_phases = {c.phase_label for c in cases}
+    for p in PHASE_LABELS:
+        if p not in present_phases:
+            errors.append(f"未カバーのフェーズ: {p}")
     for c in cases:
         if c.phase_label not in PHASE_LABELS:
             errors.append(f"未知の phase_label: {c.phase_label}（{c.id}）")
         if c.mode not in MODES:
             errors.append(f"未知の mode: {c.mode}（{c.id}）")
-        key = (c.phase_label, c.mode)
-        if key in seen:
-            errors.append(f"(phase, mode) 重複: {key}")
-        seen.add(key)
         if not c.pipeline:
             errors.append(f"pipeline が空: {c.id}")
         for step in c.pipeline:

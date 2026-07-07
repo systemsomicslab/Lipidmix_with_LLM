@@ -30,12 +30,20 @@ class TestValidateCases(unittest.TestCase):
         errs = ie.validate_cases(_valid_cases()[:-1], self.allowed)
         self.assertTrue(any("10" in e for e in errs))
 
-    def test_duplicate_phase_mode_flagged(self):
+    def test_missing_phase_flagged(self):
+        # あるフェーズの全ケースを別フェーズへ付け替える → そのフェーズ未カバーを検出（件数は10維持）。
         cases = _valid_cases()
-        cases[1] = ie.Case(cases[1].id + "x", cases[0].phase_label, cases[0].mode,
-                           "q", [ie.ToolStep("load_dataset", {})])
+        for c in cases:
+            if c.phase_label == ie.PHASE_LABELS[0]:
+                c.phase_label = ie.PHASE_LABELS[1]
         errs = ie.validate_cases(cases, self.allowed)
-        self.assertTrue(any("重複" in e for e in errs))
+        self.assertTrue(any("未カバーのフェーズ" in e and ie.PHASE_LABELS[0] in e for e in errs))
+
+    def test_duplicate_id_flagged(self):
+        cases = _valid_cases()
+        cases[1].id = cases[0].id
+        errs = ie.validate_cases(cases, self.allowed)
+        self.assertTrue(any("ID 重複" in e for e in errs))
 
     def test_unknown_tool_flagged(self):
         cases = _valid_cases()

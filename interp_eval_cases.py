@@ -1,7 +1,13 @@
-"""解釈品質評価の具体10ケース（5フェーズ × NEG/POS）。
+"""解釈品質評価の具体10ケース（全5フェーズを被覆）。
 
 各 Case の pipeline は順に execute_tool され、最後のツール出力が解釈対象。
-差次的解析の group_a/group_b は discovery 結果で実際の群名に置換すること。
+
+実データ制約（2026-07-07 discovery）に合わせた構成:
+  NEG = 4群（G / ILG / LPS / control 各15, n=60）で群依存フェーズを支える。
+  POS = 単一群 "1"（control_0h, n=3）で群構造なし → 差次的解析は不能、
+        PCA/QC は n=3 の退化結果（群差を捏造しないかのハルシネーション・プローブ）。
+  よって差次的解析は POS を諦め、NEG の2コントラスト（LPS→control / ILG→control）に
+  再配分する。厳密な 5×2 直積ではなく「全5フェーズ被覆」を不変条件とする。
 """
 from interp_eval import Case, ToolStep
 
@@ -20,10 +26,10 @@ def _pca(mode, directory):
     )
 
 
-def _differential(mode, directory, group_a, group_b):
+def _differential(case_id, mode, directory, group_a, group_b):
     return Case(
-        id=f"differential_{mode.lower()}", phase_label="DIFFERENTIAL", mode=mode,
-        query=f"{group_a} と {group_b} の差次的解析結果を解釈し、"
+        id=case_id, phase_label="DIFFERENTIAL", mode=mode,
+        query=f"{group_a} 群と {group_b} 群の差次的解析結果を解釈し、"
               "有意な脂質と注意点を述べて。",
         pipeline=[
             ToolStep("load_dataset", {"directory": directory}),
@@ -64,16 +70,16 @@ def _literature(mode, query_text):
     )
 
 
-# discovery 結果で group_a/group_b を実際の群名に置換すること（下は雛形）。
+# 群名は実データ discovery 済み（NEG: G/ILG/LPS/control）。差次は POS 不能のため NEG 2件。
 CASES = [
     _pca("NEG", DIR_NEG),
     _pca("POS", DIR_POS),
-    _differential("NEG", DIR_NEG, group_a="GROUP_A_NEG", group_b="GROUP_B_NEG"),
-    _differential("POS", DIR_POS, group_a="GROUP_A_POS", group_b="GROUP_B_POS"),
+    _differential("differential_lps", "NEG", DIR_NEG, group_a="LPS", group_b="control"),
+    _differential("differential_ilg", "NEG", DIR_NEG, group_a="ILG", group_b="control"),
     _qc("NEG", DIR_NEG),
     _qc("POS", DIR_POS),
     _identity("NEG", DIR_NEG),
     _identity("POS", DIR_POS),
-    _literature("NEG", "liver lipidomics ceramide disease association"),
-    _literature("POS", "hepatic phosphatidylcholine remodeling metabolism"),
+    _literature("NEG", "RAW264 macrophage LPS lipidomics phospholipid remodeling"),
+    _literature("POS", "macrophage inflammation ceramide sphingolipid signaling"),
 ]
