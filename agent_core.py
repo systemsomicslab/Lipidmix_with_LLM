@@ -15,6 +15,7 @@ import httpx
 import phase_router
 from phase_router import RouterState
 import server
+from interp_eval import INTERP_SYSTEM
 
 # LLM が呼べるのは phase_router が定義する 35 ツールだけ（server の任意属性を弾く allowlist）。
 _ALLOWED_TOOLS = {n for names in phase_router.PHASES.values() for n in names}
@@ -101,31 +102,50 @@ class Agent:
     chat_fn: Callable            # (messages: list, tools: list) -> message dict
     execute_fn: Callable         # (name: str, args: dict) -> str
     classify_fn: Callable        # (query: str, candidates: list) -> str（route 用）
+    interp_fn: Callable | None = None  # (messages: list) -> str（高価値ターンのクラウド最終解釈。None=純ローカル）
     max_rounds: int = 5
     system_prompt: str = DEFAULT_SYSTEM
 
     def run_turn(self, query: str, state: RouterState, conversation: list) -> str:
         """1 ユーザーターンを実行する。route を1回引いてフェーズ固定、有界ループでツール実行。
 
-        state（last_phase / dataset_loaded）と conversation を更新し、最終応答テキストを返す。
+        ループ終端（tool_call なし）で、このターンの実行ツール集合が高価値なら（interp_fn
+        注入時のみ）蓄積会話をクラウドへ渡して最終解釈を得る。非高価値・interp_fn 無し・
+        クラウド例外・空応答はローカル最終散文へ縮退する。state と conversation を更新し、
+        最終応答テキストを返す。
         """
         routed = phase_router.route(query, state, self.classify_fn)
         state.last_phase = routed.phase
         tools = [self.tool_schemas[n] for n in routed.tool_names if n in self.tool_schemas]
 
         conversation.append({"role": "user", "content": query})
+        turn_start = len(conversation) - 1  # 今ターンの証拠スライス起点（user を含む）
+        executed: set[str] = set()
         for _ in range(self.max_rounds):
             messages = [{"role": "system", "content": self.system_prompt}] + conversation
             msg = self.chat_fn(messages, tools)
             calls = msg.get("tool_calls") or []
             if not calls:
-                content = msg.get("content") or ""
-                conversation.append({"role": "assistant", "content": content})
-                return content
+                local_content = msg.get("content") or ""
+                if self.interp_fn is not None and should_escalate(executed):
+                    try:
+                        cloud = self.interp_fn(
+                            [{"role": "system", "content": INTERP_SYSTEM}]
+                            + conversation[turn_start:])
+                        if cloud.strip():
+                            conversation.append({"role": "assistant", "content": cloud})
+                            state.last_arm = "cloud"
+                            return cloud
+                    except (httpx.HTTPError, RuntimeError, KeyError, ValueError):
+                        pass  # クラウド失敗 → ローカル最終散文へフォールバック
+                conversation.append({"role": "assistant", "content": local_content})
+                state.last_arm = "local"
+                return local_content
             conversation.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
             for call in calls:
                 name = call["function"]["name"]
                 args = call["function"].get("arguments") or {}
+                executed.add(name)
                 out = _truncate(self.execute_fn(name, args))
                 conversation.append({"role": "tool", "content": out, "tool_name": name})
                 if name == "load_dataset" and _LOAD_SUCCESS_MARKER in out:

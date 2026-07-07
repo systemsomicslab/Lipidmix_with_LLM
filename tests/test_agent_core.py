@@ -2,6 +2,8 @@ import json
 import unittest
 from unittest import mock
 
+import httpx
+
 import phase_router
 from phase_router import RouterState
 
@@ -89,12 +91,13 @@ class TestRunTurn(unittest.TestCase):
         execute_fn.calls = calls
         return execute_fn
 
-    def _agent(self, chat_fn, execute_fn, phase="ARF"):
+    def _agent(self, chat_fn, execute_fn, phase="ARF", interp_fn=None):
         return ac.Agent(
             tool_schemas=self.schemas,
             chat_fn=chat_fn,
             execute_fn=execute_fn,
             classify_fn=lambda q, c: phase,
+            interp_fn=interp_fn,
         )
 
     def test_tool_then_final_answer(self):
@@ -154,6 +157,90 @@ class TestRunTurn(unittest.TestCase):
         out = self._agent(chat, ex).run_turn("やあ", RouterState(dataset_loaded=True), [])
         self.assertEqual(out, "こんにちは")
         self.assertEqual(ex.calls, [])
+
+    def test_high_value_tool_escalates_to_cloud(self):
+        captured = {}
+        def interp_fn(messages):
+            captured["messages"] = messages
+            return "クラウド解釈です"
+        chat = self._chat_from([
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"function": {"name": "arf_re_pca", "arguments": {}}}]},
+            {"role": "assistant", "content": "ローカル解釈"},
+        ])
+        ex = self._recording_execute()
+        state = RouterState(dataset_loaded=True)
+        conv = []
+        out = self._agent(chat, ex, interp_fn=interp_fn).run_turn("PCAを解釈して", state, conv)
+        self.assertEqual(out, "クラウド解釈です")
+        self.assertEqual(state.last_arm, "cloud")
+        # 会話末尾はクラウド解釈（ローカル散文は積まれない）
+        self.assertEqual(conv[-1], {"role": "assistant", "content": "クラウド解釈です"})
+        self.assertNotIn("ローカル解釈", [m.get("content") for m in conv])
+        # interp_fn への messages: 先頭が INTERP_SYSTEM、今ターンの証拠のみ
+        import interp_eval
+        self.assertEqual(captured["messages"][0],
+                         {"role": "system", "content": interp_eval.INTERP_SYSTEM})
+        self.assertEqual(captured["messages"][1], {"role": "user", "content": "PCAを解釈して"})
+
+    def test_differential_veto_stays_local(self):
+        called = {"n": 0}
+        def interp_fn(messages):
+            called["n"] += 1
+            return "クラウド"
+        chat = self._chat_from([
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"function": {"name": "arf_preprocess", "arguments": {}}},
+                            {"function": {"name": "arf_differential", "arguments": {}}}]},
+            {"role": "assistant", "content": "ローカル差次解釈"},
+        ])
+        ex = self._recording_execute()
+        state = RouterState(dataset_loaded=True)
+        out = self._agent(chat, ex, interp_fn=interp_fn).run_turn("差次を解釈して", state, [])
+        self.assertEqual(out, "ローカル差次解釈")
+        self.assertEqual(state.last_arm, "local")
+        self.assertEqual(called["n"], 0)  # veto で interp_fn は呼ばれない
+
+    def test_cloud_failure_falls_back_to_local(self):
+        def interp_fn(messages):
+            raise httpx.HTTPError("boom")
+        chat = self._chat_from([
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"function": {"name": "arf_re_pca", "arguments": {}}}]},
+            {"role": "assistant", "content": "ローカル解釈"},
+        ])
+        ex = self._recording_execute()
+        state = RouterState(dataset_loaded=True)
+        conv = []
+        out = self._agent(chat, ex, interp_fn=interp_fn).run_turn("PCAを解釈して", state, conv)
+        self.assertEqual(out, "ローカル解釈")
+        self.assertEqual(state.last_arm, "local")
+        self.assertEqual(conv[-1], {"role": "assistant", "content": "ローカル解釈"})
+
+    def test_empty_cloud_response_falls_back_to_local(self):
+        chat = self._chat_from([
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"function": {"name": "paper_search", "arguments": {}}}]},
+            {"role": "assistant", "content": "ローカル文献解釈"},
+        ])
+        ex = self._recording_execute()
+        state = RouterState(dataset_loaded=True)
+        out = self._agent(chat, ex, phase="LITERATURE",
+                          interp_fn=lambda m: "   ").run_turn("文献を解釈して", state, [])
+        self.assertEqual(out, "ローカル文献解釈")
+        self.assertEqual(state.last_arm, "local")
+
+    def test_high_value_without_interp_fn_stays_local(self):
+        chat = self._chat_from([
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"function": {"name": "arf_re_pca", "arguments": {}}}]},
+            {"role": "assistant", "content": "ローカル解釈"},
+        ])
+        ex = self._recording_execute()
+        state = RouterState(dataset_loaded=True)
+        out = self._agent(chat, ex).run_turn("PCAを解釈して", state, [])  # interp_fn=None（既定）
+        self.assertEqual(out, "ローカル解釈")
+        self.assertEqual(state.last_arm, "local")
 
 
 class TestShouldEscalate(unittest.TestCase):
