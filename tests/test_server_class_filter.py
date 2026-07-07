@@ -104,8 +104,8 @@ class ServerClassFilterTests(unittest.TestCase):
         self.session.current_file_path = "test.arf"
         with patch.object(path_resolvers, "_filter_arf_spots", return_value=self.session.features):
             result = server.arf_re_pca(group_levels=["control"])
-        self.assertIn('"group": "control"', result[0])
-        self.assertIn('"group": "other"', result[0])
+        self.assertIn("control=1", result[0])
+        self.assertIn("other=1", result[0])
 
     def test_arf_list_classes_returns_counts(self):
         self.session.current_file_path = "test.arf"
@@ -122,8 +122,8 @@ class ServerClassFilterTests(unittest.TestCase):
             arf_path = Path(tmp) / "test.arf"
             arf_path.touch()
             result = server.arf_parser(str(arf_path))
-        self.assertIn('"group": "control"', result[0])
-        self.assertIn('"group": "treated"', result[0])
+        self.assertIn("control=1", result[0])
+        self.assertIn("treated=1", result[0])
 
     def test_arf_parser_group_levels_collapse(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,8 +131,8 @@ class ServerClassFilterTests(unittest.TestCase):
             arf_path.touch()
             result = server.arf_parser(str(arf_path), group_levels=["control"])
         # control -> "control"; treated has no listed level -> "other"
-        self.assertIn('"group": "control"', result[0])
-        self.assertIn('"group": "other"', result[0])
+        self.assertIn("control=1", result[0])
+        self.assertIn("other=1", result[0])
 
 
 if __name__ == "__main__":
