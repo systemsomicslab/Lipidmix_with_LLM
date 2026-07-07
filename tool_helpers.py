@@ -5,7 +5,6 @@ ARF 要約整形、identity 正規化、検証ドシエ、前処理行列ビル�
 peak_verification（いずれも下位レイヤ）。tools_* / server は import しない。
 session への参照は session_state.session（動的）で行う。
 """
-import json
 from pathlib import Path
 
 import lipid_identity
