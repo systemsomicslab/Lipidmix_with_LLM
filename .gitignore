@@ -25,3 +25,4 @@ playbook/
 *.txt
 *.csproj
 *.sln
+interp_eval_out/
