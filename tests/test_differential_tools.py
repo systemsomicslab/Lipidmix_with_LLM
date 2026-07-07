@@ -34,6 +34,28 @@ class TestArfDifferential(unittest.TestCase):
         self.assertGreaterEqual(out["summary"]["n_significant"], 1)
         self.assertTrue(any("バッチ" in c or "交絡" in c for c in out["caveats"]))
 
+    def test_two_group_payload_omits_full_volcano_but_session_keeps_it(self):
+        # 8000字切り詰めで summary が埋没しないよう、payload は全量 volcano を含まず
+        # 要約中心にする。全量は session に残し save_volcano_figure から使える。
+        session_state.session.feature_matrix = np.array([
+            [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
+            [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
+        ])
+        names = ["a1", "a2", "a3", "b1", "b2", "b3"]
+        session_state.session.pp_sample_names = names
+        session_state.session.pp_feature_names = ["f0", "f1"]
+        session_state.session.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.sample_meta = {
+            n: {"group": ("A" if n.startswith("a") else "B")} for n in names
+        }
+        out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertNotIn("volcano", out)
+        self.assertIn("volcano_note", out)
+        self.assertIn("summary", out)
+        # 全量 volcano（全特徴分）は session に残る
+        vol = session_state.session.last_differential["volcano"]
+        self.assertEqual(len(vol), 2)
+
 
 class TestArfDifferentialDegenerate(unittest.TestCase):
     def setUp(self):

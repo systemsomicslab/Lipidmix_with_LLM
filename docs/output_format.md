@@ -588,7 +588,7 @@ QC/ブランク/注入順のいずれかが欠けているためにスキップ�
 - **2群比較**（`group_a` と `group_b` を指定）: 特徴量ごとに Welch t 検定（等分散を仮定しない）と log2 fold change を計算する。`log2fc = log2((mean_a + 擬似カウント) / (mean_b + 擬似カウント))`（**正=群Aで高い**、擬似カウント既定1.0でゼロ割回避）。小n・分散0・全欠損は `p=NaN`。
 - **一元配置ANOVA**（`group_factor` のみ指定）: その factor の全水準で特徴量ごとに F 統計量と p 値を計算する（3群以上）。
 - **多重検定補正**: いずれも Benjamini-Hochberg で `p → q`（FDR）を付与（NaN は補正から除外し位置は保持）。p値は scipy があれば正確（無ければ近似フォールバック）。
-- **volcano**: 2群比較のみ。各点は `feature` / `log2fc` / `neg_log10_p` / `sig`（`up`=q≤閾値かつlog2fc≥+閾値 / `down`=q≤閾値かつlog2fc≤−閾値 / `ns`）。`save_volcano_figure(analysis_id, title=None)` が直近結果を `reports/figures/<analysis_id>_volcano.png` に描画する。
+- **volcano**: 2群比較のみ。各点は `feature` / `log2fc` / `neg_log10_p` / `sig`（`up`=q≤閾値かつlog2fc≥+閾値 / `down`=q≤閾値かつlog2fc≤−閾値 / `ns`）。全特徴分の点列は `session.last_differential["volcano"]` に保持し、`save_volcano_figure(analysis_id, title=None)` が `reports/figures/<analysis_id>_volcano.png` に描画する。**`arf_differential()` の応答 payload には全量 volcano を同梱せず**、`summary`（`n_tested`/`n_significant`/`n_up`/`n_down`＋有意上位 `top`）中心の要約と `volcano_note` のみを返す（先頭の結論が巨大配列＋文脈切り詰めで埋没し「全て ns」と誤読される退行を避けるため）。
 
 ### 12.3 必須caveat
 

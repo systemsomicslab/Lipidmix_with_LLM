@@ -577,9 +577,14 @@ def arf_differential(
                 "群内 n 不足・分散0・欠損が多い可能性があります（前処理の見直しを検討）。")
         session_state.session.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
                                      "results": results, "volcano": volcano}
+        # 全量 volcano（~特徴数）は上の last_differential に保持し save_volcano_figure から
+        # 使う。payload には載せない——先頭の summary が巨大 volcano 配列＋文脈切り詰めで
+        # 埋没し、解釈モデルが有意件数を読めず「全て ns」と誤読する退行を避けるため。
         payload = {"status": "success", "kind": "two_group",
                    "group_a": group_a, "group_b": group_b,
-                   "summary": summary, "volcano": volcano, "caveats": caveats}
+                   "summary": summary, "caveats": caveats,
+                   "volcano_note": "全特徴の volcano 点列は本要約に非同梱。"
+                                   "save_volcano_figure で図示できます。"}
     elif group_factor is not None:
         results = differential.one_way_anova(matrix, feature_names, group_labels,
                                              log_transform=log_transform)
