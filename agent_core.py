@@ -82,6 +82,18 @@ DEFAULT_SYSTEM = (
 # このマーカーの有無で成功を判定する（v1 の実務的ヒューリスティック）。
 _LOAD_SUCCESS_MARKER = "データセット読み込み"
 
+# クラウド送りが分界点(7-0)で優勢だった高価値ツール（PCA/QC/文献）。実行ツール集合が
+# これに触れたターンの最終解釈をクラウドへエスカレートする。
+CLOUD_TIER_TOOLS = {"arf_re_pca", "arf_pca_preprocessed", "arf_preprocess", "paper_search"}
+# 差次は slim 化後ローカルで互角。QC と同じ arf_preprocess を伴走するため、
+# arf_differential が走ったターンはクラウド送りを取り消す（local veto）。
+LOCAL_VETO_TOOLS = {"arf_differential"}
+
+
+def should_escalate(executed: set[str]) -> bool:
+    """このターンで実行したツール集合が高価値(クラウド送り)かを判定する純述語。"""
+    return bool(executed & CLOUD_TIER_TOOLS) and not (executed & LOCAL_VETO_TOOLS)
+
 
 @dataclass
 class Agent:

@@ -154,3 +154,34 @@ class TestRunTurn(unittest.TestCase):
         out = self._agent(chat, ex).run_turn("やあ", RouterState(dataset_loaded=True), [])
         self.assertEqual(out, "こんにちは")
         self.assertEqual(ex.calls, [])
+
+
+class TestShouldEscalate(unittest.TestCase):
+    def test_pca_tool_escalates(self):
+        self.assertTrue(ac.should_escalate({"load_dataset", "arf_re_pca"}))
+
+    def test_pca_preprocessed_escalates(self):
+        self.assertTrue(ac.should_escalate({"arf_pca_preprocessed"}))
+
+    def test_qc_preprocess_escalates(self):
+        self.assertTrue(ac.should_escalate({"load_dataset", "arf_preprocess"}))
+
+    def test_literature_escalates(self):
+        self.assertTrue(ac.should_escalate({"paper_search"}))
+
+    def test_differential_vetoes_even_with_preprocess(self):
+        # arf_preprocess は cloud-tier だが arf_differential 同居で local へ降格
+        self.assertFalse(
+            ac.should_escalate({"load_dataset", "arf_preprocess", "arf_differential"}))
+
+    def test_pca_and_differential_together_vetoes(self):
+        self.assertFalse(ac.should_escalate({"arf_re_pca", "arf_differential"}))
+
+    def test_identity_stays_local(self):
+        self.assertFalse(ac.should_escalate({"load_dataset", "arf2_annotate_identities"}))
+
+    def test_no_cloud_tier_stays_local(self):
+        self.assertFalse(ac.should_escalate({"load_dataset"}))
+
+    def test_empty_set_stays_local(self):
+        self.assertFalse(ac.should_escalate(set()))
