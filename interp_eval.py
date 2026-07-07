@@ -15,6 +15,10 @@ AXES = ["hallucination", "accuracy", "completeness", "utility", "language"]
 PHASE_LABELS = ["PCA", "DIFFERENTIAL", "QC", "IDENTITY", "LITERATURE"]
 MODES = ["NEG", "POS"]
 MODEL_KEYS = ["qwen3_off", "qwen3_on", "qwen25_7b"]
+INTERP_SYSTEM = (
+    "あなたはMS-DIALリピドミクス解析アシスタントです。直前のツール結果だけを"
+    "根拠に、日本語で簡潔に科学的解釈を述べてください。結果にない数値・主張を"
+    "創作しないこと。")
 
 
 @dataclass

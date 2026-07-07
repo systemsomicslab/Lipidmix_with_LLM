@@ -34,9 +34,7 @@ from interp_eval_cases import CASES
 OUT = Path("interp_eval_out")
 FROZEN = OUT / "frozen"
 INTERP = OUT / "interp"
-SYSTEM = ("あなたはMS-DIALリピドミクス解析アシスタントです。直前のツール結果だけを"
-          "根拠に、日本語で簡潔に科学的解釈を述べてください。結果にない数値・主張を"
-          "創作しないこと。")
+SYSTEM = ie.INTERP_SYSTEM
 
 # (model_key, model/表示名, think)。azure_ 接頭のキーはクラウド腕へディスパッチ（think 不使用）。
 # 実 deployment は .env の AZURE_OPENAI_DEPLOYMENT（gpt-5.4-mini-kamegai）。表示名は実体に合わせる。

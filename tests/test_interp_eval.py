@@ -152,5 +152,20 @@ class TestOllamaGenerate(unittest.TestCase):
         self.assertEqual(captured["payload"]["options"]["temperature"], 0)
 
 
+class InterpSystemSharedTests(unittest.TestCase):
+    def test_interp_system_verbatim(self):
+        import interp_eval
+        self.assertEqual(
+            interp_eval.INTERP_SYSTEM,
+            "あなたはMS-DIALリピドミクス解析アシスタントです。直前のツール結果だけを"
+            "根拠に、日本語で簡潔に科学的解釈を述べてください。結果にない数値・主張を"
+            "創作しないこと。")
+
+    def test_run_system_is_shared(self):
+        import interp_eval
+        import interp_eval_run
+        self.assertEqual(interp_eval_run.SYSTEM, interp_eval.INTERP_SYSTEM)
+
+
 if __name__ == "__main__":
     unittest.main()
