@@ -64,5 +64,43 @@ class TestBuildInterpMessages(unittest.TestCase):
         self.assertEqual(msgs[3]["tool_name"], "arf_re_pca")
 
 
+class TestBlindSheet(unittest.TestCase):
+    def test_make_pairs_three_models(self):
+        pairs = ie.make_pairs(["a", "b", "c"])
+        self.assertEqual(pairs, [("a", "b"), ("a", "c"), ("b", "c")])
+
+    def _frozen_list(self):
+        return [ie.FrozenCase(f"c{i}", "PCA", "NEG", "q", "t", {}, "out")
+                for i in range(2)]
+
+    def _interp(self):
+        d = {}
+        for i in range(2):
+            for m in ie.MODEL_KEYS:
+                d[(f"c{i}", m)] = f"text-{i}-{m}"
+        return d
+
+    def test_sheet_is_blind_and_key_recovers_models(self):
+        items, key = ie.build_blind_sheet(self._frozen_list(), self._interp(),
+                                          ie.MODEL_KEYS, seed=7)
+        # 2ケース × 3ペア = 6 項目
+        self.assertEqual(len(items), 6)
+        # 盲検: 項目にモデル名が出ない
+        for it in items:
+            self.assertNotIn("model", it)
+            blob = it["a_text"] + it["b_text"]
+            # a_text/b_text は該当ケースの2モデル出力のどちらか
+            self.assertTrue(blob.startswith("text-") or "text-" in blob)
+        # answer_key で A/B の実モデルを復元でき、pair_key の2モデルと一致
+        for it in items:
+            ak = key[f"{it['case_id']}::{it['pair_key']}"]
+            self.assertEqual({ak["A"], ak["B"]}, set(it["pair_key"].split("__")))
+
+    def test_deterministic_with_seed(self):
+        a = ie.build_blind_sheet(self._frozen_list(), self._interp(), ie.MODEL_KEYS, 7)
+        b = ie.build_blind_sheet(self._frozen_list(), self._interp(), ie.MODEL_KEYS, 7)
+        self.assertEqual(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()
