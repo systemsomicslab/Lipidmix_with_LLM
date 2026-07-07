@@ -25,10 +25,14 @@ SYSTEM = ("あなたはMS-DIALリピドミクス解析アシスタントです�
           "根拠に、日本語で簡潔に科学的解釈を述べてください。結果にない数値・主張を"
           "創作しないこと。")
 
-# (model_key, ollama model, think)
+# (model_key, model/表示名, think)。azure_ 接頭のキーはクラウド腕へディスパッチ（think 不使用）。
 MODELS = [("qwen3_off", "qwen3:14b", False),
           ("qwen3_on", "qwen3:14b", True),
-          ("qwen25_7b", "qwen2.5:7b", False)]
+          ("qwen25_7b", "qwen2.5:7b", False),
+          ("azure_4omini", "gpt-4o-mini", None)]
+
+# チャンピオン対決（分界点実測）: クラウド腕 vs ローカル最良のみを対戦させる。
+CHAMPION_KEYS = ["qwen3_on", "azure_4omini"]
 
 
 def do_freeze():
@@ -62,19 +66,26 @@ def do_generate():
     for fc in _load_frozen():
         msgs = ie.build_interp_messages(SYSTEM, fc)
         for key, model, think in MODELS:
-            text = ie.ollama_generate(msgs, model=model, think=think)
-            (INTERP / f"{fc.id}__{key}.txt").write_text(text, encoding="utf-8")
+            dest = INTERP / f"{fc.id}__{key}.txt"
+            if dest.exists():  # 冪等: 生成済みは再生成しない（azure 追加時に既存ローカルを温存）
+                print(f"skip {fc.id} / {key} (exists)")
+                continue
+            text = ie.generate_interp(key, model, think, msgs)
+            dest.write_text(text, encoding="utf-8")
             print(f"generated {fc.id} / {key} ({len(text)} chars)")
 
 
-def do_sheet():
+def do_sheet(model_keys=None):
+    """盲検シートを生成する。model_keys 未指定はローカル3本、CHAMPION_KEYS 指定で
+    クラウド腕 vs ローカル最良のチャンピオン対決（分界点実測）。"""
+    model_keys = model_keys or ie.MODEL_KEYS
     OUT.mkdir(parents=True, exist_ok=True)
     frozen = _load_frozen()
     interp = {}
     for fc in frozen:
-        for key, _, _ in MODELS:
+        for key in model_keys:
             interp[(fc.id, key)] = (INTERP / f"{fc.id}__{key}.txt").read_text(encoding="utf-8")
-    items, answer_key = ie.build_blind_sheet(frozen, interp, ie.MODEL_KEYS, seed=20260707)
+    items, answer_key = ie.build_blind_sheet(frozen, interp, model_keys, seed=20260707)
     fc_by_id = {fc.id: fc for fc in frozen}
     # item 番号だけを可視にし、対戦モデル対（pair_key）は index に隠す＝審判は A/B/tie で盲検採点。
     index = {}
@@ -130,9 +141,13 @@ def do_aggregate():
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "sheet":
+        champion = "--champion" in sys.argv[2:]
+        do_sheet(model_keys=CHAMPION_KEYS if champion else None)
+        return
     {"freeze": do_freeze, "generate": do_generate,
-     "sheet": do_sheet, "aggregate": do_aggregate}.get(cmd, lambda: print(
-        "usage: interp_eval_run.py freeze|generate|sheet|aggregate"))()
+     "aggregate": do_aggregate}.get(cmd, lambda: print(
+        "usage: interp_eval_run.py freeze|generate|sheet [--champion]|aggregate"))()
 
 
 if __name__ == "__main__":

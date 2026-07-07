@@ -4,6 +4,7 @@ I/O オーケストレーションは interp_eval_run.py、ケース定義は in
 """
 import httpx
 import itertools
+import os
 import random
 from collections import Counter
 from dataclasses import dataclass, field
@@ -158,3 +159,40 @@ def ollama_generate(messages, model, think, url=None, timeout=300):
     resp = httpx.post(url, json=payload, timeout=timeout)
     resp.raise_for_status()
     return resp.json()["message"].get("content") or ""
+
+
+def azure_generate(messages, deployment=None, temperature=0.0, timeout=300,
+                   endpoint=None, api_key=None, api_version=None):
+    """Azure OpenAI Chat Completions で解釈を生成する（ollama_generate と同形＝messages→text）。
+
+    認証情報は引数優先・無ければ env（AZURE_OPENAI_ENDPOINT / API_KEY / DEPLOYMENT /
+    API_VERSION）。新規SDK依存は入れず httpx で REST を叩く。build_interp_messages の
+    system/user は role/content 形式で Azure もそのまま受理する。
+    """
+    endpoint = endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT")
+    api_key = api_key or os.environ.get("AZURE_OPENAI_API_KEY")
+    deployment = deployment or os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+    api_version = api_version or os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    if not (endpoint and api_key and deployment):
+        raise RuntimeError(
+            "Azure 認証情報が未設定です（AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY / "
+            "AZURE_OPENAI_DEPLOYMENT を設定してください）。")
+    url = (f"{endpoint.rstrip('/')}/openai/deployments/{deployment}"
+           f"/chat/completions?api-version={api_version}")
+    resp = httpx.post(url, headers={"api-key": api_key},
+                      json={"messages": messages, "temperature": temperature},
+                      timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"].get("content") or ""
+
+
+def generate_interp(key, model, think, messages):
+    """モデルキーに応じてクラウド/ローカルの生成腕へディスパッチする。
+
+    azure キー（"azure_" 接頭）は azure_generate、それ以外は ollama_generate。
+    orchestrator（interp_eval_run.do_generate）から使う継ぎ目をここに集約し単体検証可能にする。
+    """
+    if key.startswith("azure"):
+        # deployment は env（AZURE_OPENAI_DEPLOYMENT）由来。MODELS の model 欄は表示用別名。
+        return azure_generate(messages)
+    return ollama_generate(messages, model=model, think=think)
