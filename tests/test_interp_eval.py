@@ -102,5 +102,24 @@ class TestBlindSheet(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+class TestAggregate(unittest.TestCase):
+    def test_overall_and_axis_tallies(self):
+        verdicts = [
+            ie.PairVerdict("c0", "PCA", "NEG", "qwen25_7b__qwen3_off",
+                           overall="qwen3_off",
+                           axes={"hallucination": "qwen3_off", "accuracy": "tie",
+                                 "completeness": "qwen3_off", "utility": "tie",
+                                 "language": "qwen3_off"}),
+            ie.PairVerdict("c0", "PCA", "NEG", "qwen3_off__qwen3_on",
+                           overall="tie",
+                           axes={a: "tie" for a in ie.AXES}),
+        ]
+        agg = ie.aggregate(verdicts, ie.MODEL_KEYS)
+        self.assertEqual(agg["overall"]["qwen3_off"], {"win": 1, "loss": 0, "tie": 1})
+        self.assertEqual(agg["overall"]["qwen25_7b"], {"win": 0, "loss": 1, "tie": 0})
+        self.assertEqual(agg["by_axis"]["hallucination"]["qwen3_off"], 1)
+        self.assertEqual(agg["by_phase_axis"]["PCA|completeness"]["qwen3_off"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

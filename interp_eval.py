@@ -103,3 +103,41 @@ def build_blind_sheet(frozen_cases, interp, model_keys, seed):
             })
             answer_key[f"{fc.id}::{pair_key}"] = {"A": a_model, "B": b_model}
     return items, answer_key
+
+
+@dataclass
+class PairVerdict:
+    case_id: str
+    phase_label: str
+    mode: str
+    pair_key: str
+    overall: str      # モデルキー or "tie"
+    axes: dict        # axis -> モデルキー or "tie"
+
+
+def _blank_counts(model_keys):
+    return {m: {"win": 0, "loss": 0, "tie": 0} for m in model_keys}
+
+
+def aggregate(verdicts, model_keys):
+    """盲検採点（PairVerdict 群）を集計する。"""
+    overall = _blank_counts(model_keys)
+    by_axis = {ax: {m: 0 for m in model_keys} for ax in AXES}
+    by_phase_axis = {}
+    for v in verdicts:
+        m1, m2 = v.pair_key.split("__")
+        if v.overall == "tie":
+            overall[m1]["tie"] += 1
+            overall[m2]["tie"] += 1
+        else:
+            loser = m2 if v.overall == m1 else m1
+            overall[v.overall]["win"] += 1
+            overall[loser]["loss"] += 1
+        for ax in AXES:
+            winner = v.axes.get(ax, "tie")
+            if winner != "tie":
+                by_axis[ax][winner] += 1
+                key = f"{v.phase_label}|{ax}"
+                slot = by_phase_axis.setdefault(key, {m: 0 for m in model_keys})
+                slot[winner] += 1
+    return {"overall": overall, "by_axis": by_axis, "by_phase_axis": by_phase_axis}
