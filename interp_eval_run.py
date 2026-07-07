@@ -8,9 +8,22 @@
     .venv-1/Scripts/python.exe interp_eval_run.py aggregate
 """
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
+
+# .env からは AZURE_OPENAI_* のみを取り込む（クラウド腕の認証情報）。同ファイルの
+# LIPIDMIX_* はテンプレの未記入プレースホルダ（NAS/ダミーパス）で、取り込むと server
+# import 時の mkdir が壊れるため意図的に除外する。既存の os.environ は上書きしない。
+try:
+    from dotenv import dotenv_values, find_dotenv
+    _envpath = find_dotenv(usecwd=True)
+    for _k, _v in (dotenv_values(_envpath) if _envpath else {}).items():
+        if _k.startswith("AZURE_") and _v and _k not in os.environ:
+            os.environ[_k] = _v
+except ImportError:
+    pass
 
 import agent_core as ac
 import interp_eval as ie
@@ -26,13 +39,14 @@ SYSTEM = ("あなたはMS-DIALリピドミクス解析アシスタントです�
           "創作しないこと。")
 
 # (model_key, model/表示名, think)。azure_ 接頭のキーはクラウド腕へディスパッチ（think 不使用）。
+# 実 deployment は .env の AZURE_OPENAI_DEPLOYMENT（gpt-5.4-mini-kamegai）。表示名は実体に合わせる。
 MODELS = [("qwen3_off", "qwen3:14b", False),
           ("qwen3_on", "qwen3:14b", True),
           ("qwen25_7b", "qwen2.5:7b", False),
-          ("azure_4omini", "gpt-4o-mini", None)]
+          ("azure_gpt5mini", "gpt-5.4-mini", None)]
 
 # チャンピオン対決（分界点実測）: クラウド腕 vs ローカル最良のみを対戦させる。
-CHAMPION_KEYS = ["qwen3_on", "azure_4omini"]
+CHAMPION_KEYS = ["qwen3_on", "azure_gpt5mini"]
 
 
 def do_freeze():
@@ -111,7 +125,10 @@ def do_sheet(model_keys=None):
     print(f"wrote {OUT/'blind_sheet.md'} ({len(items)} items)")
 
 
-def do_aggregate():
+def do_aggregate(model_keys=None):
+    """verdicts を集計する。model_keys 未指定はローカル3本、CHAMPION_KEYS 指定で
+    クラウド腕 vs ローカル最良のチャンピオン対決（do_sheet --champion と対）。"""
+    model_keys = model_keys or ie.MODEL_KEYS
     OUT.mkdir(parents=True, exist_ok=True)
     index = json.loads((OUT / "answer_key.json").read_text(encoding="utf-8"))
     raw = json.loads((OUT / "verdicts.json").read_text(encoding="utf-8"))
@@ -126,7 +143,7 @@ def do_aggregate():
             case_id=info["case_id"], phase_label=info["phase_label"], mode=info["mode"],
             pair_key=info["pair_key"], overall=side_to_model(v["overall"]),
             axes={ax: side_to_model(v["axes"][ax]) for ax in ie.AXES}))
-    agg = ie.aggregate(verdicts, ie.MODEL_KEYS)
+    agg = ie.aggregate(verdicts, model_keys)
     (OUT / "summary.json").write_text(
         json.dumps(agg, ensure_ascii=False, indent=2), encoding="utf-8")
     lines = ["# 解釈品質サマリ", "", "## 総合勝敗"]
@@ -135,19 +152,30 @@ def do_aggregate():
     lines += ["", "## 軸別勝数"]
     for ax, d in agg["by_axis"].items():
         lines.append(f"- {ax}: " + ", ".join(f"{m}={n}" for m, n in d.items()))
+    # フェーズ別の総合勝敗（＝分界点: どのフェーズでクラウドがローカル最良を上回るか）。
+    by_phase = {}
+    for v in verdicts:
+        slot = by_phase.setdefault(v.phase_label, {m: 0 for m in model_keys} | {"tie": 0})
+        slot[v.overall] += 1
+    lines += ["", "## フェーズ別 総合"]
+    for ph, d in by_phase.items():
+        lines.append(f"- {ph}: " + ", ".join(f"{m}={n}" for m, n in d.items()))
     (OUT / "summary.md").write_text("\n".join(lines), encoding="utf-8")
     print(f"wrote {OUT/'summary.md'}")
 
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    champion = "--champion" in sys.argv[2:]
     if cmd == "sheet":
-        champion = "--champion" in sys.argv[2:]
         do_sheet(model_keys=CHAMPION_KEYS if champion else None)
         return
-    {"freeze": do_freeze, "generate": do_generate,
-     "aggregate": do_aggregate}.get(cmd, lambda: print(
-        "usage: interp_eval_run.py freeze|generate|sheet [--champion]|aggregate"))()
+    if cmd == "aggregate":
+        do_aggregate(model_keys=CHAMPION_KEYS if champion else None)
+        return
+    {"freeze": do_freeze, "generate": do_generate}.get(cmd, lambda: print(
+        "usage: interp_eval_run.py freeze|generate|sheet [--champion]|"
+        "aggregate [--champion]"))()
 
 
 if __name__ == "__main__":

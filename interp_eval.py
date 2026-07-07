@@ -161,6 +161,29 @@ def ollama_generate(messages, model, think, url=None, timeout=300):
     return resp.json()["message"].get("content") or ""
 
 
+def _openai_messages(messages):
+    """Ollama 形式の会話を OpenAI Chat Completions で有効な role/content のみへ変換する。
+
+    build_interp_messages は assistant.tool_calls（id/type なし）と tool ロールを使うが、
+    OpenAI は tool_calls[].type / tool_call_id を必須とし拒否する（400）。同じ根拠を保った
+    まま、tool 出力を user ターンへ畳み込む（tool_name も明記）。system/通常の user・
+    assistant（content あり）はそのまま通す。ローカル腕とは会話符号化のみが異なり、
+    モデルに与える証拠（クエリ＋ツール出力＋system）は同一。
+    """
+    out = []
+    for m in messages:
+        role, content = m.get("role"), m.get("content") or ""
+        if role == "assistant" and m.get("tool_calls") and not content:
+            continue  # 空の tool_call 指示ターンは畳み込み先の tool 出力で表現する
+        if role == "tool":
+            name = m.get("tool_name") or m.get("name") or "tool"
+            out.append({"role": "user",
+                        "content": f"[ツール結果: {name}]\n{content}"})
+        else:
+            out.append({"role": role, "content": content})
+    return out
+
+
 def azure_generate(messages, deployment=None, temperature=0.0, timeout=300,
                    endpoint=None, api_key=None, api_version=None):
     """Azure OpenAI Chat Completions で解釈を生成する（ollama_generate と同形＝messages→text）。
@@ -177,11 +200,18 @@ def azure_generate(messages, deployment=None, temperature=0.0, timeout=300,
         raise RuntimeError(
             "Azure 認証情報が未設定です（AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY / "
             "AZURE_OPENAI_DEPLOYMENT を設定してください）。")
-    url = (f"{endpoint.rstrip('/')}/openai/deployments/{deployment}"
-           f"/chat/completions?api-version={api_version}")
-    resp = httpx.post(url, headers={"api-key": api_key},
-                      json={"messages": messages, "temperature": temperature},
-                      timeout=timeout)
+    base = endpoint.rstrip("/")
+    body = {"messages": _openai_messages(messages), "temperature": temperature}
+    if base.endswith("/openai/v1"):
+        # Azure AI Foundry の OpenAI 互換 v1 サーフェス: deployment は body の model に載せ、
+        # URL は {endpoint}/chat/completions（api-version クエリは不要）。
+        url = f"{base}/chat/completions"
+        body["model"] = deployment
+    else:
+        # 従来の Azure OpenAI: deployment を URL パスに、api-version をクエリに載せる。
+        url = (f"{base}/openai/deployments/{deployment}"
+               f"/chat/completions?api-version={api_version}")
+    resp = httpx.post(url, headers={"api-key": api_key}, json=body, timeout=timeout)
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"].get("content") or ""
 

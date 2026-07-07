@@ -9,3 +9,4 @@ scipy
 pygoslin
 httpx
 plotly
+python-dotenv
