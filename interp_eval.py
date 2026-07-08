@@ -280,3 +280,58 @@ def openai_chat(messages, tools, deployment=None, temperature=0.0, timeout=300,
             args = raw or {}
         calls.append({"function": {"name": fn.get("name"), "arguments": args}})
     return {"content": msg.get("content") or "", "tool_calls": calls}
+
+
+def transcript_text(conversation, final):
+    """agent_core.run_turn が積んだ会話ログを、保存用の人間可読テキストへ整形する。"""
+    lines = []
+    for m in conversation:
+        role = m.get("role")
+        if role == "user":
+            lines.append(f"### user\n{m.get('content', '')}")
+        elif role == "assistant":
+            calls = m.get("tool_calls") or []
+            for c in calls:
+                fn = c.get("function") or {}
+                args = json.dumps(fn.get("arguments") or {}, ensure_ascii=False)
+                lines.append(f"### assistant→tool_call: {fn.get('name')}({args})")
+            if m.get("content"):
+                lines.append(f"### assistant\n{m.get('content')}")
+            elif not calls:
+                lines.append("### assistant\n")
+        elif role == "tool":
+            lines.append(f"### tool[{m.get('tool_name')}]\n{m.get('content', '')}")
+    lines.append(f"### FINAL\n{final}")
+    return "\n\n".join(lines)
+
+
+def score_aggregate(scores, model_keys):
+    """Opus基準の絶対採点（各軸0–2）をモデル別・フェーズ別に集計する。
+
+    score: {"case_id","phase_label","model","axes":{axis:int}}。
+    返り値: by_model[model][axis]=軸平均, overall[model]=1ケース5軸合計の平均,
+    by_phase[phase][model]=同フェーズの5軸合計平均。
+    """
+    axis_vals = {m: {ax: [] for ax in AXES} for m in model_keys}
+    totals = {m: [] for m in model_keys}
+    phase_totals = {}
+    for s in scores:
+        m = s["model"]
+        if m not in axis_vals:
+            continue
+        total = 0
+        for ax in AXES:
+            v = s["axes"][ax]
+            axis_vals[m][ax].append(v)
+            total += v
+        totals[m].append(total)
+        phase_totals.setdefault(s["phase_label"], {}).setdefault(m, []).append(total)
+
+    def _mean(xs):
+        return sum(xs) / len(xs) if xs else 0.0
+
+    by_model = {m: {ax: _mean(axis_vals[m][ax]) for ax in AXES} for m in model_keys}
+    overall = {m: _mean(totals[m]) for m in model_keys}
+    by_phase = {ph: {m: _mean(v.get(m, [])) for m in model_keys}
+                for ph, v in phase_totals.items()}
+    return {"by_model": by_model, "overall": overall, "by_phase": by_phase}
