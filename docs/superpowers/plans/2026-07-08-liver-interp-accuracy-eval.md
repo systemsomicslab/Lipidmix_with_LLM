@@ -816,36 +816,150 @@ max_rounds で終わる場合は system_prompt を微調整（`DEFAULT_SYSTEM` �
 
 ---
 
-### Task 7: Sonnet 5 / Haiku 4.5（Claude Desktop 手動）
+### Task 7: Sonnet 5 / Haiku 4.5（サブエージェント自動実行）
 
-**種別: 手動ハンドオフ（ユーザーが Desktop で実行）。** 手順書を作り、ユーザーが実行、結果を貼り戻す。
+**種別: コードヘルパ＋オーケストレーション。** サブエージェント用ツール駆動ヘルパ `liver2_drive.py` を作り
+（軽量テスト付き）、`model="sonnet"` / `model="haiku"` のサブエージェントに各ケースをツール駆動で解釈させ、
+出力を回収する。ms-data-parser MCP はこのセッションに未接続のため、サブエージェントは MCP ではなく
+`liver2_drive.py`（＝`agent_core.execute_tool`）でツールを駆動する（gold と同一機構）。
 
 **Files:**
-- Create: `interp_eval_out/liver2/desktop_protocol.md`
-- Create（貼り戻し先）: `interp_eval_out/liver2/interp/<case>__sonnet5.txt`, `<case>__haiku45.txt`
+- Create: `liver2_drive.py`
+- Test: `tests/test_liver2_drive.py`（新規、`execute_tool` をモックし整形のみ検証）
+- Create（回収先）: `interp_eval_out/liver2/interp/<case>__sonnet5.txt`, `<case>__haiku45.txt`
 
-- [ ] **Step 1: desktop_protocol.md を作成**
+**Interfaces:**
+- Consumes: `agent_core`（`execute_tool`, `_truncate`）、`server`, `session_state`
+- Produces: `liver2_drive.drive(directory: str, steps: list[dict]) -> str`（steps 各要素 `{"name","args"}`。
+  各ツール戻り値を `=== <name> <args> ===` 見出し付きで連結して返す）＋ CLI（`python liver2_drive.py <DIR> '<steps-json>'`）
 
-内容: (1) `claude_desktop_config.json` に `ms-data-parser`（`server.py`）を登録する手順と
-`LIPIDMIX_DATA_DIR` の NEG/POS 切替、(2) モデル選択手順（Sonnet 5、Haiku 4.5）、
-(3) 極性ごと1会話で流す10クエリ（`LIVER2_CASES` の `query` を NEG5→POS5 の順で列挙）、
-(4) 各回答（ツール呼び出しを含むトランスクリプト）を `interp/<case>__<model>.txt` へ保存する様式。
+- [ ] **Step 1: Write the failing test**
 
-- [ ] **Step 2: ユーザーが Sonnet 5 を実行**
+`tests/test_liver2_drive.py`:
 
-ユーザーが Desktop で NEG会話・POS会話を実行し、10ケース分のトランスクリプトを貼り戻す。私は貼られた
-内容を `interp/<case>__sonnet5.txt` に保存する。
+```python
+import unittest
+from unittest import mock
 
-- [ ] **Step 3: ユーザーが Haiku 4.5 を実行（可能なら）**
+import liver2_drive
 
-Desktop のモデルピッカーに Haiku 4.5 があれば同様に実行・保存。**無ければ** `desktop_protocol.md` に
-「Haiku 4.5 は Desktop 選択不可のため除外（3モデル評価に縮退）」と記録し、以降のスコープから外す。
 
-- [ ] **Step 4: Commit**
+class TestDrive(unittest.TestCase):
+    def test_runs_steps_and_formats_output(self):
+        with mock.patch.object(liver2_drive.ac, "execute_tool",
+                               side_effect=["LOADED", "PCA_OUT"]) as ex, \
+             mock.patch.object(liver2_drive.session_state, "session", None), \
+             mock.patch.object(liver2_drive.server, "AnalysisSession",
+                               return_value=object()):
+            out = liver2_drive.drive("D", [
+                {"name": "load_dataset", "args": {"directory": "D"}},
+                {"name": "arf_re_pca", "args": {"top_features": 10}}])
+        self.assertIn("=== load_dataset", out)
+        self.assertIn("LOADED", out)
+        self.assertIn("=== arf_re_pca", out)
+        self.assertIn("PCA_OUT", out)
+        self.assertEqual(ex.call_count, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv-1/Scripts/python.exe -m unittest tests.test_liver2_drive -v`
+Expected: FAIL（`ModuleNotFoundError: No module named 'liver2_drive'`）
+
+- [ ] **Step 3: Create `liver2_drive.py`**
+
+```python
+"""サブエージェント用ツール駆動ヘルパ。
+
+データをプライムし、指定ツール列を1プロセス内で順に実行して出力を印字する。session は
+プロセス内のみ有効なので、毎回 steps の先頭に load_dataset を含めること。
+
+使い方（サブエージェントが繰り返し呼ぶ）:
+  .venv-1/Scripts/python.exe liver2_drive.py <DIR> \
+    '[{"name":"load_dataset","args":{"directory":"<DIR>"}},{"name":"arf_re_pca","args":{"top_features":10}}]'
+"""
+import json
+import os
+import sys
+
+import agent_core as ac
+import server
+import session_state
+
+
+def drive(directory, steps):
+    """steps（{"name","args"} の列）を新規セッションで順に実行し、整形テキストを返す。"""
+    os.environ["LIPIDMIX_DATA_DIR"] = directory
+    session_state.session = server.AnalysisSession()
+    parts = []
+    for s in steps:
+        args = s.get("args") or {}
+        out = ac._truncate(ac.execute_tool(s["name"], args))
+        parts.append(f"=== {s['name']} {json.dumps(args, ensure_ascii=False)} ===\n{out}")
+    return "\n\n".join(parts)
+
+
+def main():
+    if len(sys.argv) < 3:
+        print("usage: liver2_drive.py <DIR> '<steps-json>'")
+        return
+    print(drive(sys.argv[1], json.loads(sys.argv[2])))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `.venv-1/Scripts/python.exe -m unittest tests.test_liver2_drive -v`
+Expected: PASS（全1件）
+
+- [ ] **Step 5: ヘルパ実データ スモーク**
+
+Run: `PYTHONPATH=. .venv-1/Scripts/python.exe liver2_drive.py "C:\Users\yuu18\datasets\20230824_liver\20230824_liver\NEG" '[{"name":"load_dataset","args":{"directory":"C:\\Users\\yuu18\\datasets\\20230824_liver\\20230824_liver\\NEG"}},{"name":"arf_list_classes","args":{}}]'`
+Expected: `=== load_dataset` と `=== arf_list_classes`（GF/SPF×AIN/HFD/NC の class_counts）が印字される。
+
+- [ ] **Step 6: Commit（ヘルパ）**
 
 ```bash
-git add interp_eval_out/liver2/desktop_protocol.md interp_eval_out/liver2/interp
-git commit -m "run(interp-eval): Desktop 手順書＋Sonnet5/Haiku45 トランスクリプト
+git add liver2_drive.py tests/test_liver2_drive.py
+git commit -m "feat(interp-eval): サブエージェント用ツール駆動ヘルパ liver2_drive
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+```
+
+- [ ] **Step 7: Sonnet 5 サブエージェントで全10ケース実行**
+
+各ケースについて `Agent`（`subagent_type="general-purpose"`, `model="sonnet"`, `run_in_background: false`）を起動。
+プロンプトに: (1) 役割（MS-DIALリピドミクス解析アシスタント、日本語で簡潔に科学的解釈）、(2) ケースの `query`、
+(3) 対象 `directory`（NEG/POS）、(4) **ツールの呼び方**＝`PYTHONPATH=. .venv-1/Scripts/python.exe liver2_drive.py <DIR> '<steps-json>'` を必要な回数実行して**実際のツール出力だけ**を根拠にする（数値・主張を創作しない）、
+(5) **ケース別の in-scope ツール指針**（例 PCA: load_dataset/arf_re_pca/arf_list_classes、必要なら class_ids/group_levels で再PCA。差次: arf_preprocess/arf_differential。QC: arf_preprocess。同定: arf2_annotate_identities。文献: paper_search）、
+(6) 最終出力＝解釈本文のみ、を含める。返ってきた最終解釈を `interp/<case>__sonnet5.txt` に保存。
+
+Expected: 10ファイル生成。各々に実ツール出力に基づく日本語解釈。
+
+- [ ] **Step 8: Haiku 4.5 サブエージェントで全10ケース実行**
+
+Step 7 と同一プロンプトで `model="haiku"` のサブエージェントを起動し、`interp/<case>__haiku45.txt` に保存。
+
+Expected: 10ファイル生成。
+
+- [ ] **Step 9: 実ツール実行の検証（非捏造チェック）**
+
+各 `sonnet5`/`haiku45` トランスクリプトの主要数値（PCA 寄与率・`n_significant`・QC-RSD 等）を
+`frozen/<case>.json` の gold 証拠と突き合わせ、実際にツールを走らせたことを確認。乖離が大きい項目は
+「捏造疑い」として scores の notes に記録し、hallucination 軸へ反映する。
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add interp_eval_out/liver2/interp
+git commit -m "run(interp-eval): Sonnet5/Haiku45 サブエージェントで全10ケース実行
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -922,8 +1036,8 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 内容: (1) 目的・データ・手法（本 plan/spec 参照）、(2) 精度ランキング（`scores.md` 引用）、
 (3) フェーズ別強弱（どのモデルがどのフェーズで gold から乖離したか）、(4) 主要所見（各下位モデルの
-代表的な捏造・欠落・逸脱の実例）、(5) 限界（n=10・単一run・審判は私＋抜き取り校正・Haiku の Desktop 可否）、
-(6) 結論（実運用でどのモデルが解釈担当に足るか）。
+代表的な捏造・欠落・逸脱の実例）、(5) 限界（n=10・単一run・審判は私＋抜き取り校正・サブエージェントの
+非決定性と駆動機構の非対称）、(6) 結論（実運用でどのモデルが解釈担当に足るか）。
 
 - [ ] **Step 2: docs/HISTRY.md・task.md 更新**
 
@@ -953,16 +1067,18 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Self-Review
 
 **1. Spec coverage:**
-- §2 出場モデル/経路 → Task 1(Azureアダプタ)/4(hybrid・azure配線)/6(自動実行)/7(Desktop手動)。gold=Task 5。✓
+- §2 出場モデル/経路 → Task 1(Azureアダプタ)/4(hybrid・azure配線)/6(自動実行)/7(Sonnet/Haiku サブエージェント)。gold=Task 5。✓
 - §3 データ/科学枠組み → Task 2(DIR/cases)/5(ライブ解析)。✓
 - §4 10ケース → Task 2、差次確定=Task 5 Step4。✓
 - §5 rubric照合採点(5軸)/二層審判 → Task 3(集計)/5(rubric)/8(採点・校正)。✓
-- §6 成果物(analysis/rubric/frozen/interp/scores/desktop_protocol/report) → Task 5/6/7/8/9。✓
-- §7 実装物(OpenAIアダプタ/cases/ランナー/採点集計) → Task 1/2/4/3。✓
+- §6 成果物(analysis/rubric/frozen/interp/scores/report) → Task 5/6/7/8/9。✓
+- §7 実装物(OpenAIアダプタ/cases/ランナー/採点集計/サブエージェント駆動ヘルパ) → Task 1/2/4/3/7。✓
 - §8 実行手順 → Task 5–9 の順序に対応。✓
-- §9 未解決(差次確定/POS成立/Haiku可否/rubric刻み) → Task 5 Step3–5/7 Step3 で処理。✓
+- §9 未解決(差次確定/POS成立/非捏造検証/駆動非対称/rubric刻み) → Task 5 Step3–5/7 Step9 で処理。✓
 
-**2. Placeholder scan:** コードステップは全て実コードを掲載。解析/手動タスク（5–9）は TDD 不能な作業だが、各ステップに具体的ツール・引数・出力先・検証コマンドを明記（"適切に" 等の曖昧語なし）。✓
+**2. Placeholder scan:** コードステップは全て実コードを掲載。解析/オーケストレーションタスク（5,6,8,9）は
+TDD 不能だが、各ステップに具体的ツール・引数・出力先・検証コマンドを明記（"適切に" 等の曖昧語なし）。Task 7 の
+ヘルパ `liver2_drive` は TDD＋実データスモーク。✓
 
 **3. Type consistency:**
 - `openai_chat` 返り値 `{"content","tool_calls":[{"function":{"name","arguments":dict}}]}` は `agent_core.run_turn` の消費形（`msg.get("tool_calls")` → `call["function"]["name"]` / `call["function"].get("arguments")`）と一致。✓

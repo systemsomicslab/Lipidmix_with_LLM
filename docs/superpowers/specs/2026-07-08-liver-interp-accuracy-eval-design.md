@@ -30,8 +30,19 @@
 | **Opus 4.8**（この Claude Code セッション） | 正解基準 | 私が Python から `agent_core.execute_tool` をライブ駆動。フィルタ/群指定を変え**科学的分離が出るまで再PCA**し、正解解釈＋`rubric.md` を作成 | 自動（私） |
 | ローカルハイブリッド | 被評価 | 既存 `agent_core.Agent`（`chat_fn`=qwen3:14b、`interp_fn`=Azure エスカレーション）を `run_turn` で各ケース実行 | 自動 |
 | Azure gpt-5.4-mini | 被評価 | 新規 OpenAI ツール呼び出しアダプタを `chat_fn` に据えた `agent_core.Agent` を `run_turn` で実行 | 自動 |
-| Sonnet 5 | 被評価 | Claude Desktop に `server.py`（ms-data-parser MCP）を登録し、極性ごと1会話で手動実行→トランスクリプト貼り戻し | 手動（ユーザー） |
-| Haiku 4.5 | 被評価 | 同上。Desktop モデルピッカーに出なければ「Desktop 選択不可」を記録して除外 | 手動（ユーザー） |
+| Sonnet 5 | 被評価 | Agent ツールで `model="sonnet"` のサブエージェントを起動し、`agent_core.execute_tool`（ヘルパ `liver2_drive.py`）でツールを駆動して解釈を生成→私が回収 | 自動（サブエージェント） |
+| Haiku 4.5 | 被評価 | 同上（`model="haiku"`）。サブエージェントは常に起動可のため Desktop ピッカー問題は発生しない | 自動（サブエージェント） |
+
+**サブエージェント経路の根拠**: この Claude Code セッションに ms-data-parser MCP は接続されていない
+（接続は `claude-in-chrome` のみ）ため MCP プロトコル越しには呼べないが、サブエージェントは Bash/Python
+で `agent_core.execute_tool` を叩ける＝gold（私）と同一のツール駆動が可能。Agent ツールの `model` 指定で
+Sonnet 5 / Haiku 4.5 を選べるため、Anthropic API キーも Desktop 手動も不要で全自動化できる。
+
+**駆動機構の非対称（限界として明記）**: サブエージェント（Sonnet/Haiku）は `execute_tool` 直呼びで全ツールが
+可視、Azure/ハイブリッドは `run_turn` のフェーズ限定ツール。→ 各サブエージェントには**ケース別の同一ツール
+指針**（そのフェーズの想定ツールと再PCA/フィルタ許可）をプロンプトで与えて範囲を揃え、残差はレポートの限界に記す。
+サブエージェントは temp=0 制御ができないため、**各トランスクリプトの数値を `frozen/` の gold 証拠と突き合わせ、
+実際にツールを走らせた（捏造でない）ことを検証**する。
 
 **正解基準の妥当性**: 正解＝Opus 4.8 の解釈。Qwen 系（ローカル）・GPT 系（Azure）とは別系統。
 Sonnet/Haiku は同じ Claude 系のため自己系統との比較になるが、採点は「正解一致」の絶対採点であり
@@ -110,29 +121,31 @@ Opus ライブ解析から、各ケースの**必須所見リスト**を抽出�
    異なりうるため単一の凍結入力は存在しない——各モデルが実際に見た証拠は当該モデルの**トランスクリプト**
    （下記4）内のツール呼び出し列に残す。`frozen/` はあくまで gold の正準証拠として採点の共通参照にする。
 4. **各モデルのトランスクリプト**（`interp/<case>__<model>.txt`。ツール呼び出し列＋最終解釈を含む）＋
-   **スコア表**（`scores.json`/`scores.md`）。
-5. **Desktop 実行手順書**（`desktop_protocol.md`）: Sonnet/Haiku 用の MCP 登録手順・モデル選択・投入プロンプト・貼り戻し様式。
-6. **最終比較レポート**（`report.md`）: 精度ランキング・フェーズ別強弱・主要所見・限界。
+   **スコア表**（`scores.json`/`scores.md`）。model キー: `hybrid` / `azure` / `sonnet5` / `haiku45`。
+5. **最終比較レポート**（`report.md`）: 精度ランキング・フェーズ別強弱・主要所見・限界。
 
 ## 7. 実装物（コード）
 
-1. **OpenAI ツール呼び出しアダプタ**（`interp_eval.py` または新モジュール）: Ollama tool schema を
-   OpenAI function-calling 形式へ変換し、応答の `tool_calls` を `agent_core.Agent` が期待する
-   message dict 形へ逆変換する `chat_fn`。Azure gpt-5.4-mini を `run_turn` のツールドライバにする。
-2. **新データセットのケース定義**: `interp_eval_cases.py` に本 spec §4 の10ケースを追加（前回ケースと分離
-   または差し替え。DIR は `20230824_liver` の NEG/POS）。
+1. **OpenAI ツール呼び出しアダプタ**（`interp_eval.py`）: Ollama tool schema を OpenAI function-calling
+   形式へ渡し、応答の `tool_calls` を `agent_core.Agent` が期待する message dict 形へ逆変換する `chat_fn`
+   （`openai_chat`）。Azure gpt-5.4-mini を `run_turn` のツールドライバにする。
+2. **新データセットのケース定義**: `interp_eval_cases_liver2.py` に本 spec §4 の10ケースを追加（前回ケースと
+   隔離。DIR は `20230824_liver` の NEG/POS）。
 3. **フルツール駆動ランナー**: 自動モデル（ローカルハイブリッド・Azure）について各ケースを `run_turn` で
-   実行しトランスクリプトと最終解釈を保存する `interp_eval_run.py` サブコマンド。
-4. **採点集計**: rubric 被覆率・5軸スコアをモデル別/フェーズ別に集計する関数（`interp_eval.py` の純ロジック層に
-   追加し unittest で検証）。
+   実行しトランスクリプトを保存する `interp_eval_liver2.py`（`run_auto`）。
+4. **サブエージェント用ツール駆動ヘルパ**: `liver2_drive.py`。データをプライムし、指定ツール列を1プロセスで
+   順に実行して出力を印字する。Sonnet/Haiku サブエージェントがこれを繰り返し呼んでツールを駆動する。
+5. **採点集計**: 5軸スコアをモデル別/フェーズ別に集計する `score_aggregate`＋トランスクリプト整形
+   `transcript_text`（`interp_eval.py` の純ロジック層。unittest で検証）。
 
 ## 8. 実行手順（オーケストレーション）
 
 1. **gold**: Opus（私）が10ケースをライブ駆動→`gold/analysis.md`＋`rubric.md`＋`frozen/` を確定。
-2. **差次コントラスト最終化**: 再PCAの主因に合わせ #3/#4 を確定し `interp_eval_cases.py` を更新。
+2. **差次コントラスト最終化**: 再PCAの主因に合わせ #3/#4 を確定し `interp_eval_cases_liver2.py` を更新。
 3. **auto 実行**: ローカルハイブリッド・Azure を `run_turn` で全ケース実行→`interp/` 保存。
-4. **Desktop 手動**: ユーザーが Sonnet 5・Haiku 4.5 を Desktop で実行→トランスクリプトを `interp/` へ貼り戻し
-   （Haiku 選択不可なら除外を記録）。
+4. **サブエージェント実行**: `model="sonnet"` / `model="haiku"` のサブエージェントを起動し、`liver2_drive.py`
+   でケース別にツールを駆動させ解釈を生成→`interp/<case>__{sonnet5,haiku45}.txt` に保存。各トランスクリプトの
+   数値を `frozen/` と突き合わせ、実ツール実行（非捏造）を検証。
 5. **採点**: 私が rubric 照合で全モデル×全ケースを5軸採点→`scores.json`。ユーザーが抜き取り校正。
 6. **レポート**: `report.md` に精度ランキング・フェーズ別強弱・限界を記述。
 
@@ -140,5 +153,8 @@ Opus ライブ解析から、各ケースの**必須所見リスト**を抽出�
 
 - 差次コントラストの最終選択（§4）と `arf_differential` の有効な群指定（ライブ解析で確定）。
 - POS の QC/差次が NEG と同等に成立するか（POS も 2×3 だが実データの分離強度は未確認）。
-- Desktop で Haiku 4.5 が選択可能か（不可なら4モデル→3モデル評価に縮退し、その旨を明記）。
-- rubric の順序尺度の刻み（0–2 か 0–3 か）と「致命的ハルシネーション」の失格閾値の具体化。
+- サブエージェントが実際にツールを走らせるか（捏造でないか）を `frozen/` 照合でどう機械的に確認するか
+  （数値一致のスポットチェック手順）。
+- 駆動機構の非対称（サブエージェント=全ツール直呼び vs Azure/ハイブリッド=フェーズ限定 `run_turn`）を
+  ケース別ツール指針でどこまで揃えるか。残差はレポート限界に記載。
+- rubric の順序尺度の刻み（本 spec は各軸 0–2 に確定）と「致命的ハルシネーション」の失格閾値の具体化。
