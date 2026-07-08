@@ -4,6 +4,7 @@ I/O オーケストレーションは interp_eval_run.py、ケース定義は in
 """
 import httpx
 import itertools
+import json
 import os
 import random
 from collections import Counter
@@ -188,14 +189,8 @@ def _openai_messages(messages):
     return out
 
 
-def azure_generate(messages, deployment=None, temperature=0.0, timeout=300,
-                   endpoint=None, api_key=None, api_version=None):
-    """Azure OpenAI Chat Completions で解釈を生成する（ollama_generate と同形＝messages→text）。
-
-    認証情報は引数優先・無ければ env（AZURE_OPENAI_ENDPOINT / API_KEY / DEPLOYMENT /
-    API_VERSION）。新規SDK依存は入れず httpx で REST を叩く。build_interp_messages の
-    system/user は role/content 形式で Azure もそのまま受理する。
-    """
+def _resolve_azure_creds(endpoint, api_key, deployment, api_version):
+    """Azure 認証情報を引数優先・無ければ env から解決する。未設定なら RuntimeError。"""
     endpoint = endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT")
     api_key = api_key or os.environ.get("AZURE_OPENAI_API_KEY")
     deployment = deployment or os.environ.get("AZURE_OPENAI_DEPLOYMENT")
@@ -204,17 +199,37 @@ def azure_generate(messages, deployment=None, temperature=0.0, timeout=300,
         raise RuntimeError(
             "Azure 認証情報が未設定です（AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY / "
             "AZURE_OPENAI_DEPLOYMENT を設定してください）。")
+    return endpoint, api_key, deployment, api_version
+
+
+def _azure_chat_url(endpoint, deployment, api_version):
+    """chat completions の URL と、deployment を body.model に載せるか(=v1 Foundry)を返す。
+
+    Azure AI Foundry の OpenAI 互換 v1 サーフェス（endpoint が /openai/v1 で終わる）は
+    deployment を body.model に載せ URL は {endpoint}/chat/completions（api-version 不要）。
+    従来の Azure OpenAI は deployment を URL パス・api-version をクエリに載せる。
+    """
     base = endpoint.rstrip("/")
-    body = {"messages": _openai_messages(messages), "temperature": temperature}
     if base.endswith("/openai/v1"):
-        # Azure AI Foundry の OpenAI 互換 v1 サーフェス: deployment は body の model に載せ、
-        # URL は {endpoint}/chat/completions（api-version クエリは不要）。
-        url = f"{base}/chat/completions"
+        return f"{base}/chat/completions", True
+    return (f"{base}/openai/deployments/{deployment}"
+            f"/chat/completions?api-version={api_version}"), False
+
+
+def azure_generate(messages, deployment=None, temperature=0.0, timeout=300,
+                   endpoint=None, api_key=None, api_version=None):
+    """Azure OpenAI Chat Completions で解釈を生成する（ollama_generate と同形＝messages→text）。
+
+    認証情報は引数優先・無ければ env（AZURE_OPENAI_ENDPOINT / API_KEY / DEPLOYMENT /
+    API_VERSION）。新規SDK依存は入れず httpx で REST を叩く。build_interp_messages の
+    system/user は role/content 形式で Azure もそのまま受理する。
+    """
+    endpoint, api_key, deployment, api_version = _resolve_azure_creds(
+        endpoint, api_key, deployment, api_version)
+    url, use_model_field = _azure_chat_url(endpoint, deployment, api_version)
+    body = {"messages": _openai_messages(messages), "temperature": temperature}
+    if use_model_field:
         body["model"] = deployment
-    else:
-        # 従来の Azure OpenAI: deployment を URL パスに、api-version をクエリに載せる。
-        url = (f"{base}/openai/deployments/{deployment}"
-               f"/chat/completions?api-version={api_version}")
     resp = httpx.post(url, headers={"api-key": api_key}, json=body, timeout=timeout)
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"].get("content") or ""
@@ -230,3 +245,93 @@ def generate_interp(key, model, think, messages):
         # deployment は env（AZURE_OPENAI_DEPLOYMENT）由来。MODELS の model 欄は表示用別名。
         return azure_generate(messages)
     return ollama_generate(messages, model=model, think=think)
+
+
+def openai_chat(messages, tools, deployment=None, temperature=0.0, timeout=300,
+                endpoint=None, api_key=None, api_version=None):
+    """Azure/OpenAI をツールドライバにする chat_fn（agent_core.Agent 用）。
+
+    messages（Ollama 形式の会話）を _openai_messages で OpenAI 有効 role/content へ畳み、
+    tools（既に OpenAI function 形式の schema 群）を付けて chat completions を叩く。応答の
+    tool_calls を agent_core が期待する {"function":{"name","arguments":dict}} へ逆変換して返す
+    （OpenAI の arguments は JSON 文字列なので json.loads する。壊れていれば空 dict へ縮退）。
+    """
+    endpoint, api_key, deployment, api_version = _resolve_azure_creds(
+        endpoint, api_key, deployment, api_version)
+    url, use_model_field = _azure_chat_url(endpoint, deployment, api_version)
+    body = {"messages": _openai_messages(messages), "temperature": temperature}
+    if tools:
+        body["tools"] = tools
+    if use_model_field:
+        body["model"] = deployment
+    resp = httpx.post(url, headers={"api-key": api_key}, json=body, timeout=timeout)
+    resp.raise_for_status()
+    msg = resp.json()["choices"][0]["message"]
+    calls = []
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        raw = fn.get("arguments")
+        if isinstance(raw, str):
+            try:
+                args = json.loads(raw) if raw.strip() else {}
+            except ValueError:
+                args = {}
+        else:
+            args = raw or {}
+        calls.append({"function": {"name": fn.get("name"), "arguments": args}})
+    return {"content": msg.get("content") or "", "tool_calls": calls}
+
+
+def transcript_text(conversation, final):
+    """agent_core.run_turn が積んだ会話ログを、保存用の人間可読テキストへ整形する。"""
+    lines = []
+    for m in conversation:
+        role = m.get("role")
+        if role == "user":
+            lines.append(f"### user\n{m.get('content', '')}")
+        elif role == "assistant":
+            calls = m.get("tool_calls") or []
+            for c in calls:
+                fn = c.get("function") or {}
+                args = json.dumps(fn.get("arguments") or {}, ensure_ascii=False)
+                lines.append(f"### assistant→tool_call: {fn.get('name')}({args})")
+            if m.get("content"):
+                lines.append(f"### assistant\n{m.get('content')}")
+            elif not calls:
+                lines.append("### assistant\n")
+        elif role == "tool":
+            lines.append(f"### tool[{m.get('tool_name')}]\n{m.get('content', '')}")
+    lines.append(f"### FINAL\n{final}")
+    return "\n\n".join(lines)
+
+
+def score_aggregate(scores, model_keys):
+    """Opus基準の絶対採点（各軸0–2）をモデル別・フェーズ別に集計する。
+
+    score: {"case_id","phase_label","model","axes":{axis:int}}。
+    返り値: by_model[model][axis]=軸平均, overall[model]=1ケース5軸合計の平均,
+    by_phase[phase][model]=同フェーズの5軸合計平均。
+    """
+    axis_vals = {m: {ax: [] for ax in AXES} for m in model_keys}
+    totals = {m: [] for m in model_keys}
+    phase_totals = {}
+    for s in scores:
+        m = s["model"]
+        if m not in axis_vals:
+            continue
+        total = 0
+        for ax in AXES:
+            v = s["axes"][ax]
+            axis_vals[m][ax].append(v)
+            total += v
+        totals[m].append(total)
+        phase_totals.setdefault(s["phase_label"], {}).setdefault(m, []).append(total)
+
+    def _mean(xs):
+        return sum(xs) / len(xs) if xs else 0.0
+
+    by_model = {m: {ax: _mean(axis_vals[m][ax]) for ax in AXES} for m in model_keys}
+    overall = {m: _mean(totals[m]) for m in model_keys}
+    by_phase = {ph: {m: _mean(v.get(m, [])) for m in model_keys}
+                for ph, v in phase_totals.items()}
+    return {"by_model": by_model, "overall": overall, "by_phase": by_phase}
