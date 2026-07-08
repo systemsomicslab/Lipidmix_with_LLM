@@ -61,6 +61,7 @@ class RouterState:
     """Agent が保持する軽量ビュー。route はこれを読むだけで書き換えない。"""
     dataset_loaded: bool
     last_phase: str | None = None
+    last_arm: str | None = None  # run_turn が最終応答時に書く（"local" / "cloud"）
 
 
 @dataclass
