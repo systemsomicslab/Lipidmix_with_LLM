@@ -36,6 +36,14 @@ FROZEN = OUT / "frozen"
 INTERP = OUT / "interp"
 AUTO_MODELS = ["hybrid", "azure"]
 
+# 対象データは do_run_auto で事前ロード（プライム）済み。全モデルに同一の前提を与えて
+# 再 load_dataset の相対パス誤読を防ぎ、分析ツール駆動を単離する。
+SYSTEM_PRELOADED = ac.DEFAULT_SYSTEM + (
+    "\n対象データセットは既に読み込み済みです（load_dataset 実行済み）。再度 load_dataset を"
+    "呼ばず、arf_re_pca / arf_preprocess / arf_differential / arf2_annotate_identities / "
+    "paper_search などの分析ツールを使って解析し、結果を根拠に日本語で簡潔に解釈してください。"
+    "群名や Class ID が必要なら arf_list_classes で確認できます。")
+
 
 def build_agent(key, schemas):
     """自動モデルの Agent を組み立てる。hybrid=qwen3:14b+Azureエスカレーション、azure=Azure単体。"""
@@ -50,7 +58,7 @@ def build_agent(key, schemas):
     return ac.Agent(
         tool_schemas=schemas, chat_fn=chat_fn, execute_fn=ac.execute_tool,
         classify_fn=safe_classify, interp_fn=interp_fn,
-        system_prompt=ac.DEFAULT_SYSTEM)
+        system_prompt=SYSTEM_PRELOADED, max_rounds=8)
 
 
 def do_freeze():
