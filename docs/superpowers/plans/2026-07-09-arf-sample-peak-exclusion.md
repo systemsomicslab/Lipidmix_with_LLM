@@ -544,14 +544,23 @@ import session_state
 
 
 def _spot(master_id, entries):
-    return {"MasterAlignmentID": master_id, "AlignedPeakProperties": list(entries)}
+    # arf_re_pca の loadings 整形（get_pca_loading_features）が spot.Name/MassCenter/RT を
+    # 参照するため Spot メタも付す。MasterAlignmentID は features のリスト位置に一致させる。
+    return {
+        "MasterAlignmentID": master_id,
+        "Name": f"Lipid_{master_id}",
+        "MassCenter": 700.0 + master_id,
+        "RT": 5.0 + master_id,
+        "AlignedPeakProperties": list(entries),
+    }
 
 
 def _fixture():
     # 4 サンプル x 3 スポット。build_pca_matrix が実際に消費できる生 list 行。
+    # MasterAlignmentID は 0..2（実データ同様 features のリスト位置＝group_index に一致）。
     samples = ["sA", "sB", "sC", "sD"]
     spots = []
-    for mid in (1, 2, 3):
+    for mid in (0, 1, 2):
         rows = []
         for i, name in enumerate(samples):
             row = [i] * 40  # data[18]=height を確保する長さ
