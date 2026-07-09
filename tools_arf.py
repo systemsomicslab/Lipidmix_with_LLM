@@ -529,14 +529,21 @@ def arf_re_pca(
 
         # フィルタリング後のデータをセッションの状態に反映
         session_state.session.filtered_features = filtered_spots
-        
+
+        # 手動除外（PCA 外れサンプル / 特定ピーク）を PCA 再計算前に適用（非破壊）
+        active_spots = exclusions.prune_spots(
+            filtered_spots,
+            session_state.session.excluded_samples,
+            session_state.session.excluded_spots,
+        )
+
         # 統計情報の計算
-        peak_df = extract_peak_properties(filtered_spots)
-        avg_samples = len(peak_df) / len(filtered_spots) if len(filtered_spots) > 0 else 0
-        
+        peak_df = extract_peak_properties(active_spots)
+        avg_samples = len(peak_df) / len(active_spots) if len(active_spots) > 0 else 0
+
         # 2. 正確に使い回された関数による行列構築とPCAの実行
         matrix, sample_names, feature_names = build_pca_matrix(
-            filtered_spots, use_properties=props, min_detection_rate=min_detection_rate,
+            active_spots, use_properties=props, min_detection_rate=min_detection_rate,
         )
         if matrix.size == 0:
             return ["[ERROR] フィルタ後のデータから PCA 用行列を構築できませんでした。データ数が少なすぎる可能性があります。"]
@@ -577,11 +584,19 @@ def arf_re_pca(
         pc1_var = pca_result['explained_variance_ratio'][0] * 100
         pc2_var = pca_result['explained_variance_ratio'][1] * 100
 
+        n_excl_s = len(session_state.session.excluded_samples)
+        n_excl_p = len(session_state.session.excluded_spots)
+        exclude_note = (
+            f"- **ユーザ手動除外**: サンプル {n_excl_s} 件 / スポット {n_excl_p} 件\n"
+            if (n_excl_s or n_excl_p) else ""
+        )
+
         # 5. レポート全体の結合
         file_name = Path(session_state.session.current_file_path).name if session_state.session.current_file_path else "Unknown"
         output_text = (
             f"### 🔄 ARF フィルタ適用・PCA再計算完了: {file_name}\n"
             f"- **適用フィルタ条件**: 強度最小値=`{min_intensity}`, アノテーションキーワード=`'{annotation_keyword or '指定なし'}'`\n"
+            f"{exclude_note}"
             f"{_format_arf_class_filter(class_filter_stats)}"
             f"{_format_arf_tag_filter(tag_filter_stats)}"
             f"- **フィルタ後の有効スポット数**: `{len(filtered_spots)}` / {len(session_state.session.features)} (データ残存率: {len(filtered_spots)/len(session_state.session.features)*100:.1f}%)\n"
