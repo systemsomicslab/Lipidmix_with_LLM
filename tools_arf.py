@@ -201,7 +201,7 @@ def arf_pca_preprocessed(
         f"- **PCA入力行列の形状**: {tuple(matrix.shape)} (サンプル数 x 特徴量数)\n"
         f"- **PC1 説明分散比**: {pca_result['explained_variance_ratio'][0]*100:.2f}%\n"
         f"- **PC2 説明分散比**: {pca_result['explained_variance_ratio'][1]*100:.2f}%\n"
-        f"{plot_block}{loadings_block}"
+        f"{loadings_block}{plot_block}"
     )
     return [text]
 
@@ -344,8 +344,8 @@ def arf_parser(
             f"- **PCA入力行列の形状**: {matrix.shape} (サンプル数 x 特徴量数)\n"
             f"- **PC1 説明分散比**: {pca_result['explained_variance_ratio'][0]*100:.2f}%\n"
             f"- **PC2 説明分散比**: {pca_result['explained_variance_ratio'][1]*100:.2f}%\n"
-            f"{plot_instruction_text}"  # ← ここにプロット用の指示とデータを追加
             f"{loadings_summary_text}"
+            f"{plot_instruction_text}"  # ← 座標ブロックは末尾（loadings の後）へ
         )
         
         # 戻り値の構築（画像オブジェクトを廃止し、テキストのみを返す）
@@ -495,8 +495,8 @@ def arf_re_pca(
             f"- **PCA入力行列の形状**: {matrix.shape} (サンプル数 x 特徴量数)\n"
             f"- **PC1 説明分散比**: {pc1_var:.2f}%\n"
             f"- **PC2 説明分散比**: {pc2_var:.2f}%\n"
-            f"{plot_instruction_text}"
             f"{loadings_summary_text}"
+            f"{plot_instruction_text}"
         )
         
         return [output_text]

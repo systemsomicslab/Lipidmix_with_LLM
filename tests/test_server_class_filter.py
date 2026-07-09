@@ -134,6 +134,25 @@ class ServerClassFilterTests(unittest.TestCase):
         self.assertIn("control=1", result[0])
         self.assertIn("other=1", result[0])
 
+    def test_arf_parser_orders_loadings_before_coordinates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arf_path = Path(tmp) / "test.arf"
+            arf_path.touch()
+            result = server.arf_parser(str(arf_path))
+        text = result[0]
+        self.assertIn("```json", text)
+        self.assertIn('"pc1"', text)
+        # loadings 節は座標 JSON より前（末尾截断で loadings を守る）
+        self.assertLess(text.index("Loadings 寄与度分析"), text.index("```json"))
+
+    def test_arf_re_pca_orders_loadings_before_coordinates(self):
+        self.session.current_file_path = "test.arf"
+        with patch.object(path_resolvers, "_filter_arf_spots", return_value=self.session.features):
+            result = server.arf_re_pca()
+        text = result[0]
+        self.assertIn("```json", text)
+        self.assertLess(text.index("Loadings 寄与度分析"), text.index("```json"))
+
 
 if __name__ == "__main__":
     unittest.main()

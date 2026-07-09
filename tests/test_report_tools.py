@@ -150,7 +150,8 @@ class PcaPlotHelperTests(unittest.TestCase):
         finally:
             session_state.session.last_pca_plot = saved
 
-    def test_format_pca_plot_block_omits_points_keeps_summary(self):
+    def test_format_pca_plot_block_includes_points_and_summary(self):
+        import json as _json
         import tool_helpers
         block = tool_helpers._format_pca_plot_block(
             {"components": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]],
@@ -160,18 +161,25 @@ class PcaPlotHelperTests(unittest.TestCase):
             intro="\n#### 📊 PCA スコア要約\n",
             groups={"s1": "A", "s2": "A", "s3": "B", "s4": "B"},
         )
-        # 散布図の per-sample 点列は非同梱
-        self.assertNotIn('"pc1"', block)
-        self.assertNotIn('"sample"', block)
-        self.assertNotIn("```json", block)
-        # 結論・群別サンプル数・図示 note は残る
+        # 座標点列が JSON フェンスで同梱される
+        self.assertIn("```json", block)
+        self.assertIn('"sample": "s1"', block)
+        self.assertIn('"pc1"', block)
+        self.assertIn('"pc2"', block)
+        self.assertIn('"group": "A"', block)
+        # 結論・群別サンプル数・図示 note も残る
         self.assertIn("24.00%", block)
         self.assertIn("15.00%", block)
         self.assertIn("A=2", block)
         self.assertIn("B=2", block)
         self.assertIn("save_pca_figure", block)
+        # JSON は valid で points が 4 件、座標が一致
+        payload = _json.loads(block.split("```json")[1].split("```")[0].strip())
+        self.assertEqual(len(payload["points"]), 4)
+        self.assertEqual(payload["points"][0]["pc1"], 1.0)
+        self.assertEqual(payload["points"][0]["pc2"], 2.0)
 
-    def test_format_pca_plot_block_no_groups_shows_total(self):
+    def test_format_pca_plot_block_no_groups_includes_points_without_group(self):
         import tool_helpers
         block = tool_helpers._format_pca_plot_block(
             {"components": [[1.0, 2.0], [3.0, 4.0]],
@@ -181,7 +189,8 @@ class PcaPlotHelperTests(unittest.TestCase):
             intro="\n#### PCA\n",
         )
         self.assertIn("サンプル数: 2", block)
-        self.assertNotIn('"pc1"', block)
+        self.assertIn('"pc1"', block)
+        self.assertNotIn('"group"', block)
 
 
 class SavePcaFigureTests(unittest.TestCase):

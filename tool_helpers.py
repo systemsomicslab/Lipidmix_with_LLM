@@ -6,6 +6,7 @@ peak_verification（いずれも下位レイヤ）。tools_* / server は import
 session への参照は session_state.session（動的）で行う。
 """
 from pathlib import Path
+import json
 
 import lipid_identity
 import knowledge_store
@@ -147,14 +148,17 @@ def _format_pca_plot_block(
     intro: str,
     groups: dict[str, str | None] | None = None,
 ) -> str:
-    """PCAスコアの要約ヘッダ＋群別サンプル数＋図示noteを返す（散布図点列は非同梱）。
+    """PCAスコアの要約ヘッダ＋群別サンプル数＋座標点列(JSON)を返す。
 
-    散布図の全点列は session_state.session.last_pca_plot に別途保存され
-    （_remember_arf_pca_plot）、save_pca_figure が図示する。ここに点列を埋め込むと
-    8000字切り詰めで末尾の loadings が消えるため、要約のみを返す（差次スリムと同型）。
+    LLM がこの座標から散布図を自描画できるよう per-sample の点列を ```json
+    フェンスで同梱する。点列は session_state.session.last_pca_plot にも別途保存
+    され（_remember_arf_pca_plot）、save_pca_figure がユーザー要求時の PNG 化に
+    使う。呼び出し側はこのブロックを loadings の後（payload 末尾）に置くこと
+    （万一の下流截断で loadings ではなく座標点を失うようにするため）。
     """
     groups = groups or {}
     evr = pca_result["explained_variance_ratio"]
+    coords = pca_result.get("components", [])
     lines = [
         intro.rstrip("\n"),
         f"- {title}",
@@ -167,7 +171,30 @@ def _format_pca_plot_block(
         lines.append(f"- 群別サンプル数: {counts}")
     else:
         lines.append(f"- サンプル数: {len(sample_names)}")
-    lines.append("- 散布図の点列は本要約に非同梱。save_pca_figure で図示できます。")
+
+    points = []
+    for i, name in enumerate(sample_names):
+        if i < len(coords) and len(coords[i]) >= 2:
+            point = {
+                "pc1": round(float(coords[i][0]), 4),
+                "pc2": round(float(coords[i][1]), 4),
+                "sample": name,
+            }
+            if groups.get(name) is not None:
+                point["group"] = groups[name]
+            points.append(point)
+    plot_data = {
+        "x_label": f"PC1 ({evr[0] * 100:.2f}%)",
+        "y_label": f"PC2 ({evr[1] * 100:.2f}%)",
+        "points": points,
+    }
+    lines.append(
+        "- 上記座標から散布図を描画してください（group があれば群ごとに色分け・凡例付き）。"
+        "PNG が必要なときのみ save_pca_figure を実行します。"
+    )
+    lines.append("```json")
+    lines.append(json.dumps(plot_data, ensure_ascii=False))
+    lines.append("```")
     return "\n".join(lines) + "\n"
 
 
