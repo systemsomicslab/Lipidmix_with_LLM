@@ -541,6 +541,22 @@ QC/ブランク/注入順のいずれかが欠けているためにスキップ�
 
 前処理後行列が無い（`session.feature_matrix is None`）場合はエラーメッセージ1件を返す。あれば `arf_reader.run_pca` でPCAを実行し、`arf_parser`/`arf_re_pca` と同じ整形ヘルパー（スコアプロット用JSON、Loadings上位）を使って結果を返す。出力テキストの構造・キー意味は8.1節のスコアプロット用JSONと同一。既定の `arf_parser`/`arf_re_pca` 経路とは完全に独立しており、`arf_preprocess()` を実行しない限り既存の解析結果には影響しない。
 
+### 10.5 手動サンプル/ピーク除外（`arf_exclude`）
+
+PCAスコアプロットで明らかに外れた1サンプルや、特定のピーク（スポット）を**名前/IDで手動除外**するためのツール。`exclusions.py`（MCP非依存の純ロジック層、`prune_spots()` / `roster()`）と `tools_arf.py` の `arf_exclude()` が担う。除外は**可逆・非破壊**で、`session.filtered_features` 自体は変更しない。
+
+`arf_exclude(exclude_samples=None, exclude_spots=None, mode="add")` は JSON を返す。
+
+- **`exclude_samples`**: 除外するサンプル名（`file_name`、完全一致）のリスト。
+- **`exclude_spots`**: 除外するスポットの `MasterAlignmentID`（int）のリスト。
+- **`mode`**: `add`（既定・追加）/ `remove`（再包含）/ `clear`（全消去）/ `list`（現状表示のみ）。
+- 現データに存在しない指定は `unmatched_samples` / `unmatched_spots` として警告に載せ、一致分のみ集合へ反映する（タイプミスに寛容）。
+- 応答キー: `status` / `mode` / `excluded_samples` / `excluded_spots` / `samples_before` / `samples_after` / `spots_before` / `spots_after` / `unmatched_samples` / `unmatched_spots` / `caveats`。残サンプルまたは残スポットが0件になる指定には caveat が付く。
+
+除外集合は `session.excluded_samples`（`file_name` 集合）と `session.excluded_spots`（`MasterAlignmentID` 集合）に保持され、新ファイルロード（`load_data` のキャッシュミス経路）でリセットされる。行列を組む直前に `exclusions.prune_spots()` が適用され、**`arf_preprocess`**（→ `arf_pca_preprocessed` / `arf_differential`）と **`arf_re_pca`** が自動的に除外を反映する（初回ロードの `arf_parser` には適用されない）。除外が有効なとき、それぞれの出力に「ユーザ手動除外: サンプル N 件 / スポット M 件」の注記が付く。`arf_list_sample_roles()` は各サンプルに `excluded: true/false` を付して現在の除外状態を示す。
+
+運用フロー: `arf_parser`（全体PCAで外れ俯瞰）→ `arf_exclude(exclude_samples=[...])` → `arf_re_pca` または `arf_preprocess`＋`arf_pca_preprocessed` で除外後PCAを確認 → `arf_differential`。戻したいときは `mode="remove"` / `mode="clear"`。
+
 ## 11. 差次的解析（P2b）
 
 `differential.py`（MCP非依存の純ロジック層）と、`tools_arf.py` の `arf_differential()` / `tools_reports.py` の `save_volcano_figure()` が、前処理後のサンプル×特徴量行列に対する群間比較を担う。既定挙動・既存ツールは不変で、明示呼び出し時のみ作用する。
