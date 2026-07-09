@@ -93,6 +93,8 @@ def arf_list_sample_roles() -> str:
     counts = {"sample": 0, "qc": 0, "blank": 0}
     for m in meta.values():
         counts[m["role"]] = counts.get(m["role"], 0) + 1
+    for name, m in meta.items():
+        m["excluded"] = name in session_state.session.excluded_samples
     return json.dumps({"status": "success", "counts": counts, "samples": meta},
                       ensure_ascii=False, indent=2)
 

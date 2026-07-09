@@ -82,5 +82,19 @@ class TestArfExclude(unittest.TestCase):
         self.assertTrue(out["caveats"])
 
 
+class TestSampleRolesExcludedFlag(unittest.TestCase):
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+        session_state.session.filtered_features = _fixture()
+        session_state.session.arf_class_index = None
+
+    def test_roles_mark_excluded_samples(self):
+        session_state.session.excluded_samples.add("sB")
+        out = json.loads(server.arf_list_sample_roles())
+        self.assertEqual(out["status"], "success")
+        self.assertTrue(out["samples"]["sB"]["excluded"])
+        self.assertFalse(out["samples"]["sA"]["excluded"])
+
+
 if __name__ == "__main__":
     unittest.main()
