@@ -57,6 +57,13 @@ class TestPreprocessExcludeWiring(unittest.TestCase):
         # 3 スポット → 2 スポット（列数が減る。各スポット1プロパティ height）
         self.assertEqual(out["matrix_shape"][1], 2)
 
+    def test_preprocess_all_samples_excluded_flags_empty_matrix(self):
+        for name in ("sA", "sB", "sC", "sD"):
+            session_state.session.excluded_samples.add(name)
+        out = json.loads(server.arf_preprocess())
+        self.assertEqual(out["matrix_shape"][0], 0)
+        self.assertTrue(any("行列が空" in c for c in out.get("caveats", [])))
+
 
 class TestRePcaExcludeWiring(unittest.TestCase):
     def setUp(self):

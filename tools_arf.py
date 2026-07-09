@@ -247,6 +247,11 @@ def arf_preprocess(
     if n_excl_s or n_excl_p:
         report.setdefault("caveats", []).append(
             f"ユーザ手動除外: サンプル {n_excl_s} 件 / スポット {n_excl_p} 件を除外済み。")
+    # 除外が過度で行列が空（残サンプル0 または 残特徴量0）になった場合を前景化する。
+    if matrix2.size == 0:
+        report.setdefault("caveats", []).append(
+            "前処理後の行列が空です（残サンプルまたは残特徴量が 0 件）。手動除外が過度な"
+            "可能性があります。PCA/差次的解析は実行できません（arf_exclude の mode=remove/clear で復帰）。")
     report["status"] = "success"
     report["matrix_shape"] = list(matrix2.shape)
     report["recipe"] = recipe
