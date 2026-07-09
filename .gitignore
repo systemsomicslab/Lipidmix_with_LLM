@@ -26,3 +26,5 @@ playbook/
 *.csproj
 *.sln
 interp_eval_out/
+# 解釈精度評価アウトプット（archives/ 退避後の新パス）
+archives/interp_eval/out/
