@@ -13,19 +13,9 @@ def _entry_file_name(entry) -> str | None:
     from arf_reader import _convert_to_alignment_feature
     try:
         feature = _convert_to_alignment_feature(entry)
-        file_name = feature.get("file_name")
-        if file_name:
-            return file_name
     except Exception:
-        pass
-
-    # Fallback: for short entries (e.g., in tests), extract the first string
-    if isinstance(entry, list):
-        for item in entry:
-            if isinstance(item, str):
-                return item
-
-    return None
+        return None
+    return feature.get("file_name")
 
 
 def prune_spots(spots, excluded_samples, excluded_spots):

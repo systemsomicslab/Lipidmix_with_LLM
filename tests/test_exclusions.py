@@ -2,17 +2,27 @@ import unittest
 import exclusions
 
 
-def _spot(master_id, entries):
-    """entries: list of raw AlignedPeakProperties rows (list). 各 row の
-    先頭付近の文字列が file_name として解釈される（_convert_to_alignment_feature 準拠）。"""
-    return {"MasterAlignmentID": master_id, "AlignedPeakProperties": list(entries)}
+def _row(file_id, name, height):
+    """現実的な AlignmentChromPeakFeature 生 row（len>25・data[18] 数値）so that
+    arf_reader._convert_to_alignment_feature exercises its real path and derives
+    file_name from the string in data[:10]."""
+    row = [0] * 26
+    row[0] = file_id
+    row[1] = name
+    row[2] = file_id
+    row[18] = float(height)
+    return row
+
+
+def _spot(master_id, rows):
+    return {"MasterAlignmentID": master_id,
+            "AlignedPeakProperties": [list(r) for r in rows]}
 
 
 def _fixture():
-    # 3 サンプル (sA, sB, sC) x 2 スポット (id=1, id=2)
     return [
-        _spot(1, [[0, "sA", 10], [1, "sB", 20], [2, "sC", 30]]),
-        _spot(2, [[0, "sA", 11], [1, "sB", 21], [2, "sC", 31]]),
+        _spot(1, [_row(0, "sA", 10), _row(1, "sB", 20), _row(2, "sC", 30)]),
+        _spot(2, [_row(0, "sA", 11), _row(1, "sB", 21), _row(2, "sC", 31)]),
     ]
 
 
