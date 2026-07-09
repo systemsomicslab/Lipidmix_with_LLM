@@ -38,6 +38,9 @@ class FakeSession:
         self.pca_result = None
         self.arf_tag_index = {}
         self.arf_class_index = make_class_index()
+        # 手動除外集合（実 AnalysisSession をミラー。空集合なので prune_spots は恒等）
+        self.excluded_samples = set()
+        self.excluded_spots = set()
 
     def load_data(self, file_path, tag_directory=None):
         self.current_file_path = file_path

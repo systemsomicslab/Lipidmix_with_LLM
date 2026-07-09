@@ -9,11 +9,12 @@ import asyncio
 import server
 
 
-# 分割前に実測した 35 ツールの正準スナップショット（sorted）。
+# MCP 登録ツールの正準スナップショット（sorted）。arf_exclude 追加で 36 件。
 EXPECTED_TOOLS = sorted([
     "arf2_annotate_identities",
     "arf2_parser",
     "arf_differential",
+    "arf_exclude",
     "arf_list_classes",
     "arf_list_sample_roles",
     "arf_list_tags",
@@ -63,7 +64,7 @@ EXPECTED_TEMPLATES = sorted([
 
 def test_tool_count_is_stable():
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 35
+    assert len(tools) == 36
 
 
 def test_tool_names_snapshot():
