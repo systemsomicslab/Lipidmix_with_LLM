@@ -14,6 +14,7 @@ import math
 from pathlib import Path
 
 import differential
+import exclusions
 import path_resolvers
 import preprocessing
 import session_state
@@ -40,6 +41,7 @@ __all__ = [
     "arf_list_tags",
     "arf_list_classes",
     "arf_list_sample_roles",
+    "arf_exclude",
     "arf_preprocess",
     "arf_pca_preprocessed",
     "arf_parser",
@@ -91,8 +93,92 @@ def arf_list_sample_roles() -> str:
     counts = {"sample": 0, "qc": 0, "blank": 0}
     for m in meta.values():
         counts[m["role"]] = counts.get(m["role"], 0) + 1
+    for name, m in meta.items():
+        m["excluded"] = name in session_state.session.excluded_samples
     return json.dumps({"status": "success", "counts": counts, "samples": meta},
                       ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def arf_exclude(
+    exclude_samples: list[str] | None = None,
+    exclude_spots: list[int] | None = None,
+    mode: str = "add",
+) -> str:
+    """PCA 外れサンプルや特定ピークを名前/ID で手動除外・再包含する（可逆・非破壊）。
+
+    先に arf_parser で ARF を読み込んでおくこと。除外は session に保持され、以降の
+    arf_re_pca / arf_preprocess（→ arf_pca_preprocessed / arf_differential）へ反映される。
+    filtered_features 自体は変更しないため、mode="remove"/"clear" で元に戻せる。
+
+    引数:
+    - exclude_samples: 除外するサンプル名（file_name、完全一致）のリスト。
+    - exclude_spots: 除外するスポットの MasterAlignmentID（int）のリスト。
+    - mode: add（既定・追加）/ remove（再包含）/ clear（全消去）/ list（現状表示のみ）。
+    """
+    spots = session_state.session.filtered_features
+    if spots is None:
+        return json.dumps({"status": "error",
+                           "message": "先に arf_parser で ARF を読み込んでください。"},
+                          ensure_ascii=False, indent=2)
+
+    avail_samples, avail_ids = exclusions.roster(spots)
+    es = session_state.session.excluded_samples
+    esp = session_state.session.excluded_spots
+    req_samples = list(exclude_samples or [])
+    req_spots = list(exclude_spots or [])
+    unmatched_samples: list[str] = []
+    unmatched_spots: list[int] = []
+    caveats: list[str] = []
+
+    if mode == "clear":
+        es.clear()
+        esp.clear()
+    elif mode == "list":
+        pass
+    elif mode in ("add", "remove"):
+        matched_samples = [n for n in req_samples if n in avail_samples]
+        unmatched_samples = [n for n in req_samples if n not in avail_samples]
+        matched_spots = [i for i in req_spots if i in avail_ids]
+        unmatched_spots = [i for i in req_spots if i not in avail_ids]
+        if mode == "add":
+            es.update(matched_samples)
+            esp.update(matched_spots)
+        else:  # remove
+            es.difference_update(req_samples)
+            esp.difference_update(req_spots)
+        if unmatched_samples:
+            preview = ", ".join(sorted(avail_samples)[:10])
+            caveats.append(
+                f"未一致サンプル {unmatched_samples} は現データに存在しません（無視）。"
+                f"利用可能サンプル例: {preview}")
+        if unmatched_spots:
+            caveats.append(
+                f"未一致スポット {unmatched_spots} は現データに存在しません（無視）。")
+    else:
+        return json.dumps({"status": "error",
+                           "message": f"unknown mode: {mode!r}（add/remove/clear/list）"},
+                          ensure_ascii=False, indent=2)
+
+    pruned = exclusions.prune_spots(spots, es, esp)
+    pruned_names, pruned_ids = exclusions.roster(pruned)
+    payload = {
+        "status": "success",
+        "mode": mode,
+        "excluded_samples": sorted(es),
+        "excluded_spots": sorted(esp),
+        "samples_before": len(avail_samples),
+        "samples_after": len(pruned_names),
+        "spots_before": len(avail_ids),
+        "spots_after": len(pruned_ids),
+        "unmatched_samples": unmatched_samples,
+        "unmatched_spots": unmatched_spots,
+        "caveats": caveats,
+    }
+    if pruned_names == set() or pruned_ids == set():
+        payload["caveats"].append(
+            "除外の結果、残サンプルまたは残スポットが 0 件です。PCA/差次的解析は実行できません。")
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
@@ -113,7 +199,13 @@ def arf_preprocess(
                            "message": "先に arf_parser で ARF を読み込んでください。"},
                           ensure_ascii=False, indent=2)
     props = props or ["height"]
-    matrix, sample_names, feature_names = tool_helpers._pp_build_matrix(session_state.session.filtered_features, props)
+    # 手動除外（PCA 外れサンプル / 特定ピーク）を行列構築前に適用（非破壊）
+    active = exclusions.prune_spots(
+        session_state.session.filtered_features,
+        session_state.session.excluded_samples,
+        session_state.session.excluded_spots,
+    )
+    matrix, sample_names, feature_names = tool_helpers._pp_build_matrix(active, props)
     meta = _build_sample_meta(sample_names, session_state.session.arf_class_index)
     roles = {n: meta[n]["role"] for n in sample_names}
     run_order = {n: meta[n]["run_order"] for n in sample_names}
@@ -150,6 +242,16 @@ def arf_preprocess(
             f"プールQC が層別（{len(qc_strata)} サブグループ{f': {labels}' if labels else ''}）"
             "と検出されました。全 QC を1系列として扱うドリフト補正/RSD フィルタは近似です。"
         )
+    n_excl_s = len(session_state.session.excluded_samples)
+    n_excl_p = len(session_state.session.excluded_spots)
+    if n_excl_s or n_excl_p:
+        report.setdefault("caveats", []).append(
+            f"ユーザ手動除外: サンプル {n_excl_s} 件 / スポット {n_excl_p} 件を除外済み。")
+    # 除外が過度で行列が空（残サンプル0 または 残特徴量0）になった場合を前景化する。
+    if matrix2.size == 0:
+        report.setdefault("caveats", []).append(
+            "前処理後の行列が空です（残サンプルまたは残特徴量が 0 件）。手動除外が過度な"
+            "可能性があります。PCA/差次的解析は実行できません（arf_exclude の mode=remove/clear で復帰）。")
     report["status"] = "success"
     report["matrix_shape"] = list(matrix2.shape)
     report["recipe"] = recipe
@@ -434,14 +536,21 @@ def arf_re_pca(
 
         # フィルタリング後のデータをセッションの状態に反映
         session_state.session.filtered_features = filtered_spots
-        
+
+        # 手動除外（PCA 外れサンプル / 特定ピーク）を PCA 再計算前に適用（非破壊）
+        active_spots = exclusions.prune_spots(
+            filtered_spots,
+            session_state.session.excluded_samples,
+            session_state.session.excluded_spots,
+        )
+
         # 統計情報の計算
-        peak_df = extract_peak_properties(filtered_spots)
-        avg_samples = len(peak_df) / len(filtered_spots) if len(filtered_spots) > 0 else 0
-        
+        peak_df = extract_peak_properties(active_spots)
+        avg_samples = len(peak_df) / len(active_spots) if len(active_spots) > 0 else 0
+
         # 2. 正確に使い回された関数による行列構築とPCAの実行
         matrix, sample_names, feature_names = build_pca_matrix(
-            filtered_spots, use_properties=props, min_detection_rate=min_detection_rate,
+            active_spots, use_properties=props, min_detection_rate=min_detection_rate,
         )
         if matrix.size == 0:
             return ["[ERROR] フィルタ後のデータから PCA 用行列を構築できませんでした。データ数が少なすぎる可能性があります。"]
@@ -482,11 +591,19 @@ def arf_re_pca(
         pc1_var = pca_result['explained_variance_ratio'][0] * 100
         pc2_var = pca_result['explained_variance_ratio'][1] * 100
 
+        n_excl_s = len(session_state.session.excluded_samples)
+        n_excl_p = len(session_state.session.excluded_spots)
+        exclude_note = (
+            f"- **ユーザ手動除外**: サンプル {n_excl_s} 件 / スポット {n_excl_p} 件\n"
+            if (n_excl_s or n_excl_p) else ""
+        )
+
         # 5. レポート全体の結合
         file_name = Path(session_state.session.current_file_path).name if session_state.session.current_file_path else "Unknown"
         output_text = (
             f"### 🔄 ARF フィルタ適用・PCA再計算完了: {file_name}\n"
             f"- **適用フィルタ条件**: 強度最小値=`{min_intensity}`, アノテーションキーワード=`'{annotation_keyword or '指定なし'}'`\n"
+            f"{exclude_note}"
             f"{_format_arf_class_filter(class_filter_stats)}"
             f"{_format_arf_tag_filter(tag_filter_stats)}"
             f"- **フィルタ後の有効スポット数**: `{len(filtered_spots)}` / {len(session_state.session.features)} (データ残存率: {len(filtered_spots)/len(session_state.session.features)*100:.1f}%)\n"

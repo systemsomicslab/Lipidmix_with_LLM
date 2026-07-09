@@ -87,6 +87,10 @@ class AnalysisSession:
         self.sample_meta = {}            # {sample_name: {role, group, run_order, batch}}
         self.preprocessing_recipe = {}   # 直近適用した前処理レシピ（空=未適用）
 
+        # --- 手動除外集合（PCA 外れサンプル / 特定ピークの可逆・非破壊除外） ---
+        self.excluded_samples = set()   # 除外する file_name（サンプル）
+        self.excluded_spots = set()     # 除外する MasterAlignmentID（スポット）
+
     def apply_filter(self, filter_params: dict | None = None):
         """現データに対して動的にフィルタを適用する。"""
         if filter_params is None:
@@ -150,6 +154,11 @@ class AnalysisSession:
                 self.arf_class_index = discover_arf_class_index(file_path)
                 attach_class_ids_to_spots(self.features, self.arf_class_index)
             return self.features
+
+        # 別データに古い手動除外を持ち越さない（open 前に初期化し、新ファイル読込の
+        # 開始時点で必ずクリアされるようにする）
+        self.excluded_samples = set()
+        self.excluded_spots = set()
 
         print(f"DEBUG: Loading/Deserializing {file_path}", file=sys.stderr)
         with open(file_path, 'rb') as f:
