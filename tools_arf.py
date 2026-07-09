@@ -14,6 +14,7 @@ import math
 from pathlib import Path
 
 import differential
+import exclusions
 import path_resolvers
 import preprocessing
 import session_state
@@ -40,6 +41,7 @@ __all__ = [
     "arf_list_tags",
     "arf_list_classes",
     "arf_list_sample_roles",
+    "arf_exclude",
     "arf_preprocess",
     "arf_pca_preprocessed",
     "arf_parser",
@@ -93,6 +95,88 @@ def arf_list_sample_roles() -> str:
         counts[m["role"]] = counts.get(m["role"], 0) + 1
     return json.dumps({"status": "success", "counts": counts, "samples": meta},
                       ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def arf_exclude(
+    exclude_samples: list[str] | None = None,
+    exclude_spots: list[int] | None = None,
+    mode: str = "add",
+) -> str:
+    """PCA 外れサンプルや特定ピークを名前/ID で手動除外・再包含する（可逆・非破壊）。
+
+    先に arf_parser で ARF を読み込んでおくこと。除外は session に保持され、以降の
+    arf_re_pca / arf_preprocess（→ arf_pca_preprocessed / arf_differential）へ反映される。
+    filtered_features 自体は変更しないため、mode="remove"/"clear" で元に戻せる。
+
+    引数:
+    - exclude_samples: 除外するサンプル名（file_name、完全一致）のリスト。
+    - exclude_spots: 除外するスポットの MasterAlignmentID（int）のリスト。
+    - mode: add（既定・追加）/ remove（再包含）/ clear（全消去）/ list（現状表示のみ）。
+    """
+    spots = session_state.session.filtered_features
+    if spots is None:
+        return json.dumps({"status": "error",
+                           "message": "先に arf_parser で ARF を読み込んでください。"},
+                          ensure_ascii=False, indent=2)
+
+    avail_samples, avail_ids = exclusions.roster(spots)
+    es = session_state.session.excluded_samples
+    esp = session_state.session.excluded_spots
+    req_samples = list(exclude_samples or [])
+    req_spots = list(exclude_spots or [])
+    unmatched_samples: list[str] = []
+    unmatched_spots: list[int] = []
+    caveats: list[str] = []
+
+    if mode == "clear":
+        es.clear()
+        esp.clear()
+    elif mode == "list":
+        pass
+    elif mode in ("add", "remove"):
+        matched_samples = [n for n in req_samples if n in avail_samples]
+        unmatched_samples = [n for n in req_samples if n not in avail_samples]
+        matched_spots = [i for i in req_spots if i in avail_ids]
+        unmatched_spots = [i for i in req_spots if i not in avail_ids]
+        if mode == "add":
+            es.update(matched_samples)
+            esp.update(matched_spots)
+        else:  # remove
+            es.difference_update(req_samples)
+            esp.difference_update(req_spots)
+        if unmatched_samples:
+            preview = ", ".join(sorted(avail_samples)[:10])
+            caveats.append(
+                f"未一致サンプル {unmatched_samples} は現データに存在しません（無視）。"
+                f"利用可能サンプル例: {preview}")
+        if unmatched_spots:
+            caveats.append(
+                f"未一致スポット {unmatched_spots} は現データに存在しません（無視）。")
+    else:
+        return json.dumps({"status": "error",
+                           "message": f"unknown mode: {mode!r}（add/remove/clear/list）"},
+                          ensure_ascii=False, indent=2)
+
+    pruned = exclusions.prune_spots(spots, es, esp)
+    pruned_names, pruned_ids = exclusions.roster(pruned)
+    payload = {
+        "status": "success",
+        "mode": mode,
+        "excluded_samples": sorted(es),
+        "excluded_spots": sorted(esp),
+        "samples_before": len(avail_samples),
+        "samples_after": len(pruned_names),
+        "spots_before": len(avail_ids),
+        "spots_after": len(pruned_ids),
+        "unmatched_samples": unmatched_samples,
+        "unmatched_spots": unmatched_spots,
+        "caveats": caveats,
+    }
+    if pruned_names == set() or pruned_ids == set():
+        payload["caveats"].append(
+            "除外の結果、残サンプルまたは残スポットが 0 件です。PCA/差次的解析は実行できません。")
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
