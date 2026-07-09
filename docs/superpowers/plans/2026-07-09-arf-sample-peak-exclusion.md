@@ -40,17 +40,31 @@ import unittest
 import exclusions
 
 
-def _spot(master_id, entries):
-    """entries: list of raw AlignedPeakProperties rows (list). 各 row の
-    先頭付近の文字列が file_name として解釈される（_convert_to_alignment_feature 準拠）。"""
-    return {"MasterAlignmentID": master_id, "AlignedPeakProperties": list(entries)}
+def _row(file_id, name, height):
+    """現実的な AlignmentChromPeakFeature 生 row を作る。
+
+    arf_reader._convert_to_alignment_feature は len(data) > 25 かつ
+    data[18] が数値のときだけ本来の変換パスに入り、data[:10] 中の文字列を
+    file_name として拾う。テストがこの実パスを通るよう 26 要素・data[18] を
+    数値・data[1] に名前を置く（3 要素の短い row では実パスに入らない）。"""
+    row = [0] * 26
+    row[0] = file_id
+    row[1] = name           # data[:10] 中の文字列 → file_name として解釈
+    row[2] = file_id        # master_peak_id (>=0 → 非ギャップフィル)
+    row[18] = float(height)  # height（数値 → 実変換パスを起動）
+    return row
+
+
+def _spot(master_id, rows):
+    return {"MasterAlignmentID": master_id,
+            "AlignedPeakProperties": [list(r) for r in rows]}
 
 
 def _fixture():
     # 3 サンプル (sA, sB, sC) x 2 スポット (id=1, id=2)
     return [
-        _spot(1, [[0, "sA", 10], [1, "sB", 20], [2, "sC", 30]]),
-        _spot(2, [[0, "sA", 11], [1, "sB", 21], [2, "sC", 31]]),
+        _spot(1, [_row(0, "sA", 10), _row(1, "sB", 20), _row(2, "sC", 30)]),
+        _spot(2, [_row(0, "sA", 11), _row(1, "sB", 21), _row(2, "sC", 31)]),
     ]
 
 
@@ -264,14 +278,16 @@ Expected: FAIL（`AttributeError: 'AnalysisSession' object has no attribute 'exc
         self.excluded_spots = set()     # 除外する MasterAlignmentID（スポット）
 ```
 
-`load_data` のキャッシュミス経路、`self.pca_result = None` と `self.filtered_features = None` の並びに追記:
+`load_data` のキャッシュミス経路。除外リセットは `with open(...)` の**前**に置く
+（存在しないパスでは `open` が先に例外を投げるため、`with` 内に置くと新ファイル読込で
+リセットされない。キャッシュヒットの早期 return より後なので同一ファイル再読込では維持される）:
 ```python
-            # 新しいファイルを読み込んだら計算結果はリセット
-            self.pca_result = None
-            self.filtered_features = None
-            # 別データに古い手動除外を持ち越さない
-            self.excluded_samples = set()
-            self.excluded_spots = set()
+        # 別データに古い手動除外を持ち越さない（open 前に初期化）
+        self.excluded_samples = set()
+        self.excluded_spots = set()
+
+        print(f"DEBUG: Loading/Deserializing {file_path}", file=sys.stderr)
+        with open(file_path, 'rb') as f:
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -311,14 +327,26 @@ import server
 import session_state
 
 
-def _spot(master_id, entries):
-    return {"MasterAlignmentID": master_id, "AlignedPeakProperties": list(entries)}
+def _row(file_id, name, height):
+    """現実的な AlignmentChromPeakFeature 生 row（len>25・data[18] 数値）。
+    exclusions.roster/_convert_to_alignment_feature が実パスで file_name を拾える。"""
+    row = [0] * 26
+    row[0] = file_id
+    row[1] = name
+    row[2] = file_id
+    row[18] = float(height)
+    return row
+
+
+def _spot(master_id, rows):
+    return {"MasterAlignmentID": master_id,
+            "AlignedPeakProperties": [list(r) for r in rows]}
 
 
 def _fixture():
     return [
-        _spot(1, [[0, "sA", 10], [1, "sB", 20], [2, "sC", 30]]),
-        _spot(2, [[0, "sA", 11], [1, "sB", 21], [2, "sC", 31]]),
+        _spot(1, [_row(0, "sA", 10), _row(1, "sB", 20), _row(2, "sC", 30)]),
+        _spot(2, [_row(0, "sA", 11), _row(1, "sB", 21), _row(2, "sC", 31)]),
     ]
 
 
