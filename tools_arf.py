@@ -197,7 +197,13 @@ def arf_preprocess(
                            "message": "先に arf_parser で ARF を読み込んでください。"},
                           ensure_ascii=False, indent=2)
     props = props or ["height"]
-    matrix, sample_names, feature_names = tool_helpers._pp_build_matrix(session_state.session.filtered_features, props)
+    # 手動除外（PCA 外れサンプル / 特定ピーク）を行列構築前に適用（非破壊）
+    active = exclusions.prune_spots(
+        session_state.session.filtered_features,
+        session_state.session.excluded_samples,
+        session_state.session.excluded_spots,
+    )
+    matrix, sample_names, feature_names = tool_helpers._pp_build_matrix(active, props)
     meta = _build_sample_meta(sample_names, session_state.session.arf_class_index)
     roles = {n: meta[n]["role"] for n in sample_names}
     run_order = {n: meta[n]["run_order"] for n in sample_names}
@@ -234,6 +240,11 @@ def arf_preprocess(
             f"プールQC が層別（{len(qc_strata)} サブグループ{f': {labels}' if labels else ''}）"
             "と検出されました。全 QC を1系列として扱うドリフト補正/RSD フィルタは近似です。"
         )
+    n_excl_s = len(session_state.session.excluded_samples)
+    n_excl_p = len(session_state.session.excluded_spots)
+    if n_excl_s or n_excl_p:
+        report.setdefault("caveats", []).append(
+            f"ユーザ手動除外: サンプル {n_excl_s} 件 / スポット {n_excl_p} 件を除外済み。")
     report["status"] = "success"
     report["matrix_shape"] = list(matrix2.shape)
     report["recipe"] = recipe
