@@ -54,6 +54,24 @@ def pack_ext_block(inner_objects: list) -> bytes:
     return msgpack.packb(ext, use_bin_type=True)
 
 
+def pack_ext_block_from_stream(inner_stream: bytes) -> bytes:
+    """事前にバイト列化した inner_stream から ExtType(99) ブロックを組む。
+
+    Python の str は必ず妥当な UTF-8 のため、不正 UTF-8 を持つ msgpack `str`
+    フィールドは packb では作れない。生バイトを直接与えるためのヘルパ。
+    """
+    payload = msgpack.packb(len(inner_stream), use_bin_type=True) + lz4.block.compress(
+        inner_stream, store_size=False
+    )
+    return msgpack.packb(msgpack.ExtType(99, payload), use_bin_type=True)
+
+
+# msgpack `str3` ヘッダ(0xa3) + 不正UTF-8バイト('k', 0xdc, 0x00)。
+# 0xdc は2バイト列の先頭だが後続が継続バイトでないため strict では失敗する
+# ——実POSファイルで観測された "0xdc in position 1" を再現する。
+_BAD_UTF8_STR = b"\xa3k\xdc\x00"
+
+
 class ArfMultiblockTests(unittest.TestCase):
     def test_deserialize_legacy_single_block_container(self):
         data = pack_legacy_block([[0, 0, make_group(1), make_group(2)]])
@@ -80,6 +98,43 @@ class ArfMultiblockTests(unittest.TestCase):
         self.assertEqual([spot["SourceBlockIndex"] for spot in features], [0, 0, 1])
         self.assertEqual([spot["SourceLocalIndex"] for spot in features], [0, 1, 0])
         self.assertEqual([spot["MassCenter"] for spot in features], [701.0, 702.0, 703.0])
+
+    def test_deserialize_tolerates_invalid_utf8_string_field(self):
+        # POSモード .arf 再現(1): 先頭に不正UTF-8の str フィールドを持つ独立
+        # オブジェクトがあってもクラッシュしないこと。strict な Unpacker では
+        # ここで UnicodeDecodeError（"0xdc in position 1"）が発生していた。
+        header_block = b"\x93" + _BAD_UTF8_STR + b"\x00\x00"  # [bad_str, 0, 0]
+        feature_container = msgpack.packb(
+            [0, 0, make_group(1), make_group(2)], use_bin_type=True
+        )
+        data = pack_ext_block_from_stream(header_block + feature_container)
+
+        features = arf_reader.deserialize(io.BytesIO(data))
+
+        self.assertEqual(len(features), 2)
+        self.assertEqual([spot["MassCenter"] for spot in features], [701.0, 702.0])
+
+    def test_deserialize_container_with_string_header_and_padding(self):
+        # POSモード .arf 再現(2): コンテナ自身のヘッダが「文字列(不正UTF-8) +
+        # 複数のスカラー」で、グループが index 2 より後ろから始まるレイアウト。
+        # 旧実装は item[0] が int でないコンテナを認識できず全スポットを取り
+        # こぼしていた（POS で 19289 → 0 スポット）。
+        # container = [bad_str, 50, 51, 95, group1, group2]（ヘッダ4要素）。
+        container = (
+            b"\x96"  # fixarray6
+            + _BAD_UTF8_STR  # [0] 不正UTF-8文字列
+            + b"\x32\x33\x5f"  # [1][2][3] スカラー int (50,51,95)
+            + msgpack.packb(make_group(1), use_bin_type=True)
+            + msgpack.packb(make_group(2), use_bin_type=True)
+        )
+        data = pack_ext_block_from_stream(container)
+
+        features = arf_reader.deserialize(io.BytesIO(data))
+
+        # ヘッダのスカラー4要素はスキップされ、2グループが抽出される。
+        self.assertEqual(len(features), 2)
+        self.assertEqual([spot["MasterAlignmentID"] for spot in features], [0, 1])
+        self.assertEqual([spot["MassCenter"] for spot in features], [701.0, 702.0])
 
     def test_deserialize_lz4_packed_msgpack_returns_raw_inner_objects(self):
         data = pack_ext_block([[0, 0, make_group(1)]]) + pack_ext_block([make_group(2)])

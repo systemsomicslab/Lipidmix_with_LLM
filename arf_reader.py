@@ -180,6 +180,11 @@ def _msgpack_stream(data: bytes):
     return msgpack.Unpacker(
         io.BytesIO(data),
         raw=False,
+        # POSモードの .arf はヘッダ相当フィールドに不正なUTF-8バイトを含む
+        # ことがある（NEGは含まない）。strict だと1バイトで全体が
+        # UnicodeDecodeError で停止するため、既存の _decode(errors='ignore')
+        # 規約に合わせて不正バイトを無視して読み進める。
+        unicode_errors="ignore",
         strict_map_key=False,
         max_buffer_size=1024 * 1024 * 1024,
     )
@@ -190,6 +195,7 @@ def _decode_lz4_msgpack_payload(compressed_data: bytes) -> list:
     unpacker = msgpack.Unpacker(
         stream,
         raw=False,
+        unicode_errors="ignore",
         strict_map_key=False,
         max_buffer_size=1024 * 1024 * 1024,
     )
@@ -229,13 +235,29 @@ def _iter_lz4_msgpack_blocks(data: bytes):
         yield block_index, _decode_lz4_msgpack_payload(payload)
 
 
-def _is_arf_feature_container_object(item) -> bool:
+def _is_arf_peak_group(item) -> bool:
+    """item が 1スポット分の「グループ（= サンプル行の並び）」か判定する。
+
+    グループは行(AlignmentChromPeakFeature)のリストなので、非空かつ全要素が
+    リストになる。行そのものは大半がスカラー要素を持つため、この条件では
+    グループと誤認されない。
+    """
     return (
         isinstance(item, list)
-        and len(item) > 2
-        and isinstance(item[0], int)
-        and isinstance(item[1], int)
+        and len(item) > 0
+        and all(isinstance(row, list) for row in item)
     )
+
+
+def _is_arf_feature_container_object(item) -> bool:
+    """item が特徴量コンテナ（グループを内包する）か判定する。
+
+    ヘッダ長は ion mode で異なる（NEG は [id, id] の2要素、POS は先頭に
+    プロジェクト文字列を含む99要素などになる）ため、位置を仮定せず
+    『グループ要素を1つ以上含むか』で判定する。単独グループ自身は
+    グループ要素を持たないためコンテナ扱いされない。
+    """
+    return isinstance(item, list) and any(_is_arf_peak_group(e) for e in item)
 
 
 def _iter_arf_peak_groups(data: bytes):
@@ -243,24 +265,20 @@ def _iter_arf_peak_groups(data: bytes):
         if not items:
             continue
 
-        first = items[0]
         local_index = 0
-        if _is_arf_feature_container_object(first):
-            for group in first[2:]:
-                yield block_index, local_index, group
-                local_index += 1
-        else:
-            yield block_index, local_index, first
-            local_index += 1
-
-        for item in items[1:]:
+        for item in items:
             if _is_arf_feature_container_object(item):
-                for group in item[2:]:
-                    yield block_index, local_index, group
-                    local_index += 1
-            else:
+                # コンテナ: グループ要素のみを取り出す（先頭のヘッダ
+                # スカラー群は自動的にスキップされる）。
+                for element in item:
+                    if _is_arf_peak_group(element):
+                        yield block_index, local_index, element
+                        local_index += 1
+            elif _is_arf_peak_group(item):
+                # 単独グループ（コンテナ外に置かれた末尾スポット等）。
                 yield block_index, local_index, item
                 local_index += 1
+            # それ以外（グループを持たないメタデータ）はスキップ。
 
 
 def deserialize_lz4_packed_msgpack(data: bytes) -> list:
