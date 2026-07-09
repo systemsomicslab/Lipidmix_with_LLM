@@ -155,7 +155,8 @@ class AnalysisSession:
                 attach_class_ids_to_spots(self.features, self.arf_class_index)
             return self.features
 
-        # 新しいファイル読込時は手動除外を初期化
+        # 別データに古い手動除外を持ち越さない（open 前に初期化し、新ファイル読込の
+        # 開始時点で必ずクリアされるようにする）
         self.excluded_samples = set()
         self.excluded_spots = set()
 
@@ -165,17 +166,6 @@ class AnalysisSession:
             file_ext = str(file_path).lower()
             if file_ext.endswith('.arf'):
                 self.features = arf_reader.deserialize(io.BytesIO(f.read()))
-            else:
-                self.features = deserialize(io.BytesIO(f.read())) # 元からインポートされている arf2_reader 用
-
-            self.current_file_path = file_path
-            self.current_tag_directory = tag_directory
-            # 新しいファイルを読み込んだら計算結果はリセット
-            self.pca_result = None
-            self.filtered_features = None
-
-            # ARF ファイルの場合、タグとクラスを処理
-            if file_ext.endswith('.arf'):
                 self.arf_tag_index = discover_arf_tag_index(
                     file_path, self.features, tag_directory=tag_directory,
                 )
@@ -183,8 +173,15 @@ class AnalysisSession:
                 self.arf_class_index = discover_arf_class_index(file_path)
                 attach_class_ids_to_spots(self.features, self.arf_class_index)
             else:
+                self.features = deserialize(io.BytesIO(f.read())) # 元からインポートされている arf2_reader 用
                 self.arf_tag_index = None
                 self.arf_class_index = None
+
+            self.current_file_path = file_path
+            self.current_tag_directory = tag_directory
+            # 新しいファイルを読み込んだら計算結果はリセット
+            self.pca_result = None
+            self.filtered_features = None
 
         return self.features
 
