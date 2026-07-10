@@ -268,3 +268,68 @@ class TestPreprocessOrchestration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestQcInterspersion(unittest.TestCase):
+    """QC-RLSC は QC が試料列に散在することを前提にする（kidney aging 実データで露見）。"""
+
+    def _fixture(self, qc_orders, sample_orders):
+        names = [f"QC_{i}" for i in range(len(qc_orders))] + \
+                [f"S_{i}" for i in range(len(sample_orders))]
+        roles = {n: ("qc" if n.startswith("QC") else "sample") for n in names}
+        run_order = dict(zip(names, list(qc_orders) + list(sample_orders)))
+        matrix = np.arange(1, len(names) * 3 + 1, dtype=float).reshape(len(names), 3)
+        return matrix, names, roles, run_order
+
+    def test_qc_appended_after_samples_is_skipped(self):
+        # 試料 1-48 → Blank → QC 50-56。内挿が全て外挿になるので補正してはいけない。
+        matrix, names, roles, run_order = self._fixture(range(50, 57), range(1, 49))
+        out, rep = pp.qc_drift_correct(matrix, roles, names, run_order)
+        self.assertEqual(rep["status"], "skipped")
+        self.assertIn("挿入されていません", rep["caveat"])
+        self.assertEqual(rep["qc_interspersion"]["covered"], 0)
+        np.testing.assert_array_equal(out, matrix)
+
+    def test_interspersed_qc_is_applied(self):
+        matrix, names, roles, run_order = self._fixture([1, 5, 9, 13], [2, 3, 6, 7, 10, 11])
+        _, rep = pp.qc_drift_correct(matrix, roles, names, run_order)
+        self.assertEqual(rep["status"], "applied")
+        self.assertEqual(rep["qc_interspersion"]["covered"], 6)
+        self.assertNotIn("caveat", rep)
+
+    def test_partial_coverage_is_caveated(self):
+        matrix, names, roles, run_order = self._fixture([1, 2, 3, 4], [2, 3, 20, 21, 22])
+        _, rep = pp.qc_drift_correct(matrix, roles, names, run_order)
+        self.assertEqual(rep["status"], "applied")
+        self.assertIn("外挿", rep["caveat"])
+
+
+class TestDetectFailedQc(unittest.TestCase):
+    """失敗 QC 注入を残すと qc_rsd_filter がほぼ全特徴を落とす（1345 -> 51 を実測）。"""
+
+    def _fixture(self, qc_rows):
+        names = [f"QC_{i}" for i in range(len(qc_rows))] + ["S_0", "S_1"]
+        roles = {n: ("qc" if n.startswith("QC") else "sample") for n in names}
+        matrix = np.array(list(qc_rows) + [[100.0, 100.0], [100.0, 100.0]])
+        return matrix, names, roles
+
+    def test_flags_low_intensity_qc(self):
+        matrix, names, roles = self._fixture([
+            [100.0, 100.0], [102.0, 98.0], [99.0, 101.0], [1.0, 0.5],
+        ])
+        rep = pp.detect_failed_qc(matrix, roles, names)
+        self.assertEqual(rep["failed"], ["QC_3"])
+        self.assertIn("arf_exclude", rep["caveat"])
+
+    def test_healthy_qc_is_silent(self):
+        matrix, names, roles = self._fixture([
+            [100.0, 100.0], [102.0, 98.0], [99.0, 101.0], [98.0, 103.0],
+        ])
+        rep = pp.detect_failed_qc(matrix, roles, names)
+        self.assertEqual(rep["failed"], [])
+        self.assertNotIn("caveat", rep)
+
+    def test_too_few_qc_is_not_judged(self):
+        matrix, names, roles = self._fixture([[100.0, 100.0], [1.0, 1.0]])
+        rep = pp.detect_failed_qc(matrix, roles, names)
+        self.assertEqual(rep["failed"], [])

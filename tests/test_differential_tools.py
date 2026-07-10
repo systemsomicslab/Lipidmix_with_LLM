@@ -1,10 +1,12 @@
 import json
 import unittest
+from unittest import mock
 
 import numpy as np
 
 import server
 import session_state
+import tools_arf
 
 
 class TestArfDifferential(unittest.TestCase):
@@ -73,11 +75,13 @@ class TestArfDifferentialDegenerate(unittest.TestCase):
         session_state.session.sample_meta = {names[i]: {"group": groups[i]} for i in range(n)}
 
     def test_empty_requested_group_is_flagged(self):
+        # 群名が1件も一致しないなら success を返してはいけない。有意0件を
+        # 「群間差なし」と読ませる余地を残さず、利用可能な Class ID を示して落とす。
         self._prime(["A", "A", "A"])  # no B members at all
         out = json.loads(server.arf_differential(group_a="A", group_b="B"))
-        self.assertEqual(out["status"], "success")
-        self.assertTrue(any("B" in c for c in out["caveats"]),
-                        f"expected caveat naming empty group B, got {out['caveats']}")
+        self.assertEqual(out["status"], "error")
+        self.assertIn("B", out["message"])
+        self.assertIn("A", out["message"])
 
     def test_zero_testable_features_is_flagged(self):
         # A and B each have 2 members but all values identical -> zero variance ->
@@ -108,6 +112,138 @@ class TestSaveVolcano(unittest.TestCase):
         }
         rel = server.save_volcano_figure("A1")
         self.assertIn("volcano", rel)
+
+
+
+class TestPooledGroupSpecs(unittest.TestCase):
+    """Class ID は因子トークンの連結（24M_GF_F）。プール群比較を可能にする。"""
+
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+        # 2 週齢 x 2 菌叢、各 2 個体。加齢で f0 が上がる。
+        classes = ["24M_GF", "24M_GF", "24M_SPF", "24M_SPF",
+                   "9w_GF", "9w_GF", "9w_SPF", "9w_SPF"]
+        names = [f"s{i}" for i in range(len(classes))]
+        session_state.session.feature_matrix = np.array([
+            [50.0, 5.0], [52.0, 5.1], [48.0, 4.9], [51.0, 5.0],
+            [10.0, 5.0], [11.0, 5.2], [9.5, 4.8], [10.5, 5.1],
+        ])
+        session_state.session.pp_sample_names = names
+        session_state.session.pp_feature_names = ["Spot_0_height", "Spot_1_height"]
+        session_state.session.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.sample_meta = {
+            n: {"group": c} for n, c in zip(names, classes)}
+
+    def test_partial_token_pools_class_ids(self):
+        out = json.loads(server.arf_differential(group_a="24M", group_b="9w"))
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(out["n_a"], 4)
+        self.assertEqual(out["n_b"], 4)
+        self.assertEqual(out["resolved_class_ids"]["group_a"], ["24M_GF", "24M_SPF"])
+        self.assertEqual(out["summary"]["n_significant"], 1)
+        self.assertTrue(any("プール群として解決" in c for c in out["caveats"]))
+
+    def test_multi_token_spec_narrows_the_pool(self):
+        out = json.loads(server.arf_differential(group_a="24M_GF", group_b="9w_GF"))
+        self.assertEqual(out["n_a"], 2)
+        self.assertEqual(out["resolved_class_ids"]["group_a"], ["24M_GF"])
+
+    def test_overlapping_specs_are_rejected(self):
+        # "GF" と "24M" は 24M_GF を共有する。プールが排他でないので検定してはいけない。
+        out = json.loads(server.arf_differential(group_a="GF", group_b="24M"))
+        self.assertEqual(out["status"], "error")
+        self.assertIn("24M_GF", out["message"])
+
+    def test_identical_specs_are_rejected(self):
+        out = json.loads(server.arf_differential(group_a="GF", group_b="GF"))
+        self.assertEqual(out["status"], "error")
+
+    def test_unknown_spec_lists_available_class_ids(self):
+        out = json.loads(server.arf_differential(group_a="24M", group_b="99w"))
+        self.assertEqual(out["status"], "error")
+        self.assertIn("99w", out["message"])
+        self.assertIn("24M_GF", out["message"])
+
+
+class TestTopHitAnnotation(unittest.TestCase):
+    """ARF 側 Name が Unknown でも ARF2 の注釈で解釈可能にする（両者は食い違い得る）。"""
+
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+        names = ["a1", "a2", "a3", "b1", "b2", "b3"]
+        session_state.session.feature_matrix = np.array([
+            [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
+            [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
+        ])
+        session_state.session.pp_sample_names = names
+        session_state.session.pp_feature_names = ["Spot_474_height", "Spot_1_height"]
+        session_state.session.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.sample_meta = {
+            n: {"group": ("A" if n.startswith("a") else "B")} for n in names}
+
+    def test_uses_arf_name_when_annotated(self):
+        session_state.session.features = [
+            {"MasterAlignmentID": 474, "Name": "BMP 42:10"},
+            {"MasterAlignmentID": 1, "Name": "Unknown"},
+        ]
+        out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        top = out["summary"]["top"][0]
+        self.assertEqual(top["spot_id"], 474)
+        self.assertEqual(top["name"], "BMP 42:10")
+        self.assertEqual(top["name_source"], "arf")
+
+    def test_falls_back_to_arf2_catalog(self):
+        session_state.session.features = [{"MasterAlignmentID": 474, "Name": "Unknown"}]
+        arf2_spots = [{"MasterAlignmentID": 474,
+                       "Name": "SL 33:0;O|SL 17:0;O/16:0", "Ontology": "SL"}]
+        with mock.patch.object(tools_arf, "_sibling_arf2_path", return_value="dummy.arf2"), \
+             mock.patch("builtins.open", mock.mock_open(read_data=b"")), \
+             mock.patch("arf2_reader.deserialize", return_value=arf2_spots):
+            out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        top = out["summary"]["top"][0]
+        self.assertEqual(top["name"], "SL 33:0;O|SL 17:0;O/16:0")
+        self.assertEqual(top["ontology"], "SL")
+        self.assertEqual(top["name_source"], "arf2")
+        self.assertTrue(any("ARF2" in c for c in out["caveats"]))
+
+    def test_no_sibling_arf2_leaves_name_none(self):
+        session_state.session.features = [{"MasterAlignmentID": 474, "Name": "Unknown"}]
+        with mock.patch.object(tools_arf, "_sibling_arf2_path", return_value=None):
+            out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertIsNone(out["summary"]["top"][0]["name"])
+
+
+
+class TestSiblingArf2Resolution(unittest.TestCase):
+    """MasterAlignmentID はアラインメント実行ごとに振り直される。別バッチの .arf2 を
+    引くと ID 対応が黙って崩れるため、同一語幹の兄弟だけを許す。"""
+
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+
+    def test_matches_same_alignment_stem(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            stem = "AlignmentResult_2026_07_09_17_14_19"
+            arf = os.path.join(d, f"{stem}_PeakProperties.arf")
+            arf2 = os.path.join(d, f"{stem}.arf2")
+            open(arf, "wb").close()
+            open(arf2, "wb").close()
+            session_state.session.current_file_path = arf
+            self.assertEqual(str(tools_arf._sibling_arf2_path()), arf2)
+
+    def test_rejects_other_batch(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            arf = os.path.join(d, "AlignmentResult_2026_07_09_17_14_19_PeakProperties.arf")
+            open(arf, "wb").close()
+            # 別実行の .arf2 しか無い場合は掴まない
+            open(os.path.join(d, "AlignmentResult_2026_07_09_17_34_57.arf2"), "wb").close()
+            session_state.session.current_file_path = arf
+            self.assertIsNone(tools_arf._sibling_arf2_path())
+
+    def test_no_loaded_file(self):
+        self.assertIsNone(tools_arf._sibling_arf2_path())
 
 
 if __name__ == "__main__":

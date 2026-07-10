@@ -201,6 +201,17 @@ def qc_drift_correct(matrix, roles, sample_names, run_order, min_qc=4, window=5)
         }
 
     order_int = np.array([int(o) for o in orders])
+    span = _qc_interspersion(order_int, qc_mask, roles, sample_names)
+    if span["covered"] == 0:
+        return matrix, {
+            "status": "skipped",
+            "caveat": (
+                f"QC が試料列に挿入されていません（注入順 QC={span['qc_range']}, "
+                f"試料={span['sample_range']}）。QC-RLSC は QC が試料の前後に散在することを"
+                "前提とするため、この設計では補正が成立しません（内挿が全て外挿になる）。"),
+            "qc_used": int(qc_mask.sum()),
+            "qc_interspersion": span,
+        }
     qc_order = order_int[qc_mask]
     sort = np.argsort(qc_order)
     qc_order_sorted = qc_order[sort]
@@ -221,7 +232,33 @@ def qc_drift_correct(matrix, roles, sample_names, run_order, min_qc=4, window=5)
         with np.errstate(divide="ignore", invalid="ignore"):
             factor = np.where(interp_trend > 0, global_level / interp_trend, 1.0)
         corrected[:, j] = matrix[:, j] * factor
-    return corrected, {"status": "applied", "qc_used": int(qc_mask.sum())}
+    report = {"status": "applied", "qc_used": int(qc_mask.sum()), "qc_interspersion": span}
+    if span["covered"] < 0.5 * span["n_samples"]:
+        report["caveat"] = (
+            f"試料 {span['n_samples']} 件のうち QC 注入順区間に入るのは {span['covered']} 件のみ。"
+            "区間外の試料は外挿補正となり、ドリフト補正の信頼性は限定的です。")
+    return corrected, report
+
+
+def _qc_interspersion(order_int, qc_mask, roles, sample_names) -> dict:
+    """QC の注入順が試料の注入順を挟んでいるか（QC-RLSC の前提）を測る。
+
+    QC を全試料の後ろにまとめて流す設計では np.interp が端値で頭打ちになり、
+    「補正した」外見だけが残る。実際に内挿できた試料数を covered として返す。
+    """
+    sample_mask = np.array([roles.get(n) == "sample" for n in sample_names])
+    qc_orders = order_int[qc_mask]
+    sample_orders = order_int[sample_mask]
+    if sample_orders.size == 0:
+        return {"covered": 0, "n_samples": 0, "qc_range": None, "sample_range": None}
+    lo, hi = int(qc_orders.min()), int(qc_orders.max())
+    covered = int(((sample_orders >= lo) & (sample_orders <= hi)).sum())
+    return {
+        "covered": covered,
+        "n_samples": int(sample_orders.size),
+        "qc_range": [lo, hi],
+        "sample_range": [int(sample_orders.min()), int(sample_orders.max())],
+    }
 
 
 def qc_rsd_filter(matrix, roles, sample_names, max_rsd=0.30):
@@ -240,6 +277,37 @@ def qc_rsd_filter(matrix, roles, sample_names, max_rsd=0.30):
         rsd = np.where(mean > 0, sd / mean, np.inf)
     keep = rsd <= max_rsd
     return keep, {"removed": int((~keep).sum()), "max_rsd": max_rsd}
+
+
+def detect_failed_qc(matrix, roles, sample_names, min_ratio=0.2) -> dict:
+    """総強度が QC 中央値の min_ratio 未満に落ちた QC 注入（失敗注入）を検出する。
+
+    失敗 QC を残したまま qc_rsd_filter を掛けると QC の RSD が全特徴で跳ね上がり、
+    ほぼ全特徴が除去される（実測: 1345 → 51）。フィルタ側の閾値問題に見えるため、
+    原因である QC 側を名指しで前景化する。行列は非破壊（検出のみ）。
+    """
+    matrix = np.asarray(matrix, dtype=float)
+    qc_names = [n for n in sample_names if roles.get(n) == "qc"]
+    if len(qc_names) < 3:
+        return {"failed": [], "checked": len(qc_names)}
+    index = {n: i for i, n in enumerate(sample_names)}
+    tic = {n: float(np.nansum(matrix[index[n], :])) for n in qc_names}
+    median = float(np.median(list(tic.values())))
+    if not np.isfinite(median) or median <= 0:
+        return {"failed": [], "checked": len(qc_names)}
+    failed = sorted(n for n in qc_names if tic[n] < min_ratio * median)
+    report = {
+        "failed": failed,
+        "checked": len(qc_names),
+        "min_ratio": min_ratio,
+        "qc_total_intensity": {n: tic[n] for n in qc_names},
+    }
+    if failed:
+        report["caveat"] = (
+            f"QC {len(failed)}/{len(qc_names)} 件の総強度が QC 中央値の {min_ratio:.0%} 未満です"
+            f"（{', '.join(failed)}）。失敗注入の可能性が高く、残したまま max_qc_rsd を適用すると"
+            "ほぼ全特徴が除去されます。arf_exclude で除外してから前処理し直してください。")
+    return report
 
 
 def impute(matrix, method="half_min"):
@@ -283,6 +351,13 @@ def preprocess(matrix, sample_names, roles, run_order, recipe):
     applied: list[str] = []
     caveats: list[str] = []
     steps: dict = {}
+
+    # 前処理の前に QC 自体の健全性を見る。失敗 QC は下流の全フィルタを汚染するため、
+    # 正規化でスケールが動く前の生強度で判定する。
+    qc_health = detect_failed_qc(matrix, roles, sample_names)
+    steps["qc_health"] = qc_health
+    if "caveat" in qc_health:
+        caveats.append(qc_health["caveat"])
 
     if recipe.get("blank_min_fold") is not None:
         mask, rep = blank_filter(matrix, roles, sample_names, recipe["blank_min_fold"])

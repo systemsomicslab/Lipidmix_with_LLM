@@ -11,6 +11,7 @@ module 修飾（path_resolvers.* / tool_helpers.*）で参照し patch が確実
 """
 import json
 import math
+import re
 from pathlib import Path
 
 import differential
@@ -20,7 +21,7 @@ import preprocessing
 import session_state
 import tool_helpers
 from mcp_core import mcp
-from msdial_classes import assign_sample_groups, filter_arf_by_class_ids
+from msdial_classes import assign_sample_groups, expand_class_specs, filter_arf_by_class_ids
 from msdial_tags import filter_arf_by_tags
 from path_resolvers import resolve_arf_file_path
 from session_state import _build_sample_meta
@@ -623,6 +624,122 @@ def arf_re_pca(
         return [f"ARF再PCA実行中にエラーが発生しました: {str(e)}\n{traceback.format_exc()}"]
 
 
+_SPOT_ID_RE = re.compile(r"^Spot_(\d+)")
+
+
+def _pool_group_labels(group_labels, group_a, group_b):
+    """完全 Class ID だけでなく、因子トークンによるプール群指定を許す。
+
+    Class ID は `24M_GF_F` のようにアンダースコア区切りの因子トークン列なので、
+    `group_a="24M"` を「24M を含む全 Class ID」に展開してラベルを貼り直す。
+    完全な Class ID を渡した場合は（そのトークン集合を含む他の Class ID が無い限り）
+    自分自身にのみ一致するため、従来の2群比較はそのまま動く。
+
+    戻り値 (relabeled, resolved)。一致ゼロ・両群の重複は ValueError。
+    """
+    if str(group_a) == str(group_b):
+        raise ValueError(f"group_a と group_b が同一です: {group_a!r}")
+    available = sorted({str(g) for g in group_labels if g is not None})
+    if not available:
+        raise ValueError(
+            "Class ID メタデータが解決できていないため群を特定できません（.mddata 未検出）。")
+    expanded = expand_class_specs([group_a, group_b], available)
+    a_ids, b_ids = set(expanded[group_a]), set(expanded[group_b])
+    overlap = sorted(a_ids & b_ids)
+    if overlap:
+        raise ValueError(
+            f"group_a='{group_a}' と group_b='{group_b}' が同じ Class ID を含みます "
+            f"({', '.join(overlap)})。群は排他である必要があります。")
+    relabeled = []
+    for g in group_labels:
+        key = str(g) if g is not None else None
+        if key in a_ids:
+            relabeled.append(group_a)
+        elif key in b_ids:
+            relabeled.append(group_b)
+        else:
+            relabeled.append(None)
+    resolved = {"group_a": sorted(a_ids), "group_b": sorted(b_ids)}
+    return relabeled, resolved
+
+
+def _spot_id_of(feature_name) -> int | None:
+    match = _SPOT_ID_RE.match(str(feature_name))
+    return int(match.group(1)) if match else None
+
+
+def _sibling_arf2_path() -> Path | None:
+    """読み込み中の ARF と同一アラインメント実行の .arf2 を返す。
+
+    MasterAlignmentID はアラインメント実行ごとに振り直されるため、別バッチの
+    .arf2 を引くと ID 対応が黙って崩れる。`AlignmentResult_<timestamp>` の語幹が
+    一致する兄弟ファイルだけを許し、無ければ None（注釈は諦める）。
+    """
+    current = getattr(session_state.session, "current_file_path", None)
+    if not current:
+        return None
+    path = Path(current)
+    match = re.match(r"(AlignmentResult_\d{4}(?:_\d{2}){5})", path.name)
+    if not match:
+        return None
+    sibling = path.with_name(f"{match.group(1)}.arf2")
+    return sibling if sibling.is_file() else None
+
+
+def _annotate_with_names(rows: list[dict]) -> dict:
+    """差次的解析の上位ヒットに脂質名/Ontology を付す。ARF が Unknown なら ARF2 を引く。
+
+    同一アラインメントの ARF と ARF2 は同じ MasterAlignmentID を指すが、代表 Name は
+    食い違うことがある（ARF 側 Unknown・ARF2 側は注釈あり）。上位ヒットが
+    `Spot_474_height` のままだと解釈に到達できないため橋渡しし、出所を name_source で
+    開示する。ARF2 は大きいので、ARF で埋まらない ID が残るときだけ読む。
+    """
+    spots = {s.get("MasterAlignmentID"): s for s in (session_state.session.features or [])}
+    unresolved: list[dict] = []
+    for row in rows:
+        sid = _spot_id_of(row.get("feature"))
+        row["spot_id"] = sid
+        name = (spots.get(sid) or {}).get("Name") or ""
+        if name and name.strip().lower() != "unknown":
+            row["name"] = name
+            row["name_source"] = "arf"
+        else:
+            row["name"] = None
+            row["name_source"] = None
+            if sid is not None:
+                unresolved.append(row)
+    report = {"annotated_from_arf": len(rows) - len(unresolved)}
+    if not unresolved:
+        return report
+
+    arf2_path = _sibling_arf2_path()
+    if not arf2_path:
+        report["arf2_lookup"] = "skipped: 同一アラインメントの .arf2 が隣接していません"
+        return report
+    import io as _io
+    from arf2_reader import deserialize as _arf2_deserialize
+    with open(arf2_path, "rb") as fh:
+        catalog = {s.get("MasterAlignmentID"): s for s in _arf2_deserialize(_io.BytesIO(fh.read()))}
+    filled = 0
+    for row in unresolved:
+        spot = catalog.get(row["spot_id"])
+        if not spot:
+            continue
+        name = spot.get("Name") or ""
+        if name and name.strip().lower() != "unknown":
+            row["name"] = name
+            row["ontology"] = spot.get("Ontology") or None
+            row["name_source"] = "arf2"
+            filled += 1
+    report["annotated_from_arf2"] = filled
+    report["arf2_path"] = str(arf2_path)
+    if filled:
+        report["note"] = (
+            f"{filled} 件は ARF 側 Name が Unknown で、ARF2 カタログの注釈を採用しました"
+            "（name_source=arf2）。ARF と ARF2 で代表 Name は食い違い得ます。")
+    return report
+
+
 @mcp.tool()
 def arf_differential(
     group_factor: str | None = None,
@@ -638,6 +755,10 @@ def arf_differential(
     先に arf_preprocess を実行して session_state.session.feature_matrix を用意すること
     （未実行なら未正規化 caveat 付きで生行列にフォールバックする）。
 
+    - group_a / group_b: 完全な Class ID（`24M_GF_F`）に加え、**因子トークンによる
+      プール群指定**を受け付ける。`group_a="24M", group_b="9w"` のように書くと、その
+      トークンを含む全 Class ID がプールされる（`24M_GF_F` + `24M_SPF_M` + …）。
+      複数トークンの AND 指定も可（`"24M_GF"`）。両群が同じ Class ID を掴むとエラー。
     - log_transform: [既定 True] log2(x+1) 空間で検定する。MS 強度は対数正規に近く、
       生強度での t 検定/ANOVA は正規性仮定を外れやすいため既定で有効。2群では log2FC も
       log2 空間の群平均差（＝幾何平均比）になる。生スケールで検定したい場合のみ False。
@@ -670,10 +791,25 @@ def arf_differential(
         caveats.append("交絡評価不可: " + conf["detail"] + src_note)
 
     if group_a is not None and group_b is not None:
+        try:
+            group_labels, resolved = _pool_group_labels(group_labels, group_a, group_b)
+        except ValueError as exc:
+            return json.dumps({"status": "error", "message": str(exc)},
+                              ensure_ascii=False, indent=2)
+        if any(len(ids) > 1 for ids in resolved.values()):
+            caveats.append(
+                "プール群として解決: "
+                + "; ".join(f"{spec} = {' + '.join(ids)}"
+                            for spec, ids in ((group_a, resolved["group_a"]),
+                                              (group_b, resolved["group_b"])))
+                + "。因子内の他要因（性・菌叢等）はプール内で平均化されます。")
         results = differential.two_group_test(matrix, feature_names, group_labels,
                                               group_a, group_b, log_transform=log_transform)
         results = differential.add_fdr(results)
         summary = differential.summarize_two_group(results, q_threshold, log2fc_threshold)
+        annotation = _annotate_with_names(summary.get("top") or [])
+        if annotation.get("note"):
+            caveats.append(annotation["note"])
         volcano = differential.volcano_data(results, q_threshold, log2fc_threshold)
         n_a = group_labels.count(group_a)
         n_b = group_labels.count(group_b)
@@ -699,6 +835,8 @@ def arf_differential(
         # 埋没し、解釈モデルが有意件数を読めず「全て ns」と誤読する退行を避けるため。
         payload = {"status": "success", "kind": "two_group",
                    "group_a": group_a, "group_b": group_b,
+                   "resolved_class_ids": resolved,
+                   "n_a": n_a, "n_b": n_b,
                    "summary": summary, "caveats": caveats,
                    "volcano_note": "全特徴の volcano 点列は本要約に非同梱。"
                                    "save_volcano_figure で図示できます。"}
