@@ -13,6 +13,8 @@ import server
 # EIC ツールは eicaef_* → eic_* に改称、eicaef_top_peak_tops は強度基準の
 # eic_rank_by_max_intensity に置換。PAI2 の PCA 依存 2 ツール
 # （pai2_get_top_metabolites / pai2_update_analysis_filter）は撤去。
+# arf_re_pca は arf_parser（min_intensity/annotation_keyword を吸収）へ統合し撤去。
+# pai2_inspect_metabolite_details は peak 語彙へ統一し pai2_inspect_peak に改称。
 EXPECTED_TOOLS = sorted([
     "arf2_annotate_identities",
     "arf2_parser",
@@ -24,7 +26,6 @@ EXPECTED_TOOLS = sorted([
     "arf_parser",
     "arf_pca_preprocessed",
     "arf_preprocess",
-    "arf_re_pca",
     "eic_parser",
     "eic_plot_chromatograms",
     "eic_rank_by_max_intensity",
@@ -39,7 +40,7 @@ EXPECTED_TOOLS = sorted([
     "list_reports",
     "load_dataset",
     "log_search",
-    "pai2_inspect_metabolite_details",
+    "pai2_inspect_peak",
     "pai2_parser",
     "paper_search",
     "read_report",
@@ -67,7 +68,7 @@ EXPECTED_TEMPLATES = sorted([
 
 def test_tool_count_is_stable():
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 36
+    assert len(tools) == 35
 
 
 def test_tool_names_snapshot():

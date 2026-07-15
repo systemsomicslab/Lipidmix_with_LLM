@@ -197,7 +197,7 @@ class VerifyPeakToolTests(unittest.TestCase):
 
     def test_error_when_not_loaded(self):
         session_state.session.filtered_features = None
-        out = json.loads(server.verify_peak_annotation(metabolite_id="1"))
+        out = json.loads(server.verify_peak_annotation(peak_id="1"))
         self.assertEqual(out["status"], "error")
 
     def test_error_when_no_selector(self):
@@ -207,12 +207,12 @@ class VerifyPeakToolTests(unittest.TestCase):
 
     def test_not_found(self):
         session_state.session.filtered_features = [_feat()]
-        out = json.loads(server.verify_peak_annotation(metabolite_id="999"))
+        out = json.loads(server.verify_peak_annotation(peak_id="999"))
         self.assertEqual(out["status"], "not_found")
 
     def test_success_shape_and_bands(self):
         session_state.session.filtered_features = [_feat()]
-        out = json.loads(server.verify_peak_annotation(metabolite_id="1"))
+        out = json.loads(server.verify_peak_annotation(peak_id="1"))
         self.assertEqual(out["status"], "success")
         self.assertEqual(out["identity"]["name"], "PC 34:1")
         self.assertEqual(out["identity"]["ion_mode"], "Positive")
@@ -222,12 +222,12 @@ class VerifyPeakToolTests(unittest.TestCase):
 
     def test_unknown_formula_degrades_to_unknown_band(self):
         session_state.session.filtered_features = [_feat(formula="Unknown")]
-        out = json.loads(server.verify_peak_annotation(metabolite_id="1"))
+        out = json.loads(server.verify_peak_annotation(peak_id="1"))
         self.assertEqual(out["analytical_checks"]["mass_error"]["band"], "UNKNOWN")
 
     def test_ether_caveat_surfaced(self):
         session_state.session.filtered_features = [_feat(name="PE O-38:5", ontology="PE", id=2)]
-        out = json.loads(server.verify_peak_annotation(metabolite_id="2"))
+        out = json.loads(server.verify_peak_annotation(peak_id="2"))
         self.assertTrue(out["biological_plausibility"]["caveats"])
 
     def test_candidate_slugs_from_knowledge(self):
@@ -240,7 +240,7 @@ class VerifyPeakToolTests(unittest.TestCase):
             encoding="utf-8",
         )
         session_state.session.filtered_features = [_feat(name="PE 38:5", ontology="PE", id=3)]
-        out = json.loads(server.verify_peak_annotation(metabolite_id="3"))
+        out = json.loads(server.verify_peak_annotation(peak_id="3"))
         self.assertIn(
             "pe-p-vs-pe-o-annotation",
             out["biological_plausibility"]["candidate_knowledge_slugs"],
@@ -248,7 +248,7 @@ class VerifyPeakToolTests(unittest.TestCase):
 
     def test_multiple_matches_wrapped(self):
         session_state.session.filtered_features = [_feat(id=1), _feat(id=2)]
-        out = json.loads(server.verify_peak_annotation(metabolite_name="PC"))
+        out = json.loads(server.verify_peak_annotation(peak_name="PC"))
         self.assertEqual(out["status"], "success")
         self.assertIn("matches", out)
         self.assertEqual(len(out["matches"]), 2)

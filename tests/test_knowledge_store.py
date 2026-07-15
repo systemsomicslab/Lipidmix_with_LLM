@@ -184,10 +184,10 @@ class PlaybookToolReferenceTests(unittest.TestCase):
             write_note(
                 directory,
                 "flow",
-                "type: playbook\nwhen_to_use: x\ntools: [arf2_parser, arf_re_pca]",
+                "type: playbook\nwhen_to_use: x\ntools: [arf2_parser, arf_parser]",
             )
             refs = playbook_tool_references(directory)
-            self.assertEqual(refs["flow"], ["arf2_parser", "arf_re_pca"])
+            self.assertEqual(refs["flow"], ["arf2_parser", "arf_parser"])
 
 
 class CoverageTests(unittest.TestCase):

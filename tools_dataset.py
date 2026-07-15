@@ -25,7 +25,7 @@ list_data_files = mcp.tool()(path_resolvers.list_data_files)
 
 
 @mcp.tool()
-def load_dataset(directory: str | None = None) -> list:
+def load_dataset(directory: str | None = None) -> str:
     """データフォルダを指定して、最初の標準解析（arf2 概観 → arf 詳細）を一括実行します。
 
     MS-DIAL出力フォルダを解析する際の **入口** です。フォルダのパスを渡すと:
@@ -45,15 +45,15 @@ def load_dataset(directory: str | None = None) -> list:
     if directory:
         target_dir = Path(directory).expanduser()
         if not target_dir.exists():
-            return [f"データディレクトリが存在しません: {target_dir}"]
+            return f"データディレクトリが存在しません: {target_dir}"
         if not target_dir.is_dir():
-            return [f"指定されたパスはディレクトリではありません: {target_dir}"]
+            return f"指定されたパスはディレクトリではありません: {target_dir}"
         mcp_core.DATA_DIR = target_dir  # 以降のツールの既定探索先を更新（正準は mcp_core 側）
 
     arf2_path = resolve_arf2_file_path()
     arf_path = resolve_arf_file_path()
 
-    outputs: list = [
+    blocks: list[str] = [
         f"## 📂 データセット読み込み: {mcp_core.DATA_DIR}\n"
         "標準の初期解析として **arf2（全体概観）→ arf（PeakProperties, サンプル別PCA）** を実行します。\n"
         "この出力（群構造・脂質クラス・極性など）は、解釈に進む前の『実験目的の推測とユーザー確認』"
@@ -62,18 +62,18 @@ def load_dataset(directory: str | None = None) -> list:
 
     batch_note = _describe_batch_selection(mcp_core.DATA_DIR)
     if batch_note:
-        outputs.append(batch_note)
+        blocks.append(batch_note)
 
     if arf2_path:
-        outputs.extend(arf2_parser(file_path=arf2_path))
+        blocks.append(arf2_parser(file_path=arf2_path))
     else:
-        outputs.append("⚠️ .arf2 ファイルが見つかりませんでした（全体概観をスキップ）。")
+        blocks.append("⚠️ .arf2 ファイルが見つかりませんでした（全体概観をスキップ）。")
 
     if arf_path:
-        outputs.extend(arf_parser(file_path=arf_path))
+        blocks.append(arf_parser(file_path=arf_path))
     else:
-        outputs.append(
+        blocks.append(
             "⚠️ 解析対象の .arf（PeakProperties.arf 等）が見つかりませんでした。"
         )
 
-    return outputs
+    return "\n\n".join(blocks)

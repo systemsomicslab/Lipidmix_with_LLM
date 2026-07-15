@@ -41,7 +41,7 @@ class TestPcaPreprocessed(unittest.TestCase):
 
     def test_requires_preprocessed_matrix(self):
         out = server.arf_pca_preprocessed()
-        self.assertIn("前処理", out[0])
+        self.assertIn("前処理", out)
 
     def test_runs_pca_on_preprocessed_matrix(self):
         import numpy as np
@@ -54,8 +54,8 @@ class TestPcaPreprocessed(unittest.TestCase):
         session_state.session.preprocessing_recipe = {"normalize": "median"}
         self.assertTrue(server._pp_has_preprocessed())
         out = server.arf_pca_preprocessed()
-        self.assertIn("PCA", out[0])
-        self.assertIn("前処理レシピ", out[0])
+        self.assertIn("PCA", out)
+        self.assertIn("前処理レシピ", out)
 
 
 if __name__ == "__main__":

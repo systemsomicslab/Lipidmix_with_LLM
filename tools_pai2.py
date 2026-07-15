@@ -1,6 +1,6 @@
 """PAI2（1測定ファイルのピーク一覧）ツール群と単一ピーク検証。
 
-pai2_parser（在庫要約）, pai2_inspect_metabolite_details, verify_peak_annotation。
+pai2_parser（在庫要約）, pai2_inspect_peak, verify_peak_annotation。
 PAI2 は単一サンプルなのでサンプル間比較（オミクス PCA）は行わない（複数サンプルの
 多変量比較は ARF/ARF2 を使う）。deps: mcp_core / session_state / path_resolvers /
 tool_helpers / pai2_reader / knowledge_store。tools_* / server は import しない。
@@ -15,11 +15,11 @@ import session_state
 from mcp_core import mcp
 from path_resolvers import resolve_pai2_file_path
 from tool_helpers import _build_verification_dossier
-from pai2_reader import inspect_metabolite_details, summarize_pai2_inventory
+from pai2_reader import inspect_peak_details, summarize_pai2_inventory
 
 __all__ = [
     "pai2_parser",
-    "pai2_inspect_metabolite_details",
+    "pai2_inspect_peak",
     "verify_peak_annotation",
 ]
 
@@ -68,35 +68,39 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
         return text_report
 
     except Exception as e:
-        return f"エラーが発生しました: {str(e)}"
+        return f"[ERROR] PAI2 解析に失敗しました: {str(e)}"
 
 
 @mcp.tool()
-def pai2_inspect_metabolite_details(metabolite_id: str | None = None, metabolite_name: str | None = None) -> str:
-    """特定の代謝物について、強度・S/N・MS/MS相当の情報を返す。
+def pai2_inspect_peak(peak_id: str | None = None, peak_name: str | None = None) -> str:
+    """特定のピークについて、強度・S/N・MS/MS相当の情報を返す。
 
-    返り値には signal_to_noise フィールドが含まれます。
+    返り値には signal_to_noise フィールドが含まれます。peak_id か peak_name の
+    いずれかを指定する。
     """
     if session_state.session.filtered_features is None:
-        return "先に pai2_parser を実行してデータを読み込んでください。"
+        return json.dumps(
+            {"status": "error", "message": "先に pai2_parser を実行してデータを読み込んでください。"},
+            ensure_ascii=False, indent=2,
+        )
 
-    details = inspect_metabolite_details(
+    details = inspect_peak_details(
         session_state.session.filtered_features,
-        metabolite_id=metabolite_id,
-        metabolite_name=metabolite_name,
+        peak_id=peak_id,
+        peak_name=peak_name,
     )
     return json.dumps(details, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
 def verify_peak_annotation(
-    metabolite_id: str | None = None, metabolite_name: str | None = None
+    peak_id: str | None = None, peak_name: str | None = None
 ) -> str:
     """指定した1ピークのアノテーションが生化学的に妥当かを検証するドシエを返す。
 
     分析化学的な同定確度（精密質量誤差ppm・アダクト/イオンモード整合）を決定的に
     判定し、生物学的妥当性は関連 knowledge slug を添えて LLM の判断に委ねる。
-    先に pai2_parser でデータを読み込むこと。metabolite_id か metabolite_name の
+    先に pai2_parser でデータを読み込むこと。peak_id か peak_name の
     いずれかを指定する。
     """
     if session_state.session.filtered_features is None:
@@ -105,21 +109,21 @@ def verify_peak_annotation(
             ensure_ascii=False,
             indent=2,
         )
-    if metabolite_id is None and metabolite_name is None:
+    if peak_id is None and peak_name is None:
         return json.dumps(
-            {"status": "error", "message": "metabolite_id か metabolite_name のいずれかを指定してください。"},
+            {"status": "error", "message": "peak_id か peak_name のいずれかを指定してください。"},
             ensure_ascii=False,
             indent=2,
         )
 
     matches = []
     for feat in session_state.session.filtered_features:
-        if metabolite_id is not None and str(feat.get("id")) == str(metabolite_id):
+        if peak_id is not None and str(feat.get("id")) == str(peak_id):
             matches.append(feat)
         elif (
-            metabolite_name is not None
+            peak_name is not None
             and isinstance(feat.get("name"), str)
-            and metabolite_name.lower() in feat.get("name", "").lower()
+            and peak_name.lower() in feat.get("name", "").lower()
         ):
             matches.append(feat)
 

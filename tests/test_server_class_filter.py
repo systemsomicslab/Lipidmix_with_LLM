@@ -88,27 +88,29 @@ class ServerClassFilterTests(unittest.TestCase):
             arf_path.touch()
             result = server.arf_parser(str(arf_path), class_ids=["control"])
 
-        self.assertIn("Class IDフィルタ**: `control`", result[0])
-        self.assertIn("PCA入力行列の形状**: (1, 2)", result[0])
+        self.assertIn("Class IDフィルタ**: `control`", result)
+        self.assertIn("PCA入力行列の形状**: (1, 2)", result)
         rows = self.session.filtered_features[0]["AlignedPeakProperties"]
         self.assertEqual([row[1] for row in rows], ["sample_control"])
 
-    def test_arf_re_pca_combines_class_filter_with_other_filters(self):
-        self.session.current_file_path = "test.arf"
-        with patch.object(path_resolvers, "_filter_arf_spots", return_value=self.session.features):
-            result = server.arf_re_pca(class_ids=["treated"])
+    def test_arf_parser_combines_class_filter_with_intensity_keyword(self):
+        # arf_re_pca が担っていた「強度/キーワードで絞って PCA し直す」を arf_parser が吸収。
+        # _filter_arf_spots は恒等にパッチし、class フィルタ結果がそのまま PCA へ流れることを確認。
+        with tempfile.TemporaryDirectory() as tmp:
+            arf_path = Path(tmp) / "test.arf"
+            arf_path.touch()
+            with patch.object(path_resolvers, "_filter_arf_spots",
+                              side_effect=lambda feats, *a, **k: feats):
+                result = server.arf_parser(
+                    str(arf_path), class_ids=["treated"],
+                    min_intensity=50.0, annotation_keyword="PC",
+                )
 
-        self.assertIn("Class IDフィルタ**: `treated`", result[0])
-        self.assertIn("PCA入力行列の形状**: (1, 2)", result[0])
+        self.assertIn("Class IDフィルタ**: `treated`", result)
+        self.assertIn("PCA入力行列の形状**: (1, 2)", result)
+        self.assertIn("適用フィルタ条件", result)
         rows = self.session.filtered_features[0]["AlignedPeakProperties"]
         self.assertEqual([row[1] for row in rows], ["sample_treated"])
-
-    def test_arf_re_pca_plot_includes_group_label(self):
-        self.session.current_file_path = "test.arf"
-        with patch.object(path_resolvers, "_filter_arf_spots", return_value=self.session.features):
-            result = server.arf_re_pca(group_levels=["control"])
-        self.assertIn("control=1", result[0])
-        self.assertIn("other=1", result[0])
 
     def test_arf_list_classes_returns_counts(self):
         self.session.current_file_path = "test.arf"
@@ -125,8 +127,8 @@ class ServerClassFilterTests(unittest.TestCase):
             arf_path = Path(tmp) / "test.arf"
             arf_path.touch()
             result = server.arf_parser(str(arf_path))
-        self.assertIn("control=1", result[0])
-        self.assertIn("treated=1", result[0])
+        self.assertIn("control=1", result)
+        self.assertIn("treated=1", result)
 
     def test_arf_parser_group_levels_collapse(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -134,26 +136,18 @@ class ServerClassFilterTests(unittest.TestCase):
             arf_path.touch()
             result = server.arf_parser(str(arf_path), group_levels=["control"])
         # control -> "control"; treated has no listed level -> "other"
-        self.assertIn("control=1", result[0])
-        self.assertIn("other=1", result[0])
+        self.assertIn("control=1", result)
+        self.assertIn("other=1", result)
 
     def test_arf_parser_orders_loadings_before_coordinates(self):
         with tempfile.TemporaryDirectory() as tmp:
             arf_path = Path(tmp) / "test.arf"
             arf_path.touch()
             result = server.arf_parser(str(arf_path))
-        text = result[0]
+        text = result
         self.assertIn("```json", text)
         self.assertIn('"pc1"', text)
         # loadings 節は座標 JSON より前（末尾截断で loadings を守る）
-        self.assertLess(text.index("Loadings 寄与度分析"), text.index("```json"))
-
-    def test_arf_re_pca_orders_loadings_before_coordinates(self):
-        self.session.current_file_path = "test.arf"
-        with patch.object(path_resolvers, "_filter_arf_spots", return_value=self.session.features):
-            result = server.arf_re_pca()
-        text = result[0]
-        self.assertIn("```json", text)
         self.assertLess(text.index("Loadings 寄与度分析"), text.index("```json"))
 
 

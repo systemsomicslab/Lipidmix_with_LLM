@@ -333,9 +333,9 @@ ARFサンプルとの結合は `FileID` を優先し、欠損時は正規化し�
 | `signal_to_noise` | S/N |
 | `rt` | RT（小数2桁丸め） |
 
-### 5.4 `inspect_metabolite_details()`
+### 5.4 `inspect_peak_details()`
 
-成功時は `{"status":"success", "matches":[...], "note":...}` を返す。`metabolite_name` は大文字小文字を無視した部分一致で、複数件返り得る。
+成功時は `{"status":"success", "matches":[...], "note":...}` を返す。`peak_name` は大文字小文字を無視した部分一致で、複数件返り得る。
 
 | `matches[]` キー | 意味 |
 |---|---|
@@ -482,9 +482,9 @@ MCPツール `eic_rank_by_max_intensity` はこの `max_intensity` 降順で並�
 
 MCPツール層（`tools_*.py`。`server.py` はそれらを登録・再エクスポートする薄いファサード）が、上記の構造化結果を主にMarkdown/JSON文字列へ整形する。LLMは表示文ではなく、次の意味を基準に解釈する。
 
-### 8.1 `arf_parser()` / `arf_re_pca()`
+### 8.1 `arf_parser()`
 
-返り値はテキスト1件を含む `list`。総スポット数、Class ID分布、タグファイル対応数、タグ別件数、総サンプル別レコード数、平均サンプル数/スポット、PCA行列形状、PC1/PC2説明分散比、PCAスコア要約（群別サンプル数・図示note、点列は非同梱）、Loading上位を含む。`class_ids` を指定すると、選択したClass IDに属するサンプル行だけを残してPCAを実行する。複数Class IDはOR条件で、照合は大文字小文字を区別しない。`arf_list_classes()` は `.mddata` のパスとClass ID別サンプル数をJSONで返す。`arf_list_tags()` は現在のARFセッションについてタグ定義、サンプルファイル対応数、タグ付与数をJSONで返す。
+返り値はMarkdownテキスト1件（`str`）。総スポット数、適用フィルタ/手動除外の注記、Class ID分布、タグファイル対応数、タグ別件数、総サンプル別レコード数、平均サンプル数/スポット、PCA行列形状、PC1/PC2説明分散比、PCAスコア要約（群別サンプル数・図示note、点列は非同梱）、Loading上位を含む。`class_ids` を指定すると、選択したClass IDに属するサンプル行だけを残してPCAを実行する。複数Class IDはOR条件で、照合は大文字小文字を区別しない。`min_intensity`（スポット平均強度の下限）と `annotation_keyword`（脂質クラス/化合物名の部分一致）で生スポットを絞ってPCAをやり直せる（**フィルタ条件を変えたPCAのやり直しは本ツールの再呼び出しで行う**。ファイルはセッションキャッシュされ再パースは走らない）。手動除外（`arf_exclude`）も行列構築前に反映される。正規化・QC・欠損補完を経た「前処理後」行列でのPCAは `arf_preprocess` → `arf_pca_preprocessed`。`arf_list_classes()` は `.mddata` のパスとClass ID別サンプル数をJSONで返す。`arf_list_tags()` は現在のARFセッションについてタグ定義、サンプルファイル対応数、タグ付与数をJSONで返す。
 
 PCAスコア要約（散布図の点列は非同梱＝`save_pca_figure` で図示。全点列は
 `session.last_pca_plot` に保持され図ツールが参照する）:
@@ -498,11 +498,11 @@ PCAスコア要約（散布図の点列は非同梱＝`save_pca_figure` で図�
 
 ### 8.2 `arf2_parser()`
 
-返り値はテキスト1件を含む `list`。`total_spots`, `annotated_count`, `annotation_rate`, RT/m/z範囲、強度中央値、イオンモード、S/N中央値、Ontology上位を自然言語で表示する。個々の22列は返さず、セッション内部に保持する。
+返り値はMarkdownテキスト1件（`str`）。`total_spots`, `annotated_count`, `annotation_rate`, RT/m/z範囲、強度中央値、イオンモード、S/N中央値、Ontology上位を自然言語で表示する。個々の22列は返さず、セッション内部に保持する。
 
 ### 8.3 `pai2_parser()` と関連ツール
 
-`pai2_parser()` はテキスト1件を返す（PCA・画像は返さない）。JSONは `summarize_pai2_inventory()` の在庫要約で、`total_peaks` / `annotated_peaks`（`Unknown`・`no MS2:`・`low score:` を除いた確定注釈数）/ `annotated_fraction` / `ion_mode_counts` / `mz_range` / `rt_range` / `height_summary` / `sn_summary` / `top_by_height`（強度上位10ピーク）を含む。PAI2 は単一測定ファイルのピーク一覧なので、サンプル間比較（オミクスPCA）はこの単位では行わない（複数サンプルの多変量比較は ARF/ARF2）。旧 `pai2_get_top_metabolites()` / `pai2_update_analysis_filter()`（いずれもピーク属性PCA依存）は撤去した。`pai2_inspect_metabolite_details()` は5.4節の辞書をJSON文字列で返す。MS/MS は同名 `.dcl`（`dcl_index` がリスト順に対応）を参照する。
+`pai2_parser()` はテキスト1件を返す（PCA・画像は返さない）。JSONは `summarize_pai2_inventory()` の在庫要約で、`total_peaks` / `annotated_peaks`（`Unknown`・`no MS2:`・`low score:` を除いた確定注釈数）/ `annotated_fraction` / `ion_mode_counts` / `mz_range` / `rt_range` / `height_summary` / `sn_summary` / `top_by_height`（強度上位10ピーク）を含む。PAI2 は単一測定ファイルのピーク一覧なので、サンプル間比較（オミクスPCA）はこの単位では行わない（複数サンプルの多変量比較は ARF/ARF2）。旧 `pai2_get_top_metabolites()` / `pai2_update_analysis_filter()`（いずれもピーク属性PCA依存）は撤去した。`pai2_inspect_peak(peak_id=None, peak_name=None)` は5.4節の辞書をJSON文字列で返す（旧名 `pai2_inspect_metabolite_details` から peak 語彙へ統一）。MS/MS は同名 `.dcl`（`dcl_index` がリスト順に対応）を参照する。
 
 ### 8.4 `eic_parser()` と関連ツール
 
@@ -540,7 +540,7 @@ DCLパーサーは現時点で独立したMCPツールとして公開されて�
 
 ## 10. 前処理・QC（P2a）
 
-`preprocessing.py`（MCP非依存の純ロジック層）と `tools_arf.py` の `arf_list_sample_roles()` / `arf_preprocess()` / `arf_pca_preprocessed()` が、ARFロード後のサンプル×特徴量行列に対する前処理・QCを担う。既定では**何も適用されない（opt-in）**。生行列を消費する `arf_parser`/`arf_re_pca` の既定挙動は変えない。
+`preprocessing.py`（MCP非依存の純ロジック層）と `tools_arf.py` の `arf_list_sample_roles()` / `arf_preprocess()` / `arf_pca_preprocessed()` が、ARFロード後のサンプル×特徴量行列に対する前処理・QCを担う。既定では**何も適用されない（opt-in）**。生行列を消費する `arf_parser` の既定挙動は変えない。
 
 ### 10.1 役割検出（sample/qc/blank）
 
@@ -571,7 +571,7 @@ QC/ブランク/注入順のいずれかが欠けているためにスキップ�
 
 ### 10.4 `arf_pca_preprocessed()`
 
-前処理後行列が無い（`session.feature_matrix is None`）場合はエラーメッセージ1件を返す。あれば `arf_reader.run_pca` でPCAを実行し、`arf_parser`/`arf_re_pca` と同じ整形ヘルパー（スコアプロット用JSON、Loadings上位）を使って結果を返す。出力テキストの構造・キー意味は8.1節のスコアプロット用JSONと同一。既定の `arf_parser`/`arf_re_pca` 経路とは完全に独立しており、`arf_preprocess()` を実行しない限り既存の解析結果には影響しない。
+前処理後行列が無い（`session.feature_matrix is None`）場合はエラーメッセージ1件を返す。あれば `arf_reader.run_pca` でPCAを実行し、`arf_parser` と同じ整形ヘルパー（スコアプロット用JSON、Loadings上位）を使って結果を返す。出力テキストの構造・キー意味は8.1節のスコアプロット用JSONと同一。生スポットへ直接フィルタする `arf_parser` 経路とは完全に独立しており、`arf_preprocess()` を実行しない限り既存の解析結果には影響しない。
 
 ### 10.5 手動サンプル/ピーク除外（`arf_exclude`）
 
@@ -585,9 +585,9 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 - 現データに存在しない指定は `unmatched_samples` / `unmatched_spots` として警告に載せ、一致分のみ集合へ反映する（タイプミスに寛容）。
 - 応答キー: `status` / `mode` / `excluded_samples` / `excluded_spots` / `samples_before` / `samples_after` / `spots_before` / `spots_after` / `unmatched_samples` / `unmatched_spots` / `caveats`。残サンプルまたは残スポットが0件になる指定には caveat が付く。
 
-除外集合は `session.excluded_samples`（`file_name` 集合）と `session.excluded_spots`（`MasterAlignmentID` 集合）に保持され、新ファイルロード（`load_data` のキャッシュミス経路）でリセットされる。行列を組む直前に `exclusions.prune_spots()` が適用され、**`arf_preprocess`**（→ `arf_pca_preprocessed` / `arf_differential`）と **`arf_re_pca`** が自動的に除外を反映する（初回ロードの `arf_parser` には適用されない）。除外が有効なとき、それぞれの出力に「ユーザ手動除外: サンプル N 件 / スポット M 件」の注記が付く。`arf_list_sample_roles()` は各サンプルに `excluded: true/false` を付して現在の除外状態を示す。
+除外集合は `session.excluded_samples`（`file_name` 集合）と `session.excluded_spots`（`MasterAlignmentID` 集合）に保持され、新ファイルロード（`load_data` のキャッシュミス経路）でリセットされる。行列を組む直前に `exclusions.prune_spots()` が適用され、**`arf_parser`**・**`arf_preprocess`**（→ `arf_pca_preprocessed` / `arf_differential`）がいずれも自動的に除外を反映する。除外が有効なとき、それぞれの出力に「ユーザ手動除外: サンプル N 件 / スポット M 件」の注記が付く。`arf_list_sample_roles()` は各サンプルに `excluded: true/false` を付して現在の除外状態を示す。
 
-運用フロー: `arf_parser`（全体PCAで外れ俯瞰）→ `arf_exclude(exclude_samples=[...])` → `arf_re_pca` または `arf_preprocess`＋`arf_pca_preprocessed` で除外後PCAを確認 → `arf_differential`。戻したいときは `mode="remove"` / `mode="clear"`。
+運用フロー: `arf_parser`（全体PCAで外れ俯瞰）→ `arf_exclude(exclude_samples=[...])` → `arf_parser` 再呼び出し または `arf_preprocess`＋`arf_pca_preprocessed` で除外後PCAを確認 → `arf_differential`。戻したいときは `mode="remove"` / `mode="clear"`。
 
 ## 11. 差次的解析（P2b）
 

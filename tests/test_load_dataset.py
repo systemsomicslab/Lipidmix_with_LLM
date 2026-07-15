@@ -66,14 +66,13 @@ class LoadDatasetTests(unittest.TestCase):
 
     def test_missing_directory_returns_error(self):
         out = server.load_dataset(directory=str(Path(tempfile.gettempdir()) / "no_such_dir_xyz"))
-        self.assertTrue(any("存在しません" in str(x) for x in out))
+        self.assertIn("存在しません", out)
 
     def test_empty_directory_warns_for_both_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = server.load_dataset(directory=tmp)
-            joined = "\n".join(str(x) for x in out)
-            self.assertIn(".arf2 ファイルが見つかりませんでした", joined)
-            self.assertIn(".arf", joined)
+            self.assertIn(".arf2 ファイルが見つかりませんでした", out)
+            self.assertIn(".arf", out)
             # 既定探索先が指定フォルダに更新される
             self.assertEqual(str(mcp_core.DATA_DIR), tmp)
 
@@ -151,11 +150,10 @@ class LoadDatasetBatchAnnounceTests(unittest.TestCase):
             self._touch(directory, "AlignmentResult_2026_06_01_09_00_00_PeakProperties.arf")
             self._touch(directory, "AlignmentResult_2026_06_01_09_00_00.arf2")
             out = server.load_dataset(directory=str(directory))
-            joined = "\n".join(str(x) for x in out)
             # 検出した最新バッチのタイムスタンプを明示する
-            self.assertIn("2026_06_01_09_00_00", joined)
+            self.assertIn("2026_06_01_09_00_00", out)
             # 旧バッチをスキップした旨が分かる（バッチ数に言及）
-            self.assertIn("バッチ", joined)
+            self.assertIn("バッチ", out)
 
     def test_batch_note_matches_analyzed_arf_not_persample_files(self):
         # A newer per-sample file (.pai2 with a compact 12-digit timestamp) must
@@ -185,8 +183,7 @@ class LoadDatasetBatchAnnounceTests(unittest.TestCase):
             self._touch(directory, "AlignmentResult_2026_06_01_09_00_00_PeakProperties.arf")
             self._touch(directory, "AlignmentResult_2026_06_01_09_00_00.arf2")
             out = server.load_dataset(directory=str(directory))
-            joined = "\n".join(str(x) for x in out)
-            self.assertNotIn("複数バッチ", joined)
+            self.assertNotIn("複数バッチ", out)
 
 
 class SelectLatestBatchTests(unittest.TestCase):
