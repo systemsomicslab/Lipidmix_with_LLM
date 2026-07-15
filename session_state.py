@@ -11,6 +11,7 @@ import しない（循環回避）。`arf_reader` は module オブジェクト�
 テストの `patch.object(server.arf_reader, ...)` が共有 module 経由でここにも効く。
 """
 import io
+import os
 import re
 
 import arf_reader
@@ -30,6 +31,20 @@ from msdial_tags import (
 )
 
 _BATCH_DATE_RE = re.compile(r"(\d{8})")
+
+# output-format リソースを LLM が pull していないときに、解釈直結のパーサー出力の
+# 先頭へ最大1回だけ前置する意味論ダイジェスト（自己完結・~7行）。round-trip 不要で
+# ローカルLLM でも意味が届く。全文定義は docs/output_format.md /
+# lipidmix://docs/output-format。§2.1 は脂質名ショートハンド文法。
+SEMANTICS_CAVEAT = (
+    "[意味論] 解釈前に lipidmix://docs/output-format を参照。要点:\n"
+    "- 粒度: ARF行=1スポット×1サンプル / ARF2行=全サンプル統合スポット。\n"
+    "- IsGapFilled=true は補間値（実測でない）。\n"
+    "- Nameの存在≠確定同定。空/Unknown/no MS2:/low score: を区別。\n"
+    "- EIC peak_top は横軸座標(RT)で強度でない。強度はmax_intensity。\n"
+    "- PAI2は単一サンプル→PCA不能。多変量比較はARF/ARF2。\n"
+    "- 脂質名: 34:1(species)と 16:0/18:1(molecular)は別粒度。P-/O-は曖昧(§2.1)。"
+)
 
 
 def _build_sample_meta(sample_names, class_index):
@@ -90,6 +105,29 @@ class AnalysisSession:
         # --- 手動除外集合（PCA 外れサンプル / 特定ピークの可逆・非破壊除外） ---
         self.excluded_samples = set()   # 除外する file_name（サンプル）
         self.excluded_spots = set()     # 除外する MasterAlignmentID（スポット）
+
+        # --- 意味論 caveat ガード（output-format 未 pull 時に1回だけ前置） ---
+        # プロセス内で真に1回だけ発火させる。output-format リソースが読まれたら
+        # output_format_seen=True になり以後は前置しない。reset_analysis_state /
+        # load_data ではリセットしない（データ切替のたびに再注入しないため）。
+        self.output_format_seen = False
+        self.caveat_emitted = False
+
+    def maybe_prepend_caveat(self, text: str) -> str:
+        """解釈直結パーサー出力の先頭へ意味論ダイジェストを最大1回だけ前置する。
+
+        output-format リソースが未 fetch（output_format_seen=False）かつ本プロセスで
+        未注入（caveat_emitted=False）のときだけ SEMANTICS_CAVEAT を前置する。環境変数
+        LIPIDMIX_CAVEAT_MODE=off で無効化（ローカルの操作ナビゲータ専用デプロイ向け。
+        既定 digest）。エラー文字列など解釈材料でない出力には呼ばない。
+        """
+        mode = os.getenv("LIPIDMIX_CAVEAT_MODE", "digest").strip().lower()
+        if mode == "off":
+            return text
+        if self.output_format_seen or self.caveat_emitted:
+            return text
+        self.caveat_emitted = True
+        return f"{SEMANTICS_CAVEAT}\n\n{text}"
 
     def reset_analysis_state(self):
         """別データセットへ切り替える際に、前データ由来の解析成果を一括で破棄する。

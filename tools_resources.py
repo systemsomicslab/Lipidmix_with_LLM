@@ -6,6 +6,7 @@ index・expand、knowledge inbox。
 """
 import knowledge_store
 import mcp_core
+import session_state
 from mcp_core import mcp, OUTPUT_FORMAT_DOC, PLAYBOOK_DIR
 
 
@@ -22,11 +23,15 @@ from mcp_core import mcp, OUTPUT_FORMAT_DOC, PLAYBOOK_DIR
 def output_format_reference() -> str:
     """Return the parser output format and ontology reference for LLM clients."""
     try:
-        return OUTPUT_FORMAT_DOC.read_text(encoding="utf-8")
+        text = OUTPUT_FORMAT_DOC.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise FileNotFoundError(
             f"Output format reference was not found: {OUTPUT_FORMAT_DOC}"
         ) from exc
+    # リソースが読まれた＝意味論が既に届いているので、以後パーサー出力へ
+    # ダイジェストを前置しない（条件付きガードの「未読」条件を解除）。
+    session_state.session.output_format_seen = True
+    return text
 
 
 # --- 知識・ワークフロー蓄積層（knowledge / playbook） ---

@@ -51,7 +51,7 @@ def arf2_parser(file_path: str | None = None) -> str:
             f"※ 個別のサンプル比較やPCAを行いたい場合は、詳細データを持つ `.arf` (PeakProperties.arf など) を対象に `arf_parser` を使用してください。"
         )
 
-        return output_text
+        return session_state.session.maybe_prepend_caveat(output_text)
 
     except Exception as e:
         return f"[ERROR] ARF2解析に失敗しました: {str(e)}"

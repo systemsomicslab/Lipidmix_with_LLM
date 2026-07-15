@@ -50,7 +50,7 @@ def eic_parser(file_path: str | None = None) -> str:
             "== コメント ==",
             "この結果をもとに、m/z範囲検索やRT範囲検索、強度上位抽出（eic_rank_by_max_intensity）を実行できます。",
         ]
-        return "\n".join(output_text)
+        return session_state.session.maybe_prepend_caveat("\n".join(output_text))
     except Exception as e:
         return f"EIC解析中にエラーが発生しました: {str(e)}"
 

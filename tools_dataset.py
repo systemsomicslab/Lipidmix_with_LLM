@@ -8,6 +8,7 @@ from pathlib import Path
 
 import mcp_core
 import path_resolvers
+import session_state
 from mcp_core import mcp
 from path_resolvers import (
     resolve_arf_file_path,
@@ -59,6 +60,11 @@ def load_dataset(directory: str | None = None) -> str:
         "この出力（群構造・脂質クラス・極性など）は、解釈に進む前の『実験目的の推測とユーザー確認』"
         "（GATEWAY手順1）の材料になります。"
     ]
+
+    # 意味論ダイジェストは入口の先頭で1回だけ前置する。ここで発火させておくと、
+    # 後段で呼ぶ arf2_parser / arf_parser 内の同ガードは caveat_emitted により
+    # no-op になり、ダイジェストが arf2 ブロック内へ埋没するのを防げる。
+    blocks[0] = session_state.session.maybe_prepend_caveat(blocks[0])
 
     batch_note = _describe_batch_selection(mcp_core.DATA_DIR)
     if batch_note:

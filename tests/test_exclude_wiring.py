@@ -29,6 +29,9 @@ class _FakeParserSession:
         self.current_file_path = file_path
         return self.features
 
+    def maybe_prepend_caveat(self, text):
+        return text  # 意味論 caveat は本テストの対象外（恒等パススルー）
+
 
 def _spot(master_id, entries):
     # loadings 整形（get_pca_loading_features）が spot.Name/MassCenter/RT を参照するため、

@@ -31,7 +31,7 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
     返すのは注釈状況・m/z・RT・強度・S/N の分布と、強度上位ピーク（生化学的に意味のある
     ランキング）です。PAI2 は単一サンプルなので、サンプル間比較（オミクス PCA）はこの単位
     では行えません（複数サンプルの多変量比較は ARF/ARF2 を使う）。個々のピークは
-    pai2_inspect_metabolite_details / verify_peak_annotation で深掘りできます。MS/MS は
+    pai2_inspect_peak / verify_peak_annotation で深掘りできます。MS/MS は
     同名 .dcl（dcl_index がリスト順に対応）を参照します。
     """
     file_path = resolve_pai2_file_path(file_path)
@@ -65,7 +65,7 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
             f"### PAI2 解析完了: {Path(file_path).name}\n"
             + json.dumps(summary, indent=2, ensure_ascii=False)
         )
-        return text_report
+        return session_state.session.maybe_prepend_caveat(text_report)
 
     except Exception as e:
         return f"[ERROR] PAI2 解析に失敗しました: {str(e)}"

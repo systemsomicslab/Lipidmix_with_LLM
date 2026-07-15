@@ -488,7 +488,7 @@ def arf_parser(
             f"{plot_instruction_text}"  # ← 座標ブロックは末尾（loadings の後）へ
         )
 
-        return output_text
+        return session_state.session.maybe_prepend_caveat(output_text)
 
     except Exception as e:
         return f"[ERROR] ARF解析に失敗しました: {str(e)}"

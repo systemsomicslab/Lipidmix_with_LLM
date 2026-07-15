@@ -30,30 +30,29 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 
 | ツール | 機能 |
 |--------|------|
-| `arf_parser` | `.arf` を読み込み PCA を実行。スコアプロット画像＋Loading上位を返す。タグ/Class ID/群色分け・log変換・検出率足切り等の指定に対応。 |
+| `arf_parser` | `.arf` を読み込み PCA を実行。スコアプロット用JSON＋Loading上位を返す。タグ/Class ID/群色分け・log変換・検出率足切りに加え、強度閾値(`min_intensity`)・アノテーションキーワード(`annotation_keyword`)でのフィルタも吸収。フィルタ条件を変えた再PCAは引数を変えて本ツールを再呼び出しする(再パースは走らない)。 |
 | `arf_list_classes` | 現在の ARF データセットで利用可能な MS-DIAL Class ID 値を一覧。 |
 | `arf_list_tags` | ロード済み ARF データセットの MS-DIAL タグを一覧。 |
 | `arf_list_sample_roles` | サンプルを sample/qc/blank に分類して返す(前処理適用前の確認)。 |
 | `arf_exclude` | PCA 外れサンプルや特定ピークを名前/ID で手動除外・再包含(可逆・非破壊)。 |
 | `arf_preprocess` | ロード済み ARF 行列に前処理レシピ(正規化・補完・ブランク/QC RSD 足切り・ドリフト補正)を適用し session を更新。 |
 | `arf_pca_preprocessed` | `arf_preprocess` 後の前処理済み行列で PCA を実行(生行列経路とは独立)。 |
-| `arf_re_pca` | 強度閾値・アノテーションキーワード(脂質クラス等)でフィルタして PCA を再実行。要 `arf_parser` 先行。 |
-| `arf_differential` | 前処理後行列で差次的解析。2群指定=Welch、因子のみ=一元配置 ANOVA。因子トークンのプール群指定・log2変換に対応。 |
+| `arf_differential` | 前処理後行列で差次的解析(2群 Welch t 検定＋log2FC、BH 補正)。因子トークンによるプール群指定に対応。多群 ANOVA は MCP から非公開(関心の2群を因子指定で切り出す)。 |
 
 ## 4. EIC 解析(`.eic.aef`)
 
 | ツール | 機能 |
 |--------|------|
-| `eicaef_parser` | `.eic.aef` を解析しテキスト要約を返す。 |
-| `eicaef_search_by_mz_range` | m/z 範囲でスポットを検索。 |
-| `eicaef_search_by_rt_range` | RT 範囲でスポットを検索。 |
-| `eicaef_top_peak_tops` | PeakTop 値で上位スポットを返す。 |
-| `eicaef_plot_chromatograms` | 指定 `spot_id` のEIC系列を読み、クライアント中立の構造化プロット情報(`lipidmix.eic.v1`)を返す。`file_ids` で最大12試料を選択でき、画像生成・ファイル保存は行わない。 |
+| `eic_parser` | `.eic.aef` を解析しテキスト要約を返す。 |
+| `eic_search_by_mz_range` | m/z 範囲でスポットを検索。 |
+| `eic_search_by_rt_range` | RT 範囲でスポットを検索。 |
+| `eic_rank_by_max_intensity` | 各試料のクロマトグラム最大強度の最大値で降順に並べた強度上位ランキングを返す。 |
+| `eic_plot_chromatograms` | 指定 `spot_id` のEIC系列を読み、クライアント中立の構造化プロット情報(`lipidmix.eic.v1`)を返す。`file_ids` で最大12試料を選択でき、画像生成・ファイル保存は行わない。 |
 
 ### EICの描画フロー
 
-1. `eicaef_search_by_mz_range` または `eicaef_search_by_rt_range` で描画対象の `spot_id` を確認する。
-2. `eicaef_plot_chromatograms(spot_id, file_ids=...)` を呼び、`series[].x` / `series[].y`、軸、試料、ピーク範囲を含む構造化プロット情報を取得する。
+1. `eic_search_by_mz_range` または `eic_search_by_rt_range` で描画対象の `spot_id` を確認する。
+2. `eic_plot_chromatograms(spot_id, file_ids=...)` を呼び、`series[].x` / `series[].y`、軸、試料、ピーク範囲を含む構造化プロット情報を取得する。
 3. 描画方法はクライアントに任せる。Use-LLLMではPlotlyのインタラクティブな線グラフとして表示し、Claude Desktop等は各UIの描画方式を使用する。
 4. 通常の対話描画ではPNGを生成しない。ユーザーがPNGの生成・保存を明示的に希望した場合だけ `save_eic_figure` を実行する。
 
@@ -63,10 +62,8 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 
 | ツール | 機能 |
 |--------|------|
-| `pai2_parser` | `.pai2` を解析し PCA スコアプロット(PNG)＋要約を同時返却(画像は自動インライン描画)。 |
-| `pai2_update_analysis_filter` | `min_intensity` / `min_sn` を更新して PCA を再実行。 |
-| `pai2_get_top_metabolites` | 直近 PCA から主成分寄与の上位代謝物リストを返す。 |
-| `pai2_inspect_metabolite_details` | 特定代謝物の強度・S/N・MS/MS 相当情報を返す。 |
+| `pai2_parser` | `.pai2`(単一測定ファイル)を解析し、ピーク在庫要約(注釈状況・m/z・RT・強度・S/N の分布と強度上位ピーク)をテキストで返す。単一サンプルのためオミクスPCAは行わない(多変量比較は ARF/ARF2)。 |
+| `pai2_inspect_peak` | `peak_id` または `peak_name` で特定ピークの強度・S/N・MS/MS 相当フィールドの有無を返す。 |
 
 ## 6. アノテーション検証
 
