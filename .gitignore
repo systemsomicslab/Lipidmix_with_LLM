@@ -15,6 +15,7 @@ photos/
 workspace/
 debug/
 analysis/
+analyses/
 knowledge/
 playbook/
 .check.py
