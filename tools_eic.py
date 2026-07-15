@@ -10,14 +10,17 @@ import session_state
 from mcp_core import mcp
 from path_resolvers import resolve_eicaef_file_path
 from eic_aef_reader import (
+    read_eic_spot_css1,
     summarize_eic_data,
     top_eic_spots_by_peak_top,
     search_eic_by_mz_range,
     search_eic_by_rt_range,
 )
+from eic_plot import EICPlotPayload, build_eic_plot_payload
 
 __all__ = [
     "eicaef_parser",
+    "eicaef_plot_chromatograms",
     "eicaef_top_peak_tops",
     "eicaef_search_by_mz_range",
     "eicaef_search_by_rt_range",
@@ -50,6 +53,36 @@ def eicaef_parser(file_path: str | None = None) -> str:
         return "\n".join(output_text)
     except Exception as e:
         return f"EIC解析中にエラーが発生しました: {str(e)}"
+
+
+@mcp.tool()
+def eicaef_plot_chromatograms(
+    spot_id: int,
+    file_path: str | None = None,
+    file_ids: list[int] | None = None,
+    normalize: str = "none",
+    title: str | None = None,
+) -> EICPlotPayload:
+    """Return client-neutral plot data for selected EIC chromatograms.
+
+    This read-only tool returns structured ``lipidmix.eic.v1`` JSON only. It does
+    not render an image and does not write files: Use-LLLM may render the series
+    with Plotly, while Claude Desktop or another MCP client may use its own UI.
+    Call ``save_eic_figure`` only after the user explicitly requests PNG output.
+
+    ``spot_id`` is exact and should normally come from the existing m/z or RT
+    search tools. ``file_ids`` selects at most 12 sample traces; when omitted all
+    traces are returned only if the spot contains 12 samples or fewer.
+    """
+    resolved = resolve_eicaef_file_path(file_path)
+    if not resolved:
+        raise FileNotFoundError("データディレクトリに .aef ファイルが見つかりませんでした。")
+    spot = read_eic_spot_css1(resolved, spot_id, file_ids=file_ids)
+    payload = build_eic_plot_payload(
+        spot, resolved, normalize=normalize, title=title,
+    )
+    session_state.session.last_eic_plot = payload
+    return payload
 
 
 @mcp.tool()

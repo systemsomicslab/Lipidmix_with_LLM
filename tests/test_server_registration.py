@@ -23,6 +23,7 @@ EXPECTED_TOOLS = sorted([
     "arf_preprocess",
     "arf_re_pca",
     "eicaef_parser",
+    "eicaef_plot_chromatograms",
     "eicaef_search_by_mz_range",
     "eicaef_search_by_rt_range",
     "eicaef_top_peak_tops",
@@ -42,6 +43,7 @@ EXPECTED_TOOLS = sorted([
     "paper_search",
     "read_report",
     "record_objective",
+    "save_eic_figure",
     "save_pca_figure",
     "save_volcano_figure",
     "update_objective",
@@ -64,7 +66,7 @@ EXPECTED_TEMPLATES = sorted([
 
 def test_tool_count_is_stable():
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 36
+    assert len(tools) == 38
 
 
 def test_tool_names_snapshot():

@@ -79,6 +79,7 @@ class AnalysisSession:
         self.arf_class_index = None
         self.current_tag_directory = None
         self.last_pca_plot = None  # 直近PCAの描画用データ（save_pca_figure が参照）
+        self.last_eic_plot = None  # 直近EICプロット情報（明示的なPNG保存時のみ参照）
 
         # --- P2a 前処理用の正準行列とサンプルメタ ---
         self.feature_matrix = None       # 前処理後のサンプル×特徴量行列

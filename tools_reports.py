@@ -1,6 +1,6 @@
 """解析・解釈レポートと図の保存ツール群。
 
-write/read/list_reports, save_pca_figure, save_volcano_figure。
+write/read/list_reports, save_pca_figure, save_volcano_figure, save_eic_figure。
 レポート先の解決は mcp_core（DATA_DIR を動的参照）に委ねる。deps: mcp_core /
 session_state / tool_helpers / knowledge_store / matplotlib。
 tools_* / server は import しない。
@@ -13,6 +13,7 @@ import knowledge_store
 import session_state
 from mcp_core import mcp, _resolve_report_dir, _report_dir_candidates, _build_report_meta
 from tool_helpers import _pca_scatter_arrays
+from eic_plot import render_eic_plot
 
 __all__ = [
     "write_report",
@@ -20,6 +21,7 @@ __all__ = [
     "list_reports",
     "save_pca_figure",
     "save_volcano_figure",
+    "save_eic_figure",
 ]
 
 
@@ -182,3 +184,32 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
 
     rel = f"figures/{out_path.name}"
     return f"volcano図を保存: {out_path}\n本文に ![volcano]({rel}) で埋め込めます。"
+
+
+@mcp.tool()
+def save_eic_figure(analysis_id: str, title: str | None = None) -> str:
+    """明示的なユーザー要求時だけ、直近EICプロット情報をPNGとして保存する。
+
+    先に ``eicaef_plot_chromatograms`` でクライアント描画用の構造化情報を作る。
+    通常の対話描画ではこのツールを呼ばず、各MCPクライアントのUIへ描画を任せる。
+    """
+    plot = getattr(session_state.session, "last_eic_plot", None)
+    if not plot or not plot.get("series"):
+        return (
+            "先に eicaef_plot_chromatograms を実行してください"
+            "（EICプロット情報がありません）。"
+        )
+
+    slug = knowledge_store.make_slug(analysis_id)
+    reports_dir = _resolve_report_dir()
+    figures_dir = reports_dir / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    out_path = figures_dir / f"{slug}_eic.png"
+    fig = render_eic_plot(plot, title=title)
+    try:
+        fig.savefig(out_path, dpi=120, format="png", bbox_inches="tight")
+    finally:
+        plt.close(fig)
+
+    rel = f"figures/{out_path.name}"
+    return f"EIC図を保存: {out_path}\n本文に ![EIC]({rel}) で埋め込めます。"

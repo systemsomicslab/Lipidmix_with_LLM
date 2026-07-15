@@ -11,6 +11,7 @@ Python prototypes for parsing, analyzing, and exposing MS-DIAL lipidomics data t
 - `msdial_classes.py` - Reads user-defined Class ID values (`AnalysisFileClass`) from `.mddata`, resolves `.mddata` from `.mdproject` or the ARF directory, and filters ARF sample rows before PCA.
 - `arf2_reader.py` - `.arf2` parser and text summary generator.
 - `eic_aef_reader.py` - `.EIC.aef` parser with EIC summaries and m/z or RT search helpers.
+- `eic_plot.py` - Builds the renderer-neutral `lipidmix.eic.v1` line-plot payload and renders it with matplotlib only for an explicitly requested PNG save.
 - `pai2_reader.py` - `.pai2` parser with feature filtering, PCA summaries, top-contributor extraction, and metabolite detail lookup.
 - `dcl_reader.py` - `.dcl` (MSDecResult) parser. Reads MS-DIAL's custom binary deconvoluted MS/MS spectra (not msgpack/lz4), and can attach those spectra to `.pai2` peaks by index (`attach_msms_to_features`).
 - `data_config.py` - Single source of truth for the data search directory. Returns `<project>/data` by default, or the path in the `LIPIDMIX_DATA_DIR` environment variable when set. Used by `server.py` and all `*_reader` parsers.
@@ -193,6 +194,8 @@ Analysis/interpretation report recording:
 - `list_reports()` - One-line index (analysis_id / date / status) of existing reports.
 - `save_pca_figure(analysis_id, title=None)` - Render the latest session PCA result to `reports/figures/<analysis_id>_pca.png` and return a relative path to embed in the report body as `![PCA](figures/<analysis_id>_pca.png)`.
 - `save_volcano_figure(analysis_id, title=None)` - Render the latest two-group differential result (`arf_differential`) as a volcano plot to `reports/figures/<analysis_id>_volcano.png` and return a relative path to embed as `![volcano](figures/<analysis_id>_volcano.png)`.
+- `eicaef_plot_chromatograms(spot_id, file_path=None, file_ids=None, normalize="none", title=None)` - Read selected traces for one CSS1 EIC spot by direct pointer-table access and return structured `lipidmix.eic.v1` plot information. The tool does not render or write an image; each MCP client chooses its own UI renderer.
+- `save_eic_figure(analysis_id, title=None)` - Only when the user explicitly requests PNG output, render the latest EIC plot payload to `reports/figures/<analysis_id>_eic.png`. This is a separate write operation from interactive plotting.
 
 The server also exposes MCP **resources**: `lipidmix://docs/output-format` (authoritative parser output reference), `lipidmix://knowledge/index` and `lipidmix://playbook/index` (dynamic, one line per note), `lipidmix://{knowledge,playbook}/expand/{slug}` (a note plus its 1-hop `[[link]]` neighbors within a structural budget), and `lipidmix://knowledge/inbox` (pending discovery notes awaiting review).
 

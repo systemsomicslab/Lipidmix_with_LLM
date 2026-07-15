@@ -490,6 +490,19 @@ PCAスコア要約（散布図の点列は非同梱＝`save_pca_figure` で図�
 
 `eicaef_parser()` は7.3節の要約をJSON文字列として返す。m/z/RT検索の各表示行は `spot_id`, `rt`, `mz`, `num_samples` を持つ。`eicaef_top_peak_tops()` はさらに `max_peak_top` を表示するが、7.4節のとおり強度ではなく横軸座標である。
 
+### 8.5 `eicaef_plot_chromatograms()` の描画契約
+
+`eicaef_plot_chromatograms()` は画像ではなく、クライアント中立の構造化JSON
+`plot_schema="lipidmix.eic.v1"` を返す。主要フィールドは `axes`、スポットの
+`rt`/`mz`、および各試料の `series[].x` / `series[].y` / `file_id` /
+`peak_left` / `peak_top` / `peak_right` である。Use-LLLMはこれをPlotlyへ変換し、
+Claude Desktop等は各クライアントのUI方式で描画できる。通常の描画ではファイルを
+作らない。
+
+PNGが必要だとユーザーが明示した場合に限り、先に得たプロット情報を
+`save_eic_figure(analysis_id, title=None)` で `reports/figures/` へ保存する。
+この保存は対話描画とは別の書き込み操作である。
+
 DCLパーサーは現時点で独立したMCPツールとして公開されていない。
 
 ## 9. LLM解釈時の必須注意事項
