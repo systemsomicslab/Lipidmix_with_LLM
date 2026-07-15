@@ -10,7 +10,6 @@ _filter_arf_spots / _pp_build_matrix はテストが差し替える対象なの�
 module 修飾（path_resolvers.* / tool_helpers.*）で参照し patch が確実に効くようにする。
 """
 import json
-import math
 import re
 from pathlib import Path
 
@@ -742,18 +741,21 @@ def _annotate_with_names(rows: list[dict]) -> dict:
 
 @mcp.tool()
 def arf_differential(
-    group_factor: str | None = None,
     group_a: str | None = None,
     group_b: str | None = None,
     q_threshold: float = 0.05,
     log2fc_threshold: float = 1.0,
     log_transform: bool = True,
 ) -> str:
-    """前処理後行列で差次的解析を行う。group_a/group_b 指定時は2群 Welch、
-    group_factor のみ指定時はその因子の全水準で一元配置 ANOVA。
+    """前処理後行列で2群差次的解析（Welch t 検定 + log2FC）を行う。
+
+    group_a / group_b の両方を指定する。多群 ANOVA は「因子（加齢/菌叢等）→水準」の
+    対応が MS-DIAL メタに無く安全に導けないため現状は非対応（誤って全 Class ID を
+    水準にした結果を返さないよう封鎖している）。3群以上を比べたいときは、下記の
+    因子トークン・プール指定で関心のある2群を切り出して呼ぶこと。
 
     先に arf_preprocess を実行して session_state.session.feature_matrix を用意すること
-    （未実行なら未正規化 caveat 付きで生行列にフォールバックする）。
+    （未実行ならエラーを返す。生行列への暗黙フォールバックはしない）。
 
     - group_a / group_b: 完全な Class ID（`24M_GF_F`）に加え、**因子トークンによる
       プール群指定**を受け付ける。`group_a="24M", group_b="9w"` のように書くと、その
@@ -840,24 +842,10 @@ def arf_differential(
                    "summary": summary, "caveats": caveats,
                    "volcano_note": "全特徴の volcano 点列は本要約に非同梱。"
                                    "save_volcano_figure で図示できます。"}
-    elif group_factor is not None:
-        results = differential.one_way_anova(matrix, feature_names, group_labels,
-                                             log_transform=log_transform)
-        results = differential.add_fdr(results)
-        sig = [r for r in results if r.get("q") is not None and math.isfinite(r["q"]) and r["q"] <= q_threshold]
-        n_tested = sum(1 for r in results if r["p"] is not None and math.isfinite(r["p"]))
-        if n_tested == 0:
-            caveats.append(
-                "検定可能な特徴が0件（全特徴で p=NaN）。水準が空・分散0・または正規化で試料が"
-                "NaN化した可能性があります。『有意0件』を『群間差なし』と解釈しないでください。")
-        session_state.session.last_differential = {"kind": "anova", "results": results, "volcano": []}
-        payload = {"status": "success", "kind": "anova",
-                   "n_tested": n_tested,
-                   "n_significant": len(sig),
-                   "top": sorted(sig, key=lambda r: r["q"])[:15],
-                   "caveats": caveats}
     else:
         return json.dumps({"status": "error",
-                           "message": "group_a+group_b（2群）か group_factor（ANOVA）のいずれかを指定してください。"},
+                           "message": "group_a と group_b の両方を指定してください（2群比較）。"
+                                      "完全 Class ID か因子トークン（例 group_a='24M', group_b='9w'）で"
+                                      "関心のある2群を切り出せます。多群 ANOVA は現状非対応です。"},
                           ensure_ascii=False, indent=2)
     return json.dumps(payload, ensure_ascii=False, indent=2)

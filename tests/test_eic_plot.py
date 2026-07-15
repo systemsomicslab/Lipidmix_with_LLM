@@ -131,7 +131,7 @@ class EicPlotToolTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_returns_structured_plot_data_without_writing_png(self):
-        payload = server.eicaef_plot_chromatograms(
+        payload = server.eic_plot_chromatograms(
             0, file_path=str(self.path), file_ids=[7], normalize="per_trace_max",
         )
         self.assertEqual(payload["plot_schema"], "lipidmix.eic.v1")
@@ -145,12 +145,12 @@ class EicPlotToolTests(unittest.TestCase):
 
     def test_fastmcp_exposes_output_schema(self):
         tools = asyncio.run(server.mcp.list_tools())
-        tool = next(item for item in tools if item.name == "eicaef_plot_chromatograms")
+        tool = next(item for item in tools if item.name == "eic_plot_chromatograms")
         self.assertIsNotNone(tool.outputSchema)
         self.assertIn("plot_schema", tool.outputSchema.get("properties", {}))
 
     def test_png_is_written_only_by_explicit_save_tool(self):
-        server.eicaef_plot_chromatograms(0, file_path=str(self.path), file_ids=[7])
+        server.eic_plot_chromatograms(0, file_path=str(self.path), file_ids=[7])
         message = server.save_eic_figure("sample-eic")
         png = self.tmp / "reports" / "figures" / "sample-eic_eic.png"
         self.assertTrue(png.is_file())
@@ -158,7 +158,7 @@ class EicPlotToolTests(unittest.TestCase):
 
     def test_save_tool_guides_when_plot_is_missing(self):
         message = server.save_eic_figure("sample-eic")
-        self.assertIn("eicaef_plot_chromatograms", message)
+        self.assertIn("eic_plot_chromatograms", message)
         self.assertEqual(list(self.tmp.rglob("*.png")), [])
 
 

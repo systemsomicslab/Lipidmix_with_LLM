@@ -80,6 +80,8 @@ class AnalysisSession:
         self.current_tag_directory = None
         self.last_pca_plot = None  # 直近PCAの描画用データ（save_pca_figure が参照）
         self.last_eic_plot = None  # 直近EICプロット情報（明示的なPNG保存時のみ参照）
+        self.last_differential = None  # 直近差次的解析（save_volcano_figure が参照）
+        self.pca_index = None      # PAI2 系 PCA のインデックス（互換用）
 
         # --- P2a 前処理用の正準行列とサンプルメタ ---
         self.feature_matrix = None       # 前処理後のサンプル×特徴量行列
@@ -91,6 +93,34 @@ class AnalysisSession:
         # --- 手動除外集合（PCA 外れサンプル / 特定ピークの可逆・非破壊除外） ---
         self.excluded_samples = set()   # 除外する file_name（サンプル）
         self.excluded_spots = set()     # 除外する MasterAlignmentID（スポット）
+
+    def reset_analysis_state(self):
+        """別データセットへ切り替える際に、前データ由来の解析成果を一括で破棄する。
+
+        新ファイルの load 開始時に必ず呼ぶ。前回の feature_matrix / sample_meta /
+        preprocessing_recipe / 差次的解析・PCA・EIC プロットなどが残ると、データ切替後に
+        前回データの図や結果を「今のデータのもの」として保存・解釈してしまう。
+        本メソッドは解析成果（派生状態）だけを消し、これから load される features や
+        current_file_path、EIC キャッシュ（パスで自己検証する）は触らない。
+        """
+        # 直近解析の出力
+        self.pca_result = None
+        self.filtered_features = None
+        self.filter_params = {}
+        self.last_pca_summary = None
+        self.last_pca_plot = None
+        self.pca_index = None
+        self.last_differential = None
+        self.last_eic_plot = None
+        # 前処理由来の正準行列とサンプルメタ
+        self.feature_matrix = None
+        self.pp_sample_names = None
+        self.pp_feature_names = None
+        self.sample_meta = {}
+        self.preprocessing_recipe = {}
+        # 手動除外（別データに持ち越さない）
+        self.excluded_samples = set()
+        self.excluded_spots = set()
 
     def apply_filter(self, filter_params: dict | None = None):
         """現データに対して動的にフィルタを適用する。"""
@@ -156,10 +186,10 @@ class AnalysisSession:
                 attach_class_ids_to_spots(self.features, self.arf_class_index)
             return self.features
 
-        # 別データに古い手動除外を持ち越さない（open 前に初期化し、新ファイル読込の
-        # 開始時点で必ずクリアされるようにする）
-        self.excluded_samples = set()
-        self.excluded_spots = set()
+        # 別データセットへ切り替えるので、前データ由来の解析成果（差次・PCA・前処理行列・
+        # 手動除外・EICプロット等）を open 前に一括破棄する。前回の結果を新データのものとして
+        # 保存・解釈する取り違えを防ぐ。
+        self.reset_analysis_state()
 
         print(f"DEBUG: Loading/Deserializing {file_path}", file=sys.stderr)
         with open(file_path, 'rb') as f:

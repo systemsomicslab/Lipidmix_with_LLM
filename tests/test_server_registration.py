@@ -9,7 +9,10 @@ import asyncio
 import server
 
 
-# MCP 登録ツールの正準スナップショット（sorted）。arf_exclude 追加で 36 件。
+# MCP 登録ツールの正準スナップショット（sorted）。
+# EIC ツールは eicaef_* → eic_* に改称、eicaef_top_peak_tops は強度基準の
+# eic_rank_by_max_intensity に置換。PAI2 の PCA 依存 2 ツール
+# （pai2_get_top_metabolites / pai2_update_analysis_filter）は撤去。
 EXPECTED_TOOLS = sorted([
     "arf2_annotate_identities",
     "arf2_parser",
@@ -22,11 +25,11 @@ EXPECTED_TOOLS = sorted([
     "arf_pca_preprocessed",
     "arf_preprocess",
     "arf_re_pca",
-    "eicaef_parser",
-    "eicaef_plot_chromatograms",
-    "eicaef_search_by_mz_range",
-    "eicaef_search_by_rt_range",
-    "eicaef_top_peak_tops",
+    "eic_parser",
+    "eic_plot_chromatograms",
+    "eic_rank_by_max_intensity",
+    "eic_search_by_mz_range",
+    "eic_search_by_rt_range",
     "ingest_promote",
     "ingest_reject",
     "ingest_review_queue",
@@ -36,10 +39,8 @@ EXPECTED_TOOLS = sorted([
     "list_reports",
     "load_dataset",
     "log_search",
-    "pai2_get_top_metabolites",
     "pai2_inspect_metabolite_details",
     "pai2_parser",
-    "pai2_update_analysis_filter",
     "paper_search",
     "read_report",
     "record_objective",
@@ -66,7 +67,7 @@ EXPECTED_TEMPLATES = sorted([
 
 def test_tool_count_is_stable():
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 38
+    assert len(tools) == 36
 
 
 def test_tool_names_snapshot():

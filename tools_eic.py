@@ -1,4 +1,4 @@
-"""EIC/AEF ツール群: eicaef_parser, top_peak_tops, m/z 範囲検索, RT 範囲検索。
+"""EIC/AEF ツール群: eic_parser, eic_rank_by_max_intensity, m/z 範囲検索, RT 範囲検索。
 
 deps: mcp_core / session_state / path_resolvers / eic_aef_reader。
 tools_* / server は import しない。
@@ -12,23 +12,23 @@ from path_resolvers import resolve_eicaef_file_path
 from eic_aef_reader import (
     read_eic_spot_css1,
     summarize_eic_data,
-    top_eic_spots_by_peak_top,
+    top_eic_spots_by_max_intensity,
     search_eic_by_mz_range,
     search_eic_by_rt_range,
 )
 from eic_plot import EICPlotPayload, build_eic_plot_payload
 
 __all__ = [
-    "eicaef_parser",
-    "eicaef_plot_chromatograms",
-    "eicaef_top_peak_tops",
-    "eicaef_search_by_mz_range",
-    "eicaef_search_by_rt_range",
+    "eic_parser",
+    "eic_plot_chromatograms",
+    "eic_rank_by_max_intensity",
+    "eic_search_by_mz_range",
+    "eic_search_by_rt_range",
 ]
 
 
 @mcp.tool()
-def eicaef_parser(file_path: str | None = None) -> str:
+def eic_parser(file_path: str | None = None) -> str:
     """
     .eic.aef ファイルに対応する解析用関数
     ファイルを解析し、テキスト要約を返します。
@@ -48,7 +48,7 @@ def eicaef_parser(file_path: str | None = None) -> str:
             "== 基本要約 ==",
             json.dumps(summary, indent=2, ensure_ascii=False),
             "== コメント ==",
-            "この結果をもとに、m/z範囲検索やRT範囲検索、上位PeakTop抽出を実行できます。",
+            "この結果をもとに、m/z範囲検索やRT範囲検索、強度上位抽出（eic_rank_by_max_intensity）を実行できます。",
         ]
         return "\n".join(output_text)
     except Exception as e:
@@ -56,7 +56,7 @@ def eicaef_parser(file_path: str | None = None) -> str:
 
 
 @mcp.tool()
-def eicaef_plot_chromatograms(
+def eic_plot_chromatograms(
     spot_id: int,
     file_path: str | None = None,
     file_ids: list[int] | None = None,
@@ -86,9 +86,11 @@ def eicaef_plot_chromatograms(
 
 
 @mcp.tool()
-def eicaef_top_peak_tops(file_path: str | None = None, top_n: int = 20) -> str:
-    """
-    EICデータのPeakTop値で上位スポットを返します。
+def eic_rank_by_max_intensity(file_path: str | None = None, top_n: int = 20) -> str:
+    """EICスポットを強度（各サンプルのクロマトグラム最大強度の最大値）で降順に返します。
+
+    強度上位のスポットを抽出します。旧 eicaef_top_peak_tops は peak_top（ピーク頂点の
+    横軸=RT座標。強度ではない）で並べていたため強度上位にならず、本ツールで置き換えました。
     """
     file_path = resolve_eicaef_file_path(file_path)
     if not file_path:
@@ -99,23 +101,23 @@ def eicaef_top_peak_tops(file_path: str | None = None, top_n: int = 20) -> str:
         if not isinstance(parsed, list):
             return "EIC解析結果がリストではありません。"
 
-        top_spots = top_eic_spots_by_peak_top(parsed, top_n=top_n)
+        top_spots = top_eic_spots_by_max_intensity(parsed, top_n=top_n)
         output_text = [
-            f"EIC上位PeakTopスポット: {Path(file_path).name}",
-            f"上位{top_n}件:",
+            f"EIC強度上位スポット: {Path(file_path).name}",
+            f"上位{top_n}件（max_intensity 降順）:",
         ]
         for spot in top_spots:
             output_text.append(
                 f"spot_id={spot['spot_id']} rt={spot['rt']} mz={spot['mz']} "
-                f"max_peak_top={spot['max_peak_top']} num_samples={spot['num_samples']}"
+                f"max_intensity={spot['max_intensity']} num_samples={spot['num_samples']}"
             )
         return "\n".join(output_text)
     except Exception as e:
-        return f"EIC上位PeakTop抽出中にエラーが発生しました: {str(e)}"
+        return f"EIC強度上位抽出中にエラーが発生しました: {str(e)}"
 
 
 @mcp.tool()
-def eicaef_search_by_mz_range(file_path: str | None = None, min_mz: float = 0.0, max_mz: float = 1000.0, max_results: int = 20) -> str:
+def eic_search_by_mz_range(file_path: str | None = None, min_mz: float = 0.0, max_mz: float = 1000.0, max_results: int = 20) -> str:
     """
     EICデータのm/z範囲でスポットを検索します。
     """
@@ -146,7 +148,7 @@ def eicaef_search_by_mz_range(file_path: str | None = None, min_mz: float = 0.0,
 
 
 @mcp.tool()
-def eicaef_search_by_rt_range(file_path: str | None = None, min_rt: float = 0.0, max_rt: float = 20.0, max_results: int = 20) -> str:
+def eic_search_by_rt_range(file_path: str | None = None, min_rt: float = 0.0, max_rt: float = 20.0, max_results: int = 20) -> str:
     """
     EICデータのRT範囲でスポットを検索します。
     """

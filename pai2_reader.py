@@ -338,6 +338,87 @@ def get_top_contributors(filtered_features, pca_result, top_n=5, component=0):
 
 # --- 2. 重要な代謝物の抽出 ---
 
+def _is_confident_annotation(name) -> bool:
+    """PAI2 の Name が確定同定として使えるかの粗い判定。
+
+    空文字・Unknown・`no MS2:`・`low score:` は「注釈あり」に数えない
+    （output-format の Annotation 注意に準拠）。存在するだけで確定同定ではない。
+    """
+    if not isinstance(name, str):
+        return False
+    s = name.strip()
+    if not s:
+        return False
+    low = s.lower()
+    if low == "unknown":
+        return False
+    if low.startswith("no ms2") or low.startswith("low score"):
+        return False
+    return True
+
+
+def summarize_pai2_inventory(features: list) -> dict:
+    """1測定ファイル（PAI2）のピーク在庫を、PCA を介さず素直に要約する。
+
+    PAI2 は単一サンプルのピーク一覧なので、サンプル間比較（オミクス PCA）は原理的に
+    できない。ここでは注釈状況・m/z・RT・強度・S/N の分布と、強度上位ピークという
+    生化学的に意味のある指標だけを返す。MS/MS は同名 .dcl（dcl_index がリスト順に対応）
+    を参照する。
+    """
+    n = len(features)
+    heights = [f.get("peak_height") for f in features if isinstance(f.get("peak_height"), (int, float))]
+    mzs = [f.get("m/z") for f in features if isinstance(f.get("m/z"), (int, float))]
+    rts = [f.get("time", {}).get("rt") for f in features
+           if isinstance(f.get("time", {}).get("rt"), (int, float))]
+    sns = [sn for sn in (get_signal_to_noise(f) for f in features) if sn is not None]
+    annotated = sum(1 for f in features if _is_confident_annotation(f.get("name")))
+
+    ion_modes: dict[str, int] = {}
+    for f in features:
+        mode = f.get("ion_mode")
+        key = mode.name if isinstance(mode, IonMode) else str(mode)
+        ion_modes[key] = ion_modes.get(key, 0) + 1
+
+    def _stats(xs):
+        if not xs:
+            return None
+        return {"min": round(float(min(xs)), 4),
+                "median": round(float(np.median(xs)), 4),
+                "max": round(float(max(xs)), 4)}
+
+    top_by_height = []
+    for f in sorted(features, key=lambda f: f.get("peak_height") or 0.0, reverse=True)[:10]:
+        top_by_height.append({
+            "id": f.get("id"),
+            "name": f.get("name", "Unknown"),
+            "m/z": round(f.get("m/z"), 4) if isinstance(f.get("m/z"), (int, float)) else None,
+            "rt": round(f.get("time", {}).get("rt"), 3)
+                  if isinstance(f.get("time", {}).get("rt"), (int, float)) else None,
+            "height": f.get("peak_height"),
+            "signal_to_noise": get_signal_to_noise(f),
+        })
+
+    return {
+        "total_peaks": n,
+        "annotated_peaks": annotated,
+        "annotated_fraction": round(annotated / n, 3) if n else 0.0,
+        "ion_mode_counts": ion_modes,
+        "mz_range": (_stats(mzs) or {}).get("min") is not None and {
+            "min": _stats(mzs)["min"], "max": _stats(mzs)["max"]} or None,
+        "rt_range": (_stats(rts) or {}).get("min") is not None and {
+            "min": _stats(rts)["min"], "max": _stats(rts)["max"]} or None,
+        "height_summary": _stats(heights),
+        "sn_summary": {
+            "available_fraction": round(len(sns) / n, 3) if n else 0.0,
+            **( _stats(sns) or {}),
+        },
+        "top_by_height": top_by_height,
+        "note": "PAI2 は単一測定ファイルのピーク一覧です。サンプル間比較（オミクス PCA）は"
+                "この単位では行えません（複数サンプルの比較は ARF/ARF2 を使用）。"
+                "MS/MS は同名 .dcl（dcl_index がリスト順に対応）を参照します。",
+    }
+
+
 def inspect_metabolite_details(filtered_features: list, metabolite_id: str | None = None, metabolite_name: str | None = None):
     """
     指定した代謝物について、強度・S/N・MS/MS情報などの詳細を返す。

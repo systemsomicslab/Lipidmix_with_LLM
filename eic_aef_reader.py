@@ -277,18 +277,24 @@ def search_eic_by_rt_range(results, min_rt, max_rt):
     return [spot for spot in results if min_rt <= spot.get("rt", 0.0) <= max_rt]
 
 
-def top_eic_spots_by_peak_top(results, top_n=20):
+def top_eic_spots_by_max_intensity(results, top_n=20):
+    """EIC スポットを「サンプル間で最大のクロマトグラム最大強度」で降順に並べる。
+
+    旧 ``top_eic_spots_by_peak_top`` は ``peak_top``（ピーク頂点の横軸=RT座標。強度ではない）
+    で並べており、実質「遅い RT のスポット一覧」で強度上位ではなかった。強度で上位抽出する
+    には各 sample の ``max_intensity`` を使う必要がある。
+    """
     spots_with_max = []
     for spot in results:
-        sample_max = max((sample.get("peak_top", 0.0) for sample in spot["samples"]), default=0.0)
+        sample_max = max((sample.get("max_intensity", 0.0) for sample in spot["samples"]), default=0.0)
         spots_with_max.append({
             "spot_id": spot["spot_id"],
             "rt": spot["rt"],
             "mz": spot["mz"],
             "num_samples": spot["num_samples"],
-            "max_peak_top": sample_max,
+            "max_intensity": sample_max,
         })
-    return sorted(spots_with_max, key=lambda x: x["max_peak_top"], reverse=True)[:top_n]
+    return sorted(spots_with_max, key=lambda x: x["max_intensity"], reverse=True)[:top_n]
 
 
 # --- 実行 ---

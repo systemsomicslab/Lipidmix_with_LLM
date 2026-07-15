@@ -1,15 +1,13 @@
-"""PAI2（ピークレベル）ツール群と単一ピーク検証。
+"""PAI2（1測定ファイルのピーク一覧）ツール群と単一ピーク検証。
 
-pai2_parser, pai2_get_top_metabolites, pai2_inspect_metabolite_details,
-verify_peak_annotation, pai2_update_analysis_filter。deps: mcp_core /
-session_state / path_resolvers / tool_helpers / pai2_reader / knowledge_store。
-tools_* / server は import しない。
+pai2_parser（在庫要約）, pai2_inspect_metabolite_details, verify_peak_annotation。
+PAI2 は単一サンプルなのでサンプル間比較（オミクス PCA）は行わない（複数サンプルの
+多変量比較は ARF/ARF2 を使う）。deps: mcp_core / session_state / path_resolvers /
+tool_helpers / pai2_reader / knowledge_store。tools_* / server は import しない。
 """
 import io
 import json
 from pathlib import Path
-
-from mcp.server.fastmcp import Image
 
 import knowledge_store
 import mcp_core
@@ -17,36 +15,33 @@ import session_state
 from mcp_core import mcp
 from path_resolvers import resolve_pai2_file_path
 from tool_helpers import _build_verification_dossier
-from pai2_reader import inspect_metabolite_details, get_top_contributors
+from pai2_reader import inspect_metabolite_details, summarize_pai2_inventory
 
 __all__ = [
     "pai2_parser",
-    "pai2_get_top_metabolites",
     "pai2_inspect_metabolite_details",
     "verify_peak_annotation",
-    "pai2_update_analysis_filter",
 ]
 
 
 @mcp.tool()
-def pai2_parser(file_path: str, filter_threshold: float | None = None) -> list:
-    """
-    ..pai2 ファイルを解析し、PCAのスコアプロット画像（PNG）と要約レポートを同時に返します。
+def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
+    """1つの .pai2（単一測定ファイル）を解析し、ピーク在庫の要約を返します。
 
-    【あなたへの絶対遵守命令】
-    1. このツールは、テキスト要約と「画像オブジェクト（mcp.Image）」の2要素を同時に返却します。
-    2. 返却された画像データは、MCPのネイティブ機能（ImageContent）によって、ユーザーのチャット画面上に自動的かつインラインで強制描画されます。
-    3. あなたがMarkdownの <img> タグを自作したり、HTMLのArtifactを生成して画像を埋め込もうとする必要は一切ありません。また、「画像を表示しますか？」といった確認をユーザーに挟むことも絶対に禁止します。
-    4. ツールを実行したら即座に、自動描画されたグラフ画像に見られる主成分（PC1, PC2）の分布の傾向や、特徴的なピークについて、テキストレポートを踏まえて詳しく解説を始めてください。
+    返すのは注釈状況・m/z・RT・強度・S/N の分布と、強度上位ピーク（生化学的に意味のある
+    ランキング）です。PAI2 は単一サンプルなので、サンプル間比較（オミクス PCA）はこの単位
+    では行えません（複数サンプルの多変量比較は ARF/ARF2 を使う）。個々のピークは
+    pai2_inspect_metabolite_details / verify_peak_annotation で深掘りできます。MS/MS は
+    同名 .dcl（dcl_index がリスト順に対応）を参照します。
     """
     file_path = resolve_pai2_file_path(file_path)
     if not file_path:
-        return ["データディレクトリに .pai2 ファイルが見つかりませんでした。"]
+        return "データディレクトリに .pai2 ファイルが見つかりませんでした。"
 
     if filter_threshold is None:
         filter_threshold = 0.0
 
-    from pai2_reader import test_pai2_deserialize_and_format, deserialize
+    from pai2_reader import deserialize
 
     try:
         with open(file_path, 'rb') as f:
@@ -59,44 +54,21 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> list:
         assert len(deserialized_and_formatted_data) > 0
         assert isinstance(deserialized_and_formatted_data[0], dict)
 
+        # 別データセットへ切り替えるので前データ由来の解析成果を破棄してから load する。
+        session_state.session.reset_analysis_state()
         session_state.session.features = deserialized_and_formatted_data
         session_state.session.current_file_path = file_path
         session_state.session.apply_filter({"min_intensity": filter_threshold})
-        summary, img_bytes = session_state.session.run_pca()
 
-        pca_result = session_state.session.pca_result
-        pca_index = session_state.session.pca_index
-
-
-        # Keep the PCA plot in the MCP response only. This avoids writing into
-        # DATA_DIR, which may be a read-only local or NAS data folder.
-
-        # FastMCP の Image クラスでラップして返す
-        mcp_image = Image(data=img_bytes, format="png")
-
+        summary = summarize_pai2_inventory(session_state.session.filtered_features)
         text_report = (
-            f"### 解析完了: {Path(file_path).name}\n"
-            f"(summary は S/N 情報を含みます)\n"
-            + json.dumps(summary, indent=2)
+            f"### PAI2 解析完了: {Path(file_path).name}\n"
+            + json.dumps(summary, indent=2, ensure_ascii=False)
         )
-        return [text_report, mcp_image]
+        return text_report
 
     except Exception as e:
-        return [f"エラーが発生しました: {str(e)}"]
-
-
-@mcp.tool()
-def pai2_get_top_metabolites(top_n: int = 10) -> str:
-    """
-    pai2ファイルの直近のPCA解析結果から、主成分に寄与している上位の代謝物リストを返します。
-    """
-    if session_state.session.pca_result is None:
-        return "先に analyze_pai2_pca を実行してください。"
-
-    from pai2_reader import get_top_contributors
-
-    top_list = get_top_contributors(session_state.session.filtered_features, session_state.session.pca_result, top_n)
-    return f"上位{top_n}件の代謝物:\n{json.dumps(top_list, indent=2, ensure_ascii=False)}"
+        return f"エラーが発生しました: {str(e)}"
 
 
 @mcp.tool()
@@ -162,54 +134,3 @@ def verify_peak_annotation(
     dossiers = [_build_verification_dossier(feat, vocab) for feat in matches]
     payload = dossiers[0] if len(dossiers) == 1 else {"status": "success", "matches": dossiers}
     return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
-def pai2_update_analysis_filter(min_intensity: float = 0.0, min_sn: float = 0.0) -> str:
-    """min_intensity / min_sn を更新してPCAを再実行する。"""
-    if session_state.session.features is None:
-        return "先に pai2_parser を実行してデータを読み込んでください。"
-
-    old_count = len(session_state.session.filtered_features or session_state.session.features)
-    old_pc1 = None
-    if session_state.session.last_pca_summary and session_state.session.last_pca_summary.get("explained_variance"):
-        try:
-            old_pc1 = float(session_state.session.last_pca_summary["explained_variance"]["PC1"].strip("%")) / 100.0
-        except Exception:
-            old_pc1 = None
-
-    new_filter = {"min_intensity": min_intensity}
-    if min_sn:
-        new_filter["min_sn"] = min_sn
-
-    session_state.session.apply_filter(new_filter)
-    summary, img_bytes = session_state.session.run_pca()
-    new_count = len(session_state.session.filtered_features or [])
-
-    parts = [
-        f"フィルタ更新: min_intensity={min_intensity}, min_sn={min_sn}",
-        f"前件数: {old_count}",
-        f"後件数: {new_count}",
-    ]
-
-    if old_count:
-        reduction = 100.0 * (old_count - new_count) / old_count
-        parts.append(f"データ損失率: {reduction:.1f}%")
-
-    if summary.get("explained_variance"):
-        parts.append(f"PC1 explained variance: {summary['explained_variance']['PC1']}")
-        parts.append(f"PC2 explained variance: {summary['explained_variance']['PC2']}")
-
-    if old_pc1 is not None and summary.get("explained_variance"):
-        try:
-            new_pc1 = float(summary["explained_variance"]["PC1"].strip("%")) / 100.0
-            delta = new_pc1 - old_pc1
-            parts.append(f"PC1 explained variance change: {delta:+.2%}")
-        except Exception:
-            pass
-
-    parts.append("フィルタ後の上位寄与代謝物:")
-    top_list = get_top_contributors(session_state.session.filtered_features, session_state.session.pca_result, top_n=5)
-    parts.append(json.dumps(top_list, indent=2, ensure_ascii=False))
-
-    return "\n".join(parts)

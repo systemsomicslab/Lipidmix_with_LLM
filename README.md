@@ -158,10 +158,8 @@ Available MCP tools include:
 
 - `load_dataset(directory=None)` - Entry point. Given an MS-DIAL output folder, runs the standard initial analysis (arf2 overview -> arf PCA), auto-selecting the latest `*PeakProperties.arf` when duplicates exist, and primes the session. When the folder mixes files from several MS-DIAL runs (multiple dates/batches), every resolver auto-selects the **latest batch** by the `AlignmentResult_<timestamp>` embedded in the filenames (across `.arf`/`.arf2`/`.pai2`/`.aef`); `load_dataset` reports which batch it chose and skips older ones.
 - `list_data_files(extension=None, directory=None)` - List files in the given `directory` (defaults to the configured data directory: `LIPIDMIX_DATA_DIR` or `<project>/data`), optionally filtered by extension.
-- `pai2_parser(file_path, filter_threshold=None)` - Parse `.pai2`, run PCA summary generation, and cache the parsed session.
-- `pai2_get_top_metabolites(top_n=10)` - Return top PCA contributors from the latest `.pai2` analysis.
+- `pai2_parser(file_path, filter_threshold=None)` - Parse one `.pai2` (a single measurement file's peak list) and return a peak-inventory summary: annotation counts, m/z / RT / height / S/N distributions, and top peaks by height. No PCA — PAI2 is a single sample, so cross-sample (omics) PCA is not meaningful here; use ARF/ARF2 for multi-sample multivariate analysis. MS/MS lives in the sibling `.dcl` (`dcl_index` matches list order).
 - `pai2_inspect_metabolite_details(metabolite_id=None, metabolite_name=None)` - Inspect a cached `.pai2` metabolite by ID or name.
-- `pai2_update_analysis_filter(min_intensity=0.0, min_sn=0.0)` - Re-filter cached `.pai2` features and rerun PCA.
 - `arf_parser(..., class_ids=None, group_levels=None, tag_labels=None, ...)` - Parse `.arf`, auto-load adjacent `.mddata` and tag sidecars, optionally filter samples by Class ID (partial factor specs allowed), color PCA points by group, and build a PCA matrix.
 - `arf_list_classes()` - List Class ID values, sample counts, and the per-position factor-value vocabulary (`factors_by_position`) discovered from the cached ARF dataset's `.mddata`.
 - `arf_list_tags()` - List discovered tag definitions, matched sample files, and tag assignment counts for the cached `.arf` session.
@@ -169,13 +167,13 @@ Available MCP tools include:
 - `arf_list_sample_roles()` - Classify the cached ARF's samples into `sample`/`qc`/`blank` roles (from filename and Class ID tokens) before applying any preprocessing.
 - `arf_preprocess(normalize="none", blank_min_fold=None, drift_correct=False, max_qc_rsd=None, impute="half_min", props=None)` - Apply an opt-in QC/normalization/imputation recipe to the loaded ARF matrix and cache the result as `session.feature_matrix` for downstream PCA/differential analysis.
 - `arf_pca_preprocessed(components=None, top_features=10, log_transform=False, group_levels=None)` - Run PCA on the preprocessed matrix produced by `arf_preprocess` (independent of the raw-matrix `arf_parser`/`arf_re_pca` path).
-- `arf_differential(group_factor=None, group_a=None, group_b=None, q_threshold=0.05, log2fc_threshold=1.0)` - Differential analysis over the preprocessed matrix: two-group Welch t-test + log2 fold change when `group_a`/`group_b` are given, else one-way ANOVA over `group_factor` levels. Adds BH-FDR, volcano points, and mandatory caveats (group⟂batch confounding, small n, normalization status).
+- `arf_differential(group_a=None, group_b=None, q_threshold=0.05, log2fc_threshold=1.0)` - Two-group differential analysis over the preprocessed matrix: Welch t-test + log2 fold change. Both `group_a` and `group_b` are required (full Class IDs or partial factor-token pools, e.g. `group_a="24M", group_b="9w"`). Multi-group one-way ANOVA is currently disabled: MS-DIAL metadata carries no factor→level mapping, so selecting a factor cannot be done safely — carve out the two groups of interest instead. Adds BH-FDR, volcano points, and mandatory caveats (group⟂batch confounding, small n, normalization status).
 - `arf2_parser(file_path=None)` - Parse and summarize `.arf2`.
 - `arf2_annotate_identities(file_path=None, max_rows=50)` - Offline identity standardization for the ARF2 spot catalog: GOSLIN-normalized name, bundled RefMet name / LIPID MAPS category, and a conservative MSI level per spot. (`verify_peak_annotation` also gains an `identity_normalization` block combining GOSLIN + reference mapping + an MSI-level heuristic that never asserts Level 1.)
-- `eicaef_parser(file_path=None)` - Parse and summarize `.EIC.aef`.
-- `eicaef_top_peak_tops(file_path=None, top_n=20)` - Return EIC spots ranked by peak-top intensity.
-- `eicaef_search_by_mz_range(file_path=None, min_mz=0.0, max_mz=1000.0, max_results=20)` - Search EIC spots by m/z range.
-- `eicaef_search_by_rt_range(file_path=None, min_rt=0.0, max_rt=20.0, max_results=20)` - Search EIC spots by retention-time range.
+- `eic_parser(file_path=None)` - Parse and summarize `.EIC.aef`.
+- `eic_rank_by_max_intensity(file_path=None, top_n=20)` - Return EIC spots ranked by intensity (each sample's max chromatogram intensity, taken across samples). Replaces the old `eicaef_top_peak_tops`, which ranked by `peak_top` (a retention-time coordinate, not intensity).
+- `eic_search_by_mz_range(file_path=None, min_mz=0.0, max_mz=1000.0, max_results=20)` - Search EIC spots by m/z range.
+- `eic_search_by_rt_range(file_path=None, min_rt=0.0, max_rt=20.0, max_results=20)` - Search EIC spots by retention-time range.
 
 Objective lifecycle and gap-driven literature discovery (see `docs/HISTRY.md`):
 
@@ -194,7 +192,7 @@ Analysis/interpretation report recording:
 - `list_reports()` - One-line index (analysis_id / date / status) of existing reports.
 - `save_pca_figure(analysis_id, title=None)` - Render the latest session PCA result to `reports/figures/<analysis_id>_pca.png` and return a relative path to embed in the report body as `![PCA](figures/<analysis_id>_pca.png)`.
 - `save_volcano_figure(analysis_id, title=None)` - Render the latest two-group differential result (`arf_differential`) as a volcano plot to `reports/figures/<analysis_id>_volcano.png` and return a relative path to embed as `![volcano](figures/<analysis_id>_volcano.png)`.
-- `eicaef_plot_chromatograms(spot_id, file_path=None, file_ids=None, normalize="none", title=None)` - Read selected traces for one CSS1 EIC spot by direct pointer-table access and return structured `lipidmix.eic.v1` plot information. The tool does not render or write an image; each MCP client chooses its own UI renderer.
+- `eic_plot_chromatograms(spot_id, file_path=None, file_ids=None, normalize="none", title=None)` - Read selected traces for one CSS1 EIC spot by direct pointer-table access and return structured `lipidmix.eic.v1` plot information. The tool does not render or write an image; each MCP client chooses its own UI renderer.
 - `save_eic_figure(analysis_id, title=None)` - Only when the user explicitly requests PNG output, render the latest EIC plot payload to `reports/figures/<analysis_id>_eic.png`. This is a separate write operation from interactive plotting.
 
 The server also exposes MCP **resources**: `lipidmix://docs/output-format` (authoritative parser output reference), `lipidmix://knowledge/index` and `lipidmix://playbook/index` (dynamic, one line per note), `lipidmix://{knowledge,playbook}/expand/{slug}` (a note plus its 1-hop `[[link]]` neighbors within a structural budget), and `lipidmix://knowledge/inbox` (pending discovery notes awaiting review).

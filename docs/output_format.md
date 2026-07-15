@@ -285,7 +285,9 @@ ARFサンプルとの結合は `FileID` を優先し、欠損時は正規化し�
 | `min_intensity` / `min_height` | `peak_height` の下限 |
 | `min_sn` | `S/N` の下限。S/Nが取得できないピークも除外 |
 
-### 5.3 `perform_pca_summary()`
+### 5.3 `perform_pca_summary()`（MCP非公開）
+
+**注意: このピーク属性PCAは MCP ツールからは公開していない。** `pai2_parser()` は `summarize_pai2_inventory()` による在庫要約（5.5節）のみを返す。PAI2 は単一測定ファイルなのでサンプル間比較（オミクスPCA）は原理的にできず、`[RT, m/z, Height]` の3変数PCAは生物学的仮説を検定しない（RT×m/z散布図の言い換えに近い）。関数自体はライブラリ内に残るが、以下は参考仕様である。
 
 重要: **このPCAの行はサンプルではなくピーク**である。各ピークを `[RT, m/z, Height]` の3変数で標準化し、ピーク群の分布を2成分に射影する。サンプル間のオミクスPCAではない。
 
@@ -350,6 +352,22 @@ ARFサンプルとの結合は `FileID` を優先し、欠損時は正規化し�
 | `comment` | コメント |
 
 検索条件なしは `status=error`、該当なしは `status=not_found` となる。
+
+### 5.5 `summarize_pai2_inventory()`
+
+`pai2_parser()` が返す在庫要約。PCA を介さず、単一測定ファイルのピーク分布を素直にまとめる。
+
+| キー | 意味 |
+|---|---|
+| `total_peaks` | フィルタ後のピーク総数 |
+| `annotated_peaks` | 確定注釈とみなせるピーク数（空文字・`Unknown`・`no MS2:`・`low score:` は除外） |
+| `annotated_fraction` | `annotated_peaks / total_peaks` |
+| `ion_mode_counts` | イオンモード別件数 |
+| `mz_range` / `rt_range` | m/z・RT の `{min, max}` |
+| `height_summary` | ピーク高さの `{min, median, max}` |
+| `sn_summary` | S/N の取得割合と `{min, median, max}` |
+| `top_by_height` | 強度上位10ピーク（`id`/`name`/`m/z`/`rt`/`height`/`signal_to_noise`） |
+| `note` | PAI2は単一サンプルでオミクスPCA不能・MS/MSは`.dcl`参照、の断り書き |
 
 ## 6. DCL (`dcl_reader.py`)
 
@@ -448,7 +466,7 @@ ARFサンプルとの結合は `FileID` を優先し、欠損時は正規化し�
 
 `search_eic_by_mz_range()` と `search_eic_by_rt_range()` は条件に合う**元のスポット辞書全体**を返す。境界値を含む。
 
-`top_eic_spots_by_peak_top()` の1行:
+`top_eic_spots_by_max_intensity()` の1行:
 
 | キー | 意味 |
 |---|---|
@@ -456,9 +474,9 @@ ARFサンプルとの結合は `FileID` を優先し、欠損時は正規化し�
 | `rt` | スポット代表RT |
 | `mz` | スポット代表 m/z |
 | `num_samples` | サンプル数 |
-| `max_peak_top` | サンプル間で最大のピーク頂点横軸座標 |
+| `max_intensity` | サンプル間で最大の「クロマトグラム最大強度」 |
 
-**現関数名・MCP表示は強度ランキングのように見えるが、実際には `peak_top` 座標の降順である。今回のLCデータでは概ね遅いRTのスポットが上位になる。強度上位を求める場合は `max_intensity` を使う別ロジックが必要である。**
+MCPツール `eic_rank_by_max_intensity` はこの `max_intensity` 降順で並べる**強度上位ランキング**である。旧 `top_eic_spots_by_peak_top` / `eicaef_top_peak_tops` は `peak_top`（ピーク頂点の横軸=RT座標。強度ではない）で並べており、実質「遅いRTのスポット一覧」で強度上位ではなかったため置き換えた。
 
 ## 8. MCPツールの外部出力
 
@@ -484,15 +502,15 @@ PCAスコア要約（散布図の点列は非同梱＝`save_pca_figure` で図�
 
 ### 8.3 `pai2_parser()` と関連ツール
 
-`pai2_parser()` は `[text_report, Image]` を返す。`text_report` のJSONは 5.3節の `summary`、`Image` はピークPCA散布図PNGである。`pai2_get_top_metabolites()` は5.3節の contributor 配列をJSON文字列で返す。`pai2_inspect_metabolite_details()` は5.4節の辞書をJSON文字列で返す。`pai2_update_analysis_filter()` は適用した `min_intensity`/`min_sn`、フィルタ前後件数、データ損失率、PC1/PC2説明分散率、前回からのPC1説明分散率変化、フィルタ後のPC1スコア絶対値上位5ピークをテキストで返す。
+`pai2_parser()` はテキスト1件を返す（PCA・画像は返さない）。JSONは `summarize_pai2_inventory()` の在庫要約で、`total_peaks` / `annotated_peaks`（`Unknown`・`no MS2:`・`low score:` を除いた確定注釈数）/ `annotated_fraction` / `ion_mode_counts` / `mz_range` / `rt_range` / `height_summary` / `sn_summary` / `top_by_height`（強度上位10ピーク）を含む。PAI2 は単一測定ファイルのピーク一覧なので、サンプル間比較（オミクスPCA）はこの単位では行わない（複数サンプルの多変量比較は ARF/ARF2）。旧 `pai2_get_top_metabolites()` / `pai2_update_analysis_filter()`（いずれもピーク属性PCA依存）は撤去した。`pai2_inspect_metabolite_details()` は5.4節の辞書をJSON文字列で返す。MS/MS は同名 `.dcl`（`dcl_index` がリスト順に対応）を参照する。
 
-### 8.4 `eicaef_parser()` と関連ツール
+### 8.4 `eic_parser()` と関連ツール
 
-`eicaef_parser()` は7.3節の要約をJSON文字列として返す。m/z/RT検索の各表示行は `spot_id`, `rt`, `mz`, `num_samples` を持つ。`eicaef_top_peak_tops()` はさらに `max_peak_top` を表示するが、7.4節のとおり強度ではなく横軸座標である。
+`eic_parser()` は7.3節の要約をJSON文字列として返す。m/z/RT検索の各表示行は `spot_id`, `rt`, `mz`, `num_samples` を持つ。`eic_rank_by_max_intensity()` はさらに `max_intensity`（サンプル間で最大のクロマトグラム最大強度）を表示する強度上位ランキングである（7.4節）。
 
-### 8.5 `eicaef_plot_chromatograms()` の描画契約
+### 8.5 `eic_plot_chromatograms()` の描画契約
 
-`eicaef_plot_chromatograms()` は画像ではなく、クライアント中立の構造化JSON
+`eic_plot_chromatograms()` は画像ではなく、クライアント中立の構造化JSON
 `plot_schema="lipidmix.eic.v1"` を返す。主要フィールドは `axes`、スポットの
 `rt`/`mz`、および各試料の `series[].x` / `series[].y` / `file_id` /
 `peak_left` / `peak_top` / `peak_right` である。Use-LLLMはこれをPlotlyへ変換し、
@@ -513,7 +531,7 @@ DCLパーサーは現時点で独立したMCPツールとして公開されて�
 4. ARFの `IsGapFilled=true` は実測ピークではなく補間値である。検出率や存在判定では別扱いする。
 5. ARFの `HeightAverage` は現実装ではグループ先頭値であり、名前どおりの再計算平均ではない。統合統計にはARF2側を優先する。
 6. ARF要約の `named_compounds` は空文字も数えるため、注釈率には使わない。
-7. PAI2のPCAはピークを行とする3変数PCAで、サンプル間比較ではない。`top_contributors` はPC Loadingではなくピークスコア絶対値上位である。
+7. PAI2 の `pai2_parser()` は在庫要約のみを返し PCA は行わない（PAI2 は単一サンプルでオミクスPCA不能）。旧ピーク属性PCA系ツール（`pai2_get_top_metabolites` / `pai2_update_analysis_filter`）は撤去済み。複数サンプルの多変量比較は ARF/ARF2 を使う。
 8. PAI2の `has_msms=true` は取得参照があることを示すだけで、PAI2内 `msms_spectrum` が非空とは限らない。実スペクトルはDCLを参照する。
 9. DCLの `n_msms_peaks` は元本数であり、`top_n_peaks` 適用後の配列長とは異なり得る。
 10. EICの `peak_top` は強度ではなく頂点座標である。強度は `max_intensity`、平均強度は `mean_intensity` を使う。
@@ -599,7 +617,7 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 ### 11.2 統計
 
 - **2群比較**（`group_a` と `group_b` を指定）: 特徴量ごとに Welch t 検定（等分散を仮定しない）と log2 fold change を計算する。`log2fc = log2((mean_a + 擬似カウント) / (mean_b + 擬似カウント))`（**正=群Aで高い**、擬似カウント既定1.0でゼロ割回避）。小n・分散0・全欠損は `p=NaN`。
-- **一元配置ANOVA**（`group_factor` のみ指定）: その factor の全水準で特徴量ごとに F 統計量と p 値を計算する（3群以上）。
+- **多群ANOVAは現状非対応**: MS-DIAL メタに「因子（加齢/菌叢等）→水準」の対応が無く、因子を安全に選べない（誤って全 Class ID を水準にした結果を返さないよう封鎖）。3群以上を比べたいときは `group_a`/`group_b` の因子トークン・プール指定で関心のある2群を切り出す。`differential.one_way_anova()` 自体は関数として残るが、MCP からは露出しない。
 - **多重検定補正**: いずれも Benjamini-Hochberg で `p → q`（FDR）を付与（NaN は補正から除外し位置は保持）。p値は scipy があれば正確（無ければ近似フォールバック）。
 - **volcano**: 2群比較のみ。各点は `feature` / `log2fc` / `neg_log10_p` / `sig`（`up`=q≤閾値かつlog2fc≥+閾値 / `down`=q≤閾値かつlog2fc≤−閾値 / `ns`）。全特徴分の点列は `session.last_differential["volcano"]` に保持し、`save_volcano_figure(analysis_id, title=None)` が `reports/figures/<analysis_id>_volcano.png` に描画する。**`arf_differential()` の応答 payload には全量 volcano を同梱せず**、`summary`（`n_tested`/`n_significant`/`n_up`/`n_down`＋有意上位 `top`）中心の要約と `volcano_note` のみを返す（先頭の結論が巨大配列＋文脈切り詰めで埋没し「全て ns」と誤読される退行を避けるため）。
 
