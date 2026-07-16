@@ -30,7 +30,7 @@ __all__ = [
 @mcp.tool()
 def eic_parser(file_path: str | None = None) -> str:
     """
-    .eic.aef ファイルに対応する解析用関数
+    .EIC.aef ファイルに対応する解析用関数
     ファイルを解析し、テキスト要約を返します。
     """
     file_path = resolve_eicaef_file_path(file_path)

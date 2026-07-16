@@ -1,6 +1,6 @@
 # USAGE — ms-data-parser MCP ツール一覧(全36ツール)
 
-MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.eic.aef`)を解析し、PCA・差次的解析・
+MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.EIC.aef`)を解析し、PCA・差次的解析・
 アノテーション検証・文献探索・レポート記録までを行う MCP サーバーのツール群です。
 おおまかな標準フロー:
 
@@ -39,11 +39,11 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 | `arf_pca_preprocessed` | `arf_preprocess` 後の前処理済み行列で PCA を実行(生行列経路とは独立)。 |
 | `arf_differential` | 前処理後行列で差次的解析(2群 Welch t 検定＋log2FC、BH 補正)。因子トークンによるプール群指定に対応。多群 ANOVA は MCP から非公開(関心の2群を因子指定で切り出す)。 |
 
-## 4. EIC 解析(`.eic.aef`)
+## 4. EIC 解析(`.EIC.aef`)
 
 | ツール | 機能 |
 |--------|------|
-| `eic_parser` | `.eic.aef` を解析しテキスト要約を返す。 |
+| `eic_parser` | `.EIC.aef` を解析しテキスト要約を返す。 |
 | `eic_search_by_mz_range` | m/z 範囲でスポットを検索。 |
 | `eic_search_by_rt_range` | RT 範囲でスポットを検索。 |
 | `eic_rank_by_max_intensity` | 各試料のクロマトグラム最大強度の最大値で降順に並べた強度上位ランキングを返す。 |

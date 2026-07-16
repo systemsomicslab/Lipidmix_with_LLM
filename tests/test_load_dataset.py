@@ -123,11 +123,24 @@ class PickLatestDuplicateTests(unittest.TestCase):
     def test_falls_back_to_mtime_without_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
-            self._touch(directory, "older.aef", mtime=1_000_000_000)
-            self._touch(directory, "newer.aef", mtime=2_000_000_000)
+            self._touch(directory, "older.EIC.aef", mtime=1_000_000_000)
+            self._touch(directory, "newer.EIC.aef", mtime=2_000_000_000)
             mcp_core.DATA_DIR = directory
             resolved = server.resolve_eicaef_file_path()
-            self.assertTrue(resolved.endswith("newer.aef"))
+            self.assertTrue(resolved.endswith("newer.EIC.aef"))
+
+    def test_eicaef_resolver_uses_canonical_uppercase_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._touch(directory, "newer.eic.aef", mtime=2_000_000_000)
+            expected = self._touch(
+                directory, "older.EIC.aef", mtime=1_000_000_000
+            )
+            mcp_core.DATA_DIR = directory
+
+            resolved = server.resolve_eicaef_file_path()
+
+            self.assertEqual(resolved, str(expected.absolute()))
 
 
 class LoadDatasetBatchAnnounceTests(unittest.TestCase):
