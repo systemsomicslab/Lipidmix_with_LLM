@@ -1,0 +1,131 @@
+"""サンプル単位の因子トークン（サンプル名 ∪ Class ID）による選択・群分け（純ロジック層）。
+
+MS-DIAL の Class ID は「ユーザーが MS-DIAL 上で入力した1文字列」でしかなく、実験
+デザインの全因子を含むとは限らない（時点・複製・測定日はサンプル名にしか無いことが
+ある）。そのため本モジュールは Class ID とサンプル名のトークンを統合した空間で
+spec を解決し、msdial_classes.py の Class ID 専用ロジックを一般化する。
+
+依存は msdial_tags（normalize_sample_name）と preprocessing（detect_sample_roles）
+のみの leaf。msdial_classes / tools_* / session_state / server は import しない
+（msdial_classes → sample_factors の向きに依存させるため。逆向きは循環になる）。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import preprocessing
+from msdial_tags import normalize_sample_name
+
+
+@dataclass(frozen=True)
+class SampleFacet:
+    """1サンプルの選択・群分けに必要な情報一式。
+
+    tokens は casefold 済みの統合トークン集合で、spec 照合の唯一の入力。
+    file_id は EIC の file_ids にそのまま渡せる MS-DIAL AnalysisFileId。
+    """
+
+    name: str
+    file_id: int | None
+    class_id: str | None
+    role: str
+    tokens: frozenset[str]
+
+
+def split_tokens(value) -> frozenset[str]:
+    """`_` 区切りの因子トークン集合（casefold）。空要素は落とす。"""
+    if value is None:
+        return frozenset()
+    return frozenset(token for token in str(value).casefold().split("_") if token)
+
+
+def sample_tokens(sample_name, class_id=None, extra=None) -> frozenset[str]:
+    """サンプル名 ∪ Class ID（∪ 追加ラベル）の統合トークン集合を返す。
+
+    サンプル名は normalize_sample_name で既知の測定ファイル拡張子と末尾12桁の処理
+    タイムスタンプを落としてから分割する。処理タイムスタンプは MS-DIAL の再処理
+    ごとに変わる識別子で実験因子ではないため、トークン語彙に混ぜない。
+    extra は Class ID 以外の群ラベル（session_state の sample_meta["group"] 等）用。
+    """
+    tokens = set(split_tokens(normalize_sample_name(sample_name, strip_processing_timestamp=True)))
+    tokens |= split_tokens(class_id)
+    tokens |= split_tokens(extra)
+    return frozenset(tokens)
+
+
+def build_sample_facets(sample_names, class_index=None, sample_meta=None) -> dict[str, SampleFacet]:
+    """サンプル名リストから {サンプル名: SampleFacet} を作る（入力順を保持）。
+
+    - class_index: msdial_classes.discover_arf_class_index の戻り。あれば file_id /
+      class_id を名前一致で解決する。**None でも成立**し、その場合はサンプル名の
+      トークンだけで選択できる（.mddata が無いフォルダでも因子指定が効く）。
+    - sample_meta: session_state.session.sample_meta 相当。role と group ラベルの
+      供給源。arf_differential は class_index を持たず sample_meta["group"] だけを
+      持つ経路があるため、group もトークン源として合流させる。
+    - role: sample_meta に明示があればそれを優先し、無ければ
+      preprocessing.detect_sample_roles（名前と Class ID のトークン照合）で決める。
+    """
+    lookup = _class_lookup(class_index)
+    meta = sample_meta or {}
+    ordered = list(sample_names)
+
+    records: dict[str, dict] = {}
+    class_ids: dict[str, str] = {}
+    for name in ordered:
+        record = lookup.get(normalize_sample_name(name, strip_processing_timestamp=False)) or {}
+        records[name] = record
+        if record.get("class_id"):
+            class_ids[name] = record["class_id"]
+
+    detected = preprocessing.detect_sample_roles(ordered, class_ids)
+
+    facets: dict[str, SampleFacet] = {}
+    for name in ordered:
+        record = records[name]
+        entry = meta.get(name) or {}
+        facets[name] = SampleFacet(
+            name=name,
+            file_id=record.get("file_id"),
+            class_id=record.get("class_id"),
+            role=entry.get("role") or detected.get(name, "sample"),
+            tokens=sample_tokens(name, record.get("class_id"), entry.get("group")),
+        )
+    return facets
+
+
+def arf_sample_names(features) -> list[str]:
+    """ARF スポット列の AlignedPeakProperties 行に現れるサンプル名を出現順で返す。
+
+    行は MS-DIAL の生 list で index 1 が FileName（AlignmentChromPeakFeature スキーマ）。
+    arf_reader を経由せず素の index 参照で済ませ、leaf の依存を増やさない。
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    for spot in features or []:
+        for row in (spot or {}).get("AlignedPeakProperties") or []:
+            if not isinstance(row, list) or len(row) < 2:
+                continue
+            value = row[1]
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="ignore")
+            if isinstance(value, str) and value and value not in seen:
+                seen.add(value)
+                names.append(value)
+    return names
+
+
+def _class_lookup(class_index) -> dict[str, dict]:
+    """class_index の records を正規化サンプル名で引ける辞書にする。
+
+    msdial_classes.resolve_sample_class を使わないのは、msdial_classes が本モジュール
+    を import する側であり、逆向きの import が循環になるため（session_state.
+    _build_sample_meta も同じ理由で同じ引き方をしている）。
+    """
+    if not class_index:
+        return {}
+    lookup: dict[str, dict] = {}
+    for record in class_index.get("records", []):
+        key = normalize_sample_name(record.get("file_name"), strip_processing_timestamp=False)
+        if key:
+            lookup[key] = record
+    return lookup
