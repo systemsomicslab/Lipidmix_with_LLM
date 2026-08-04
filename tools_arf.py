@@ -17,6 +17,7 @@ import differential
 import exclusions
 import path_resolvers
 import preprocessing
+import sample_factors
 import session_state
 import tool_helpers
 from mcp_core import mcp
@@ -513,15 +514,16 @@ def arf_parser(
 _SPOT_ID_RE = re.compile(r"^Spot_(\d+)")
 
 
-def _pool_group_labels(group_labels, group_a, group_b):
-    """完全 Class ID だけでなく、因子トークンによるプール群指定を許す。
+def _pool_group_labels(sample_names, group_labels, group_a, group_b):
+    """完全 Class ID / 群ラベルだけでなく、サンプル名の因子トークンでもプール群を作る。
 
-    Class ID は `24M_GF_F` のようにアンダースコア区切りの因子トークン列なので、
-    `group_a="24M"` を「24M を含む全 Class ID」に展開してラベルを貼り直す。
-    完全な Class ID を渡した場合は（そのトークン集合を含む他の Class ID が無い限り）
-    自分自身にのみ一致するため、従来の2群比較はそのまま動く。
+    Class ID は MS-DIAL 上で入力された1文字列にすぎず、時点や複製のような因子は
+    サンプル名にしか無いことがある。トークン空間を tokens(サンプル名) ∪ tokens(群ラベル)
+    に統合し、`group_a="ILG_6h"` のような多因子指定を通す。完全な群ラベルを渡した
+    場合は（そのトークン集合を含む他のサンプルが無い限り）従来どおりの2群比較になる。
 
-    戻り値 (relabeled, resolved)。一致ゼロ・両群の重複は ValueError。
+    group_labels が None のサンプル（QC/blank・群未解決）は候補から外す。
+    戻り値 (relabeled, resolved, resolved_samples)。一致ゼロ・両群の重複は ValueError。
     """
     if str(group_a) == str(group_b):
         raise ValueError(f"group_a と group_b が同一です: {group_a!r}")
@@ -529,24 +531,40 @@ def _pool_group_labels(group_labels, group_a, group_b):
     if not available:
         raise ValueError(
             "Class ID メタデータが解決できていないため群を特定できません（.mddata 未検出）。")
-    expanded = expand_class_specs([group_a, group_b], available)
-    a_ids, b_ids = set(expanded[group_a]), set(expanded[group_b])
-    overlap = sorted(a_ids & b_ids)
+
+    meta = {name: {"group": label, "role": "sample"}
+            for name, label in zip(sample_names, group_labels) if label is not None}
+    facets = sample_factors.build_sample_facets(list(meta), None, sample_meta=meta)
+    try:
+        # role は呼び出し側が group_labels=None で既に落としているので、ここでは絞らない。
+        matches, _ = sample_factors.expand_sample_specs(
+            [group_a, group_b], facets, include_roles=None)
+    except ValueError as exc:
+        raise ValueError(f"{exc} 利用可能な群ラベル: {', '.join(available)}") from exc
+
+    a_names, b_names = set(matches[group_a]), set(matches[group_b])
+    overlap = sorted({str(meta[n]["group"]) for n in (a_names & b_names)})
     if overlap:
         raise ValueError(
-            f"group_a='{group_a}' と group_b='{group_b}' が同じ Class ID を含みます "
+            f"group_a='{group_a}' と group_b='{group_b}' が同じサンプルを含みます "
             f"({', '.join(overlap)})。群は排他である必要があります。")
+
     relabeled = []
-    for g in group_labels:
-        key = str(g) if g is not None else None
-        if key in a_ids:
+    for name, label in zip(sample_names, group_labels):
+        if label is None:
+            relabeled.append(None)
+        elif name in a_names:
             relabeled.append(group_a)
-        elif key in b_ids:
+        elif name in b_names:
             relabeled.append(group_b)
         else:
             relabeled.append(None)
-    resolved = {"group_a": sorted(a_ids), "group_b": sorted(b_ids)}
-    return relabeled, resolved
+    resolved = {
+        "group_a": sorted({str(meta[n]["group"]) for n in a_names}),
+        "group_b": sorted({str(meta[n]["group"]) for n in b_names}),
+    }
+    resolved_samples = {"group_a": sorted(a_names), "group_b": sorted(b_names)}
+    return relabeled, resolved, resolved_samples
 
 
 def _spot_id_of(feature_name) -> int | None:
@@ -697,7 +715,8 @@ def arf_differential(
 
     if group_a is not None and group_b is not None:
         try:
-            group_labels, resolved = _pool_group_labels(group_labels, group_a, group_b)
+            group_labels, resolved, resolved_samples = _pool_group_labels(
+                sample_names, group_labels, group_a, group_b)
         except ValueError as exc:
             return json.dumps({"status": "error", "message": str(exc)},
                               ensure_ascii=False, indent=2)
@@ -720,6 +739,15 @@ def arf_differential(
                             for spec, ids in ((group_a, resolved["group_a"]),
                                               (group_b, resolved["group_b"])))
                 + "。因子内の他要因（性・菌叢等）はプール内で平均化されます。")
+        caveats.append(
+            "比較サンプル: "
+            + "; ".join(
+                f"{spec} = {', '.join(names)}"
+                for spec, names in ((group_a, resolved_samples["group_a"]),
+                                    (group_b, resolved_samples["group_b"]))
+            )
+            + "。指定トークンは Class ID とサンプル名の両方から解決されます。"
+        )
         results = differential.two_group_test(matrix, feature_names, group_labels,
                                               group_a, group_b, log_transform=log_transform)
         results = differential.add_fdr(results)
@@ -753,6 +781,7 @@ def arf_differential(
         payload = {"status": "success", "kind": "two_group",
                    "group_a": group_a, "group_b": group_b,
                    "resolved_class_ids": resolved,
+                   "resolved_samples": resolved_samples,
                    "n_a": n_a, "n_b": n_b,
                    "summary": summary, "caveats": caveats,
                    "volcano_note": "全特徴の volcano 点列は本要約に非同梱。"
