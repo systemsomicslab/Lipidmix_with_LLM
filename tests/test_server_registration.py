@@ -28,6 +28,7 @@ EXPECTED_TOOLS = sorted([
     "arf_preprocess",
     "eic_parser",
     "eic_plot_chromatograms",
+    "eic_plot_compounds",
     "eic_rank_by_max_intensity",
     "eic_search_by_mz_range",
     "eic_search_by_rt_range",
@@ -71,7 +72,7 @@ EXPECTED_TEMPLATES = sorted([
 
 def test_tool_count_is_stable():
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 37
+    assert len(tools) == 38
 
 
 def test_tool_names_snapshot():

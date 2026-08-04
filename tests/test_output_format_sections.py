@@ -26,7 +26,7 @@ REQUIRED_MARKERS = {
     "arf2": ["extract_arf2_data"],
     "pai2": ["ChromatogramPeakFeature", "単一サンプル"],
     "dcl": ["MSDec"],
-    "eic": ["peak_top", "lipidmix.eic.v1"],
+    "eic": ["peak_top", "lipidmix.eic.v1", "lipidmix.eic.multi.v1"],
     "identity": ["GOSLIN", "MSI"],
 }
 

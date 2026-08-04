@@ -184,5 +184,130 @@ class MultiCompoundRenderTests(unittest.TestCase):
             render_eic_plot({"plot_schema": "lipidmix.eic.v99", "series": []})
 
 
+class EicPlotCompoundsToolTests(unittest.TestCase):
+    def setUp(self):
+        import os
+        import struct
+        import tempfile
+        from pathlib import Path
+
+        import mcp_core
+        import session_state
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.path = self.tmp / "alignment.EIC.aef"
+        self.arf2 = self.tmp / "alignment.arf2"
+        self.arf2.write_bytes(b"placeholder")
+
+        from tests.test_eic_plot import _write_css1
+
+        _write_css1(self.path, [
+            {"rt": 13.5, "mz": 636.4, "samples": [{
+                "file_id": 7, "peak_top": 13.5, "peak_left": 13.4,
+                "peak_right": 13.6,
+                "points": [(13.4, 2.0), (13.5, 40.0), (13.6, 3.0)],
+            }]},
+            {"rt": 22.1, "mz": 650.6, "samples": [{
+                "file_id": 7, "peak_top": 22.1, "peak_left": 22.0,
+                "peak_right": 22.2,
+                "points": [(22.0, 5.0), (22.1, 90.0), (22.2, 4.0)],
+            }]},
+        ])
+
+        self.records = [
+            {"AlignmentID": 0, "Name": "PC(12:0/13:0)", "Ontology": "PC",
+             "AdductType": "[M+H]+", "RT": 13.5, "MassCenter": 636.4,
+             "HeightAverage": 10.0},
+            {"AlignmentID": 1, "Name": "Ceramide (d18:1/25:0)", "Ontology": "Cer",
+             "AdductType": "[M+H]+", "RT": 22.1, "MassCenter": 650.6,
+             "HeightAverage": 20.0},
+        ]
+
+        self._saved_data_dir = mcp_core.DATA_DIR
+        self._saved_reports = os.environ.get("LIPIDMIX_REPORTS_DIR")
+        self._saved_plot = session_state.session.last_eic_plot
+        mcp_core.DATA_DIR = self.tmp
+        os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "fallback")
+        session_state.session.last_eic_plot = None
+
+        import tools_eic
+
+        self._saved_loader = tools_eic.load_arf2_records
+        tools_eic.load_arf2_records = lambda _path: self.records
+
+    def tearDown(self):
+        import os
+
+        import mcp_core
+        import session_state
+        import tools_eic
+
+        tools_eic.load_arf2_records = self._saved_loader
+        mcp_core.DATA_DIR = self._saved_data_dir
+        session_state.session.last_eic_plot = self._saved_plot
+        if self._saved_reports is None:
+            os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
+        else:
+            os.environ["LIPIDMIX_REPORTS_DIR"] = self._saved_reports
+        self._tmp.cleanup()
+
+    def test_returns_multi_payload_and_writes_no_png(self):
+        import server
+        import session_state
+
+        payload = server.eic_plot_compounds(
+            7, names=["ceramide"], ontologies=["PC"],
+            file_path=str(self.path), arf2_path=str(self.arf2),
+        )
+        self.assertEqual(payload["plot_schema"], "lipidmix.eic.multi.v1")
+        self.assertEqual(
+            [item["label"] for item in payload["series"]],
+            ["PC(12:0/13:0)", "Ceramide (d18:1/25:0)"],
+        )
+        self.assertEqual(payload["sample"]["file_id"], 7)
+        self.assertIs(session_state.session.last_eic_plot, payload)
+        self.assertEqual(list(self.tmp.rglob("*.png")), [])
+
+    def test_no_query_raises(self):
+        import server
+
+        with self.assertRaisesRegex(ValueError, "names"):
+            server.eic_plot_compounds(
+                7, file_path=str(self.path), arf2_path=str(self.arf2),
+            )
+
+    def test_query_without_any_arf2_hit_raises(self):
+        import server
+
+        with self.assertRaisesRegex(ValueError, "一致"):
+            server.eic_plot_compounds(
+                7, names=["no-such-lipid"],
+                file_path=str(self.path), arf2_path=str(self.arf2),
+            )
+
+    def test_save_eic_figure_accepts_the_multi_payload(self):
+        import server
+
+        server.eic_plot_compounds(
+            7, ontologies=["PC", "Cer"],
+            file_path=str(self.path), arf2_path=str(self.arf2),
+        )
+        message = server.save_eic_figure("overlay-eic")
+        png = self.tmp / "reports" / "figures" / "overlay-eic_eic.png"
+        self.assertTrue(png.is_file())
+        self.assertIn("figures/overlay-eic_eic.png", message)
+
+    def test_fastmcp_exposes_output_schema(self):
+        import asyncio
+
+        import server
+
+        tools = asyncio.run(server.mcp.list_tools())
+        tool = next(item for item in tools if item.name == "eic_plot_compounds")
+        self.assertIsNotNone(tool.outputSchema)
+        self.assertIn("plot_schema", tool.outputSchema.get("properties", {}))
+
+
 if __name__ == "__main__":
     unittest.main()

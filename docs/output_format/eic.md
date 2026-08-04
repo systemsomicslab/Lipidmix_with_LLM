@@ -1,6 +1,6 @@
 # EIC/AEF (`.EIC.aef` / クロマトグラム)
 
-`.EIC.aef` パーサ、EIC 検索・ランキング、`eic_plot_chromatograms` の描画契約。
+`.EIC.aef` パーサ、EIC 検索・ランキング、`eic_plot_chromatograms` / `eic_plot_compounds` の描画契約。
 
 > 先に `lipidmix://docs/output-format`（共通核）を読むこと。行・列の粒度、脂質名文法、必須注意事項はそちらで定義され、ここでは繰り返さない。節番号は分割前の通し番号。
 
@@ -80,5 +80,30 @@ Claude Desktop等は各クライアントのUI方式で描画できる。通常�
 PNGが必要だとユーザーが明示した場合に限り、先に得たプロット情報を
 `save_eic_figure(analysis_id, title=None)` で `reports/figures/` へ保存する。
 この保存は対話描画とは別の書き込み操作である。
+
+### 8.6 `eic_plot_compounds()` の描画契約
+
+`eic_plot_compounds()` は**複数物質 × 1サンプル**のオーバーレイ用に、クライアント中立の
+構造化JSON `plot_schema="lipidmix.eic.multi.v1"` を返す。8.5節と同じく画像は作らない。
+
+- **1呼び出し1サンプル**。`file_id` は必須。複数サンプルを比べるときはサンプルごとに
+  呼び出し、図を並べる。1物質×全サンプルの比較は従来どおり `eic_plot_chromatograms`。
+- 物質は ARF2 の同定情報から選ぶ。`names` は `Name` への大小無視の部分一致、
+  `ontologies` は `Ontology` への大小無視の完全一致で、両者は和集合。
+- 単一の `spot` フィールドは持たない。代わりに `sample`（`file_id` / `sample_name` /
+  `class_id`）を持ち、スポット固有の情報は `series[]` の `spot_id` / `name` /
+  `ontology` / `adduct` / `mz` / `rt` に入る。`series` はRT昇順。
+- 各系列の `annotation` は `{text: "<脂質名> / <peak_top>", x, y}`。`x`/`y` はピーク頂点に
+  最も近いデータ点の座標で、`y` は正規化後の値である。
+- **`selection.dropped[]` を必ず読むこと。** `spot_id`（= ARF2 `AlignmentID`）で引いた
+  EICスポットは `rt`/`mz` の一致（±0.02 min / ±0.01 Da）を検証しており、通らなかった
+  物質は描画されない。除外理由は `rt_mismatch` / `mz_mismatch`（ID対応の崩れ）、
+  `spot_out_of_range`、`file_id_absent`（その試料にトレースが無い）、
+  `below_top_n`（`top_n` 件からあふれた）の5種。**図に無い＝試料に無い、ではない。**
+- `selection.candidates` はクエリ一致数、`selection.plotted` は実際に描画した数。
+  一致が300件を超えるとARF2 `HeightAverage` 上位300件に予備選抜され、`caveats` に残る。
+
+PNGが必要だとユーザーが明示した場合に限り `save_eic_figure(analysis_id, title=None)` で
+保存する。この保存ツールは `lipidmix.eic.v1` と `lipidmix.eic.multi.v1` の両方に対応する。
 
 DCLパーサーは現時点で独立したMCPツールとして公開されていない。
