@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TypedDict
 
+from eic_identity_map import IdentityCandidate, verify_spot_match
 from msdial_classes import parse_analysis_file_classes, resolve_mddata_path
 
 
@@ -19,9 +20,10 @@ class PlotAxes(TypedDict):
     y: PlotAxis
 
 
-class PlotSource(TypedDict):
+class PlotSource(TypedDict, total=False):
     file: str
     file_name: str
+    arf2_file: str
 
 
 class PlotSpot(TypedDict):
@@ -71,6 +73,78 @@ class EICPlotPayload(TypedDict):
     caveats: list[str]
 
 
+MULTI_PLOT_SCHEMA = "lipidmix.eic.multi.v1"
+
+
+class PlotAnnotation(TypedDict):
+    text: str
+    x: float
+    y: float
+
+
+class PlotSample(TypedDict):
+    file_id: int
+    sample_name: str | None
+    class_id: str | None
+
+
+class MultiPlotSeries(TypedDict):
+    id: str
+    label: str
+    spot_id: int
+    name: str
+    ontology: str
+    adduct: str
+    mz: float
+    rt: float
+    x: list[float]
+    y: list[float]
+    peak_left: float
+    peak_top: float
+    peak_right: float
+    max_intensity: float
+    mean_intensity: float
+    point_count: int
+    annotation: PlotAnnotation
+
+
+class DroppedCompound(TypedDict):
+    spot_id: int
+    name: str
+    reason: str
+
+
+class PlotSelection(TypedDict):
+    queries: list[str]
+    ontologies: list[str]
+    candidates: int
+    plotted: int
+    top_n: int
+    dropped: list[DroppedCompound]
+
+
+class MultiRenderHints(TypedDict):
+    mode: str
+    connect_points: bool
+    show_legend: bool
+    show_annotations: bool
+    hover_fields: list[str]
+
+
+class EICMultiPlotPayload(TypedDict):
+    plot_schema: str
+    plot_type: str
+    title: str
+    source: PlotSource
+    axes: PlotAxes
+    sample: PlotSample
+    normalization: str
+    series: list[MultiPlotSeries]
+    selection: PlotSelection
+    render_hints: MultiRenderHints
+    caveats: list[str]
+
+
 def _axis_definition(main_type: int) -> tuple[str, str | None]:
     if main_type == 0:
         return "RT", "min"
@@ -91,6 +165,30 @@ def _sample_metadata(file_path: str | Path) -> tuple[dict[int, dict], list[str]]
         }, caveats
     except Exception as exc:
         return {}, [f"Sample metadata could not be loaded; series labels use FileID: {exc}"]
+
+
+def _series_xy(sample: dict, normalize: str) -> tuple[list[float], list[float]]:
+    """クロマトグラム点列を x/y 配列へ分解し、必要なら trace 内最大で正規化する。"""
+    x_values = [float(point[0]) for point in sample["chromatogram"]]
+    raw_y = [float(point[1]) for point in sample["chromatogram"]]
+    if normalize == "per_trace_max":
+        denominator = max(raw_y, default=0.0)
+        return x_values, [
+            value / denominator if denominator > 0 else 0.0 for value in raw_y
+        ]
+    return x_values, raw_y
+
+
+def _apex_point(
+    x_values: list[float], y_values: list[float], peak_top: float,
+) -> tuple[float, float]:
+    """peak_top に最も近いデータ点の (x, y) を返す。点列が空なら (peak_top, 0.0)。"""
+    if not x_values:
+        return float(peak_top), 0.0
+    index = min(
+        range(len(x_values)), key=lambda position: abs(x_values[position] - peak_top)
+    )
+    return x_values[index], y_values[index]
 
 
 def build_eic_plot_payload(
@@ -114,13 +212,7 @@ def build_eic_plot_payload(
         sample_name = record.get("file_name")
         class_id = record.get("class_id")
         label = sample_name or f"FileID {file_id}"
-        x_values = [float(point[0]) for point in sample["chromatogram"]]
-        raw_y = [float(point[1]) for point in sample["chromatogram"]]
-        if normalize == "per_trace_max":
-            denominator = max(raw_y, default=0.0)
-            y_values = [value / denominator if denominator > 0 else 0.0 for value in raw_y]
-        else:
-            y_values = raw_y
+        x_values, y_values = _series_xy(sample, normalize)
         series.append({
             "id": f"file-{file_id}",
             "label": str(label),
@@ -172,6 +264,172 @@ def build_eic_plot_payload(
             ],
         },
         "caveats": caveats,
+    }
+
+
+def _dropped(candidate: IdentityCandidate, reason: str) -> DroppedCompound:
+    return {
+        "spot_id": int(candidate["spot_id"]),
+        "name": str(candidate["name"]),
+        "reason": reason,
+    }
+
+
+def build_multi_compound_plot_payload(
+    candidates: list[IdentityCandidate],
+    spots: list[dict],
+    *,
+    file_id: int,
+    file_path: str | Path,
+    arf2_path: str | Path,
+    normalize: str = "none",
+    top_n: int = 24,
+    title: str | None = None,
+    queries: list[str] | None = None,
+    ontologies: list[str] | None = None,
+    caveats: list[str] | None = None,
+) -> EICMultiPlotPayload:
+    """1 サンプル分の複数物質オーバーレイ用ペイロードを組み立てる。
+
+    `candidates` は ARF2 由来の同定候補、`spots` は同じ `spot_id` を要求して読んだ
+    EIC スポット。rt/mz 検証、`top_n` での強度打ち切り、RT 昇順の並べ替えを行い、
+    除外された物質は理由付きで `selection.dropped` に残す。
+    """
+    if normalize not in {"none", "per_trace_max"}:
+        raise ValueError("normalize must be 'none' or 'per_trace_max'")
+    if isinstance(top_n, bool) or not isinstance(top_n, int) or top_n < 1:
+        raise ValueError("top_n must be a positive integer")
+
+    path = Path(file_path).resolve()
+    arf2 = Path(arf2_path).resolve()
+    metadata, meta_caveats = _sample_metadata(path)
+    notes = list(caveats or []) + meta_caveats
+    dropped: list[DroppedCompound] = []
+
+    spot_by_id = {int(spot["spot_id"]): spot for spot in spots}
+    accepted = []
+    for candidate in candidates:
+        spot = spot_by_id.get(int(candidate["spot_id"]))
+        if spot is None:
+            dropped.append(_dropped(candidate, "spot_out_of_range"))
+            continue
+        sample = next(
+            (item for item in spot["samples"] if int(item["file_id"]) == int(file_id)),
+            None,
+        )
+        if sample is None:
+            dropped.append(_dropped(candidate, "file_id_absent"))
+            continue
+        reason = verify_spot_match(candidate, spot)
+        if reason:
+            dropped.append(_dropped(candidate, reason))
+            continue
+        accepted.append((candidate, spot, sample))
+
+    accepted.sort(key=lambda item: float(item[2]["max_intensity"]), reverse=True)
+    for candidate, _spot, _sample in accepted[top_n:]:
+        dropped.append(_dropped(candidate, "below_top_n"))
+    accepted = accepted[:top_n]
+    accepted.sort(key=lambda item: float(item[1]["rt"]))
+
+    if not accepted:
+        breakdown = ", ".join(
+            f"{item['name'] or item['spot_id']}={item['reason']}" for item in dropped
+        )
+        raise ValueError(
+            f"検証を通過した物質がありません（候補 {len(candidates)} 件、除外内訳: {breakdown}）。"
+            "クエリ、file_id、または対象バッチを見直してください。"
+        )
+
+    series: list[MultiPlotSeries] = []
+    main_types: list[int] = []
+    for candidate, spot, sample in accepted:
+        x_values, y_values = _series_xy(sample, normalize)
+        label = str(candidate["name"] or "")
+        if not label or label.casefold() == "unknown":
+            label = f"spot {int(candidate['spot_id'])} (m/z {float(spot['mz']):.4f})"
+        apex_x, apex_y = _apex_point(x_values, y_values, float(sample["peak_top"]))
+        main_types.append(int(spot["main_type"]))
+        series.append({
+            "id": f"spot-{int(candidate['spot_id'])}",
+            "label": label,
+            "spot_id": int(candidate["spot_id"]),
+            "name": str(candidate["name"]),
+            "ontology": str(candidate["ontology"]),
+            "adduct": str(candidate["adduct"]),
+            "mz": float(spot["mz"]),
+            "rt": float(spot["rt"]),
+            "x": x_values,
+            "y": y_values,
+            "peak_left": float(sample["peak_left"]),
+            "peak_top": float(sample["peak_top"]),
+            "peak_right": float(sample["peak_right"]),
+            "max_intensity": float(sample["max_intensity"]),
+            "mean_intensity": float(sample["mean_intensity"]),
+            "point_count": int(sample["num_points"]),
+            "annotation": {
+                "text": f"{label} / {float(sample['peak_top']):.3f}",
+                "x": apex_x,
+                "y": apex_y,
+            },
+        })
+
+    for item in dropped:
+        notes.append(
+            f"spot_id={item['spot_id']} ({item['name'] or 'Unknown'}) を描画から除外: "
+            f"{item['reason']}"
+        )
+
+    main_type = max(set(main_types), key=main_types.count)
+    if len(set(main_types)) > 1:
+        notes.append(
+            f"選択スポットの main_type が混在しています（採用: {main_type}）。"
+        )
+    x_label, x_unit = _axis_definition(main_type)
+    y_label = "Relative intensity" if normalize == "per_trace_max" else "Intensity"
+    record = metadata.get(int(file_id), {})
+    sample_name = record.get("file_name")
+    class_id = record.get("class_id")
+    sample_label = str(sample_name) if sample_name else f"FileID {int(file_id)}"
+    plot_title = title or f"EIC overlay | {len(series)} compounds | {sample_label}"
+
+    return {
+        "plot_schema": MULTI_PLOT_SCHEMA,
+        "plot_type": "line",
+        "title": plot_title,
+        "source": {
+            "file": str(path), "file_name": path.name, "arf2_file": str(arf2),
+        },
+        "axes": {
+            "x": {"label": x_label, "unit": x_unit, "scale": "linear"},
+            "y": {"label": y_label, "unit": None, "scale": "linear"},
+        },
+        "sample": {
+            "file_id": int(file_id),
+            "sample_name": str(sample_name) if sample_name else None,
+            "class_id": str(class_id) if class_id else None,
+        },
+        "normalization": normalize,
+        "series": series,
+        "selection": {
+            "queries": [str(item) for item in (queries or [])],
+            "ontologies": [str(item) for item in (ontologies or [])],
+            "candidates": len(candidates),
+            "plotted": len(series),
+            "top_n": top_n,
+            "dropped": dropped,
+        },
+        "render_hints": {
+            "mode": "lines",
+            "connect_points": True,
+            "show_legend": True,
+            "show_annotations": True,
+            "hover_fields": [
+                "label", "spot_id", "ontology", "adduct", "mz", "rt",
+                "peak_left", "peak_top", "peak_right", "max_intensity",
+            ],
+        },
+        "caveats": notes,
     }
 
 
