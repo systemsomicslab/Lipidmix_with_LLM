@@ -5,6 +5,7 @@ from sample_factors import (
     SampleFacet,
     arf_sample_names,
     build_sample_facets,
+    expand_sample_specs,
     sample_tokens,
     split_tokens,
 )
@@ -116,6 +117,91 @@ class ArfSampleNamesTests(unittest.TestCase):
     def test_empty_input(self):
         self.assertEqual(arf_sample_names([]), [])
         self.assertEqual(arf_sample_names(None), [])
+
+
+class ExpandSampleSpecsTests(unittest.TestCase):
+    def setUp(self):
+        self.facets = build_sample_facets([
+            "20220901_RAW_control_6h_1_NEG",
+            "20220901_RAW_LPS_6h_1_NEG",
+            "20220902_RAW_ILG_0h_1_NEG",
+            "20220902_RAW_ILG_6h_1_NEG",
+            "20220902_RAW_ILG_6h_2_NEG",
+        ], None)
+
+    def test_single_token_matches_all_samples_with_token(self):
+        matches, _ = expand_sample_specs(["ILG"], self.facets)
+        self.assertEqual(matches["ILG"], [
+            "20220902_RAW_ILG_0h_1_NEG",
+            "20220902_RAW_ILG_6h_1_NEG",
+            "20220902_RAW_ILG_6h_2_NEG",
+        ])
+
+    def test_multi_token_spec_is_and(self):
+        matches, _ = expand_sample_specs(["ILG_6h"], self.facets)
+        self.assertEqual(matches["ILG_6h"], [
+            "20220902_RAW_ILG_6h_1_NEG",
+            "20220902_RAW_ILG_6h_2_NEG",
+        ])
+
+    def test_token_absent_from_class_id_still_matches(self):
+        # 6h は Class ID に無くサンプル名にしかない因子。これが本機能の眼目。
+        matches, _ = expand_sample_specs(["6h"], self.facets)
+        self.assertEqual(len(matches["6h"]), 4)
+
+    def test_multiple_specs_are_independent(self):
+        matches, _ = expand_sample_specs(["ILG_6h", "control_6h"], self.facets)
+        self.assertEqual(len(matches["ILG_6h"]), 2)
+        self.assertEqual(matches["control_6h"], ["20220901_RAW_control_6h_1_NEG"])
+
+    def test_case_insensitive(self):
+        matches, _ = expand_sample_specs(["ilg_6H"], self.facets)
+        self.assertEqual(len(matches["ilg_6H"]), 2)
+
+    def test_full_sample_name_matches_only_itself(self):
+        matches, _ = expand_sample_specs(["20220902_RAW_ILG_6h_2_NEG"], self.facets)
+        self.assertEqual(matches["20220902_RAW_ILG_6h_2_NEG"], ["20220902_RAW_ILG_6h_2_NEG"])
+
+    def test_zero_match_raises_with_available_tokens(self):
+        with self.assertRaises(ValueError) as ctx:
+            expand_sample_specs(["24h"], self.facets)
+        message = str(ctx.exception)
+        self.assertIn("matched", message)
+        self.assertIn("24h", message)
+        self.assertIn("ilg", message)
+
+    def test_blank_specs_are_skipped(self):
+        matches, _ = expand_sample_specs(["ILG", "", "  "], self.facets)
+        self.assertEqual(list(matches), ["ILG"])
+
+
+class ExpandSampleSpecsRoleTests(unittest.TestCase):
+    def setUp(self):
+        self.facets = build_sample_facets([
+            "20240311_Cerebellum_ICR_NEG_1",
+            "20240311_Cerebellum_ICR_NEG_2",
+            "20240311_QC_Cerebellum_ICR_NEG_1",
+        ], None)
+
+    def test_qc_is_excluded_by_default_and_reported(self):
+        matches, excluded = expand_sample_specs(["cerebellum"], self.facets)
+        self.assertEqual(len(matches["cerebellum"]), 2)
+        self.assertEqual(excluded["cerebellum"], ["20240311_QC_Cerebellum_ICR_NEG_1"])
+
+    def test_include_roles_can_bring_qc_back(self):
+        matches, excluded = expand_sample_specs(
+            ["cerebellum"], self.facets, include_roles=("sample", "qc"))
+        self.assertEqual(len(matches["cerebellum"]), 3)
+        self.assertEqual(excluded["cerebellum"], [])
+
+    def test_include_roles_none_disables_role_filtering(self):
+        matches, _ = expand_sample_specs(["cerebellum"], self.facets, include_roles=None)
+        self.assertEqual(len(matches["cerebellum"]), 3)
+
+    def test_all_hits_dropped_by_role_raises_and_names_include_roles(self):
+        with self.assertRaises(ValueError) as ctx:
+            expand_sample_specs(["qc"], self.facets)
+        self.assertIn("include_roles", str(ctx.exception))
 
 
 if __name__ == "__main__":

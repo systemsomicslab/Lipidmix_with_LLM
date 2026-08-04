@@ -93,6 +93,61 @@ def build_sample_facets(sample_names, class_index=None, sample_meta=None) -> dic
     return facets
 
 
+def expand_sample_specs(specs, facets, *, include_roles=("sample",)):
+    """各 spec を該当サンプル名のリストへ展開する。
+
+    spec は `_` 区切りのトークン列で、**その全トークンを含む**サンプルに一致する
+    （要素内 AND・順不同）。リスト内の複数 spec は互いに独立（呼び出し側で OR 合算
+    する）。完全なサンプル名や完全な Class ID を渡しても同じ規則で解決される。
+
+    include_roles: 既定 ("sample",) で QC/blank を落とす。統合トークン空間により
+    `class_ids=["cerebellum"]` が `20240311_QC_Cerebellum_...` を名前経由で掴むように
+    なったため、群平均・PCA の汚染を既定で防ぐ。落とした分は excluded に残して
+    呼び出し側が開示できるようにする。None を渡すと role による絞り込みをしない。
+
+    戻り値 (matches, excluded)。matches={spec: [サンプル名, ...]}（facets の順）。
+    role 適用後に1件も残らない spec があれば ValueError（利用可能トークンを添える）。
+    """
+    allowed = None if include_roles is None else {str(role).casefold() for role in include_roles}
+    matches: dict[str, list[str]] = {}
+    excluded: dict[str, list[str]] = {}
+    for spec in specs:
+        wanted = split_tokens(str(spec).strip())
+        if not wanted:
+            continue
+        hits = [facet.name for facet in facets.values() if wanted <= facet.tokens]
+        if allowed is None:
+            kept, dropped = hits, []
+        else:
+            kept = [n for n in hits if facets[n].role.casefold() in allowed]
+            dropped = [n for n in hits if facets[n].role.casefold() not in allowed]
+        if not kept:
+            raise ValueError(_no_match_message(spec, facets, dropped))
+        matches[spec] = kept
+        excluded[spec] = dropped
+    return matches, excluded
+
+
+def _no_match_message(spec, facets, dropped) -> str:
+    """一致ゼロの spec に対する説明文。role で全滅した場合はその旨を明示する。
+
+    'matched' の語を含めるのは、既存テスト（expand_class_specs 由来）が
+    assertRaisesRegex(ValueError, "matched") で拾っているため。
+    """
+    if dropped:
+        roles = sorted({facets[n].role for n in dropped})
+        return (
+            f"No sample matched spec '{spec}' after role filtering: "
+            f"{len(dropped)} 件が role={'/'.join(roles)} のため除外されました。"
+            f"含めるには include_roles=[\"sample\", \"{roles[0]}\"] を指定してください。"
+        )
+    available = sorted({token for facet in facets.values() for token in facet.tokens})
+    return (
+        f"No sample matched spec '{spec}'. "
+        f"Available tokens: {', '.join(available) if available else 'なし'}"
+    )
+
+
 def arf_sample_names(features) -> list[str]:
     """ARF スポット列の AlignedPeakProperties 行に現れるサンプル名を出現順で返す。
 
