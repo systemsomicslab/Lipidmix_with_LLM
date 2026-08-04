@@ -380,10 +380,32 @@ def _directory_locks(directories):
             stack.pop().__exit__(None, None, None)
 
 
+def note_path(directory: str | Path, slug: str) -> Path:
+    """``<directory>/<slug>.md`` を組み立てる。置き場の外に出る slug は拒否する。
+
+    slug / analysis_id は呼び出し側（LLM）由来であり、その材料には `_inbox` の抄録
+    （paper_ingest が明示的に「非信頼データ」として扱うもの）が含まれる。素通しすると
+    `../../..` や絶対パスで任意ファイルの読み書き・削除に化けるため、ここを唯一の
+    パス組み立て口にして封じる。書き込み側の make_slug とは別に、読み取り/削除側にも
+    効かせる必要がある。
+    """
+    directory = Path(directory)
+    text = str(slug)
+    if not text or text != text.strip() or set(text) <= {"."}:
+        raise ValueError(f"不正なノート識別子です（空・空白・ドットのみ）: {slug!r}")
+    if "/" in text or "\\" in text or "\x00" in text:
+        raise ValueError(f"不正なノート識別子です（パス区切りを含む）: {slug!r}")
+    path = directory / f"{text}.md"
+    # ドライブレター相対（`C:name`）等、区切り文字を持たない脱出も残らず弾く。
+    if path.resolve().parent != directory.resolve():
+        raise ValueError(f"ノート置き場の外を指す識別子です: {slug!r}")
+    return path
+
+
 def _write_note_unlocked(directory: str | Path, slug: str, meta: dict, body: str) -> Path:
     directory = Path(directory)
+    path = note_path(directory, slug)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{slug}.md"
     path.write_text(
         dump_frontmatter(meta) + "\n\n" + (body or "").strip() + "\n",
         encoding="utf-8",
@@ -588,7 +610,7 @@ def promote(slug: str, knowledge_dir: str | Path, claim_strength: str | None = N
     """``_inbox/<slug>.md`` を ``knowledge/<slug>.md`` へ昇格（status除去・強度設定可）。"""
     knowledge_dir = Path(knowledge_dir)
     inbox = inbox_dir(knowledge_dir)
-    src = inbox / f"{slug}.md"
+    src = note_path(inbox, slug)
     with _directory_locks([knowledge_dir, inbox]):
         if not src.is_file():
             raise FileNotFoundError(f"inbox note not found: {slug}")
@@ -605,7 +627,7 @@ def promote(slug: str, knowledge_dir: str | Path, claim_strength: str | None = N
 def reject(slug: str, knowledge_dir: str | Path) -> bool:
     """``_inbox/<slug>.md`` を破棄する。存在しなければ False。"""
     inbox = inbox_dir(knowledge_dir)
-    src = inbox / f"{slug}.md"
+    src = note_path(inbox, slug)
     with _directory_lock(inbox):
         if src.is_file():
             src.unlink()

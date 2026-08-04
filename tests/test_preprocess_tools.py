@@ -60,3 +60,56 @@ class TestPcaPreprocessed(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBlankExclusionFromAnalysisMatrix(unittest.TestCase):
+    """ブランクは背景除去に使ったあと解析行列から外す。QC は PCA 用に残す。"""
+
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+
+    def _prime(self):
+        session_state.session.filtered_features = [{"AlignedPeakProperties": []}]
+        session_state.session.arf_class_index = None
+
+        def fake_matrix(*a, **k):
+            m = np.array([
+                [10.0, 1.0],    # s1   sample
+                [12.0, 1.2],    # s2   sample
+                [11.0, 1.1],    # QC_1 qc
+                [0.05, 0.01],   # blank_1 blank
+            ])
+            return m, ["s1", "s2", "QC_1", "blank_1"], ["Spot_0_height", "Spot_1_height"]
+
+        import tool_helpers
+        _orig = tool_helpers._pp_build_matrix
+        tool_helpers._pp_build_matrix = fake_matrix
+        self.addCleanup(setattr, tool_helpers, "_pp_build_matrix", _orig)
+
+    def test_blank_row_is_removed_but_qc_row_is_kept(self):
+        self._prime()
+        out = json.loads(server.arf_preprocess(normalize="none", impute="none"))
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(session_state.session.pp_sample_names, ["s1", "s2", "QC_1"])
+        self.assertEqual(session_state.session.feature_matrix.shape[0], 3)
+
+    def test_removal_is_reported_and_caveated(self):
+        self._prime()
+        out = json.loads(server.arf_preprocess(normalize="none", impute="none"))
+        self.assertEqual(out["excluded_from_matrix"], {"blank": ["blank_1"]})
+        self.assertTrue(
+            any("ブランク" in c for c in out["caveats"]),
+            f"ブランク除外の caveat が無い: {out['caveats']}",
+        )
+
+    def test_blank_still_usable_for_background_filtering(self):
+        """行を外すのは blank_filter を通したあと（背景除去の参照は失わない）。"""
+        self._prime()
+        out = json.loads(
+            server.arf_preprocess(normalize="none", impute="none", blank_min_fold=3.0)
+        )
+        self.assertIn("blank_filter", out["recipe_applied"])
+        self.assertNotIn(
+            "ブランクまたは生体試料が無いため",
+            json.dumps(out["steps"]["blank_filter"], ensure_ascii=False),
+        )

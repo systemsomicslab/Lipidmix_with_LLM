@@ -121,13 +121,19 @@ def map_to_reference(class_token, tables) -> dict:
     }
 
 
-def msi_level(*, name, ontology, has_msms, mass_error_band, adduct_band) -> dict:
+def msi_level(*, name, ontology, has_msms, mass_error_band, adduct_band,
+              msms_band=None) -> dict:
     """決定論的シグナルから MSI 同定信頼度レベルを推定する（ヒューリスティック）。
 
     Level 1（標準品照合）は主張しない。
     - 2: 名称あり かつ MS/MS取得 かつ 精密質量整合（putative annotated compound）
     - 3: クラス（ontology）は分かるが上記を満たさない（putative class）
     - 4: 名称もクラスも無い（unknown）
+
+    ``msms_band``（``peak_verification.msms_evidence`` の band）を渡すと、Level 2 の
+    根拠が**実スペクトル**（``PASS``）なのか**取得フラグのみ**（``FLAG_ONLY``）なのかを
+    rationale で開示する。PAI2 の has_msms は取得参照の有無を示すだけなので、
+    フラグ由来の Level 2 は弱い根拠であることを下流に伝える必要がある。
     """
     has_name = bool(name and str(name).strip())
     has_class = bool(ontology and str(ontology).strip() and str(ontology).strip() != "Unknown")
@@ -135,9 +141,21 @@ def msi_level(*, name, ontology, has_msms, mass_error_band, adduct_band) -> dict
     adduct_ok = adduct_band in ("PASS", "UNKNOWN")  # FAIL は同定を疑う
 
     if has_name and has_msms and mass_ok and adduct_ok:
+        if msms_band == "FLAG_ONLY":
+            rationale = (
+                "名称あり＋精密質量整合。ただし MS/MS は取得フラグのみで実スペクトルを"
+                "確認できていない（.dcl 未添付）ため、この Level 2 の根拠は弱い。"
+                "dcl_parser / dcl_find_msms で実フラグメントを確認すること。"
+            )
+        elif msms_band == "PASS":
+            rationale = (
+                "名称あり＋実 MS/MS スペクトル確認＋精密質量整合。"
+                "標準品照合ではないため Level 2。"
+            )
+        else:
+            rationale = "名称あり＋MS/MS取得＋精密質量整合。標準品照合ではないため Level 2。"
         return {"level": 2, "label": "putative annotated compound",
-                "rationale": "名称あり＋MS/MS取得＋精密質量整合。標準品照合ではないため Level 2。",
-                "heuristic": True}
+                "rationale": rationale, "heuristic": True}
     if has_class:
         return {"level": 3, "label": "putative class-level",
                 "rationale": "クラス（ontology）は判別できるが MS/MS または質量整合が不十分。",
@@ -146,20 +164,24 @@ def msi_level(*, name, ontology, has_msms, mass_error_band, adduct_band) -> dict
             "rationale": "名称・クラスとも無し。", "heuristic": True}
 
 
-def build_identity_block(feature, tables, *, mass_error_band, adduct_band):
+def build_identity_block(feature, tables, *, mass_error_band, adduct_band,
+                         msms_band=None):
     """1 feature の同定標準化ブロック（GOSLIN + reference + MSI）を組み立てる。
 
-    feature は pai2/arf2 のキー name / ontology / has_msms を用いる。
+    feature は pai2/arf2 のキー name / ontology / has_msms を用いる。``msms_band`` を
+    渡せば、実スペクトル（PASS）と取得フラグのみ（FLAG_ONLY）を区別して MSI の
+    rationale に反映する（ARF2 のように .dcl を引けない経路では None のまま）。
     """
     name = feature.get("name") or ""
     ontology = feature.get("ontology") or ""
-    has_msms = bool(feature.get("has_msms"))
+    has_msms = bool(feature.get("has_msms")) or msms_band == "PASS"
     class_token = pv.extract_class_token(name, ontology)
     goslin = normalize_lipid_name(name) if name.strip() else {
         "parse_ok": False, "normalized": None, "level": None,
         "lipid_maps_category": None, "error": "no name"}
     reference = map_to_reference(class_token, tables)
     msi = msi_level(name=name, ontology=ontology, has_msms=has_msms,
-                    mass_error_band=mass_error_band, adduct_band=adduct_band)
+                    mass_error_band=mass_error_band, adduct_band=adduct_band,
+                    msms_band=msms_band)
     return {"class_token": class_token, "goslin": goslin,
             "reference": reference, "msi": msi}

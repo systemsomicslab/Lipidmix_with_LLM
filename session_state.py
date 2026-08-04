@@ -34,8 +34,8 @@ _BATCH_DATE_RE = re.compile(r"(\d{8})")
 
 # output-format リソースを LLM が pull していないときに、解釈直結のパーサー出力の
 # 先頭へ最大1回だけ前置する意味論ダイジェスト（自己完結・~7行）。round-trip 不要で
-# ローカルLLM でも意味が届く。全文定義は docs/output_format.md /
-# lipidmix://docs/output-format。§2.1 は脂質名ショートハンド文法。
+# ローカルLLM でも意味が届く。全文定義は docs/output_format/（共通核 core.md ＋
+# パーサ別トピック）/ lipidmix://docs/output-format[/{topic}]。§2.1 は脂質名文法。
 SEMANTICS_CAVEAT = (
     "[意味論] 解釈前に lipidmix://docs/output-format を参照。要点:\n"
     "- 粒度: ARF行=1スポット×1サンプル / ARF2行=全サンプル統合スポット。\n"
@@ -112,22 +112,46 @@ class AnalysisSession:
         # load_data ではリセットしない（データ切替のたびに再注入しないため）。
         self.output_format_seen = False
         self.caveat_emitted = False
+        # 既読の output-format トピック（core/arf/eic/…）。トピック別リソースが
+        # 読まれるたびに増える。未読トピックのツール出力にだけ誘導1行を足す。
+        self.sections_seen: set[str] = set()
 
-    def maybe_prepend_caveat(self, text: str) -> str:
-        """解釈直結パーサー出力の先頭へ意味論ダイジェストを最大1回だけ前置する。
+    def section_hint(self, topic: str) -> str | None:
+        """未読トピックなら、該当セクションを引くよう促す1行を返す。既読なら None。
 
-        output-format リソースが未 fetch（output_format_seen=False）かつ本プロセスで
-        未注入（caveat_emitted=False）のときだけ SEMANTICS_CAVEAT を前置する。環境変数
-        LIPIDMIX_CAVEAT_MODE=off で無効化（ローカルの操作ナビゲータ専用デプロイ向け。
-        既定 digest）。エラー文字列など解釈材料でない出力には呼ばない。
+        core を読んでも各パーサの節を読んだことにはならないのでトピック単位で持つ。
+        全文（約700行）を毎回前置する代わりに、1行の誘導＋LLM 側の pull で済ませる。
+        """
+        if topic in self.sections_seen:
+            return None
+        return (
+            f"[意味論] この出力の定義は `lipidmix://docs/output-format/{topic}` にある。"
+            "解釈前に参照すること（共通の粒度・脂質名文法は `lipidmix://docs/output-format`）。"
+        )
+
+    def maybe_prepend_caveat(self, text: str, topic: str | None = None) -> str:
+        """解釈直結パーサー出力へ意味論ダイジェスト（最大1回）と誘導1行を付す。
+
+        - SEMANTICS_CAVEAT: output-format リソースが未 fetch（output_format_seen=False）
+          かつ本プロセスで未注入（caveat_emitted=False）のときだけ先頭へ前置する。
+        - topic 誘導: そのトピックが未読のあいだ、毎回末尾に1行だけ付す（安いので
+          既読になるまで出し続ける。これがオンデマンド参照の起点になる）。
+
+        環境変数 LIPIDMIX_CAVEAT_MODE=off で両方とも無効化（ローカルの操作ナビゲータ
+        専用デプロイ向け。既定 digest）。エラー文字列など解釈材料でない出力には呼ばない。
         """
         mode = os.getenv("LIPIDMIX_CAVEAT_MODE", "digest").strip().lower()
         if mode == "off":
             return text
+        out = text
+        if topic:
+            hint = self.section_hint(topic)
+            if hint:
+                out = f"{out}\n\n{hint}"
         if self.output_format_seen or self.caveat_emitted:
-            return text
+            return out
         self.caveat_emitted = True
-        return f"{SEMANTICS_CAVEAT}\n\n{text}"
+        return f"{SEMANTICS_CAVEAT}\n\n{out}"
 
     def reset_analysis_state(self):
         """別データセットへ切り替える際に、前データ由来の解析成果を一括で破棄する。

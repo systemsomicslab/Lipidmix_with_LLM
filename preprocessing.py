@@ -340,6 +340,35 @@ def impute(matrix, method="half_min"):
     return out, report
 
 
+def drop_samples_by_role(matrix, sample_names, roles, drop_roles=("blank",)):
+    """指定ロールの行を解析行列から外す。戻り値 ``(matrix, sample_names, dropped)``。
+
+    ブランクは背景除去（blank_filter）の参照として使い終えたら外す。残したまま PCA に
+    かけると、生体試料とは桁違いに低い総強度が PC1 を支配し、群分離の解釈が壊れる。
+    一方 **QC は既定では外さない**——QC クラスタの締まり具合を PCA で見るのは分析の
+    定番手段であり、除いてしまうとその確認手段を失うため。差次的解析のように群に
+    混ざると困る側は、呼び出し側が drop_roles で明示する。
+
+    ``dropped`` は ``{role: [sample_name, ...]}``（該当なしのロールは載らない）。
+    どのロールも該当しなければ行列は素通しする。
+    """
+    matrix = np.asarray(matrix, dtype=float)
+    targets = set(drop_roles)
+    dropped: dict[str, list[str]] = {}
+    keep_idx: list[int] = []
+    kept_names: list[str] = []
+    for i, name in enumerate(sample_names):
+        role = roles.get(name, "sample")
+        if role in targets:
+            dropped.setdefault(role, []).append(name)
+        else:
+            keep_idx.append(i)
+            kept_names.append(name)
+    if not dropped:
+        return matrix, list(sample_names), {}
+    return matrix[keep_idx], kept_names, dropped
+
+
 def preprocess(matrix, sample_names, roles, run_order, recipe):
     """順序: ブランク除去 → 正規化 → ドリフト補正 → QC RSD フィルタ → 補完。
 

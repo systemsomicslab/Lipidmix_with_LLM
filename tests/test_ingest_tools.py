@@ -24,6 +24,31 @@ class IngestToolRegistrationTests(unittest.TestCase):
         self.assertIn("lipidmix://knowledge/inbox", uris)
 
 
+class SlugContainmentToolTests(unittest.TestCase):
+    """ツール引数の slug は LLM 由来（材料に非信頼な抄録を含む）。置き場の外を触らせない。"""
+
+    BAD_SLUGS = ("../../evil", "..\\evil", "sub/evil", "", "..")
+
+    def test_ingest_reject_refuses_traversal(self):
+        for bad in self.BAD_SLUGS:
+            with self.subTest(slug=bad):
+                out = server.ingest_reject(bad)
+                self.assertIn("不正", out)
+
+    def test_ingest_promote_refuses_traversal(self):
+        for bad in self.BAD_SLUGS:
+            with self.subTest(slug=bad):
+                out = server.ingest_promote(bad)
+                self.assertIn("不正", out)
+
+    def test_record_objective_refuses_traversal(self):
+        out = server.record_objective(
+            analysis_id="../../evil", dataset="d", polarity="NEG",
+            groups=["a", "b"], comparison="a vs b", sub_questions=["Q"],
+        )
+        self.assertIn("不正", out)
+
+
 class KnowledgeCoverageSmokeTests(unittest.TestCase):
     def test_coverage_on_sample_objective(self):
         # サンプル objective（frontmatter の analysis_id で解決）

@@ -24,6 +24,38 @@ __all__ = [
 ]
 
 
+def _attach_sibling_msms(pai2_path: str, features: list[dict]) -> dict:
+    """同名 `.dcl` の MS/MS を PAI2 ピークへ索引対応で付与する（ベストエフォート）。
+
+    PAI2 の `has_msms` は取得参照の有無を示すだけで実スペクトルを持たない。実体は
+    同名 `.dcl`（MSDecResult）にあり、`dcl_index` が PAI2 のピーク順に対応する。
+    ここで付けておくと `verify_peak_annotation` が実フラグメントを根拠にできる。
+
+    .dcl が無い/壊れている場合でも PAI2 の解析自体は続行させる（MS/MS は付加情報で
+    あり、欠けても在庫要約は成立するため）。状況は caveat として返し、無言で
+    「MS/MS 無し」と誤認させない。
+    """
+    from dcl_reader import attach_msms_to_features, deserialize_dcl, find_dcl_for_pai2
+
+    dcl_path = find_dcl_for_pai2(pai2_path)
+    if not dcl_path:
+        return {"attached": 0, "dcl_file": None, "caveat": (
+            "同名の .dcl が隣接していないため MS/MS を付与できませんでした。"
+            "has_msms フラグだけでは実スペクトルの有無を判定できない点に注意。")}
+    try:
+        results = deserialize_dcl(dcl_path, include_spectrum=True, top_n_peaks=10)
+        attached = attach_msms_to_features(features, results)
+    except Exception as exc:  # noqa: BLE001 - MS/MS は付加情報。PAI2 解析は続行させる
+        return {"attached": 0, "dcl_file": Path(dcl_path).name, "caveat": (
+            f"隣接 .dcl の読み込みに失敗したため MS/MS は未付与です: {exc}")}
+    report = {"attached": attached, "dcl_file": Path(dcl_path).name, "caveat": None}
+    if attached == 0:
+        report["caveat"] = (
+            f"{Path(dcl_path).name} を読みましたが、MS/MS を付与できたピークは0件でした"
+            "（precursor m/z が一致せず索引対応が崩れている可能性）。")
+    return report
+
+
 @mcp.tool()
 def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
     """1つの .pai2（単一測定ファイル）を解析し、ピーク在庫の要約を返します。
@@ -60,12 +92,17 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
         session_state.session.current_file_path = file_path
         session_state.session.apply_filter({"min_intensity": filter_threshold})
 
+        # 同名 .dcl の MS/MS を付けておく。verify_peak_annotation が「取得フラグ」ではなく
+        # 実スペクトルを根拠に同定確度を語れるようにするため（欠けても解析は続行）。
+        msms_report = _attach_sibling_msms(file_path, session_state.session.features)
+
         summary = summarize_pai2_inventory(session_state.session.filtered_features)
+        summary["msms_attachment"] = msms_report
         text_report = (
             f"### PAI2 解析完了: {Path(file_path).name}\n"
             + json.dumps(summary, indent=2, ensure_ascii=False)
         )
-        return session_state.session.maybe_prepend_caveat(text_report)
+        return session_state.session.maybe_prepend_caveat(text_report, topic="pai2")
 
     except Exception as e:
         return f"[ERROR] PAI2 解析に失敗しました: {str(e)}"

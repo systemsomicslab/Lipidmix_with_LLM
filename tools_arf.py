@@ -226,8 +226,24 @@ def arf_preprocess(
         matrix, sample_names, roles, run_order, recipe,
     )
     kept_feature_names = [feature_names[i] for i in kept_idx]
+
+    # ブランクは背景除去（blank_filter）の参照として使い終えたので、ここで解析行列から
+    # 外す。残すと生体試料と桁違いに低い総強度が PCA の PC1 を支配し、群分離の解釈が
+    # 壊れる。QC は残す——QC クラスタの締まり具合を PCA で見るのは分析の定番手段。
+    # 群に混ざると困る差次的解析側は arf_differential が別途 QC を群から外す。
+    matrix2, pp_sample_names, dropped = preprocessing.drop_samples_by_role(
+        matrix2, sample_names, roles, drop_roles=("blank",),
+    )
+    report["excluded_from_matrix"] = dropped
+    if dropped.get("blank"):
+        report.setdefault("caveats", []).append(
+            f"ブランク {len(dropped['blank'])} 件（{', '.join(dropped['blank'])}）は背景除去に"
+            "使用後、解析行列（PCA/差次的解析）から除外しました。QC は PCA での品質確認の"
+            "ため残しています。"
+        )
+
     session_state.session.feature_matrix = matrix2
-    session_state.session.pp_sample_names = sample_names
+    session_state.session.pp_sample_names = pp_sample_names
     session_state.session.pp_feature_names = kept_feature_names
     session_state.session.sample_meta = meta
     session_state.session.preprocessing_recipe = recipe
@@ -488,7 +504,7 @@ def arf_parser(
             f"{plot_instruction_text}"  # ← 座標ブロックは末尾（loadings の後）へ
         )
 
-        return session_state.session.maybe_prepend_caveat(output_text)
+        return session_state.session.maybe_prepend_caveat(output_text, topic="arf")
 
     except Exception as e:
         return f"[ERROR] ARF解析に失敗しました: {str(e)}"
@@ -644,8 +660,23 @@ def arf_differential(
     sample_names = session_state.session.pp_sample_names
     feature_names = session_state.session.pp_feature_names
     meta = session_state.session.sample_meta or {}
-    group_labels = [(meta.get(n) or {}).get("group") for n in sample_names]
     batch_labels = [(meta.get(n) or {}).get("batch") for n in sample_names]
+
+    # 生体試料以外（QC・ブランク）は比較対象から外す。Class ID が group_a/group_b の
+    # 因子トークンを含むと（例 QC_24M と group_a="24M"）プールに紛れ込み、群平均を
+    # 汚染するため、ラベルを None にして _pool_group_labels のどちらにも寄らせない。
+    # ブランクは arf_preprocess で行ごと落ちている想定だが、ここでも二重に守る。
+    _NON_SAMPLE_ROLES = {"qc", "blank"}
+    excluded_roles: dict[str, list[str]] = {}
+    group_labels: list = []
+    for name in sample_names:
+        entry = meta.get(name) or {}
+        role = entry.get("role", "sample")
+        if role in _NON_SAMPLE_ROLES:
+            excluded_roles.setdefault(role, []).append(name)
+            group_labels.append(None)
+        else:
+            group_labels.append(entry.get("group"))
 
     caveats: list[str] = []
     recipe = session_state.session.preprocessing_recipe or {}
@@ -653,15 +684,16 @@ def arf_differential(
         caveats.append("正規化が未適用のため log2FC は測定量差を含み得ます（arf_preprocess の normalize を検討）。")
     if log_transform:
         caveats.append("log2(x+1) 変換後に検定を実施（強度の歪みを補正）。log2FC は群平均の log2 差＝幾何平均比です。")
+    if excluded_roles:
+        detail = "; ".join(
+            f"{role}={len(names)}件（{', '.join(names)}）"
+            for role, names in sorted(excluded_roles.items())
+        )
+        caveats.append(f"比較対象から除外（生体試料でないため）: {detail}。")
 
-    conf = differential.check_confounding(group_labels, batch_labels)
     batch_source = next((m.get("batch_source") for m in meta.values() if m.get("batch_source")), None)
     src_note = "（バッチはファイル名の日付から推定。実バッチ設計と異なる場合あり）" \
         if batch_source == "filename_date" else ""
-    if conf["confounded"]:
-        caveats.append("交絡: " + conf["detail"] + src_note)
-    elif not conf.get("assessable", True):
-        caveats.append("交絡評価不可: " + conf["detail"] + src_note)
 
     if group_a is not None and group_b is not None:
         try:
@@ -669,6 +701,18 @@ def arf_differential(
         except ValueError as exc:
             return json.dumps({"status": "error", "message": str(exc)},
                               ensure_ascii=False, indent=2)
+
+        # 交絡は「実際に比較した2群」に対して見る。プール前の Class ID 単位で判定すると、
+        # 細粒度ラベルほど各群が単一バッチになりやすく偽の交絡警告を出す（プールすれば
+        # 両群ともバッチ混在、という設計を交絡と誤報していた）。
+        paired = [(g, b) for g, b in zip(group_labels, batch_labels) if g is not None]
+        conf = differential.check_confounding(
+            [g for g, _ in paired], [b for _, b in paired],
+        )
+        if conf["confounded"]:
+            caveats.append("交絡: " + conf["detail"] + src_note)
+        elif not conf.get("assessable", True):
+            caveats.append("交絡評価不可: " + conf["detail"] + src_note)
         if any(len(ids) > 1 for ids in resolved.values()):
             caveats.append(
                 "プール群として解決: "

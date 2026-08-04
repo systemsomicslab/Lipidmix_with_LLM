@@ -41,8 +41,11 @@ def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
 
     mass_error = pv.mass_error_ppm(observed_mz, formula, adduct)
     adduct_check = pv.adduct_consistency(adduct, ion_mode_name, ontology)
+    msms = pv.msms_evidence(feat)
     class_token = pv.extract_class_token(name, ontology)
     caveats = pv.ether_caveats(name, ontology)
+    if msms["caveat"]:
+        caveats = caveats + [msms["caveat"]]
 
     if name.strip():
         cov = knowledge_store.coverage([f"{name} {ontology}"], mcp_core.KNOWLEDGE_DIR, vocab)
@@ -72,6 +75,7 @@ def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
         feat, _identity_tables(),
         mass_error_band=mass_error["band"],
         adduct_band=adduct_check["band"],
+        msms_band=msms["band"],
     )
 
     return {
@@ -90,13 +94,15 @@ def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
         "analytical_checks": {
             "mass_error": mass_error,
             "adduct_consistency": adduct_check,
+            "msms": msms,
         },
         "biological_plausibility": bio,
         "identity_normalization": identity_block,
         "llm_decision": {
             "instruction": instruction,
             "deterministic_summary": (
-                f"mass_error={mass_error['band']}, adduct={adduct_check['band']}"
+                f"mass_error={mass_error['band']}, adduct={adduct_check['band']}, "
+                f"msms={msms['band']}"
             ),
         },
     }

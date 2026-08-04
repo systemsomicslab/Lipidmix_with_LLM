@@ -256,3 +256,47 @@ class VerifyPeakToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MsmsEvidenceTests(unittest.TestCase):
+    """MS/MS の「実スペクトルがある」と「取得フラグが立っている」を峻別する。
+
+    PAI2 の has_msms は取得参照の有無を示すだけで msms_spectrum が非空とは限らない
+    （output-format core §9-8）。MSI Level 2 は MS/MS を根拠にするので、この区別を
+    曖昧にしたまま確度を主張してはならない。
+    """
+
+    def test_real_spectrum_passes_and_reports_top_fragments(self):
+        feat = {
+            "has_msms": True,
+            "n_msms_peaks": 3,
+            "msms_spectrum": [[255.2, 900.0], [281.2, 1500.0], [283.2, 400.0]],
+        }
+        out = pv.msms_evidence(feat)
+        self.assertEqual(out["band"], "PASS")
+        self.assertEqual(out["source"], "spectrum")
+        self.assertEqual(out["n_peaks"], 3)
+        # 強度降順で上位を返す（解釈に使うのは主要フラグメント）
+        self.assertEqual(out["top_fragments"][0], [281.2, 1500.0])
+        self.assertIsNone(out["caveat"])
+
+    def test_flag_without_spectrum_is_flag_only_with_caveat(self):
+        out = pv.msms_evidence({"has_msms": True, "msms_spectrum": [], "n_msms_peaks": 0})
+        self.assertEqual(out["band"], "FLAG_ONLY")
+        self.assertEqual(out["source"], "flag")
+        self.assertIsNotNone(out["caveat"])
+        self.assertEqual(out["top_fragments"], [])
+
+    def test_no_flag_and_no_spectrum_is_absent(self):
+        out = pv.msms_evidence({"has_msms": False})
+        self.assertEqual(out["band"], "ABSENT")
+        self.assertIsNone(out["source"])
+        self.assertEqual(out["n_peaks"], 0)
+
+    def test_top_fragments_are_capped(self):
+        spectrum = [[100.0 + i, float(i)] for i in range(20)]
+        out = pv.msms_evidence(
+            {"has_msms": True, "n_msms_peaks": 20, "msms_spectrum": spectrum}, top_n=5
+        )
+        self.assertEqual(len(out["top_fragments"]), 5)
+        self.assertEqual(out["n_peaks"], 20)  # 元本数は保つ

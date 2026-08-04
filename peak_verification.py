@@ -228,6 +228,52 @@ def ether_caveats(name: str | None, ontology: str | None) -> list[str]:
     return []
 
 
+def msms_evidence(feature: dict, top_n: int = 5) -> dict:
+    """MS/MS 証拠の band と主要フラグメントを返す（決定的判定）。
+
+    MSI Level 2 は「MS/MS がある」ことを根拠にするが、PAI2 の ``has_msms`` は
+    **取得参照があること**を示すだけで実スペクトルの有無を保証しない
+    （output-format core §9-8）。実体を持つのは同名 ``.dcl``（MSDecResult）であり、
+    ``dcl_reader.attach_msms_to_features`` が索引対応で ``msms_spectrum`` を書き込む。
+    ここではその2状態を明示的に分ける:
+
+    - ``PASS``      : 実スペクトルあり（source=``spectrum``）。確度主張の根拠に使える。
+    - ``FLAG_ONLY`` : 取得フラグのみでスペクトル本体が無い（source=``flag``）。.dcl 未添付か
+                      本当に空か区別できないため caveat を付す。
+    - ``ABSENT``    : フラグもスペクトルも無い。
+
+    ``top_fragments`` は強度降順の上位 ``top_n`` 本（``[[mz, intensity], ...]``）。
+    ``n_peaks`` は間引き前の元本数を保つ。
+    """
+    spectrum = feature.get("msms_spectrum") or []
+    declared = feature.get("n_msms_peaks")
+    n_peaks = int(declared) if isinstance(declared, (int, float)) else len(spectrum)
+
+    if spectrum:
+        top = sorted(spectrum, key=lambda p: p[1], reverse=True)[:top_n]
+        return {
+            "band": "PASS",
+            "source": "spectrum",
+            "n_peaks": n_peaks,
+            "top_fragments": [[p[0], p[1]] for p in top],
+            "caveat": None,
+        }
+    if feature.get("has_msms"):
+        return {
+            "band": "FLAG_ONLY",
+            "source": "flag",
+            "n_peaks": n_peaks,
+            "top_fragments": [],
+            "caveat": (
+                "MS/MS 取得フラグ（has_msms）は立っているが、実スペクトルが添付されていない。"
+                "PAI2 の has_msms は取得参照の有無を示すだけなので、これだけを根拠に同定確度を"
+                "主張しないこと。実体は同名 .dcl にあり、dcl_parser で読み込むと付与される。"
+            ),
+        }
+    return {"band": "ABSENT", "source": None, "n_peaks": n_peaks or 0,
+            "top_fragments": [], "caveat": None}
+
+
 def vocab_hits(class_token: str | None, vocab: dict[str, list[str]]) -> list[str]:
     """クラストークンに対応する語彙同義語を返す（無ければ空）。"""
     if not class_token:

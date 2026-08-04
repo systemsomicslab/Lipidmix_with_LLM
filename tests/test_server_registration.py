@@ -41,6 +41,8 @@ EXPECTED_TOOLS = sorted([
     "load_dataset",
     "log_search",
     "pai2_inspect_peak",
+    "dcl_find_msms",
+    "dcl_parser",
     "pai2_parser",
     "paper_search",
     "read_report",
@@ -61,6 +63,7 @@ EXPECTED_RESOURCES = sorted([
 ])
 
 EXPECTED_TEMPLATES = sorted([
+    "lipidmix://docs/output-format/{topic}",
     "lipidmix://knowledge/expand/{slug}",
     "lipidmix://playbook/expand/{slug}",
 ])
@@ -68,7 +71,7 @@ EXPECTED_TEMPLATES = sorted([
 
 def test_tool_count_is_stable():
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 35
+    assert len(tools) == 37
 
 
 def test_tool_names_snapshot():

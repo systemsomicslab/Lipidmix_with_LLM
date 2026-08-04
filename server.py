@@ -42,6 +42,7 @@ from session_state import AnalysisSession, _build_sample_meta
 from path_resolvers import (
     resolve_arf_file_path,
     resolve_arf2_file_path,
+    resolve_dcl_file_path,
     resolve_eicaef_file_path,
     resolve_pai2_file_path,
     _select_latest_batch,
@@ -65,6 +66,7 @@ import tools_resources  # 6 リソース
 from tools_objective import *
 from tools_reports import *
 from tools_pai2 import *
+from tools_dcl import *
 from tools_arf import *
 from tools_arf2 import *
 from tools_eic import *

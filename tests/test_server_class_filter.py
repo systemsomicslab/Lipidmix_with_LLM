@@ -46,8 +46,8 @@ class FakeSession:
         self.current_file_path = file_path
         return self.features
 
-    def maybe_prepend_caveat(self, text):
-        return text  # 意味論 caveat は本テストの対象外（恒等パススルー）
+    def maybe_prepend_caveat(self, text, topic=None):
+        return text  # 意味論 caveat / トピック誘導は本テストの対象外（恒等パススルー）
 
 
 def fake_extract_peak_properties(features):

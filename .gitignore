@@ -15,14 +15,19 @@ photos/
 workspace/
 debug/
 analysis/
+# analyses/ と knowledge/ はセッション毎に育つ蓄積物なので、既に追跡済みの
+# 種ノート以外は追跡しない（gitignore は追跡済みファイルには影響しない）。
+# playbook/ は版管理された再利用手順で、GATEWAY 手順2 (lipidmix://playbook/index)
+# が参照する。ここに挙げると**新規**の playbook ノートが無言で追跡漏れするため外す。
 analyses/
 knowledge/
-playbook/
 .check.py
 *.pyc
 *.pyo
 *.pyd
 *.log
+# 追跡済みの requirements.txt 等は影響を受けないが、新規の .txt は
+# 明示的に git add -f しない限り無視される点に注意。
 *.txt
 *.csproj
 *.sln
