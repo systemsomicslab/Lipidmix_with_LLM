@@ -148,6 +148,52 @@ def _no_match_message(spec, facets, dropped) -> str:
     )
 
 
+def assign_factor_groups(facets, group_factors=None, group_levels=None, sep="|"):
+    """因子軸ごとに値 spec を解決し、直積ラベルを {サンプル名: ラベル} で返す。
+
+    - group_factors: 因子軸のリスト。各軸は値 spec のリスト（例
+      [["control", "ILG"], ["0h", "6h"]] → "control|0h" 等）。値 spec は多トークン可
+      （"G_uralensis"）。位置インデックスを使わないのは、G_uralensis のように値が2
+      トークンに割れると以降の位置がずれて壊れるため。
+    - group_levels: 1軸のときの糖衣で group_factors=[group_levels] と等価。1軸では
+      連結が起きないため、従来の出力文字列と完全に一致する（後方互換）。
+      group_factors が指定されていればそちらが優先。
+    - 両方未指定なら各サンプルの Class ID（無ければ None）をそのままラベルにする。
+    - 軸内で2つ以上の値に一致したら ValueError（値が相互排他でない＝指定ミス）。
+    - 軸内でどの値にも一致しなければその軸は "other"（除外はしない）。
+    - role が sample でないサンプルは直積ではなく role 名（"qc"/"blank"）をラベルに
+      する。除外しないのは QC の凝集が前処理品質の判断材料になるため。
+    """
+    if group_factors:
+        axes = [[str(v).strip() for v in axis if str(v).strip()] for axis in group_factors]
+        axes = [axis for axis in axes if axis]
+    elif group_levels:
+        axes = [[str(v).strip() for v in group_levels if str(v).strip()]]
+        axes = [axis for axis in axes if axis]
+    else:
+        axes = []
+
+    groups: dict[str, str | None] = {}
+    for name, facet in facets.items():
+        if not axes:
+            groups[name] = facet.class_id
+            continue
+        if facet.role != "sample":
+            groups[name] = facet.role
+            continue
+        parts = []
+        for axis in axes:
+            hits = [value for value in axis if split_tokens(value) <= facet.tokens]
+            if len(hits) > 1:
+                raise ValueError(
+                    f"Sample '{name}' matches multiple values in one factor axis "
+                    f"({', '.join(hits)}); values within an axis must be mutually exclusive."
+                )
+            parts.append(hits[0] if hits else "other")
+        groups[name] = sep.join(parts)
+    return groups
+
+
 def arf_sample_names(features) -> list[str]:
     """ARF スポット列の AlignedPeakProperties 行に現れるサンプル名を出現順で返す。
 

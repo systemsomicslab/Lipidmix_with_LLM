@@ -4,6 +4,7 @@ from msdial_tags import normalize_sample_name
 from sample_factors import (
     SampleFacet,
     arf_sample_names,
+    assign_factor_groups,
     build_sample_facets,
     expand_sample_specs,
     sample_tokens,
@@ -202,6 +203,80 @@ class ExpandSampleSpecsRoleTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             expand_sample_specs(["qc"], self.facets)
         self.assertIn("include_roles", str(ctx.exception))
+
+
+class AssignFactorGroupsTests(unittest.TestCase):
+    def setUp(self):
+        self.names = [
+            "20220901_RAW_control_0h_1_NEG",
+            "20220901_RAW_control_6h_1_NEG",
+            "20220902_RAW_ILG_0h_1_NEG",
+            "20220902_RAW_ILG_6h_1_NEG",
+            "20220902_RAW_G_uralensis_6h_1_NEG",
+        ]
+        self.facets = build_sample_facets(self.names, name_class_index({
+            "20220901_RAW_control_0h_1_NEG": "control",
+            "20220901_RAW_control_6h_1_NEG": "control",
+            "20220902_RAW_ILG_0h_1_NEG": "ILG",
+            "20220902_RAW_ILG_6h_1_NEG": "ILG",
+            "20220902_RAW_G_uralensis_6h_1_NEG": "G",
+        }))
+
+    def test_no_factors_falls_back_to_class_id(self):
+        groups = assign_factor_groups(self.facets)
+        self.assertEqual(groups["20220902_RAW_ILG_6h_1_NEG"], "ILG")
+
+    def test_single_axis_label_has_no_separator(self):
+        # 1軸なら従来の group_levels と出力文字列が完全一致する（後方互換の要）。
+        groups = assign_factor_groups(self.facets, group_levels=["0h", "6h"])
+        self.assertEqual(groups["20220902_RAW_ILG_0h_1_NEG"], "0h")
+        self.assertEqual(groups["20220902_RAW_ILG_6h_1_NEG"], "6h")
+
+    def test_two_axes_produce_cross_product_labels(self):
+        groups = assign_factor_groups(self.facets, group_factors=[
+            ["control", "ILG", "G_uralensis"],
+            ["0h", "6h"],
+        ])
+        self.assertEqual(groups["20220901_RAW_control_0h_1_NEG"], "control|0h")
+        self.assertEqual(groups["20220902_RAW_ILG_6h_1_NEG"], "ILG|6h")
+        self.assertEqual(groups["20220902_RAW_G_uralensis_6h_1_NEG"], "G_uralensis|6h")
+
+    def test_custom_separator(self):
+        groups = assign_factor_groups(
+            self.facets, group_factors=[["ILG"], ["6h"]], sep=" / ")
+        self.assertEqual(groups["20220902_RAW_ILG_6h_1_NEG"], "ILG / 6h")
+
+    def test_axis_without_hit_becomes_other(self):
+        groups = assign_factor_groups(self.facets, group_factors=[["ILG"], ["24h"]])
+        self.assertEqual(groups["20220902_RAW_ILG_6h_1_NEG"], "ILG|other")
+
+    def test_two_hits_within_one_axis_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            assign_factor_groups(self.facets, group_factors=[["ILG", "6h"]])
+        self.assertIn("multiple", str(ctx.exception))
+
+    def test_group_factors_wins_over_group_levels(self):
+        groups = assign_factor_groups(
+            self.facets, group_factors=[["0h"], ["ILG"]], group_levels=["control"])
+        self.assertEqual(groups["20220902_RAW_ILG_0h_1_NEG"], "0h|ILG")
+
+    def test_blank_axis_values_are_ignored(self):
+        groups = assign_factor_groups(self.facets, group_factors=[["ILG", "", "  "]])
+        self.assertEqual(groups["20220902_RAW_ILG_6h_1_NEG"], "ILG")
+
+
+class AssignFactorGroupsRoleTests(unittest.TestCase):
+    def test_non_sample_roles_are_labeled_by_role_not_excluded(self):
+        # QC は除外せず可視化する。QC の凝集は前処理品質の判断材料になるため。
+        facets = build_sample_facets(
+            ["20240311_ILG_6h_1_NEG", "20240311_QC_ILG_NEG_1"], None)
+        groups = assign_factor_groups(facets, group_levels=["6h"])
+        self.assertEqual(groups["20240311_ILG_6h_1_NEG"], "6h")
+        self.assertEqual(groups["20240311_QC_ILG_NEG_1"], "qc")
+
+    def test_role_labeling_does_not_apply_without_factors(self):
+        facets = build_sample_facets(["20240311_QC_ILG_NEG_1"], None)
+        self.assertIsNone(assign_factor_groups(facets)["20240311_QC_ILG_NEG_1"])
 
 
 if __name__ == "__main__":
