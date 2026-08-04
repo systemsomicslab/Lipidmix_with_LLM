@@ -167,5 +167,36 @@ class ArfPcaPreprocessedFactorTests(unittest.TestCase):
         self.assertIn("ILG|6h=1", result)
 
 
+class ArfListClassesVocabularyTests(unittest.TestCase):
+    def setUp(self):
+        self.session = _ParserFakeSession([
+            "20220901_RAW_control_6h_1_NEG",
+            "20220902_RAW_ILG_6h_1_NEG",
+            "20220901_QC_RAW_NEG_1",
+        ])
+        self.session.current_file_path = "test.arf"
+        self.patcher = patch.object(session_state, "session", self.session)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+
+    def test_reports_sample_token_vocabulary(self):
+        payload = json.loads(server.arf_list_classes())
+        tokens = payload["sample_token_vocabulary"]["tokens"]
+        self.assertEqual(tokens["6h"]["samples"], 2)
+        self.assertEqual(tokens["ilg"]["samples"], 1)
+
+    def test_vocabulary_breaks_down_by_role(self):
+        payload = json.loads(server.arf_list_classes())
+        tokens = payload["sample_token_vocabulary"]["tokens"]
+        self.assertEqual(tokens["raw"]["roles"], {"qc": 1, "sample": 2})
+
+    def test_works_without_mddata(self):
+        payload = json.loads(server.arf_list_classes())
+        self.assertIsNone(payload["mddata_path"])
+        self.assertEqual(payload["class_counts"], {})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -64,18 +64,31 @@ def arf_list_tags() -> str:
 
 @mcp.tool()
 def arf_list_classes() -> str:
-    """List MS-DIAL Class ID values available for the current ARF dataset."""
+    """絞り込み・群分けに使える因子トークンの一覧を返す（Class ID とサンプル名の両方）。
+
+    class_ids / group_levels / group_factors / group_a / group_b に何を書けるかを
+    発見するための入口。`.mddata` が無くてもサンプル名の語彙は返る。
+    `sample_token_vocabulary.tokens[<token>]` は出現サンプル数・role 内訳・
+    サンプル名内の出現位置を持つ。位置は因子の並びを推測する手掛かりだが、値が
+    2トークンに割れる場合（G_uralensis）にずれるため指定には使わない。
+    """
     if (
         session_state.session.features is None
-        or session_state.session.arf_class_index is None
         or not str(session_state.session.current_file_path or "").lower().endswith(".arf")
     ):
-        return "先に arf_parser を実行してARFデータとClass IDメタデータを読み込んでください。"
-    class_counts = session_state.session.arf_class_index.get("class_counts", {})
+        return "先に arf_parser を実行してARFデータを読み込んでください。"
+    class_index = session_state.session.arf_class_index or {}
+    class_counts = class_index.get("class_counts", {})
+    names = sample_factors.arf_sample_names(
+        session_state.session.filtered_features or session_state.session.features
+    )
+    facets = sample_factors.build_sample_facets(
+        names, session_state.session.arf_class_index)
     return json.dumps({
-        "mddata_path": session_state.session.arf_class_index["mddata_path"],
+        "mddata_path": class_index.get("mddata_path"),
         "class_counts": class_counts,
         "factors_by_position": _class_factors_by_position(class_counts.keys()),
+        "sample_token_vocabulary": sample_factors.token_vocabulary(facets),
     }, ensure_ascii=False, indent=2)
 
 
