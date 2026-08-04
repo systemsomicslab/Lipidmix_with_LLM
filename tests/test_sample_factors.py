@@ -1,5 +1,6 @@
 import unittest
 
+from msdial_classes import assign_sample_groups, filter_arf_by_class_ids
 from msdial_tags import normalize_sample_name
 from sample_factors import (
     SampleFacet,
@@ -314,6 +315,87 @@ class TokenVocabularyTests(unittest.TestCase):
 
     def test_empty_facets(self):
         self.assertEqual(token_vocabulary({}), {"tokens": {}, "by_position": {}})
+
+
+class FilterArfBySampleTokensTests(unittest.TestCase):
+    def _features(self, names):
+        return [{"MasterAlignmentID": 1,
+                 "AlignedPeakProperties": [[i, n, 100.0 + i] for i, n in enumerate(names)]}]
+
+    def setUp(self):
+        self.names = [
+            "20220901_RAW_control_0h_1_NEG",
+            "20220901_RAW_control_6h_1_NEG",
+            "20220902_RAW_ILG_0h_1_NEG",
+            "20220902_RAW_ILG_6h_1_NEG",
+        ]
+        self.features = self._features(self.names)
+        self.index = name_class_index({
+            "20220901_RAW_control_0h_1_NEG": "control",
+            "20220901_RAW_control_6h_1_NEG": "control",
+            "20220902_RAW_ILG_0h_1_NEG": "ILG",
+            "20220902_RAW_ILG_6h_1_NEG": "ILG",
+        })
+
+    def test_filters_by_token_absent_from_class_id(self):
+        # 6h は Class ID に無い。これが通ることが本タスクの眼目。
+        filtered, stats = filter_arf_by_class_ids(self.features, self.index, ["6h"])
+        kept = {row[1] for row in filtered[0]["AlignedPeakProperties"]}
+        self.assertEqual(kept, {"20220901_RAW_control_6h_1_NEG", "20220902_RAW_ILG_6h_1_NEG"})
+        self.assertEqual(stats["after_sample_peaks"], 2)
+        self.assertEqual(stats["before_sample_peaks"], 4)
+
+    def test_multi_token_spec_and_or_across_specs(self):
+        filtered, stats = filter_arf_by_class_ids(
+            self.features, self.index, ["ILG_6h", "control_6h"])
+        kept = {row[1] for row in filtered[0]["AlignedPeakProperties"]}
+        self.assertEqual(kept, {"20220901_RAW_control_6h_1_NEG", "20220902_RAW_ILG_6h_1_NEG"})
+        self.assertEqual(sorted(stats["matched_class_ids"]), ["ILG", "control"])
+        self.assertEqual(len(stats["matched_samples"]), 2)
+
+    def test_works_without_mddata(self):
+        # class_index=None は従来 ValueError だった。名前トークンだけで成立させる。
+        filtered, stats = filter_arf_by_class_ids(self.features, None, ["ILG"])
+        kept = {row[1] for row in filtered[0]["AlignedPeakProperties"]}
+        self.assertEqual(kept, {"20220902_RAW_ILG_0h_1_NEG", "20220902_RAW_ILG_6h_1_NEG"})
+        self.assertEqual(stats["matched_class_ids"], [])
+        self.assertEqual(stats["missing_samples"], 0)
+
+    def test_qc_is_excluded_by_default_and_reported(self):
+        names = self.names + ["20220901_QC_RAW_NEG_1"]
+        filtered, stats = filter_arf_by_class_ids(self._features(names), None, ["raw"])
+        kept = {row[1] for row in filtered[0]["AlignedPeakProperties"]}
+        self.assertNotIn("20220901_QC_RAW_NEG_1", kept)
+        self.assertEqual(stats["excluded_by_role"], ["20220901_QC_RAW_NEG_1"])
+
+    def test_include_roles_can_bring_qc_back(self):
+        names = self.names + ["20220901_QC_RAW_NEG_1"]
+        filtered, stats = filter_arf_by_class_ids(
+            self._features(names), None, ["raw"], include_roles=("sample", "qc"))
+        kept = {row[1] for row in filtered[0]["AlignedPeakProperties"]}
+        self.assertIn("20220901_QC_RAW_NEG_1", kept)
+        self.assertEqual(stats["excluded_by_role"], [])
+
+
+class AssignSampleGroupsFactorTests(unittest.TestCase):
+    def test_group_factors_produce_cross_product(self):
+        index = name_class_index({
+            "20220901_RAW_control_0h_1_NEG": "control",
+            "20220902_RAW_ILG_6h_1_NEG": "ILG",
+        })
+        groups = assign_sample_groups(
+            list(index["by_file_name"].keys() and [
+                "20220901_RAW_control_0h_1_NEG", "20220902_RAW_ILG_6h_1_NEG"]),
+            index,
+            group_factors=[["control", "ILG"], ["0h", "6h"]],
+        )
+        self.assertEqual(groups["20220901_RAW_control_0h_1_NEG"], "control|0h")
+        self.assertEqual(groups["20220902_RAW_ILG_6h_1_NEG"], "ILG|6h")
+
+    def test_group_levels_work_without_class_index(self):
+        groups = assign_sample_groups(
+            ["20220902_RAW_ILG_6h_1_NEG"], None, group_levels=["6h"])
+        self.assertEqual(groups["20220902_RAW_ILG_6h_1_NEG"], "6h")
 
 
 if __name__ == "__main__":

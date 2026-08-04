@@ -12,6 +12,12 @@ import lz4.block
 import msgpack
 
 from msdial_tags import normalize_sample_name
+from sample_factors import (
+    arf_sample_names,
+    assign_factor_groups,
+    build_sample_facets,
+    expand_sample_specs,
+)
 
 
 MSGPACK_LZ4_BLOCK_TYPE = 99
@@ -212,39 +218,21 @@ def assign_sample_groups(
     sample_names: list[str],
     class_index: dict | None,
     group_levels: list[str] | None = None,
+    group_factors: list[list[str]] | None = None,
 ) -> dict[str, str | None]:
-    """Map each PCA sample name to a group label for coloring.
+    """各 PCA サンプル名を、色分け用の群ラベルへ対応づける。
 
-    - Without ``group_levels``: the group is the sample's full Class ID.
-    - With ``group_levels`` (factor value tokens, e.g. ["gf", "spf"]): the group
-      is whichever listed token the sample's Class ID contains. A sample matching
-      no listed level becomes "other"; a sample matching two or more raises a
-      ValueError (the levels are not mutually exclusive).
-    - Samples with no resolvable Class ID (or no metadata at all) get ``None``.
+    - 因子指定なし: 群はサンプルの完全 Class ID（class_index が無ければ None）。
+    - ``group_levels``（1因子の値トークン、例 ["gf", "spf"]）: その因子だけで統合する。
+      どの値にも該当しなければ "other"、2つ以上に該当すれば ValueError。
+    - ``group_factors``（因子軸のリスト、例 [["control","ILG"], ["0h","6h"]]）: 軸ごとの
+      値を解決して直積ラベル（"control|0h"）にする。group_levels より優先。
+
+    値トークンは Class ID だけでなくサンプル名からも解決される。時点や複製のように
+    Class ID に入っていない因子で色分けできるようにするため（詳細は sample_factors）。
     """
-    levels = [str(level).strip() for level in group_levels or [] if str(level).strip()]
-    groups: dict[str, str | None] = {}
-    for name in sample_names:
-        if class_index is None:
-            groups[name] = None
-            continue
-        record = resolve_sample_class(class_index, None, name)
-        if record is None:
-            groups[name] = None
-            continue
-        class_id = record["class_id"]
-        if not levels:
-            groups[name] = class_id
-            continue
-        tokens = _class_tokens(class_id)
-        hits = [level for level in levels if level.casefold() in tokens]
-        if len(hits) > 1:
-            raise ValueError(
-                f"Class ID '{class_id}' matches multiple group_levels "
-                f"({', '.join(hits)}); levels must be mutually exclusive."
-            )
-        groups[name] = hits[0] if hits else "other"
-    return groups
+    facets = build_sample_facets(sample_names, class_index)
+    return assign_factor_groups(facets, group_factors=group_factors, group_levels=group_levels)
 
 
 def filter_arf_by_class_ids(
@@ -253,12 +241,17 @@ def filter_arf_by_class_ids(
     class_ids: list[str] | None,
     *,
     missing_sample_policy: str = "error",
+    include_roles=("sample",),
 ) -> tuple[list[dict], dict]:
-    """Keep only sample rows whose AnalysisFileClass is selected.
+    """サンプル名 ∪ Class ID の因子トークンでサンプル別ピーク行を絞り込む。
 
-    ``class_ids`` accepts partial factor specs (token-subset AND within a spec,
-    OR across specs); each spec is expanded to the matching full Class IDs via
-    :func:`expand_class_specs`.
+    ``class_ids`` の各要素は `_` 区切りの部分指定（要素内 AND・順不同、要素間 OR）。
+    Class ID だけでなくサンプル名のトークンにも一致するため、Class ID に入っていない
+    因子（時点・複製・測定日）でも絞り込める。``class_index`` が None（.mddata 未検出）
+    でもサンプル名だけで成立する。
+
+    ``include_roles`` は既定 ("sample",) で QC/blank を落とし、内訳を stats の
+    ``excluded_by_role`` に残す。行の照合キーは AlignedPeakProperties の FileName。
     """
     specs = [str(value) for value in class_ids or [] if str(value).strip()]
     before_rows = _count_rows(features)
@@ -271,42 +264,46 @@ def filter_arf_by_class_ids(
             "before_sample_peaks": before_rows,
             "after_sample_peaks": before_rows,
         }
-    if class_index is None:
-        raise ValueError("No MS-DIAL mddata file was found for Class ID filtering.")
     if missing_sample_policy not in {"error", "exclude"}:
         raise ValueError("missing_sample_policy must be 'error' or 'exclude'")
 
-    available_class_ids = sorted({str(record["class_id"]) for record in class_index["records"]})
-    expanded = expand_class_specs(specs, available_class_ids)  # 一致ゼロは ValueError
-    matched_class_ids = sorted({cid for ids in expanded.values() for cid in ids})
-    selected = {cid.casefold() for cid in matched_class_ids}
+    facets = build_sample_facets(arf_sample_names(features), class_index)
+    matches, excluded = expand_sample_specs(specs, facets, include_roles=include_roles)
+    selected = {name for names in matches.values() for name in names}
+    excluded_by_role = sorted({name for names in excluded.values() for name in names})
+
+    # Class メタデータを持つはずなのに解決できないサンプルは、FileID/FileName の
+    # 食い違いを示す。従来どおり既定でエラーにする（class_index が無いときは
+    # そもそも名前トークンだけで動く設計なので「未対応」ではない）。
+    missing_samples: set[str] = set()
+    if class_index is not None:
+        missing_samples = {name for name, facet in facets.items() if facet.class_id is None}
+        if missing_samples and missing_sample_policy == "error":
+            raise ValueError(
+                "No Class ID metadata matched these ARF samples: "
+                + ", ".join(sorted(missing_samples))
+            )
 
     filtered = []
-    missing_samples = set()
     for spot in features:
         kept_rows = []
         for row in spot.get("AlignedPeakProperties") or []:
-            file_id, file_name = _arf_sample_identity(row)
-            record = resolve_sample_class(class_index, file_id, file_name)
-            if record is None:
-                missing_samples.add(file_name or str(file_id))
-                continue
-            if str(record["class_id"]).casefold() in selected:
+            _, file_name = _arf_sample_identity(row)
+            if file_name in selected:
                 kept_rows.append(row)
         if kept_rows:
             copied = spot.copy()
             copied["AlignedPeakProperties"] = kept_rows
             filtered.append(copied)
 
-    if missing_samples and missing_sample_policy == "error":
-        raise ValueError(
-            "No Class ID metadata matched these ARF samples: "
-            + ", ".join(sorted(missing_samples))
-        )
-
+    matched_class_ids = sorted({
+        facets[name].class_id for name in selected if facets[name].class_id
+    })
     return filtered, {
         "requested_class_ids": specs,
         "matched_class_ids": matched_class_ids,
+        "matched_samples": sorted(selected),
+        "excluded_by_role": excluded_by_role,
         "before_spots": len(features),
         "after_spots": len(filtered),
         "before_sample_peaks": before_rows,
