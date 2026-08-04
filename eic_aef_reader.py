@@ -87,28 +87,41 @@ def _read_exact(stream, size, context):
     return data
 
 
-def read_eic_spot_css1(
+def read_eic_spots_css1(
     file_path,
-    spot_id,
+    spot_ids,
     file_ids=None,
     *,
     max_traces=12,
     max_total_points=200_000,
+    strict=False,
 ):
-    """Read selected chromatogram traces for one CSS1 alignment spot.
+    """Read selected chromatogram traces for several CSS1 alignment spots.
 
-    The CSS1 pointer table permits direct access to a single spot. Unselected
-    sample point arrays are skipped with ``seek`` so plotting a few traces does
-    not expand every chromatogram in the file into memory.
+    The CSS1 pointer table permits direct access, so the file is opened once and
+    every requested spot is reached with ``seek``. Unselected sample point arrays
+    are skipped so plotting a few traces per spot does not expand every
+    chromatogram in the file into memory.
+
+    ``strict=True`` reproduces the single-spot contract: an out-of-range
+    ``spot_id`` and a missing requested FileID both raise. ``strict=False`` omits
+    out-of-range spots from the result and returns spots whose requested FileID
+    is absent with an empty ``samples`` list, so callers can tell the two cases
+    apart.
     """
-    if isinstance(spot_id, bool) or not isinstance(spot_id, int) or spot_id < 0:
-        raise ValueError("spot_id must be a non-negative integer")
+    requested_spots = list(spot_ids)
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in requested_spots
+    ):
+        raise ValueError("spot_ids must contain non-negative integers only")
     if max_traces < 1:
         raise ValueError("max_traces must be at least 1")
     if max_total_points < 1:
         raise ValueError("max_total_points must be at least 1")
 
     requested = None
+    requested_set = None
     if file_ids is not None:
         requested = list(file_ids)
         if not requested:
@@ -123,9 +136,9 @@ def read_eic_spot_css1(
                 f"requested {len(requested)}"
             )
         requested_set = set(requested)
-    else:
-        requested_set = None
 
+    spots = []
+    total_points = 0
     with open(file_path, "rb") as stream:
         file_size = os.fstat(stream.fileno()).st_size
         magic = _read_exact(stream, 4, "CSS1 magic")
@@ -135,105 +148,141 @@ def read_eic_spot_css1(
         num_spots = struct.unpack("<i", _read_exact(stream, 4, "spot count"))[0]
         if num_spots < 0:
             raise ValueError(f"Invalid negative EIC spot count: {num_spots}")
-        if spot_id >= num_spots:
-            raise ValueError(
-                f"spot_id {spot_id} is out of range for {num_spots} EIC spots"
-            )
-
         pointer_table_end = 14 + 8 * num_spots
-        stream.seek(14 + 8 * spot_id)
-        pointer = struct.unpack("<q", _read_exact(stream, 8, "spot pointer"))[0]
-        if pointer < pointer_table_end or pointer >= file_size:
-            raise ValueError(f"Invalid EIC spot pointer for spot_id {spot_id}: {pointer}")
-        stream.seek(pointer)
 
-        spot_header = _read_exact(stream, 21, f"spot {spot_id} header")
-        rt, ri, mass, drift, main_type, num_samples = struct.unpack(
-            "<ffffbi", spot_header
-        )
-        if num_samples < 0:
-            raise ValueError(
-                f"Invalid negative sample count for spot_id {spot_id}: {num_samples}"
-            )
-        if requested_set is None and num_samples > max_traces:
-            raise ValueError(
-                f"spot_id {spot_id} contains {num_samples} samples. "
-                f"Specify file_ids (maximum {max_traces}) instead of silently truncating."
-            )
-
-        samples = []
-        selected_points = 0
-        found_ids = set()
-        for sample_index in range(num_samples):
-            sample_header = _read_exact(
-                stream, 20, f"spot {spot_id} sample {sample_index} header"
-            )
-            file_id, num_points, peak_top, peak_left, peak_right = struct.unpack(
-                "<iifff", sample_header
-            )
-            if num_points < 0:
-                raise ValueError(
-                    f"Invalid negative chromatogram point count for FileID {file_id}: "
-                    f"{num_points}"
-                )
-            point_bytes = 8 * num_points
-            if stream.tell() + point_bytes > file_size:
-                raise ValueError(
-                    f"Chromatogram payload exceeds file size for spot_id {spot_id}, "
-                    f"FileID {file_id}"
-                )
-
-            selected = requested_set is None or file_id in requested_set
-            if not selected:
-                stream.seek(point_bytes, os.SEEK_CUR)
+        for spot_id in sorted(set(requested_spots)):
+            if spot_id >= num_spots:
+                if strict:
+                    raise ValueError(
+                        f"spot_id {spot_id} is out of range for {num_spots} EIC spots"
+                    )
                 continue
 
-            if selected_points + num_points > max_total_points:
+            stream.seek(14 + 8 * spot_id)
+            pointer = struct.unpack("<q", _read_exact(stream, 8, "spot pointer"))[0]
+            if pointer < pointer_table_end or pointer >= file_size:
                 raise ValueError(
-                    f"Selected EIC traces exceed the {max_total_points} point safety limit"
+                    f"Invalid EIC spot pointer for spot_id {spot_id}: {pointer}"
                 )
-            raw_points = _read_exact(
-                stream, point_bytes, f"spot {spot_id} FileID {file_id} chromatogram"
+            stream.seek(pointer)
+
+            spot_header = _read_exact(stream, 21, f"spot {spot_id} header")
+            rt, ri, mass, drift, main_type, num_samples = struct.unpack(
+                "<ffffbi", spot_header
             )
-            chromatogram = [
-                [float(x), float(intensity)]
-                for x, intensity in struct.iter_unpack("<ff", raw_points)
-            ]
-            intensities = [point[1] for point in chromatogram]
-            selected_points += num_points
-            found_ids.add(file_id)
-            samples.append({
-                "file_id": file_id,
-                "peak_left": float(peak_left),
-                "peak_top": float(peak_top),
-                "peak_right": float(peak_right),
-                "num_points": num_points,
-                "mean_intensity": (
-                    float(sum(intensities) / len(intensities)) if intensities else 0.0
-                ),
-                "max_intensity": float(max(intensities)) if intensities else 0.0,
-                "chromatogram": chromatogram,
+            if num_samples < 0:
+                raise ValueError(
+                    f"Invalid negative sample count for spot_id {spot_id}: {num_samples}"
+                )
+            if requested_set is None and num_samples > max_traces:
+                raise ValueError(
+                    f"spot_id {spot_id} contains {num_samples} samples. "
+                    f"Specify file_ids (maximum {max_traces}) instead of silently truncating."
+                )
+
+            samples = []
+            selected_points = 0
+            found_ids = set()
+            for sample_index in range(num_samples):
+                sample_header = _read_exact(
+                    stream, 20, f"spot {spot_id} sample {sample_index} header"
+                )
+                file_id, num_points, peak_top, peak_left, peak_right = struct.unpack(
+                    "<iifff", sample_header
+                )
+                if num_points < 0:
+                    raise ValueError(
+                        f"Invalid negative chromatogram point count for FileID {file_id}: "
+                        f"{num_points}"
+                    )
+                point_bytes = 8 * num_points
+                if stream.tell() + point_bytes > file_size:
+                    raise ValueError(
+                        f"Chromatogram payload exceeds file size for spot_id {spot_id}, "
+                        f"FileID {file_id}"
+                    )
+
+                if requested_set is not None and file_id not in requested_set:
+                    stream.seek(point_bytes, os.SEEK_CUR)
+                    continue
+
+                if total_points + num_points > max_total_points:
+                    raise ValueError(
+                        f"Selected EIC traces exceed the {max_total_points} point safety "
+                        f"limit; request fewer compounds (lower top_n) or samples"
+                    )
+                raw_points = _read_exact(
+                    stream, point_bytes, f"spot {spot_id} FileID {file_id} chromatogram"
+                )
+                chromatogram = [
+                    [float(x), float(intensity)]
+                    for x, intensity in struct.iter_unpack("<ff", raw_points)
+                ]
+                intensities = [point[1] for point in chromatogram]
+                total_points += num_points
+                selected_points += num_points
+                found_ids.add(file_id)
+                samples.append({
+                    "file_id": file_id,
+                    "peak_left": float(peak_left),
+                    "peak_top": float(peak_top),
+                    "peak_right": float(peak_right),
+                    "num_points": num_points,
+                    "mean_intensity": (
+                        float(sum(intensities) / len(intensities)) if intensities else 0.0
+                    ),
+                    "max_intensity": float(max(intensities)) if intensities else 0.0,
+                    "chromatogram": chromatogram,
+                })
+
+            if strict and requested_set is not None:
+                missing = [file_id for file_id in requested if file_id not in found_ids]
+                if missing:
+                    raise ValueError(
+                        f"Requested FileID values were not found in spot_id {spot_id}: "
+                        f"{missing}"
+                    )
+
+            spots.append({
+                "spot_id": spot_id,
+                "rt": float(rt),
+                "ri": float(ri),
+                "mz": float(mass),
+                "drift": float(drift),
+                "main_type": int(main_type),
+                "num_samples": num_samples,
+                "selected_samples": len(samples),
+                "selected_points": selected_points,
+                "samples": samples,
             })
 
-        if requested_set is not None:
-            missing = [file_id for file_id in requested if file_id not in found_ids]
-            if missing:
-                raise ValueError(
-                    f"Requested FileID values were not found in spot_id {spot_id}: {missing}"
-                )
+    return spots
 
-    return {
-        "spot_id": spot_id,
-        "rt": float(rt),
-        "ri": float(ri),
-        "mz": float(mass),
-        "drift": float(drift),
-        "main_type": int(main_type),
-        "num_samples": num_samples,
-        "selected_samples": len(samples),
-        "selected_points": selected_points,
-        "samples": samples,
-    }
+
+def read_eic_spot_css1(
+    file_path,
+    spot_id,
+    file_ids=None,
+    *,
+    max_traces=12,
+    max_total_points=200_000,
+):
+    """Read selected chromatogram traces for one CSS1 alignment spot.
+
+    Thin wrapper over :func:`read_eic_spots_css1` with the strict single-spot
+    contract: an out-of-range ``spot_id`` or a missing requested FileID raises.
+    """
+    if isinstance(spot_id, bool) or not isinstance(spot_id, int) or spot_id < 0:
+        raise ValueError("spot_id must be a non-negative integer")
+    spots = read_eic_spots_css1(
+        file_path,
+        [spot_id],
+        file_ids,
+        max_traces=max_traces,
+        max_total_points=max_total_points,
+        strict=True,
+    )
+    return spots[0]
 
 
 def summarize_eic_data(results):

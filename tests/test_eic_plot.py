@@ -1,8 +1,10 @@
 import asyncio
+import builtins
 import os
 import struct
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import matplotlib
@@ -12,7 +14,7 @@ matplotlib.use("Agg")
 import mcp_core
 import server
 import session_state
-from eic_aef_reader import read_eic_spot_css1
+from eic_aef_reader import read_eic_spot_css1, read_eic_spots_css1
 
 
 def _write_css1(path: Path, spots: list[dict]) -> None:
@@ -100,6 +102,72 @@ class EicRandomAccessTests(unittest.TestCase):
         _write_css1(crowded, [{"rt": 1.0, "mz": 100.0, "samples": samples}])
         with self.assertRaisesRegex(ValueError, "Specify file_ids"):
             read_eic_spot_css1(crowded, 0)
+
+
+class EicBatchReadTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "batch.EIC.aef"
+        _write_css1(self.path, [
+            {"rt": 1.0, "mz": 100.0, "samples": [
+                {"file_id": 1, "peak_top": 1.0, "peak_left": 0.9,
+                 "peak_right": 1.1, "points": [(0.9, 10.0), (1.0, 20.0)]},
+                {"file_id": 2, "peak_top": 1.0, "peak_left": 0.9,
+                 "peak_right": 1.1, "points": [(0.9, 1.0), (1.0, 2.0)]},
+            ]},
+            {"rt": 2.0, "mz": 200.0, "samples": [
+                {"file_id": 2, "peak_top": 2.0, "peak_left": 1.8,
+                 "peak_right": 2.2, "points": [(1.8, 3.0), (2.0, 9.0)]},
+            ]},
+            {"rt": 3.0, "mz": 300.0, "samples": [
+                {"file_id": 1, "peak_top": 3.0, "peak_left": 2.8,
+                 "peak_right": 3.2, "points": [(2.8, 4.0), (3.0, 8.0)]},
+            ]},
+        ])
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_reads_requested_spots_in_one_file_open(self):
+        opened = []
+        real_open = builtins.open
+
+        def counting_open(*args, **kwargs):
+            opened.append(args[0])
+            return real_open(*args, **kwargs)
+
+        with unittest.mock.patch("builtins.open", counting_open):
+            spots = read_eic_spots_css1(self.path, [2, 0], file_ids=[1])
+
+        self.assertEqual(len(opened), 1)
+        self.assertEqual([spot["spot_id"] for spot in spots], [0, 2])
+        self.assertEqual(spots[0]["samples"][0]["file_id"], 1)
+        self.assertEqual(
+            [point[1] for point in spots[1]["samples"][0]["chromatogram"]],
+            [4.0, 8.0],
+        )
+
+    def test_out_of_range_spot_is_omitted_when_not_strict(self):
+        spots = read_eic_spots_css1(self.path, [0, 99], file_ids=[1])
+        self.assertEqual([spot["spot_id"] for spot in spots], [0])
+
+    def test_spot_without_requested_file_id_is_returned_empty(self):
+        spots = read_eic_spots_css1(self.path, [0, 1], file_ids=[1])
+        self.assertEqual([spot["spot_id"] for spot in spots], [0, 1])
+        self.assertEqual(spots[1]["samples"], [])
+        self.assertEqual(spots[1]["selected_samples"], 0)
+
+    def test_strict_mode_raises_for_out_of_range_and_missing_file_id(self):
+        with self.assertRaisesRegex(ValueError, "out of range"):
+            read_eic_spots_css1(self.path, [99], file_ids=[1], strict=True)
+        with self.assertRaisesRegex(ValueError, "not found"):
+            read_eic_spots_css1(self.path, [1], file_ids=[1], strict=True)
+
+    def test_point_budget_is_shared_across_spots(self):
+        with self.assertRaisesRegex(ValueError, "point safety limit"):
+            read_eic_spots_css1(
+                self.path, [0, 2], file_ids=[1], max_total_points=3,
+            )
 
 
 class EicPlotToolTests(unittest.TestCase):
