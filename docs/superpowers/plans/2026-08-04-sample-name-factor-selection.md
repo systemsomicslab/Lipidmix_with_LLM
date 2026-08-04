@@ -19,6 +19,13 @@
 - 依存の向き: `sample_factors.py` は leaf（`msdial_tags` と `preprocessing` のみ import）。`msdial_classes` → `sample_factors` の向きに依存させ、逆向き（`sample_factors` → `msdial_classes`）は**作らない**。`tools_*` / `session_state` / `server` は `sample_factors` から import しない。
 - docstring・コメント・ユーザー向けメッセージは既存コードと同じく**日本語**で書く。ただし `assign_factor_groups` の排他違反メッセージだけは既存テスト `assertRaisesRegex(ValueError, "multiple")` を満たすため英単語 `multiple` を必ず含める。
 - コミットは各タスク末尾で1回。`git add` は変更したファイルのみを明示列挙する。
+- **テストファイルの分担**（レビュー時の指摘を避けるため厳守）:
+  - `tests/test_sample_factors.py` … Task 1-5。**純関数のみ**（`sample_factors` と `msdial_classes`）。
+  - `tests/test_factor_tools.py` … Task 6-9。**MCP ツールレベルのみ**（`server.arf_*`）。
+  - `tests/test_tools_samples.py` … Task 10。
+  - `import` 文は**必ずファイル先頭にまとめる**（関数・クラスの直前に置かない）。
+  - PCA の偽物（`fake_extract_peak_properties` / `fake_build_pca_matrix` / `fake_run_pca`）は
+    `from tests.test_server_class_filter import ...` で再利用し、コピーしない。
 
 ---
 
@@ -1045,7 +1052,7 @@ Class ID に無い因子（時点・複製）でも絞り込み・色分けで�
 
 **Files:**
 - Modify: `tools_arf.py:516-549`（`_pool_group_labels`）、`tools_arf.py:698-722`（呼び出し側）、`tools_arf.py:753-759`（payload）
-- Test: `tests/test_differential_tools.py`（既存・**書き換えない**）、`tests/test_sample_factors.py`
+- Test: `tests/test_differential_tools.py`（既存・**書き換えない**）、`tests/test_factor_tools.py`（**新規作成**）
 
 **Interfaces:**
 - Consumes: Task 1-2 の `build_sample_facets` / `expand_sample_specs`
@@ -1056,20 +1063,28 @@ Class ID に無い因子（時点・複製）でも絞り込み・色分けで�
 
 - [ ] **Step 1: Write the failing test**
 
-`tests/test_sample_factors.py` の import 群に追加:
+`tests/test_factor_tools.py` を**新規作成**する。以降の Task 7-9 もこのファイルへ追記していくので、
+import はここで一度にすべて置いておく:
 
 ```python
+"""MCP ツールレベルの因子トークン挙動（sample_factors 純関数は test_sample_factors.py）。"""
 import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 import server
 import session_state
-```
+from tests.test_server_class_filter import (
+    fake_build_pca_matrix,
+    fake_extract_peak_properties,
+    fake_run_pca,
+)
 
-末尾の `if __name__ == "__main__":` の直前に追記:
 
-```python
 class DifferentialByNameTokenTests(unittest.TestCase):
     """Class ID は処置だけ、時点はサンプル名にしかない構成で時点を揃えた2群比較。"""
 
@@ -1121,11 +1136,15 @@ class DifferentialByNameTokenTests(unittest.TestCase):
         out = json.loads(server.arf_differential(group_a="ILG", group_b="control"))
         self.assertEqual(out["n_a"], 4)
         self.assertEqual(out["n_b"], 4)
+
+
+if __name__ == "__main__":
+    unittest.main()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_sample_factors.py -k Differential -q`
+Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_factor_tools.py -q`
 Expected: FAIL — `status == "error"`（`_pool_group_labels` が群ラベル `ILG` しか見ないため `ILG_6h` に一致せずエラー）
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1230,13 +1249,13 @@ def _pool_group_labels(sample_names, group_labels, group_a, group_b):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_sample_factors.py tests/test_differential_tools.py -q`
+Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_factor_tools.py tests/test_differential_tools.py -q`
 Expected: PASS（既存 `TestPooledGroupSpecs` / `TestDifferentialSampleSelection` も**無改修で**通ること）
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tools_arf.py tests/test_sample_factors.py
+git add tools_arf.py tests/test_factor_tools.py
 git commit -m "feat(differential): 時点を揃えた2群比較を可能にする
 
 _pool_group_labels をファセット経由にし、group_a='ILG_6h' のように Class ID に
@@ -1250,7 +1269,7 @@ resolved_samples に全列挙し、何を比べたのかの取り違えを防ぐ
 
 **Files:**
 - Modify: `tools_arf.py:279-325`（`arf_pca_preprocessed`）、`tools_arf.py:328-510`（`arf_parser`）、`tool_helpers.py:280-294`（`_format_arf_class_filter`）
-- Test: `tests/test_server_class_filter.py`（既存・**書き換えない**）、`tests/test_sample_factors.py`
+- Test: `tests/test_server_class_filter.py`（既存・**書き換えない**）、`tests/test_factor_tools.py`（Task 6 で作成済み・追記）
 
 **Interfaces:**
 - Consumes: Task 5 の `filter_arf_by_class_ids(..., include_roles=...)` / `assign_sample_groups(..., group_factors=...)`
@@ -1261,18 +1280,12 @@ resolved_samples に全列挙し、何を比べたのかの取り違えを防ぐ
 
 - [ ] **Step 1: Write the failing test**
 
-`tests/test_sample_factors.py` の末尾の `if __name__ == "__main__":` の直前に追記:
+`tests/test_factor_tools.py` の末尾の `if __name__ == "__main__":` の直前に追記。
+import は Task 6 で先頭に置いたものをそのまま使う（**ここで import 文を足さない**）:
 
 ```python
-import tempfile
-from pathlib import Path
-from unittest.mock import patch
-
-import pandas as pd
-
-
 class _ParserFakeSession:
-    """test_server_class_filter.FakeSession と同型の最小セッション。"""
+    """test_server_class_filter.FakeSession と同型だが、サンプル名を差し替えられる版。"""
 
     def __init__(self, names):
         self.current_file_path = None
@@ -1295,22 +1308,6 @@ class _ParserFakeSession:
         return text
 
 
-def _fake_extract_peak_properties(features):
-    rows = sum(len(spot["AlignedPeakProperties"]) for spot in features)
-    return pd.DataFrame({"row": range(rows)})
-
-
-def _fake_build_pca_matrix(features, use_properties=None, min_detection_rate=0.0):
-    rows = features[0]["AlignedPeakProperties"] if features else []
-    names = [row[1] for row in rows]
-    return np.ones((len(names), 2)), names, ["10_height", "11_height"]
-
-
-def _fake_run_pca(matrix, n_components=None, log_transform=False):
-    return {"components": np.zeros((matrix.shape[0], 2)).tolist(),
-            "explained_variance_ratio": [0.6, 0.4]}
-
-
 class ArfParserFactorTests(unittest.TestCase):
     def setUp(self):
         self.session = _ParserFakeSession([
@@ -1322,9 +1319,9 @@ class ArfParserFactorTests(unittest.TestCase):
         ])
         self.patches = [
             patch.object(session_state, "session", self.session),
-            patch.object(server.arf_reader, "extract_peak_properties", _fake_extract_peak_properties),
-            patch.object(server.arf_reader, "build_pca_matrix", _fake_build_pca_matrix),
-            patch.object(server.arf_reader, "run_pca", _fake_run_pca),
+            patch.object(server.arf_reader, "extract_peak_properties", fake_extract_peak_properties),
+            patch.object(server.arf_reader, "build_pca_matrix", fake_build_pca_matrix),
+            patch.object(server.arf_reader, "run_pca", fake_run_pca),
             patch.object(server.arf_reader, "get_pca_loading_features", return_value=[]),
         ]
         for item in self.patches:
@@ -1377,7 +1374,7 @@ class ArfPcaPreprocessedFactorTests(unittest.TestCase):
         session_state.session.features = []
 
     def test_group_factors_label_the_plot(self):
-        with patch.object(server.arf_reader, "run_pca", _fake_run_pca), \
+        with patch.object(server.arf_reader, "run_pca", fake_run_pca), \
              patch.object(server.arf_reader, "get_pca_loading_features", return_value=[]):
             result = server.arf_pca_preprocessed(
                 group_factors=[["control", "ILG"], ["0h", "6h"]])
@@ -1387,7 +1384,7 @@ class ArfPcaPreprocessedFactorTests(unittest.TestCase):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_sample_factors.py -k "ArfParserFactor or ArfPcaPreprocessedFactor" -q`
+Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_factor_tools.py -k "ArfParserFactor or ArfPcaPreprocessedFactor" -q`
 Expected: FAIL — `TypeError: arf_parser() got an unexpected keyword argument 'group_factors'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1503,13 +1500,13 @@ docstring の `- group_levels:` の項の直後に追加:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_sample_factors.py tests/test_server_class_filter.py tests/test_preprocess_tools.py -q`
+Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_factor_tools.py tests/test_server_class_filter.py tests/test_preprocess_tools.py -q`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tools_arf.py tool_helpers.py tests/test_sample_factors.py
+git add tools_arf.py tool_helpers.py tests/test_factor_tools.py
 git commit -m "feat(arf): PCAに因子軸の直積による色分けとrole開示を追加
 
 arf_parser / arf_pca_preprocessed に group_factors を、arf_parser に
@@ -1523,7 +1520,7 @@ QC を掴み得るため、既定で落としたうえで除外内訳を出力�
 
 **Files:**
 - Modify: `tools_arf.py:64-78`（`arf_list_classes`）
-- Test: `tests/test_server_class_filter.py`（既存・**書き換えない**）、`tests/test_sample_factors.py`
+- Test: `tests/test_server_class_filter.py`（既存・**書き換えない**）、`tests/test_factor_tools.py`（追記）
 
 **Interfaces:**
 - Consumes: Task 1/4 の `arf_sample_names` / `build_sample_facets` / `token_vocabulary`
@@ -1531,7 +1528,7 @@ QC を掴み得るため、既定で落としたうえで除外内訳を出力�
 
 - [ ] **Step 1: Write the failing test**
 
-`tests/test_sample_factors.py` の末尾の `if __name__ == "__main__":` の直前に追記:
+`tests/test_factor_tools.py` の末尾の `if __name__ == "__main__":` の直前に追記（`_ParserFakeSession` は Task 7 で定義済み）:
 
 ```python
 class ArfListClassesVocabularyTests(unittest.TestCase):
@@ -1567,7 +1564,7 @@ class ArfListClassesVocabularyTests(unittest.TestCase):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_sample_factors.py -k ArfListClasses -q`
+Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_factor_tools.py -k ArfListClasses -q`
 Expected: FAIL — `json.decoder.JSONDecodeError`（`arf_class_index is None` なので日本語のエラー文字列が返る）
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1607,13 +1604,13 @@ def arf_list_classes() -> str:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_sample_factors.py tests/test_server_class_filter.py -q`
+Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_factor_tools.py tests/test_server_class_filter.py -q`
 Expected: PASS（既存 `test_arf_list_classes_returns_counts` / `test_arf_list_classes_returns_factor_vocabulary` も**無改修で**通ること）
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tools_arf.py tests/test_sample_factors.py
+git add tools_arf.py tests/test_factor_tools.py
 git commit -m "feat(arf): arf_list_classes にサンプル名トークン語彙を追加
 
 何で絞れるかを見に行く既存ツールに語彙を載せ、新ツールを知らなくても
@@ -1627,7 +1624,7 @@ git commit -m "feat(arf): arf_list_classes にサンプル名トークン語彙�
 
 **Files:**
 - Modify: `tools_arf.py:101-180`（`arf_exclude`）
-- Test: `tests/test_arf_exclude.py`（既存・**書き換えない**）、`tests/test_sample_factors.py`
+- Test: `tests/test_arf_exclude.py`（既存・**書き換えない**）、`tests/test_factor_tools.py`（追記）
 
 **Interfaces:**
 - Consumes: Task 1-2 の `build_sample_facets` / `expand_sample_specs`
@@ -1635,7 +1632,7 @@ git commit -m "feat(arf): arf_list_classes にサンプル名トークン語彙�
 
 - [ ] **Step 1: Write the failing test**
 
-`tests/test_sample_factors.py` の末尾の `if __name__ == "__main__":` の直前に追記:
+`tests/test_factor_tools.py` の末尾の `if __name__ == "__main__":` の直前に追記:
 
 ```python
 def _exclude_row(file_id, name, height):
@@ -1695,7 +1692,7 @@ class ArfExcludeSpecTests(unittest.TestCase):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_sample_factors.py -k ArfExcludeSpec -q`
+Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_factor_tools.py -k ArfExcludeSpec -q`
 Expected: FAIL — `test_spec_excludes_all_matching_samples` で `excluded_samples == []`（"ILG_6h" は完全一致しないので現状は未一致扱い）
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1794,13 +1791,13 @@ payload（164-176行）に `resolved_samples` を追加:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_sample_factors.py tests/test_arf_exclude.py tests/test_exclude_wiring.py -q`
+Run: `./.venv-1/Scripts/python.exe -m pytest tests/test_factor_tools.py tests/test_arf_exclude.py tests/test_exclude_wiring.py -q`
 Expected: PASS（既存 `tests/test_arf_exclude.py` の 8 tests も**無改修で**通ること）
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tools_arf.py tests/test_sample_factors.py
+git add tools_arf.py tests/test_factor_tools.py
 git commit -m "feat(arf): arf_exclude を因子トークン指定に対応
 
 exclude_samples=['ILG_6h'] で該当サンプルをまとめて除外できるようにする。
@@ -2309,7 +2306,7 @@ sample_search をツール一覧へ、Class ID に無い因子での絞り込み
 | §3 `arf_exclude` | Task 9 |
 | §4 `sample_search` / `server.py` 配線 | Task 10 |
 | §5 エラーハンドリング（一致ゼロ・排他違反・role で残0） | Task 2 / Task 3 / Task 2 の `_no_match_message` |
-| テスト: 新規2ファイル | Task 1-9（`test_sample_factors.py`）/ Task 10（`test_tools_samples.py`） |
+| テスト: 新規3ファイル | Task 1-5（`test_sample_factors.py`・純関数）/ Task 6-9（`test_factor_tools.py`・MCPツール）/ Task 10（`test_tools_samples.py`） |
 | テスト: 既存の無改修通過 | Task 5 / 6 / 7 / 8 / 9 の Step 4、Task 11 の Step 1 |
 
 **2. Placeholder scan** — 全ステップに実コードを記載済み。TBD / TODO / 「適宜」の類は無し。
