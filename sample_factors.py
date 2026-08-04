@@ -194,6 +194,49 @@ def assign_factor_groups(facets, group_factors=None, group_levels=None, sep="|")
     return groups
 
 
+def token_vocabulary(facets) -> dict:
+    """トークン語彙を集計する（何で絞れるかを発見するための一覧）。
+
+    戻り値:
+      {"tokens": {token: {"samples": 出現サンプル数,
+                          "roles": {role: 件数},
+                          "positions": [サンプル名を `_` 分割したときの出現位置, ...]}},
+       "by_position": {"0": [token, ...], ...}}
+
+    positions / by_position は因子の並びを推測する手掛かりだが、G_uralensis のように
+    値が2トークンに割れると以降がずれるため、**フィルタ指定には使わない**（指定は
+    常に値トークンで行う）。Class ID にしか無いトークンは positions が空になる。
+    """
+    counts: dict[str, dict] = {}
+    by_position: dict[int, set[str]] = {}
+
+    for facet in facets.values():
+        for token in facet.tokens:
+            entry = counts.setdefault(token, {"samples": 0, "roles": {}, "positions": set()})
+            entry["samples"] += 1
+            entry["roles"][facet.role] = entry["roles"].get(facet.role, 0) + 1
+        normalized = normalize_sample_name(facet.name, strip_processing_timestamp=True)
+        for position, token in enumerate(normalized.split("_")):
+            if not token:
+                continue
+            by_position.setdefault(position, set()).add(token)
+            counts.setdefault(
+                token, {"samples": 0, "roles": {}, "positions": set()},
+            )["positions"].add(position)
+
+    return {
+        "tokens": {
+            token: {
+                "samples": entry["samples"],
+                "roles": dict(sorted(entry["roles"].items())),
+                "positions": sorted(entry["positions"]),
+            }
+            for token, entry in sorted(counts.items())
+        },
+        "by_position": {str(position): sorted(tokens) for position, tokens in sorted(by_position.items())},
+    }
+
+
 def arf_sample_names(features) -> list[str]:
     """ARF スポット列の AlignedPeakProperties 行に現れるサンプル名を出現順で返す。
 

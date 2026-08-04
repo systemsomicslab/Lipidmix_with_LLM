@@ -9,6 +9,7 @@ from sample_factors import (
     expand_sample_specs,
     sample_tokens,
     split_tokens,
+    token_vocabulary,
 )
 
 
@@ -277,6 +278,42 @@ class AssignFactorGroupsRoleTests(unittest.TestCase):
     def test_role_labeling_does_not_apply_without_factors(self):
         facets = build_sample_facets(["20240311_QC_ILG_NEG_1"], None)
         self.assertIsNone(assign_factor_groups(facets)["20240311_QC_ILG_NEG_1"])
+
+
+class TokenVocabularyTests(unittest.TestCase):
+    def setUp(self):
+        self.facets = build_sample_facets([
+            "20220901_RAW_control_6h_1_NEG",
+            "20220902_RAW_ILG_6h_1_NEG",
+            "20220902_QC_RAW_NEG_1",
+        ], None)
+        self.vocab = token_vocabulary(self.facets)
+
+    def test_counts_samples_per_token(self):
+        self.assertEqual(self.vocab["tokens"]["raw"]["samples"], 3)
+        self.assertEqual(self.vocab["tokens"]["6h"]["samples"], 2)
+        self.assertEqual(self.vocab["tokens"]["ilg"]["samples"], 1)
+
+    def test_breaks_down_by_role(self):
+        self.assertEqual(self.vocab["tokens"]["raw"]["roles"], {"qc": 1, "sample": 2})
+        self.assertEqual(self.vocab["tokens"]["ilg"]["roles"], {"sample": 1})
+
+    def test_reports_positions_within_sample_name(self):
+        self.assertEqual(self.vocab["tokens"]["raw"]["positions"], [1, 2])
+        self.assertEqual(self.vocab["tokens"]["6h"]["positions"], [3])
+
+    def test_by_position_lists_token_vocabulary(self):
+        self.assertEqual(self.vocab["by_position"]["0"], ["20220901", "20220902"])
+        self.assertEqual(set(self.vocab["by_position"]["2"]), {"control", "ilg", "raw"})
+
+    def test_class_only_token_has_no_position(self):
+        facets = build_sample_facets(["s1"], name_class_index({"s1": "Cerebellum_gf"}))
+        vocab = token_vocabulary(facets)
+        self.assertEqual(vocab["tokens"]["cerebellum"]["positions"], [])
+        self.assertEqual(vocab["tokens"]["cerebellum"]["samples"], 1)
+
+    def test_empty_facets(self):
+        self.assertEqual(token_vocabulary({}), {"tokens": {}, "by_position": {}})
 
 
 if __name__ == "__main__":
