@@ -1,7 +1,8 @@
-"""EIC/AEF ツール群: eic_parser, eic_rank_by_max_intensity, m/z 範囲検索, RT 範囲検索。
+"""EIC/AEF ツール群: eic_parser, eic_plot_chromatograms, eic_plot_compounds,
+eic_rank_by_max_intensity, m/z 範囲検索, RT 範囲検索。
 
-deps: mcp_core / session_state / path_resolvers / eic_aef_reader。
-tools_* / server は import しない。
+deps: mcp_core / session_state / path_resolvers / eic_aef_reader /
+eic_identity_map / eic_plot。tools_* / server は import しない。
 """
 import json
 from pathlib import Path
@@ -141,7 +142,7 @@ def eic_plot_compounds(
         raise FileNotFoundError("データディレクトリに .arf2 ファイルが見つかりませんでした。")
 
     records = load_arf2_records(resolved_arf2)
-    candidates, caveats = select_identity_candidates(
+    candidates, caveats, total_matched = select_identity_candidates(
         records, names=names, ontologies=ontologies,
     )
     if not candidates:
@@ -167,6 +168,7 @@ def eic_plot_compounds(
         queries=names,
         ontologies=ontologies,
         caveats=caveats,
+        total_matched=total_matched,
     )
     session_state.session.last_eic_plot = payload
     return payload

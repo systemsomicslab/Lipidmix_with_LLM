@@ -29,7 +29,7 @@ class SelectIdentityCandidatesTests(unittest.TestCase):
         ]
 
     def test_name_query_matches_case_insensitive_substring(self):
-        candidates, caveats = select_identity_candidates(
+        candidates, caveats, total_matched = select_identity_candidates(
             self.records, names=["ceramide"],
         )
         self.assertEqual([c["spot_id"] for c in candidates], [2])
@@ -37,16 +37,21 @@ class SelectIdentityCandidatesTests(unittest.TestCase):
         self.assertEqual(candidates[0]["ontology"], "Cer")
         self.assertAlmostEqual(candidates[0]["rt"], 22.148, places=3)
         self.assertEqual(caveats, [])
+        self.assertEqual(total_matched, 1)
 
     def test_ontology_query_matches_exact_class_ignoring_case(self):
-        candidates, _ = select_identity_candidates(self.records, ontologies=["tg"])
+        candidates, _, total_matched = select_identity_candidates(
+            self.records, ontologies=["tg"],
+        )
         self.assertEqual([c["spot_id"] for c in candidates], [1])
+        self.assertEqual(total_matched, 1)
 
     def test_name_and_ontology_results_are_a_deduplicated_union_sorted_by_spot_id(self):
-        candidates, _ = select_identity_candidates(
+        candidates, _, total_matched = select_identity_candidates(
             self.records, names=["TG(15:0"], ontologies=["TG", "PC"],
         )
         self.assertEqual([c["spot_id"] for c in candidates], [0, 1])
+        self.assertEqual(total_matched, 2)
 
     def test_no_query_raises(self):
         with self.assertRaisesRegex(ValueError, "names"):
@@ -57,12 +62,14 @@ class SelectIdentityCandidatesTests(unittest.TestCase):
             _record(index, f"TG(x{index})", "TG", 10.0, 800.0, height=float(index))
             for index in range(5)
         ]
-        candidates, caveats = select_identity_candidates(
+        candidates, caveats, total_matched = select_identity_candidates(
             records, ontologies=["TG"], max_candidates=2,
         )
         self.assertEqual([c["spot_id"] for c in candidates], [3, 4])
         self.assertEqual(len(caveats), 1)
         self.assertIn("HeightAverage", caveats[0])
+        self.assertEqual(total_matched, 5)
+        self.assertGreater(total_matched, len(candidates))
 
     def test_default_candidate_limit_is_three_hundred(self):
         self.assertEqual(MAX_CANDIDATES, 300)

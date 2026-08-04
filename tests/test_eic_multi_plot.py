@@ -120,7 +120,94 @@ class MultiCompoundPayloadTests(unittest.TestCase):
         )
         self.assertEqual(payload["selection"]["plotted"], 1)
         self.assertEqual(payload["selection"]["candidates"], 2)
+        self.assertEqual(payload["selection"]["candidates_evaluated"], 2)
         self.assertEqual(payload["selection"]["top_n"], 1)
+
+    def test_candidates_defaults_to_evaluated_count_when_total_matched_omitted(self):
+        payload = self._build()
+        self.assertEqual(payload["selection"]["candidates"], 2)
+        self.assertEqual(payload["selection"]["candidates_evaluated"], 2)
+
+    def test_candidates_reports_pre_prune_total_when_pruning_happened(self):
+        # select_identity_candidates prunes to max_candidates before the builder
+        # sees the list; total_matched carries the pre-prune query-match count so
+        # `candidates` keeps its documented meaning even though only 2 of the 900
+        # matches were actually read and verified.
+        payload = self._build(total_matched=900)
+        self.assertEqual(payload["selection"]["candidates"], 900)
+        self.assertEqual(payload["selection"]["candidates_evaluated"], 2)
+        self.assertGreater(
+            payload["selection"]["candidates"],
+            payload["selection"]["candidates_evaluated"],
+        )
+
+    def test_caveats_aggregate_below_top_n_into_one_line_with_a_count(self):
+        n = 30
+        candidates = [
+            _candidate(i, f"TG(x{i})", "TG", 10.0 + i * 0.001, 800.0)
+            for i in range(n)
+        ]
+        spots = [
+            _spot(
+                i, 10.0 + i * 0.001, 800.0, 7,
+                [(9.9, 1.0), (10.0 + i * 0.001, float(n - i)), (10.1, 1.0)],
+                10.0 + i * 0.001, float(n - i),
+            )
+            for i in range(n)
+        ]
+        payload = build_multi_compound_plot_payload(
+            candidates, spots, file_id=7,
+            file_path="alignment.EIC.aef", arf2_path="alignment.arf2",
+            top_n=5,
+        )
+        below_top_n_notes = [
+            note for note in payload["caveats"] if "below_top_n" in note
+        ]
+        self.assertEqual(len(below_top_n_notes), 1)
+        dropped_count = sum(
+            1 for item in payload["selection"]["dropped"]
+            if item["reason"] == "below_top_n"
+        )
+        self.assertEqual(dropped_count, n - 5)
+        self.assertIn(str(n - 5), below_top_n_notes[0])
+        self.assertIn("selection.dropped", below_top_n_notes[0])
+
+    def test_named_reasons_cap_at_ten_with_an_overflow_note(self):
+        mismatched = [
+            _candidate(i, f"PC(x{i})", "PC", 999.0, 636.4) for i in range(12)
+        ]
+        mismatched_spots = [
+            _spot(
+                i, 13.5, 636.4, 7,
+                [(13.4, 1.0), (13.5, 5.0), (13.6, 1.0)], 13.5, 5.0,
+            )
+            for i in range(12)
+        ]
+        candidates = mismatched + [_candidate(100, "PC(ok)", "PC", 13.5, 636.4)]
+        spots = mismatched_spots + [
+            _spot(
+                100, 13.5, 636.4, 7,
+                [(13.4, 1.0), (13.5, 5.0), (13.6, 1.0)], 13.5, 5.0,
+            )
+        ]
+        payload = build_multi_compound_plot_payload(
+            candidates, spots, file_id=7,
+            file_path="alignment.EIC.aef", arf2_path="alignment.arf2",
+        )
+        rt_notes = [
+            note for note in payload["caveats"] if note.startswith("rt_mismatch")
+        ]
+        self.assertEqual(len(rt_notes), 1)
+        note = rt_notes[0]
+        self.assertIn("12", note)
+        self.assertIn("ほか 2 件", note)
+        named_spots = sum(f"spot_id={i}" in note for i in range(12))
+        self.assertEqual(named_spots, 10)
+        dropped_rt_mismatch = [
+            item for item in payload["selection"]["dropped"]
+            if item["reason"] == "rt_mismatch"
+        ]
+        self.assertEqual(len(dropped_rt_mismatch), 12)
 
     def test_unknown_name_falls_back_to_spot_and_mz_label(self):
         candidates = [_candidate(0, "Unknown", "", 13.5, 636.4)]
@@ -307,6 +394,55 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
         tool = next(item for item in tools if item.name == "eic_plot_compounds")
         self.assertIsNotNone(tool.outputSchema)
         self.assertIn("plot_schema", tool.outputSchema.get("properties", {}))
+
+
+def _resolve_source_schema(output_schema: dict) -> dict:
+    """Follow the ``source`` property's ``$ref`` into ``$defs`` (or return it inline)."""
+    source = output_schema["properties"]["source"]
+    ref = source.get("$ref")
+    if ref is None:
+        return source
+    def_name = ref.rsplit("/", 1)[-1]
+    return output_schema["$defs"][def_name]
+
+
+class PublishedOutputSchemaRegressionTests(unittest.TestCase):
+    """Important 1: widening PlotSource must not leak into eic_plot_chromatograms.
+
+    ``PlotSource`` must stay a strict ``file``/``file_name`` TypedDict so FastMCP's
+    published ``eic_plot_chromatograms`` outputSchema keeps requiring both fields
+    and never grows an ``arf2_file`` property that ``lipidmix.eic.v1`` never emits.
+    The new ``arf2_file`` field belongs only to ``eic_plot_compounds`` via a
+    separate ``MultiPlotSource`` TypedDict.
+    """
+
+    def test_single_spot_source_schema_is_unchanged(self):
+        import asyncio
+
+        import server
+
+        tools = asyncio.run(server.mcp.list_tools())
+        tool = next(item for item in tools if item.name == "eic_plot_chromatograms")
+        source_schema = _resolve_source_schema(tool.outputSchema)
+        self.assertEqual(
+            set(source_schema["properties"]), {"file", "file_name"},
+        )
+        self.assertEqual(set(source_schema["required"]), {"file", "file_name"})
+
+    def test_multi_compound_source_schema_has_all_three_fields(self):
+        import asyncio
+
+        import server
+
+        tools = asyncio.run(server.mcp.list_tools())
+        tool = next(item for item in tools if item.name == "eic_plot_compounds")
+        source_schema = _resolve_source_schema(tool.outputSchema)
+        self.assertEqual(
+            set(source_schema["properties"]), {"file", "file_name", "arf2_file"},
+        )
+        self.assertEqual(
+            set(source_schema["required"]), {"file", "file_name", "arf2_file"},
+        )
 
 
 if __name__ == "__main__":

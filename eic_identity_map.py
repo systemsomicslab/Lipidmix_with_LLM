@@ -47,11 +47,14 @@ def select_identity_candidates(
     names: list[str] | None = None,
     ontologies: list[str] | None = None,
     max_candidates: int = MAX_CANDIDATES,
-) -> tuple[list[IdentityCandidate], list[str]]:
+) -> tuple[list[IdentityCandidate], list[str], int]:
     """クエリに一致する ARF2 スポット候補（spot_id 昇順）と caveat 文字列を返す。
 
     `names` は Name への大小無視の部分一致、`ontologies` は Ontology への大小無視の
     完全一致。両者の結果は AlignmentID で重複排除した和集合になる。
+
+    3 番目の戻り値 `total_matched` は `max_candidates` による予備選抜より前の
+    クエリ一致件数（予備選抜が発生しなければ `len(candidates)` と同じ）。
     """
     name_queries = [str(query).casefold() for query in (names or []) if str(query).strip()]
     ontology_set = {
@@ -79,18 +82,18 @@ def select_identity_candidates(
             "height_average": float(record.get("HeightAverage") or 0.0),
         })
 
+    total_matched = len(candidates)
     caveats: list[str] = []
     if len(candidates) > max_candidates:
-        total = len(candidates)
         candidates.sort(key=lambda item: item["height_average"], reverse=True)
         candidates = candidates[:max_candidates]
         caveats.append(
-            f"クエリ一致 {total} 件のうち、ARF2 HeightAverage 上位 {max_candidates} 件だけを "
+            f"クエリ一致 {total_matched} 件のうち、ARF2 HeightAverage 上位 {max_candidates} 件だけを "
             "EIC 読み出し対象にしました（クエリを絞ると全件を評価できます）。"
         )
 
     candidates.sort(key=lambda item: item["spot_id"])
-    return candidates, caveats
+    return candidates, caveats, total_matched
 
 
 def verify_spot_match(

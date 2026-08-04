@@ -209,7 +209,8 @@ def read_eic_spots_css1(
                 if total_points + num_points > max_total_points:
                     raise ValueError(
                         f"Selected EIC traces exceed the {max_total_points} point safety "
-                        f"limit; request fewer compounds (lower top_n) or samples"
+                        f"limit; narrow the compound query (names / ontologies) or "
+                        f"select fewer samples (file_ids)"
                     )
                 raw_points = _read_exact(
                     stream, point_bytes, f"spot {spot_id} FileID {file_id} chromatogram"

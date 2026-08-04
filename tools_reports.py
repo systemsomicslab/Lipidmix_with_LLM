@@ -190,13 +190,14 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
 def save_eic_figure(analysis_id: str, title: str | None = None) -> str:
     """明示的なユーザー要求時だけ、直近EICプロット情報をPNGとして保存する。
 
-    先に ``eic_plot_chromatograms`` でクライアント描画用の構造化情報を作る。
-    通常の対話描画ではこのツールを呼ばず、各MCPクライアントのUIへ描画を任せる。
+    先に ``eic_plot_chromatograms``（1物質×複数サンプル）または ``eic_plot_compounds``
+    （複数物質×1サンプル）でクライアント描画用の構造化情報を作る。通常の対話描画では
+    このツールを呼ばず、各MCPクライアントのUIへ描画を任せる。
     """
     plot = getattr(session_state.session, "last_eic_plot", None)
     if not plot or not plot.get("series"):
         return (
-            "先に eic_plot_chromatograms を実行してください"
+            "先に eic_plot_chromatograms または eic_plot_compounds を実行してください"
             "（EICプロット情報がありません）。"
         )
 

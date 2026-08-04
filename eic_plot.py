@@ -20,7 +20,12 @@ class PlotAxes(TypedDict):
     y: PlotAxis
 
 
-class PlotSource(TypedDict, total=False):
+class PlotSource(TypedDict):
+    file: str
+    file_name: str
+
+
+class MultiPlotSource(TypedDict):
     file: str
     file_name: str
     arf2_file: str
@@ -118,6 +123,7 @@ class PlotSelection(TypedDict):
     queries: list[str]
     ontologies: list[str]
     candidates: int
+    candidates_evaluated: int
     plotted: int
     top_n: int
     dropped: list[DroppedCompound]
@@ -135,7 +141,7 @@ class EICMultiPlotPayload(TypedDict):
     plot_schema: str
     plot_type: str
     title: str
-    source: PlotSource
+    source: MultiPlotSource
     axes: PlotAxes
     sample: PlotSample
     normalization: str
@@ -275,6 +281,53 @@ def _dropped(candidate: IdentityCandidate, reason: str) -> DroppedCompound:
     }
 
 
+_NAMED_DROP_REASONS = ("rt_mismatch", "mz_mismatch")
+_AGGREGATE_ONLY_DROP_REASONS = ("spot_out_of_range", "file_id_absent", "below_top_n")
+_NAMED_DROP_CAP = 10
+
+
+def _dropped_caveats(dropped: list[DroppedCompound]) -> list[str]:
+    """`dropped[]` を理由ごとに1行へ集約した caveat 文を返す。
+
+    `rt_mismatch` / `mz_mismatch` は個々の物質名が診断に有用なので、最大
+    `_NAMED_DROP_CAP` 件まで名指しし、残りは件数のみ添える。それ以外の理由
+    （`spot_out_of_range` / `file_id_absent` / `below_top_n`）は件数のみの
+    1行に集約する。`selection.dropped` 自体は完全なまま変更しない。
+    """
+    if not dropped:
+        return []
+
+    by_reason: dict[str, list[DroppedCompound]] = {}
+    for item in dropped:
+        by_reason.setdefault(item["reason"], []).append(item)
+
+    notes: list[str] = []
+    for reason in _NAMED_DROP_REASONS:
+        items = by_reason.get(reason)
+        if not items:
+            continue
+        names = [
+            f"spot_id={item['spot_id']} ({item['name'] or 'Unknown'})"
+            for item in items[:_NAMED_DROP_CAP]
+        ]
+        note = f"{reason} で {len(items)} 件を除外しました: " + ", ".join(names)
+        if len(items) > _NAMED_DROP_CAP:
+            note += f" ほか {len(items) - _NAMED_DROP_CAP} 件（詳細は selection.dropped）。"
+        else:
+            note += "。"
+        notes.append(note)
+
+    for reason in _AGGREGATE_ONLY_DROP_REASONS:
+        items = by_reason.get(reason)
+        if not items:
+            continue
+        notes.append(
+            f"{reason} で {len(items)} 件を除外しました（詳細は selection.dropped）。"
+        )
+
+    return notes
+
+
 def build_multi_compound_plot_payload(
     candidates: list[IdentityCandidate],
     spots: list[dict],
@@ -288,12 +341,18 @@ def build_multi_compound_plot_payload(
     queries: list[str] | None = None,
     ontologies: list[str] | None = None,
     caveats: list[str] | None = None,
+    total_matched: int | None = None,
 ) -> EICMultiPlotPayload:
     """1 サンプル分の複数物質オーバーレイ用ペイロードを組み立てる。
 
     `candidates` は ARF2 由来の同定候補、`spots` は同じ `spot_id` を要求して読んだ
     EIC スポット。rt/mz 検証、`top_n` での強度打ち切り、RT 昇順の並べ替えを行い、
     除外された物質は理由付きで `selection.dropped` に残す。
+
+    `total_matched` は `select_identity_candidates` の `max_candidates` 予備選抜が
+    行われる前のクエリ一致件数。省略時は `len(candidates)`（予備選抜なし）とみなす。
+    `selection.candidates` にはこの値を、実際に読み出し・検証した件数は
+    `selection.candidates_evaluated`（= `len(candidates)`）に入れる。
     """
     if normalize not in {"none", "per_trace_max"}:
         raise ValueError("normalize must be 'none' or 'per_trace_max'")
@@ -333,12 +392,19 @@ def build_multi_compound_plot_payload(
     accepted.sort(key=lambda item: float(item[1]["rt"]))
 
     if not accepted:
+        reason_counts: dict[str, int] = {}
+        for item in dropped:
+            reason_counts[item["reason"]] = reason_counts.get(item["reason"], 0) + 1
         breakdown = ", ".join(
-            f"{item['name'] or item['spot_id']}={item['reason']}" for item in dropped
+            f"{reason}={count}" for reason, count in reason_counts.items()
         )
+        examples = ", ".join(
+            f"{item['name'] or item['spot_id']}={item['reason']}" for item in dropped[:5]
+        )
+        example_note = f"（例: {examples}）" if examples else ""
         raise ValueError(
-            f"検証を通過した物質がありません（候補 {len(candidates)} 件、除外内訳: {breakdown}）。"
-            "クエリ、file_id、または対象バッチを見直してください。"
+            f"検証を通過した物質がありません（候補 {len(candidates)} 件、除外内訳: "
+            f"{breakdown}{example_note}）。クエリ、file_id、または対象バッチを見直してください。"
         )
 
     series: list[MultiPlotSeries] = []
@@ -374,11 +440,7 @@ def build_multi_compound_plot_payload(
             },
         })
 
-    for item in dropped:
-        notes.append(
-            f"spot_id={item['spot_id']} ({item['name'] or 'Unknown'}) を描画から除外: "
-            f"{item['reason']}"
-        )
+    notes.extend(_dropped_caveats(dropped))
 
     main_type = max(set(main_types), key=main_types.count)
     if len(set(main_types)) > 1:
@@ -414,7 +476,10 @@ def build_multi_compound_plot_payload(
         "selection": {
             "queries": [str(item) for item in (queries or [])],
             "ontologies": [str(item) for item in (ontologies or [])],
-            "candidates": len(candidates),
+            "candidates": (
+                total_matched if total_matched is not None else len(candidates)
+            ),
+            "candidates_evaluated": len(candidates),
             "plotted": len(series),
             "top_n": top_n,
             "dropped": dropped,

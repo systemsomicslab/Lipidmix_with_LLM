@@ -100,8 +100,16 @@ PNGが必要だとユーザーが明示した場合に限り、先に得たプ�
   物質は描画されない。除外理由は `rt_mismatch` / `mz_mismatch`（ID対応の崩れ）、
   `spot_out_of_range`、`file_id_absent`（その試料にトレースが無い）、
   `below_top_n`（`top_n` 件からあふれた）の5種。**図に無い＝試料に無い、ではない。**
-- `selection.candidates` はクエリ一致数、`selection.plotted` は実際に描画した数。
-  一致が300件を超えるとARF2 `HeightAverage` 上位300件に予備選抜され、`caveats` に残る。
+  `dropped[]` は毎回、除外された物質を1件残らず列挙する。
+- `caveats[]` は `dropped[]` を理由ごとに1行へ要約したもの（例:
+  `"below_top_n で 276 件を除外しました（詳細は selection.dropped）。"`）。ただし
+  `rt_mismatch` / `mz_mismatch` は個別診断に有用なため、最大10件まで物質名を列挙し
+  超過分は件数のみ添える。網羅的な一覧が要るときは常に `selection.dropped[]` を見ること。
+- `selection.candidates` はクエリに一致した物質の総数（`max_candidates` による予備選抜が
+  行われる**前**の件数）。`selection.candidates_evaluated` は実際にEICファイルから読み出し
+  rt/mz 検証まで行った件数（予備選抜後）。一致が300件を超えるとARF2 `HeightAverage`
+  上位300件に予備選抜され、`candidates > candidates_evaluated` となり `caveats` にも残る。
+  `selection.plotted` は実際に描画した数。
 
 PNGが必要だとユーザーが明示した場合に限り `save_eic_figure(analysis_id, title=None)` で
 保存する。この保存ツールは `lipidmix.eic.v1` と `lipidmix.eic.multi.v1` の両方に対応する。
