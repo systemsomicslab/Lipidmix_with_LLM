@@ -285,9 +285,21 @@ def _format_arf_class_filter(stats: dict | None) -> str:
     matched_line = ""
     if matched and list(matched) != list(stats["requested_class_ids"]):
         matched_line = f"- **Class IDフィルタ展開先**: `{', '.join(matched)}`\n"
+    # 統合トークン空間ではサンプル名経由で QC/blank を掴み得る。既定で落としたことを
+    # 黙らせず、含める手段（include_roles）とセットで開示する。
+    excluded = stats.get("excluded_by_role") or []
+    excluded_line = ""
+    if excluded:
+        shown = ", ".join(excluded[:10])
+        more = f" ほか{len(excluded) - 10}件" if len(excluded) > 10 else ""
+        excluded_line = (
+            f"- **role により除外**: {len(excluded)} 件（{shown}{more}）。"
+            '含めるには include_roles=["sample", "qc"] を指定\n'
+        )
     return (
         f"- **Class IDフィルタ**: `{', '.join(stats['requested_class_ids'])}`\n"
         f"{matched_line}"
+        f"{excluded_line}"
         f"- **Class IDフィルタ後**: スポット {stats['after_spots']}/{stats['before_spots']}, "
         f"サンプル別ピーク {stats['after_sample_peaks']}/{stats['before_sample_peaks']}, "
         f"メタデータ未対応サンプル {stats.get('missing_samples', 0)} 件\n"

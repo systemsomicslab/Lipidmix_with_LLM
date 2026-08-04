@@ -69,5 +69,103 @@ class DifferentialByNameTokenTests(unittest.TestCase):
         self.assertEqual(out["n_b"], 4)
 
 
+class _ParserFakeSession:
+    """test_server_class_filter.FakeSession と同型だが、サンプル名を差し替えられる版。"""
+
+    def __init__(self, names):
+        self.current_file_path = None
+        self.features = [{
+            "MasterAlignmentID": 10,
+            "AlignedPeakProperties": [[i, n, 100.0 + i] for i, n in enumerate(names)],
+        }]
+        self.filtered_features = None
+        self.pca_result = None
+        self.arf_tag_index = {}
+        self.arf_class_index = None
+        self.excluded_samples = set()
+        self.excluded_spots = set()
+
+    def load_data(self, file_path, tag_directory=None):
+        self.current_file_path = file_path
+        return self.features
+
+    def maybe_prepend_caveat(self, text, topic=None):
+        return text
+
+
+class ArfParserFactorTests(unittest.TestCase):
+    def setUp(self):
+        self.session = _ParserFakeSession([
+            "20220901_RAW_control_0h_1_NEG",
+            "20220901_RAW_control_6h_1_NEG",
+            "20220902_RAW_ILG_0h_1_NEG",
+            "20220902_RAW_ILG_6h_1_NEG",
+            "20220901_QC_RAW_NEG_1",
+        ])
+        self.patches = [
+            patch.object(session_state, "session", self.session),
+            patch.object(server.arf_reader, "extract_peak_properties", fake_extract_peak_properties),
+            patch.object(server.arf_reader, "build_pca_matrix", fake_build_pca_matrix),
+            patch.object(server.arf_reader, "run_pca", fake_run_pca),
+            patch.object(server.arf_reader, "get_pca_loading_features", return_value=[]),
+        ]
+        for item in self.patches:
+            item.start()
+
+    def tearDown(self):
+        for item in reversed(self.patches):
+            item.stop()
+
+    def _run(self, **kwargs):
+        with tempfile.TemporaryDirectory() as tmp:
+            arf_path = Path(tmp) / "test.arf"
+            arf_path.touch()
+            return server.arf_parser(str(arf_path), **kwargs)
+
+    def test_group_factors_produce_cross_product_counts(self):
+        result = self._run(group_factors=[["control", "ILG"], ["0h", "6h"]])
+        self.assertIn("control|0h=1", result)
+        self.assertIn("ILG|6h=1", result)
+        self.assertIn("qc=1", result)
+
+    def test_class_ids_filter_by_name_only_token(self):
+        result = self._run(class_ids=["6h"])
+        self.assertIn("Class IDフィルタ**: `6h`", result)
+        rows = self.session.filtered_features[0]["AlignedPeakProperties"]
+        self.assertEqual(
+            [row[1] for row in rows],
+            ["20220901_RAW_control_6h_1_NEG", "20220902_RAW_ILG_6h_1_NEG"],
+        )
+
+    def test_qc_excluded_by_role_is_disclosed(self):
+        result = self._run(class_ids=["raw"])
+        self.assertIn("role により除外", result)
+        self.assertIn("20220901_QC_RAW_NEG_1", result)
+
+    def test_include_roles_brings_qc_back(self):
+        self._run(class_ids=["raw"], include_roles=["sample", "qc"])
+        rows = self.session.filtered_features[0]["AlignedPeakProperties"]
+        self.assertIn("20220901_QC_RAW_NEG_1", [row[1] for row in rows])
+
+
+class ArfPcaPreprocessedFactorTests(unittest.TestCase):
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+        names = ["20220901_RAW_control_0h_1_NEG", "20220902_RAW_ILG_6h_1_NEG"]
+        session_state.session.feature_matrix = np.array([[1.0, 2.0], [3.0, 4.0]])
+        session_state.session.pp_sample_names = names
+        session_state.session.pp_feature_names = ["Spot_0_height", "Spot_1_height"]
+        session_state.session.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.features = []
+
+    def test_group_factors_label_the_plot(self):
+        with patch.object(server.arf_reader, "run_pca", fake_run_pca), \
+             patch.object(server.arf_reader, "get_pca_loading_features", return_value=[]):
+            result = server.arf_pca_preprocessed(
+                group_factors=[["control", "ILG"], ["0h", "6h"]])
+        self.assertIn("control|0h=1", result)
+        self.assertIn("ILG|6h=1", result)
+
+
 if __name__ == "__main__":
     unittest.main()

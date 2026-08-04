@@ -282,12 +282,16 @@ def arf_pca_preprocessed(
     top_features: int = 10,
     log_transform: bool = False,
     group_levels: list[str] | None = None,
+    group_factors: list[list[str]] | None = None,
 ) -> str:
     """arf_preprocess で用意した前処理後行列で PCA を実行する（前処理後経路の PCA 入口）。
 
     正規化・QC フィルタ・欠損補完を経た行列に対する PCA。生スポットへ直接フィルタして
     やり直す PCA は arf_parser。手順は arf_preprocess → 本ツール。色分け(group_levels)や
     log 変換だけを変えて再実行しても、前処理はやり直さない。
+    群分けは group_levels（1因子）または group_factors（因子軸の直積、例
+    [["control","ILG"],["0h","6h"]] → "control|0h"）で指定する。値トークンは Class ID
+    とサンプル名の両方から解決されるため、Class ID に無い時点などでも色分けできる。
     """
     if not _pp_has_preprocessed():
         return "前処理後の行列がありません。先に arf_preprocess を実行してください。"
@@ -300,7 +304,10 @@ def arf_pca_preprocessed(
     except Exception as exc:
         return f"[ERROR] PCA 実行に失敗しました: {exc}"
 
-    sample_groups = assign_sample_groups(sample_names, session_state.session.arf_class_index, group_levels)
+    sample_groups = assign_sample_groups(
+        sample_names, session_state.session.arf_class_index, group_levels,
+        group_factors=group_factors,
+    )
     plot_block = _format_pca_plot_block(
         pca_result, sample_names,
         title="PCA (preprocessed ARF)",
@@ -344,6 +351,8 @@ def arf_parser(
     class_ids: list[str] | None = None,
     class_missing_sample_policy: str = "error",
     group_levels: list[str] | None = None,
+    group_factors: list[list[str]] | None = None,
+    include_roles: list[str] | None = None,
 ) -> str:
     """.arf（サンプル別強度）を読み込み、フィルタを適用して PCA を実行する。
 
@@ -368,13 +377,20 @@ def arf_parser(
     - tag_scope: sample_peak（サンプル別Peak ID）または alignment_spot（MasterAlignmentID）
     - tag_directory: [任意] *_tags.xml の探索先。既定はARFと同じディレクトリ
     - missing_sample_policy: タグファイル未対応サンプルの扱い。error/exclude/untagged（既定 error）
-    - class_ids: [任意] Class ID の指定リスト。各要素は `_` 区切りの部分指定が可能で、
-      指定した全トークンを含む Class ID に一致する（要素内AND・順不同）。要素間はOR。
-      例: `["gf"]`=gfを含む全クラス、`["Cerebellum_gf"]`=両方を含むクラス、完全一致も可。
+    - class_ids: [任意] 因子トークンによるサンプル絞り込み。各要素は `_` 区切りの部分指定
+      で、指定した全トークンを含むサンプルに一致する（要素内AND・順不同）。要素間はOR。
+      トークンは **Class ID とサンプル名の両方**から解決されるため、Class ID に入って
+      いない因子（時点・複製・測定日）でも絞れる。例: `["6h"]`, `["ILG_6h","control_6h"]`。
     - class_missing_sample_policy: Class IDメタデータ未対応サンプルの扱い。error/exclude（既定 error）
     - group_levels: [任意] PCA点の色分け因子の値トークン（例: `["gf","spf"]`）。
       未指定なら各サンプルの完全Class IDで色分け。指定するとその因子だけで統合し、
       該当しないサンプルは "other" 群になる。
+    - group_factors: [任意] 因子軸のリスト。各軸は値トークンのリストで、直積ラベルを
+      作る（例 `[["control","ILG"],["0h","6h"]]` → `"control|0h"`）。group_levels より優先。
+      処置×時点のような多群を手書き列挙せずに色分けできる。
+    - include_roles: [任意] class_ids のフィルタに含める role（既定 `["sample"]`）。
+      統合トークン空間ではサンプル名経由で QC/blank を掴み得るため既定で落とす。
+      QC も含めたいときだけ `["sample","qc"]` のように明示する。
     """
     props = props or ["height"]
 
@@ -406,6 +422,7 @@ def arf_parser(
             session_state.session.arf_class_index,
             class_ids,
             missing_sample_policy=class_missing_sample_policy,
+            include_roles=tuple(include_roles) if include_roles else ("sample",),
         )
         if not analysis_data:
             return "指定されたClass IDに一致するARFサンプルが見つかりませんでした。arf_list_classes で利用可能なClass IDと件数を確認してください。"
@@ -446,6 +463,7 @@ def arf_parser(
         # サンプル別の群ラベル（既定=完全Class ID、group_levels 指定時はその因子で統合）
         sample_groups = assign_sample_groups(
             sample_names, session_state.session.arf_class_index, group_levels,
+            group_factors=group_factors,
         )
 
         # PCAスコアプロット用データ（共通ヘルパー）
