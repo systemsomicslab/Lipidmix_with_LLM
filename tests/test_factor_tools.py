@@ -198,5 +198,60 @@ class ArfListClassesVocabularyTests(unittest.TestCase):
         self.assertEqual(payload["class_counts"], {})
 
 
+def _exclude_row(file_id, name, height):
+    """exclusions.roster が file_name を拾える現実的な生 row（len>25・data[18] 数値）。"""
+    row = [0] * 26
+    row[0] = file_id
+    row[1] = name
+    row[2] = file_id
+    row[18] = float(height)
+    return row
+
+
+class ArfExcludeSpecTests(unittest.TestCase):
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+        names = [
+            "20220902_RAW_ILG_6h_1_NEG",
+            "20220902_RAW_ILG_6h_2_NEG",
+            "20220902_RAW_ILG_0h_1_NEG",
+            "20220901_RAW_control_6h_1_NEG",
+        ]
+        session_state.session.filtered_features = [{
+            "MasterAlignmentID": 1,
+            "AlignedPeakProperties": [_exclude_row(i, n, 10 + i) for i, n in enumerate(names)],
+        }]
+
+    def test_spec_excludes_all_matching_samples(self):
+        out = json.loads(server.arf_exclude(exclude_samples=["ILG_6h"]))
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(sorted(out["excluded_samples"]), [
+            "20220902_RAW_ILG_6h_1_NEG", "20220902_RAW_ILG_6h_2_NEG",
+        ])
+        self.assertEqual(out["samples_after"], 2)
+
+    def test_payload_discloses_spec_resolution(self):
+        out = json.loads(server.arf_exclude(exclude_samples=["ILG_6h"]))
+        self.assertEqual(out["resolved_samples"]["ILG_6h"], [
+            "20220902_RAW_ILG_6h_1_NEG", "20220902_RAW_ILG_6h_2_NEG",
+        ])
+
+    def test_remove_mode_accepts_specs(self):
+        server.arf_exclude(exclude_samples=["ILG_6h"])
+        out = json.loads(server.arf_exclude(exclude_samples=["ILG_6h"], mode="remove"))
+        self.assertEqual(out["excluded_samples"], [])
+        self.assertEqual(session_state.session.excluded_samples, set())
+
+    def test_exact_name_still_wins(self):
+        out = json.loads(server.arf_exclude(exclude_samples=["20220902_RAW_ILG_6h_1_NEG"]))
+        self.assertEqual(out["excluded_samples"], ["20220902_RAW_ILG_6h_1_NEG"])
+
+    def test_unmatched_spec_is_reported_not_raised(self):
+        out = json.loads(server.arf_exclude(exclude_samples=["24h"]))
+        self.assertEqual(out["status"], "success")
+        self.assertIn("24h", out["unmatched_samples"])
+        self.assertEqual(session_state.session.excluded_samples, set())
+
+
 if __name__ == "__main__":
     unittest.main()

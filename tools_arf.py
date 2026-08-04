@@ -112,6 +112,37 @@ def arf_list_sample_roles() -> str:
                       ensure_ascii=False, indent=2)
 
 
+def _resolve_exclude_specs(req_samples, avail_samples):
+    """除外指定を実サンプル名へ解決する（完全一致優先、次に因子トークン spec）。
+
+    完全一致を先に見るのは、サンプル名が他のサンプル名のトークン部分集合に
+    なっている場合でも「その1件だけ」という従来の意図を保つため。
+    一致ゼロの指定は例外にせず unmatched へ回す（既存方針: 除外指定の取りこぼし
+    だけで解析全体を止めない）。
+    """
+    if not req_samples:
+        return [], {}, []
+    facets = sample_factors.build_sample_facets(
+        sorted(avail_samples), session_state.session.arf_class_index)
+    matched: list[str] = []
+    resolved: dict[str, list[str]] = {}
+    unmatched: list[str] = []
+    for spec in req_samples:
+        if spec in avail_samples:
+            resolved[spec] = [spec]
+            matched.append(spec)
+            continue
+        try:
+            hits, _ = sample_factors.expand_sample_specs(
+                [spec], facets, include_roles=None)
+        except ValueError:
+            unmatched.append(spec)
+            continue
+        resolved[spec] = hits[spec]
+        matched.extend(hits[spec])
+    return matched, resolved, unmatched
+
+
 @mcp.tool()
 def arf_exclude(
     exclude_samples: list[str] | None = None,
@@ -125,7 +156,11 @@ def arf_exclude(
     filtered_features 自体は変更しないため、mode="remove"/"clear" で元に戻せる。
 
     引数:
-    - exclude_samples: 除外するサンプル名（file_name、完全一致）のリスト。
+    - exclude_samples: 除外するサンプル。完全なサンプル名に加え、`_` 区切りの因子
+      トークン指定（`"ILG_6h"` = ILG かつ 6h の全サンプル）を受ける。トークンは
+      Class ID とサンプル名の両方から解決される。解決結果は payload の
+      resolved_samples に必ず出る。一致ゼロの指定は unmatched_samples 行きで、
+      除外指定の取りこぼしだけで解析を止めない。
     - exclude_spots: 除外するスポットの MasterAlignmentID（int）のリスト。
     - mode: add（既定・追加）/ remove（再包含）/ clear（全消去）/ list（現状表示のみ）。
     """
@@ -140,6 +175,7 @@ def arf_exclude(
     esp = session_state.session.excluded_spots
     req_samples = list(exclude_samples or [])
     req_spots = list(exclude_spots or [])
+    resolved_samples: dict[str, list[str]] = {}
     unmatched_samples: list[str] = []
     unmatched_spots: list[int] = []
     caveats: list[str] = []
@@ -150,15 +186,15 @@ def arf_exclude(
     elif mode == "list":
         pass
     elif mode in ("add", "remove"):
-        matched_samples = [n for n in req_samples if n in avail_samples]
-        unmatched_samples = [n for n in req_samples if n not in avail_samples]
+        matched_samples, resolved_samples, unmatched_samples = _resolve_exclude_specs(
+            req_samples, avail_samples)
         matched_spots = [i for i in req_spots if i in avail_ids]
         unmatched_spots = [i for i in req_spots if i not in avail_ids]
         if mode == "add":
             es.update(matched_samples)
             esp.update(matched_spots)
         else:  # remove
-            es.difference_update(req_samples)
+            es.difference_update(matched_samples)
             esp.difference_update(req_spots)
         if unmatched_samples:
             preview = ", ".join(sorted(avail_samples)[:10])
@@ -180,6 +216,7 @@ def arf_exclude(
         "mode": mode,
         "excluded_samples": sorted(es),
         "excluded_spots": sorted(esp),
+        "resolved_samples": resolved_samples,
         "samples_before": len(avail_samples),
         "samples_after": len(pruned_names),
         "spots_before": len(avail_ids),
