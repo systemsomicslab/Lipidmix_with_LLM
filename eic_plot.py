@@ -433,31 +433,68 @@ def build_multi_compound_plot_payload(
     }
 
 
-def render_eic_plot(payload: EICPlotPayload, title: str | None = None):
+def render_eic_plot(payload, title: str | None = None):
     """Render an approved EIC payload to a matplotlib figure for explicit saving."""
+    schema = payload.get("plot_schema")
+    if schema == MULTI_PLOT_SCHEMA:
+        return _render_multi_compound(payload, title)
+    if schema == "lipidmix.eic.v1":
+        return _render_single_spot(payload, title)
+    raise ValueError(f"Unsupported EIC plot schema: {schema!r}")
+
+
+def _render_single_spot(payload: EICPlotPayload, title: str | None = None):
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(9, 6))
     for item in payload["series"]:
         line = ax.plot(item["x"], item["y"], label=item["label"], linewidth=1.4)[0]
         if item["x"]:
-            nearest = min(
-                range(len(item["x"])),
-                key=lambda index: abs(item["x"][index] - item["peak_top"]),
-            )
-            ax.scatter(
-                [item["x"][nearest]], [item["y"][nearest]],
-                color=line.get_color(), s=20, zorder=3,
-            )
+            apex_x, apex_y = _apex_point(item["x"], item["y"], item["peak_top"])
+            ax.scatter([apex_x], [apex_y], color=line.get_color(), s=20, zorder=3)
     if len(payload["series"]) == 1:
         item = payload["series"][0]
         ax.axvspan(item["peak_left"], item["peak_right"], color="#999999", alpha=0.12)
+    _apply_axes(ax, payload, title)
+    ax.legend(fontsize=8, loc="best")
+    return fig
+
+
+def _render_multi_compound(payload: EICMultiPlotPayload, title: str | None = None):
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    show_annotations = payload["render_hints"].get("show_annotations", True)
+    for item in payload["series"]:
+        line = ax.plot(item["x"], item["y"], label=item["label"], linewidth=1.2)[0]
+        annotation = item.get("annotation")
+        if not annotation:
+            continue
+        ax.scatter(
+            [annotation["x"]], [annotation["y"]],
+            color=line.get_color(), s=16, zorder=3,
+        )
+        if show_annotations:
+            ax.annotate(
+                annotation["text"],
+                xy=(annotation["x"], annotation["y"]),
+                xytext=(0, 6),
+                textcoords="offset points",
+                fontsize=6,
+                rotation=45,
+                ha="left",
+                va="bottom",
+            )
+    _apply_axes(ax, payload, title)
+    ax.legend(fontsize=6, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
+    return fig
+
+
+def _apply_axes(ax, payload, title: str | None) -> None:
     x_axis = payload["axes"]["x"]
     y_axis = payload["axes"]["y"]
     x_label = x_axis["label"] + (f" ({x_axis['unit']})" if x_axis["unit"] else "")
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_axis["label"])
     ax.set_title(title or payload["title"])
-    ax.legend(fontsize=8, loc="best")
     ax.grid(alpha=0.2)
-    return fig

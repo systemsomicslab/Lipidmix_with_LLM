@@ -1,6 +1,12 @@
 import unittest
 
-from eic_plot import build_multi_compound_plot_payload
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+
+from eic_plot import build_multi_compound_plot_payload, render_eic_plot
 
 
 def _candidate(spot_id, name, ontology, rt, mz):
@@ -137,6 +143,45 @@ class MultiCompoundPayloadTests(unittest.TestCase):
             self._build(normalize="zscore")
         with self.assertRaisesRegex(ValueError, "top_n"):
             self._build(top_n=0)
+
+
+class MultiCompoundRenderTests(unittest.TestCase):
+    def setUp(self):
+        candidates = [
+            _candidate(0, "PC(12:0/13:0)", "PC", 13.5, 636.4),
+            _candidate(1, "Ceramide (d18:1/25:0)", "Cer", 22.1, 650.6),
+        ]
+        spots = [
+            _spot(0, 13.5, 636.4, 7, [(13.4, 2.0), (13.5, 40.0), (13.6, 3.0)], 13.5, 40.0),
+            _spot(1, 22.1, 650.6, 7, [(22.0, 5.0), (22.1, 90.0), (22.2, 4.0)], 22.1, 90.0),
+        ]
+        self.payload = build_multi_compound_plot_payload(
+            candidates, spots, file_id=7,
+            file_path="alignment.EIC.aef", arf2_path="alignment.arf2",
+        )
+
+    def test_renders_one_line_and_one_annotation_per_series(self):
+        fig = render_eic_plot(self.payload)
+        try:
+            ax = fig.axes[0]
+            self.assertEqual(len(ax.get_lines()), 2)
+            texts = [annotation.get_text() for annotation in ax.texts]
+            self.assertIn("Ceramide (d18:1/25:0) / 22.100", texts)
+            self.assertEqual(ax.get_xlabel(), "RT (min)")
+        finally:
+            plt.close(fig)
+
+    def test_annotations_can_be_switched_off(self):
+        self.payload["render_hints"]["show_annotations"] = False
+        fig = render_eic_plot(self.payload)
+        try:
+            self.assertEqual(list(fig.axes[0].texts), [])
+        finally:
+            plt.close(fig)
+
+    def test_unknown_schema_raises(self):
+        with self.assertRaisesRegex(ValueError, "schema"):
+            render_eic_plot({"plot_schema": "lipidmix.eic.v99", "series": []})
 
 
 if __name__ == "__main__":
