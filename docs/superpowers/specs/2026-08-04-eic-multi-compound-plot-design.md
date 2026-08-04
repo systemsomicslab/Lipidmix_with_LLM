@@ -170,10 +170,15 @@ def read_eic_spots_css1(
   多物質ツールは `file_ids=[file_id]` の 1 本しか要求しないため実質制約にならない。
 - `max_total_points` はバッチ全体の合計点数に対する上限とし、超過時は
   読み込んだ点数と `top_n` を減らす旨のメッセージを含む `ValueError` を送出する。
-- 範囲外 `spot_id` は例外を投げず、返却リストから単に欠落させる。呼び出し側が
-  `"spot_out_of_range"` として扱う。
-- 既存 `read_eic_spot_css1` はこのバッチ版に委譲し、外部から見た振る舞い（範囲外
-  `spot_id` で `ValueError`、`file_ids` 未指定かつ 12 トレース超で `ValueError`）を維持する。
+- `strict` フラグで単数版との差を吸収する。`strict=True` では範囲外 `spot_id` と
+  要求 `file_ids` の不在を `ValueError` にする（既存 `read_eic_spot_css1` の振る舞い）。
+  `strict=False` では範囲外 `spot_id` を返却リストから欠落させ、要求 `file_id` を持たない
+  スポットは `samples` が空のまま返す。これにより呼び出し側は「スポット自体が無い」
+  （`"spot_out_of_range"`）と「そのサンプルにトレースが無い」（`"file_id_absent"`）を
+  区別できる。
+- 既存 `read_eic_spot_css1` はこのバッチ版に `strict=True` で委譲し、外部から見た
+  振る舞い（範囲外 `spot_id` で `ValueError`、`file_ids` 未指定かつ 12 トレース超で
+  `ValueError`）を維持する。
 
 ## 7. 描画・保存
 
