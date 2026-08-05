@@ -1,4 +1,4 @@
-# USAGE — ms-data-parser MCP ツール一覧(全36ツール)
+# USAGE — ms-data-parser MCP ツール一覧(全39ツール)
 
 MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.EIC.aef`)を解析し、PCA・差次的解析・
 アノテーション検証・文献探索・レポート記録までを行う MCP サーバーのツール群です。
@@ -18,6 +18,7 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 |--------|------|
 | `list_data_files` | 指定ディレクトリ内のファイル一覧を取得。`extension`(例 `.arf2`)でフィルタ可。 |
 | `load_dataset` | MS-DIAL 出力フォルダの**入口**。arf2 概観→arf 詳細PCAを一括実行。最新バッチ・PeakProperties.arf を自動選択し、以降のツールの既定探索先を更新。 |
+| `sample_search` | 因子トークン(`ILG_6h` 等)でサンプルを検索し、`file_id` と `.pai2`/`.dcl` の実パスを返す。specs 省略で語彙一覧。ARF ロード前でも動く。 |
 
 ## 2. ARF2 解析(データセット全体カタログ)
 
@@ -107,3 +108,22 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 | `write_report` | 解析・解釈レポートを `reports/<analysis_id>.md` に上書き保存。 |
 | `read_report` | 過去レポートを読み戻す(最新更新のものを返す。セッション継続用)。 |
 | `list_reports` | 既存レポートの1行索引(analysis_id / date / status)を返す。 |
+
+## 10. Class ID に無い因子で絞る・比べる
+
+MS-DIAL の Class ID は入力された1文字列にすぎず、時点や複製がサンプル名にしか
+無いことがある(例: Class ID = `ILG`/`control` だけで、時点 `6h` はサンプル名のみ)。
+`class_ids` / `group_a` / `group_b` / `group_levels` / `group_factors` のトークンは
+Class ID とサンプル名の**両方**から解決されるため、そのまま書ける。
+
+```python
+sample_search()                                    # 何で絞れるかの語彙一覧
+arf_parser(class_ids=["ILG_6h", "control_6h"])     # 6h だけで PCA
+arf_parser(group_factors=[["control", "LPS", "ILG", "G_uralensis"],
+                          ["0h", "15min", "1h", "6h", "24h"]])  # 処置x時点の20群で色分け
+arf_preprocess(normalize="median")
+arf_differential(group_a="ILG_6h", group_b="control_6h")        # 時点を揃えた2群比較
+```
+
+QC/blank はフィルタでは既定で除外され(`include_roles=["sample","qc"]` で戻せる)、
+PCA の色分けでは `"qc"`/`"blank"` ラベルとして残る(前処理品質の判断材料になるため)。
