@@ -48,6 +48,7 @@ EXPECTED_TOOLS = sorted([
     "paper_search",
     "read_report",
     "record_objective",
+    "sample_search",
     "save_eic_figure",
     "save_pca_figure",
     "save_volcano_figure",
@@ -72,7 +73,7 @@ EXPECTED_TEMPLATES = sorted([
 
 def test_tool_count_is_stable():
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 38
+    assert len(tools) == 39
 
 
 def test_tool_names_snapshot():

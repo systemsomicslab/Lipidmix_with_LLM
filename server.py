@@ -68,6 +68,7 @@ from tools_reports import *
 from tools_pai2 import *
 from tools_dcl import *
 from tools_arf import *
+from tools_samples import *  # sample_search
 from tools_arf2 import *
 from tools_eic import *
 from tools_dataset import *  # list_data_files, load_dataset

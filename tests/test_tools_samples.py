@@ -1,0 +1,123 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import mcp_core
+import server
+import session_state
+
+
+SAMPLES = [
+    "20220901_RAW_control_6h_1_NEG",
+    "20220902_RAW_ILG_6h_1_NEG",
+    "20220902_RAW_ILG_6h_2_NEG",
+    "20220901_QC_RAW_NEG_1",
+]
+
+
+def make_dir(tmp: str, timestamps=("202605151012",)) -> Path:
+    """サンプルごとの .pai2 / .dcl を、指定バッチ分だけ作る。"""
+    directory = Path(tmp)
+    for stamp in timestamps:
+        for name in SAMPLES:
+            for suffix in (".pai2", ".dcl"):
+                (directory / f"{name}_{stamp}{suffix}").touch()
+    return directory
+
+
+class SampleSearchFromDirectoryTests(unittest.TestCase):
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+
+    def test_vocabulary_mode_lists_all_samples_and_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = json.loads(server.sample_search(directory=str(make_dir(tmp))))
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["total_samples"], 4)
+        self.assertEqual(payload["token_vocabulary"]["tokens"]["6h"]["samples"], 3)
+
+    def test_spec_mode_returns_matching_samples_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = json.loads(
+                server.sample_search(specs=["ILG_6h"], directory=str(make_dir(tmp))))
+        self.assertEqual(payload["matched"], 2)
+        self.assertEqual(
+            [s["name"] for s in payload["samples"]],
+            ["20220902_RAW_ILG_6h_1_NEG", "20220902_RAW_ILG_6h_2_NEG"],
+        )
+        self.assertNotIn("token_vocabulary", payload)
+
+    def test_returns_real_file_paths_per_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = make_dir(tmp)
+            payload = json.loads(
+                server.sample_search(specs=["ILG_6h_1"], directory=str(directory)))
+            files = payload["samples"][0]["files"]
+            self.assertTrue(files[".pai2"].endswith("20220902_RAW_ILG_6h_1_NEG_202605151012.pai2"))
+            self.assertTrue(Path(files[".dcl"]).is_file())
+
+    def test_selects_latest_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = make_dir(tmp, timestamps=("202601010000", "202605151012"))
+            payload = json.loads(
+                server.sample_search(specs=["ILG_6h_1"], directory=str(directory)))
+        self.assertIn("202605151012", payload["samples"][0]["files"][".pai2"])
+        self.assertNotIn("202601010000", payload["samples"][0]["files"][".pai2"])
+
+    def test_search_returns_all_roles_with_role_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = json.loads(
+                server.sample_search(specs=["raw"], directory=str(make_dir(tmp))))
+        roles = {s["name"]: s["role"] for s in payload["samples"]}
+        self.assertEqual(roles["20220901_QC_RAW_NEG_1"], "qc")
+        self.assertEqual(payload["matched"], 4)
+
+    def test_include_roles_narrows_the_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = json.loads(server.sample_search(
+                specs=["raw"], directory=str(make_dir(tmp)), include_roles=["sample"]))
+        self.assertEqual(payload["matched"], 3)
+        self.assertEqual(payload["excluded_by_role"], ["20220901_QC_RAW_NEG_1"])
+
+    def test_custom_extensions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = json.loads(server.sample_search(
+                specs=["ILG_6h_1"], directory=str(make_dir(tmp)), extensions=[".dcl"]))
+        self.assertEqual(list(payload["samples"][0]["files"]), [".dcl"])
+
+    def test_zero_match_returns_error_with_vocabulary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = json.loads(
+                server.sample_search(specs=["24h"], directory=str(make_dir(tmp))))
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("24h", payload["message"])
+        self.assertIn("token_vocabulary", payload)
+
+    def test_missing_directory_is_an_error(self):
+        payload = json.loads(server.sample_search(directory="C:/no/such/dir"))
+        self.assertEqual(payload["status"], "error")
+
+
+class SampleSearchFromLoadedArfTests(unittest.TestCase):
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+        session_state.session.current_file_path = "loaded.arf"
+        session_state.session.features = [{
+            "MasterAlignmentID": 1,
+            "AlignedPeakProperties": [[i, n, 1.0] for i, n in enumerate(SAMPLES)],
+        }]
+
+    def test_uses_loaded_arf_sample_names(self):
+        payload = json.loads(server.sample_search(specs=["ILG_6h"]))
+        self.assertEqual(payload["source"], "loaded_arf")
+        self.assertEqual(payload["matched"], 2)
+
+    def test_file_id_comes_from_class_index_when_absent(self):
+        payload = json.loads(server.sample_search(specs=["ILG_6h"]))
+        self.assertIsNone(payload["samples"][0]["file_id"])
+
+
+if __name__ == "__main__":
+    unittest.main()
