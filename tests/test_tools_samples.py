@@ -81,6 +81,31 @@ class SampleSearchFromDirectoryTests(unittest.TestCase):
         self.assertEqual(payload["matched"], 3)
         self.assertEqual(payload["excluded_by_role"], ["20220901_QC_RAW_NEG_1"])
 
+    def test_vocabulary_mode_with_include_roles_drops_qc(self):
+        # specs 省略（語彙モード）でも include_roles を適用し、QC/blank を
+        # 結果とトークン語彙の両方から落とすことを検証する。
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = json.loads(server.sample_search(
+                directory=str(make_dir(tmp)), include_roles=["sample"]))
+        self.assertEqual(payload["matched"], 3)
+        self.assertEqual(payload["excluded_by_role"], ["20220901_QC_RAW_NEG_1"])
+        self.assertNotIn(
+            "20220901_QC_RAW_NEG_1",
+            [s["name"] for s in payload["samples"]],
+        )
+        self.assertNotIn("qc", payload["token_vocabulary"]["tokens"].get("raw", {}).get("roles", {}))
+
+    def test_vocabulary_mode_without_include_roles_keeps_qc(self):
+        # include_roles 省略時は従来どおり全 role を含む（回帰防止）。
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = json.loads(server.sample_search(directory=str(make_dir(tmp))))
+        self.assertEqual(payload["matched"], 4)
+        self.assertEqual(payload["excluded_by_role"], [])
+        self.assertIn(
+            "20220901_QC_RAW_NEG_1",
+            [s["name"] for s in payload["samples"]],
+        )
+
     def test_custom_extensions(self):
         with tempfile.TemporaryDirectory() as tmp:
             payload = json.loads(server.sample_search(

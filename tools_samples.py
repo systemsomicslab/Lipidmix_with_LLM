@@ -68,16 +68,17 @@ def sample_search(
 
     cleaned = [str(s) for s in specs or [] if str(s).strip()]
     if not cleaned:
+        kept, dropped = _apply_role_filter(facets, roles)
         return json.dumps({
             "status": "success",
             "source": source,
             "directory": str(target_dir) if target_dir else None,
             "specs": [],
             "total_samples": len(facets),
-            "matched": len(facets),
-            "excluded_by_role": [],
-            "samples": [_describe(f, target_dir, exts) for f in facets.values()],
-            "token_vocabulary": vocabulary,
+            "matched": len(kept),
+            "excluded_by_role": sorted(dropped),
+            "samples": [_describe(f, target_dir, exts) for f in kept.values()],
+            "token_vocabulary": sample_factors.token_vocabulary(kept),
         }, ensure_ascii=False, indent=2)
 
     try:
@@ -107,6 +108,22 @@ def sample_search(
 
 def _error(message: str) -> str:
     return json.dumps({"status": "error", "message": message}, ensure_ascii=False, indent=2)
+
+
+def _apply_role_filter(facets, roles):
+    """specs 省略時（語彙モード）にも include_roles を適用する。
+
+    specs 指定時は sample_factors.expand_sample_specs が role フィルタを担うが、
+    specs 省略の分岐はそこを通らないため facets 自体にここで同じ意味論のフィルタを
+    掛ける。roles が None（省略時）なら従来どおり全 role を素通しする。
+    戻り値は (残った {サンプル名: SampleFacet}, 除外されたサンプル名の集合)。
+    """
+    if roles is None:
+        return dict(facets), set()
+    allowed = {str(role).casefold() for role in roles}
+    kept = {name: f for name, f in facets.items() if f.role.casefold() in allowed}
+    dropped = {name for name in facets if name not in kept}
+    return kept, dropped
 
 
 def _collect_facets(directory):
