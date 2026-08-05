@@ -252,6 +252,41 @@ class ArfExcludeSpecTests(unittest.TestCase):
         self.assertIn("24h", out["unmatched_samples"])
         self.assertEqual(session_state.session.excluded_samples, set())
 
+    def test_empty_or_underscore_only_specs_are_unmatched_not_raised(self):
+        """split_tokens が空集合を返す spec（空文字/空白/アンダースコアのみ）は
+        expand_sample_specs 内で continue され matches に入らない。resolved 側が
+        それを KeyError で落とさず unmatched_samples 行きにできることを確認する。
+        """
+        out = json.loads(server.arf_exclude(exclude_samples=["", "   ", "___"]))
+        self.assertEqual(out["status"], "success")
+        for spec in ("", "   ", "___"):
+            self.assertIn(spec, out["unmatched_samples"])
+        self.assertEqual(out["excluded_samples"], [])
+        self.assertEqual(session_state.session.excluded_samples, set())
+
+
+class ArfExcludeQcRoleSpecTests(unittest.TestCase):
+    """include_roles=None（tools_arf._resolve_exclude_specs）の意図: 除外指定は
+    group 形成と異なり QC/blank ロールのサンプルも因子トークン spec で狙えてよい。
+    """
+
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+        names = [
+            "20220902_RAW_ILG_6h_1_NEG",
+            "20220901_QC_RAW_NEG_1",
+        ]
+        session_state.session.filtered_features = [{
+            "MasterAlignmentID": 1,
+            "AlignedPeakProperties": [_exclude_row(i, n, 10 + i) for i, n in enumerate(names)],
+        }]
+
+    def test_factor_token_spec_excludes_qc_sample(self):
+        out = json.loads(server.arf_exclude(exclude_samples=["QC"]))
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(out["excluded_samples"], ["20220901_QC_RAW_NEG_1"])
+        self.assertEqual(out["resolved_samples"]["QC"], ["20220901_QC_RAW_NEG_1"])
+
 
 if __name__ == "__main__":
     unittest.main()

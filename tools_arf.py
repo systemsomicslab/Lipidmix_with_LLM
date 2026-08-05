@@ -138,6 +138,12 @@ def _resolve_exclude_specs(req_samples, avail_samples):
         except ValueError:
             unmatched.append(spec)
             continue
+        if spec not in hits:
+            # トークンが空集合になる spec（空文字・空白・アンダースコアのみ）は
+            # expand_sample_specs 内で continue されるため matches に入らない。
+            # ValueError と同じ扱いで unmatched へ回す（KeyError で落とさない）。
+            unmatched.append(spec)
+            continue
         resolved[spec] = hits[spec]
         matched.extend(hits[spec])
     return matched, resolved, unmatched
