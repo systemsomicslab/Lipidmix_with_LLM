@@ -125,5 +125,9 @@ arf_preprocess(normalize="median")
 arf_differential(group_a="ILG_6h", group_b="control_6h")        # 時点を揃えた2群比較
 ```
 
-QC/blank はフィルタでは既定で除外され(`include_roles=["sample","qc"]` で戻せる)、
-PCA の色分けでは `"qc"`/`"blank"` ラベルとして残る(前処理品質の判断材料になるため)。
+QC/blank の扱いはツールごとに異なる。`arf_parser` の `class_ids` フィルタでは既定で除外され
+(`include_roles=["sample","qc"]` で戻せる)。`sample_search` は既定で全 role を返す
+(role を絞りたいときだけ `include_roles` を渡す)。`arf_differential` は QC/blank を常に
+比較対象から除外し、オーバーライドはできない。PCA の色分けは `group_levels`/`group_factors`
+で軸を指定した場合に `"qc"`/`"blank"` ラベルとして残る(前処理品質の判断材料になるため。
+軸を指定しない場合は生の Class ID でラベルされる)。
