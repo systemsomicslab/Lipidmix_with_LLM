@@ -276,6 +276,7 @@ def filter_arf_by_class_ids(
     # 食い違いを示す。従来どおり既定でエラーにする（class_index が無いときは
     # そもそも名前トークンだけで動く設計なので「未対応」ではない）。
     missing_samples: set[str] = set()
+    missing_excluded: list[str] = []
     if class_index is not None:
         missing_samples = {name for name, facet in facets.items() if facet.class_id is None}
         if missing_samples and missing_sample_policy == "error":
@@ -283,6 +284,13 @@ def filter_arf_by_class_ids(
                 "No Class ID metadata matched these ARF samples: "
                 + ", ".join(sorted(missing_samples))
             )
+        # policy="exclude" は「Class メタデータを解決できないサンプルを解析から外す」の
+        # 意。統合トークン空間ではそういうサンプルもサンプル名トークンで spec に一致
+        # するため、ここで明示的に差し引かないと「未対応 N 件」と開示しながら実際には
+        # 解析に入ってしまう（旧 Class ID 専用実装は行ループで読み飛ばしていた）。
+        if missing_samples:
+            missing_excluded = sorted(selected & missing_samples)
+            selected -= missing_samples
 
     filtered = []
     for spot in features:
@@ -309,6 +317,7 @@ def filter_arf_by_class_ids(
         "before_sample_peaks": before_rows,
         "after_sample_peaks": _count_rows(filtered),
         "missing_samples": len(missing_samples),
+        "missing_samples_excluded": missing_excluded,
     }
 
 

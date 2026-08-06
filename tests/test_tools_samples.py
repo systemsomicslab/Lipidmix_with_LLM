@@ -143,6 +143,30 @@ class SampleSearchFromLoadedArfTests(unittest.TestCase):
         payload = json.loads(server.sample_search(specs=["ILG_6h"]))
         self.assertIsNone(payload["samples"][0]["file_id"])
 
+    def test_search_space_is_not_narrowed_by_a_prior_filter(self):
+        """arf_parser の絞り込み（filtered_features）で検索対象が痩せないこと。
+
+        sample_search は「どのサンプルが存在するか」の発見入口なので、直前の
+        フィルタに関わらずデータセット全体を見る。
+        """
+        session_state.session.filtered_features = [{
+            "MasterAlignmentID": 1,
+            "AlignedPeakProperties": [[1, "20220902_RAW_ILG_6h_1_NEG", 1.0]],
+        }]
+        payload = json.loads(server.sample_search())
+        self.assertEqual(payload["total_samples"], len(SAMPLES))
+        self.assertIn("control", payload["token_vocabulary"]["tokens"])
+
+    def test_spec_outside_the_prior_filter_still_resolves(self):
+        session_state.session.filtered_features = [{
+            "MasterAlignmentID": 1,
+            "AlignedPeakProperties": [[1, "20220902_RAW_ILG_6h_1_NEG", 1.0]],
+        }]
+        payload = json.loads(server.sample_search(specs=["control"]))
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(
+            [s["name"] for s in payload["samples"]], ["20220901_RAW_control_6h_1_NEG"])
+
 
 if __name__ == "__main__":
     unittest.main()

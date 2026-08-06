@@ -68,6 +68,51 @@ class DifferentialByNameTokenTests(unittest.TestCase):
         self.assertEqual(out["n_a"], 4)
         self.assertEqual(out["n_b"], 4)
 
+    def test_blank_group_spec_returns_structured_error(self):
+        """トークンが空集合になる群指定（空文字/空白/アンダースコアのみ）。
+
+        expand_sample_specs はそういう spec を読み飛ばすため matches に現れない。
+        _pool_group_labels が KeyError で MCP ツールの外まで抜けず、他の失敗経路と
+        同じ構造化エラー JSON になることを固定する（arf_exclude 側と同じ形）。
+        """
+        for spec in ("", "   ", "___"):
+            with self.subTest(spec=spec):
+                out = json.loads(
+                    server.arf_differential(group_a=spec, group_b="control_6h"))
+                self.assertEqual(out["status"], "error")
+                self.assertIn("因子トークン", out["message"])
+
+    def test_same_class_id_groups_are_split_by_name_token(self):
+        """同一 Class ID（ILG）内で時点だけが違う2群。サンプル集合は交差しない。"""
+        out = json.loads(server.arf_differential(group_a="ILG_6h", group_b="ILG_0h"))
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(out["n_a"], 3)
+        self.assertEqual(out["n_b"], 1)
+        a = set(out["resolved_samples"]["group_a"])
+        b = set(out["resolved_samples"]["group_b"])
+        self.assertEqual(a & b, set())
+        self.assertEqual(b, {"20220902_RAW_ILG_0h_1_NEG"})
+
+    def test_shared_class_id_is_disclosed_as_not_group_defining(self):
+        """resolved_class_ids は両群とも ['ILG']。縮退比較と誤読されないよう開示する。"""
+        out = json.loads(server.arf_differential(group_a="ILG_6h", group_b="ILG_0h"))
+        self.assertEqual(out["resolved_class_ids"]["group_a"], ["ILG"])
+        self.assertEqual(out["resolved_class_ids"]["group_b"], ["ILG"])
+        self.assertTrue(
+            any("Class ID では区別されず" in c for c in out["caveats"]),
+            out["caveats"])
+
+    def test_pool_caveat_fires_on_multi_sample_groups(self):
+        """プール caveat は Class ID 数ではなくサンプル数で発火する。
+
+        ILG_6h / control_6h はどちらも Class ID 1個・サンプル3件。旧条件
+        （len(resolved[...]) > 1）では発火せず、プールしている事実が隠れていた。
+        """
+        out = json.loads(server.arf_differential(group_a="ILG_6h", group_b="control_6h"))
+        pooled = [c for c in out["caveats"] if "プール群として解決" in c]
+        self.assertEqual(len(pooled), 1, out["caveats"])
+        self.assertIn("3 サンプル", pooled[0])
+
 
 class _ParserFakeSession:
     """test_server_class_filter.FakeSession と同型だが、サンプル名を差し替えられる版。"""
@@ -146,6 +191,28 @@ class ArfParserFactorTests(unittest.TestCase):
         self._run(class_ids=["raw"], include_roles=["sample", "qc"])
         rows = self.session.filtered_features[0]["AlignedPeakProperties"]
         self.assertIn("20220901_QC_RAW_NEG_1", [row[1] for row in rows])
+
+    def test_summary_discloses_selected_samples_not_just_class_ids(self):
+        """class_ids=["6h"] は 6h のサンプルだけを選ぶ。Class ID だけを見せると
+        「ILG と control の全サンプル」と誤読されるため、件数と実サンプル名を出す。
+        """
+        result = self._run(class_ids=["6h"])
+        self.assertIn("選択サンプル**: 2 件", result)
+        self.assertIn("20220901_RAW_control_6h_1_NEG", result)
+        self.assertNotIn("展開先", result)
+
+    def test_list_classes_vocabulary_is_not_narrowed_by_a_prior_filter(self):
+        """絞り込む arf_parser の後でも、発見用の語彙はデータセット全体を見る。
+
+        arf_list_classes は「何で絞れるか」の入口。フィルタ後の特徴量から語彙を
+        作ると 0h/control が消え、ユーザーは「そんなサンプルは無い」と誤る。
+        """
+        self._run(class_ids=["6h"])
+        payload = json.loads(server.arf_list_classes())
+        tokens = payload["sample_token_vocabulary"]["tokens"]
+        self.assertIn("0h", tokens)
+        self.assertEqual(tokens["6h"]["samples"], 2)
+        self.assertEqual(tokens["0h"]["samples"], 2)
 
 
 class ArfPcaPreprocessedFactorTests(unittest.TestCase):

@@ -134,8 +134,10 @@ def _collect_facets(directory):
     """
     session = session_state.session
     if directory is None and _has_loaded_arf(session):
-        names = sample_factors.arf_sample_names(
-            session.filtered_features or session.features)
+        # 検索対象は**常にデータセット全体**（features）。filtered_features を優先すると
+        # 直前の arf_parser(class_ids=...) の絞り込みで検索空間が黙って痩せ、「どの
+        # サンプルが存在するか」を尋ねる本ツールが取りこぼしを起こす。
+        names = sample_factors.arf_sample_names(session.features)
         if names:
             facets = sample_factors.build_sample_facets(names, session.arf_class_index)
             return facets, "loaded_arf", _loaded_arf_dir(session)

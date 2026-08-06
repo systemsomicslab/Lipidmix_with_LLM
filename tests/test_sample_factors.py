@@ -377,6 +377,46 @@ class FilterArfBySampleTokensTests(unittest.TestCase):
         self.assertEqual(stats["excluded_by_role"], [])
 
 
+class FilterArfMissingClassPolicyTests(unittest.TestCase):
+    """Class メタデータを解決できないサンプルの policy 分岐（統合トークン空間）。
+
+    統合トークン空間では Class ID レコードが無いサンプルもサンプル名トークンで
+    spec に一致するため、"exclude" が名前どおりに除外することを固定する。
+    """
+
+    def setUp(self):
+        self.names = [
+            "20220901_RAW_control_6h_1_NEG",
+            "20220902_RAW_ILG_6h_1_NEG",
+        ]
+        self.features = [{
+            "MasterAlignmentID": 1,
+            "AlignedPeakProperties": [[i, n, 100.0 + i] for i, n in enumerate(self.names)],
+        }]
+        # ILG しか知らない class_index（control は Class ID レコードを持たない）。
+        self.index = name_class_index({"20220902_RAW_ILG_6h_1_NEG": "ILG"})
+
+    def test_error_policy_still_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            filter_arf_by_class_ids(self.features, self.index, ["6h"])
+        self.assertIn("20220901_RAW_control_6h_1_NEG", str(ctx.exception))
+
+    def test_exclude_policy_actually_drops_the_sample(self):
+        filtered, stats = filter_arf_by_class_ids(
+            self.features, self.index, ["6h"], missing_sample_policy="exclude")
+        kept = {row[1] for row in filtered[0]["AlignedPeakProperties"]}
+        self.assertEqual(kept, {"20220902_RAW_ILG_6h_1_NEG"})
+        self.assertEqual(stats["matched_samples"], ["20220902_RAW_ILG_6h_1_NEG"])
+        self.assertEqual(stats["after_sample_peaks"], 1)
+
+    def test_exclude_policy_discloses_which_samples_were_dropped(self):
+        _, stats = filter_arf_by_class_ids(
+            self.features, self.index, ["6h"], missing_sample_policy="exclude")
+        self.assertEqual(stats["missing_samples"], 1)
+        self.assertEqual(
+            stats["missing_samples_excluded"], ["20220901_RAW_control_6h_1_NEG"])
+
+
 class AssignSampleGroupsFactorTests(unittest.TestCase):
     def test_group_factors_produce_cross_product(self):
         index = name_class_index({
@@ -384,8 +424,7 @@ class AssignSampleGroupsFactorTests(unittest.TestCase):
             "20220902_RAW_ILG_6h_1_NEG": "ILG",
         })
         groups = assign_sample_groups(
-            list(index["by_file_name"].keys() and [
-                "20220901_RAW_control_0h_1_NEG", "20220902_RAW_ILG_6h_1_NEG"]),
+            ["20220901_RAW_control_0h_1_NEG", "20220902_RAW_ILG_6h_1_NEG"],
             index,
             group_factors=[["control", "ILG"], ["0h", "6h"]],
         )

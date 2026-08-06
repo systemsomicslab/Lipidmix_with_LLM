@@ -199,12 +199,14 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 
 群ラベルは `session.sample_meta[<sample>]["group"]`（ファイル名由来の factor トークン / Class ID 機構、`msdial_classes.assign_sample_groups`）から取得する。バッチは同 `sample_meta` の `batch`（ファイル名中の8桁日付）。`arf_differential()` は `session.feature_matrix`（前処理後行列）を消費し、無ければエラーを返す（先に `arf_preprocess()` が必要）。
 
-`sample_meta[...]["group"]` は常に**完全な Class ID**（例 `24M_GF_F`）である。一方 `group_a` / `group_b` は**因子トークンによるプール指定**を受け付ける（`msdial_classes.expand_class_specs`）:
+`sample_meta[...]["group"]` は常に**完全な Class ID**（例 `24M_GF_F`）である。一方 `group_a` / `group_b` は**因子トークンによるプール指定**を受け付ける（`sample_factors.expand_sample_specs`。トークンは Class ID とサンプル名の両方から解決される）:
 
 - `group_a="24M", group_b="9w"` → `24M_*` を全てプールし `9w_*` と比較（多因子デザインで主効果を見る正しい経路）
 - `group_a="24M_GF"` のように複数トークンを `_` で繋ぐと AND 絞り込み（`24M` かつ `GF`）
 - 完全な Class ID を渡せば従来どおりその1水準のみ
-- 応答の `resolved_class_ids` に展開結果、`n_a` / `n_b` に実 n を返す。展開が2水準以上なら「プール群として解決」caveat を付す
+- `group_a="ILG_6h", group_b="ILG_0h"` のように、**Class ID が同一でサンプル名の因子（時点等）だけが違う2群**も切り出せる
+- 応答の `resolved_samples` が**群の定義そのもの**（実際に比較したサンプル名）、`n_a` / `n_b` が実 n。プールに2件以上のサンプルが入れば「プール群として解決」caveat を付す
+- 応答の `resolved_class_ids` は**選択されたサンプルが持つ Class ID**であって群の定義ではない。両群で同じ Class ID になり得る（上の `ILG_6h` vs `ILG_0h`）ため、縮退比較と誤読しないこと。その場合は「Class ID では区別されず」caveat が付く
 
 **一致ゼロ・両群が同じ Class ID を掴む指定は `status="error"` で落とす**（成功扱いで n=0 を返すと「有意0件＝群間差なし」と誤読されるため）。`24M` と `GF` は `24M_GF_*` を共有するので排他ではなくエラーになる。なお交互作用検定は依然として提供しない。
 

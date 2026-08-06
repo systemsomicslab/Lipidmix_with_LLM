@@ -21,7 +21,7 @@ import sample_factors
 import session_state
 import tool_helpers
 from mcp_core import mcp
-from msdial_classes import assign_sample_groups, expand_class_specs, filter_arf_by_class_ids
+from msdial_classes import assign_sample_groups, filter_arf_by_class_ids
 from msdial_tags import filter_arf_by_tags
 from path_resolvers import resolve_arf_file_path
 from session_state import _build_sample_meta
@@ -79,9 +79,11 @@ def arf_list_classes() -> str:
         return "先に arf_parser を実行してARFデータを読み込んでください。"
     class_index = session_state.session.arf_class_index or {}
     class_counts = class_index.get("class_counts", {})
-    names = sample_factors.arf_sample_names(
-        session_state.session.filtered_features or session_state.session.features
-    )
+    # 語彙は**常にデータセット全体**（features）から作る。filtered_features を優先すると
+    # 直前の arf_parser(class_ids=...) の絞り込みで語彙が黙って痩せ、「何で絞れるか」を
+    # 尋ねる本ツールが「control サンプルは存在しない」と誤答する（class_counts は
+    # mddata 全体を見ているため、同じ payload の中で2つのスコープが混在してしまう）。
+    names = sample_factors.arf_sample_names(session_state.session.features)
     facets = sample_factors.build_sample_facets(
         names, session_state.session.arf_class_index)
     return json.dumps({
@@ -616,6 +618,17 @@ def _pool_group_labels(sample_names, group_labels, group_a, group_b):
     except ValueError as exc:
         raise ValueError(f"{exc} 利用可能な群ラベル: {', '.join(available)}") from exc
 
+    # トークンが空集合になる spec（空文字・空白のみ・アンダースコアのみ）は
+    # expand_sample_specs 内で読み飛ばされ matches に入らない。ここで ValueError へ
+    # 変換しないと KeyError が MCP ツールの外まで抜ける（他の失敗経路はすべて構造化
+    # エラー JSON を返す）。_resolve_exclude_specs の同名ガードと同じ失敗モード。
+    blank_specs = [str(spec) for spec in (group_a, group_b) if spec not in matches]
+    if blank_specs:
+        raise ValueError(
+            f"群指定 {blank_specs} に因子トークンがありません"
+            "（空文字・空白のみ・アンダースコアのみは群指定として無効です）。"
+            f"利用可能な群ラベル: {', '.join(available)}")
+
     a_names, b_names = set(matches[group_a]), set(matches[group_b])
     overlap = sorted({str(meta[n]["group"]) for n in (a_names & b_names)})
     if overlap:
@@ -806,13 +819,33 @@ def arf_differential(
             caveats.append("交絡: " + conf["detail"] + src_note)
         elif not conf.get("assessable", True):
             caveats.append("交絡評価不可: " + conf["detail"] + src_note)
-        if any(len(ids) > 1 for ids in resolved.values()):
+        # プールしているかどうかは Class ID の数ではなくサンプルの数で決まる。
+        # 統合トークン空間では 1 つの Class ID の中を時点等で切り分けられるため、
+        # len(resolved[...]) > 1 で判定すると「ILG_6h = 3サンプル」のような
+        # プールが発火せず、平均化されている事実が隠れる。
+        if any(len(names) > 1 for names in resolved_samples.values()):
             caveats.append(
                 "プール群として解決: "
-                + "; ".join(f"{spec} = {' + '.join(ids)}"
-                            for spec, ids in ((group_a, resolved["group_a"]),
-                                              (group_b, resolved["group_b"])))
+                + "; ".join(
+                    f"{spec} = {len(names)} サンプル"
+                    + (f"（Class ID: {' + '.join(ids)}）" if ids else "")
+                    for spec, names, ids in (
+                        (group_a, resolved_samples["group_a"], resolved["group_a"]),
+                        (group_b, resolved_samples["group_b"], resolved["group_b"]))
+                )
                 + "。因子内の他要因（性・菌叢等）はプール内で平均化されます。")
+        # resolved_class_ids は「選択されたサンプルが持つ Class ID」であって群の定義
+        # ではない。両群が同じ Class ID を持つ構成（ILG_6h vs ILG_0h）では、そのまま
+        # 読むとツール自身が拒否すべき縮退比較に見える。群を分けている実体は
+        # サンプル名の因子トークンなので、その旨を明示する。
+        shared_class_ids = sorted(set(resolved["group_a"]) & set(resolved["group_b"]))
+        if shared_class_ids:
+            caveats.append(
+                f"resolved_class_ids は選択サンプルの Class ID であり群の定義では"
+                f"ありません。group_a='{group_a}' と group_b='{group_b}' は "
+                f"Class ID では区別されず（共通: {', '.join(shared_class_ids)}）、"
+                "サンプル名の因子トークンで分離されています。実際の群構成は "
+                "resolved_samples を参照してください。")
         caveats.append(
             "比較サンプル: "
             + "; ".join(
