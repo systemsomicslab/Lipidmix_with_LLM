@@ -16,7 +16,7 @@ __all__ = ["arf2_parser", "arf2_annotate_identities"]
 
 
 @mcp.tool()
-def arf2_parser(file_path: str | None = None) -> list:
+def arf2_parser(file_path: str | None = None) -> str:
     """
     .arf2 ファイル（MS-DIALの全体カタログ）を解析し、データセットの全体像（メタデータ）を要約して返します。
     このファイルにはサンプル個別の強度データは含まれていないため、PCA等の多変量解析は実行できません。
@@ -24,11 +24,10 @@ def arf2_parser(file_path: str | None = None) -> list:
     """
     file_path = resolve_arf2_file_path(file_path)
     if not file_path:
-        return ["データディレクトリに .arf2 ファイルが見つかりませんでした。"]
+        return "データディレクトリに .arf2 ファイルが見つかりませんでした。"
 
     from arf2_reader import deserialize, generate_text_summary, summarize_arf2_data
     from pathlib import Path
-    import json
 
     try:
         # ARF2データの読み込み
@@ -36,7 +35,7 @@ def arf2_parser(file_path: str | None = None) -> list:
             deserialized_data = deserialize(f)
 
         if not deserialized_data:
-            return [".arf2 ファイルのパースに失敗したか、データが空です。"]
+            return ".arf2 ファイルのパースに失敗したか、データが空です。"
 
         # 要約テキストの生成
         text_summary = generate_text_summary(deserialized_data)
@@ -52,11 +51,10 @@ def arf2_parser(file_path: str | None = None) -> list:
             f"※ 個別のサンプル比較やPCAを行いたい場合は、詳細データを持つ `.arf` (PeakProperties.arf など) を対象に `arf_parser` を使用してください。"
         )
 
-        return [output_text]
+        return session_state.session.maybe_prepend_caveat(output_text, topic="arf2")
 
     except Exception as e:
-        import traceback
-        return [f"ARF2解析中にエラーが発生しました: {str(e)}\n{traceback.format_exc()}"]
+        return f"[ERROR] ARF2解析に失敗しました: {str(e)}"
 
 
 @mcp.tool()

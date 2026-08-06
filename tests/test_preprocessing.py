@@ -333,3 +333,55 @@ class TestDetectFailedQc(unittest.TestCase):
         matrix, names, roles = self._fixture([[100.0, 100.0], [1.0, 1.0]])
         rep = pp.detect_failed_qc(matrix, roles, names)
         self.assertEqual(rep["failed"], [])
+
+
+class TestDropSamplesByRole(unittest.TestCase):
+    """ブランクは背景除去に使ったあと解析行列から外す（PCA/差次を支配させない）。
+
+    QC は PCA に残す（クラスタの締まり具合の確認は PCA の主目的の一つ）ため、
+    既定の除外対象は blank のみ。
+    """
+
+    def _matrix(self):
+        return np.array([
+            [10.0, 1.0],
+            [20.0, 2.0],
+            [15.0, 1.5],
+            [0.1, 0.01],
+        ])
+
+    NAMES = ["s1", "s2", "qc1", "blank1"]
+    ROLES = {"s1": "sample", "s2": "sample", "qc1": "qc", "blank1": "blank"}
+
+    def test_drops_blank_rows_only_by_default(self):
+        matrix, names, dropped = pp.drop_samples_by_role(
+            self._matrix(), self.NAMES, self.ROLES,
+        )
+        self.assertEqual(names, ["s1", "s2", "qc1"])
+        self.assertEqual(dropped, {"blank": ["blank1"]})
+        self.assertEqual(matrix.shape, (3, 2))
+        np.testing.assert_allclose(matrix[2], [15.0, 1.5])  # qc1 が残る
+
+    def test_can_drop_multiple_roles(self):
+        matrix, names, dropped = pp.drop_samples_by_role(
+            self._matrix(), self.NAMES, self.ROLES, drop_roles=("blank", "qc"),
+        )
+        self.assertEqual(names, ["s1", "s2"])
+        self.assertEqual(dropped, {"blank": ["blank1"], "qc": ["qc1"]})
+
+    def test_no_matching_role_is_a_noop(self):
+        names_only_samples = {"s1": "sample", "s2": "sample"}
+        matrix, names, dropped = pp.drop_samples_by_role(
+            np.array([[1.0], [2.0]]), ["s1", "s2"], names_only_samples,
+        )
+        self.assertEqual(names, ["s1", "s2"])
+        self.assertEqual(dropped, {})
+        self.assertEqual(matrix.shape, (2, 1))
+
+    def test_dropping_every_row_yields_empty_matrix_not_error(self):
+        matrix, names, dropped = pp.drop_samples_by_role(
+            np.array([[1.0], [2.0]]), ["b1", "b2"], {"b1": "blank", "b2": "blank"},
+        )
+        self.assertEqual(names, [])
+        self.assertEqual(dropped, {"blank": ["b1", "b2"]})
+        self.assertEqual(matrix.shape[0], 0)

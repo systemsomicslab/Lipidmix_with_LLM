@@ -184,10 +184,10 @@ class PlaybookToolReferenceTests(unittest.TestCase):
             write_note(
                 directory,
                 "flow",
-                "type: playbook\nwhen_to_use: x\ntools: [arf2_parser, arf_re_pca]",
+                "type: playbook\nwhen_to_use: x\ntools: [arf2_parser, arf_parser]",
             )
             refs = playbook_tool_references(directory)
-            self.assertEqual(refs["flow"], ["arf2_parser", "arf_re_pca"])
+            self.assertEqual(refs["flow"], ["arf2_parser", "arf_parser"])
 
 
 class CoverageTests(unittest.TestCase):
@@ -280,6 +280,59 @@ class PromoteRejectTests(unittest.TestCase):
             self.assertTrue(reject("paper-y", directory))
             self.assertFalse((knowledge_store.inbox_dir(directory) / "paper-y.md").exists())
             self.assertFalse(reject("missing", directory))
+
+
+class SlugContainmentTests(unittest.TestCase):
+    """slug/analysis_id は呼び出し側（LLM）由来なので、ノート置き場の外へ出られてはならない。
+
+    _inbox の抄録は非信頼データ（プロンプトインジェクション経路）であり、そこから
+    導かれた識別子がそのままファイルパスになると任意ファイルの読み書き/削除に化ける。
+    """
+
+    def _outside_file(self, tmp: str) -> Path:
+        """ノート置き場の1つ上に、消えては困る .md を置く。"""
+        outside = Path(tmp) / "outside.md"
+        outside.write_text("must survive", encoding="utf-8")
+        return outside
+
+    def test_reject_refuses_traversal_and_keeps_outside_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = self._outside_file(tmp)
+            knowledge_dir = Path(tmp) / "knowledge"
+            knowledge_store.inbox_dir(knowledge_dir).mkdir(parents=True, exist_ok=True)
+            with self.assertRaises(ValueError):
+                reject("../../outside", knowledge_dir)
+            self.assertTrue(outside.is_file())
+
+    def test_promote_refuses_traversal_and_keeps_outside_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = self._outside_file(tmp)
+            knowledge_dir = Path(tmp) / "knowledge"
+            knowledge_store.inbox_dir(knowledge_dir).mkdir(parents=True, exist_ok=True)
+            with self.assertRaises(ValueError):
+                promote("../../outside", knowledge_dir)
+            self.assertTrue(outside.is_file())
+
+    def test_write_note_refuses_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "notes"
+            with self.assertRaises(ValueError):
+                ks_write_note(directory, "../escaped", {"type": "knowledge"}, "body")
+            self.assertFalse((Path(tmp) / "escaped.md").exists())
+
+    def test_write_note_refuses_backslash_and_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "notes"
+            for bad in ("..\\escaped", "", ".", "..", "sub/note"):
+                with self.subTest(slug=bad), self.assertRaises(ValueError):
+                    ks_write_note(directory, bad, {"type": "knowledge"}, "body")
+
+    def test_normal_slug_still_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "notes"
+            path = ks_write_note(directory, "pe-p-vs-pe-o", {"type": "knowledge"}, "body")
+            self.assertEqual(path, directory / "pe-p-vs-pe-o.md")
+            self.assertTrue(path.is_file())
 
 
 class NoteLockTests(unittest.TestCase):

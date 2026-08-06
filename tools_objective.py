@@ -65,7 +65,12 @@ def record_objective(
         "confirmed_objective": confirmed_objective,
         "expected_biology": expected_biology or [],
     }
-    path = knowledge_store.write_objective(mcp_core.ANALYSES_DIR, analysis_id, meta_fields, sub_questions)
+    try:
+        path = knowledge_store.write_objective(
+            mcp_core.ANALYSES_DIR, analysis_id, meta_fields, sub_questions,
+        )
+    except ValueError as exc:
+        return str(exc)
     return (
         f"objective を記録: {path.name}（confirmed={bool(confirmed_objective)}, "
         f"小問{len(sub_questions)}件）。knowledge_coverage('{analysis_id}') で GAP を確認。"
@@ -244,6 +249,8 @@ def ingest_promote(slug: str, claim_strength: str = "suggested", links: list[str
         dest = knowledge_store.promote(slug, mcp_core.KNOWLEDGE_DIR, claim_strength=claim_strength)
     except FileNotFoundError:
         return f"_inbox に見つかりません: {slug}"
+    except ValueError as exc:
+        return str(exc)
     if links:
         text = dest.read_text(encoding="utf-8").rstrip()
         text += "\n\n## 関連\n" + "\n".join(f"- [[{link}]]" for link in links) + "\n"
@@ -257,5 +264,8 @@ def ingest_promote(slug: str, claim_strength: str = "suggested", links: list[str
 @mcp.tool()
 def ingest_reject(slug: str) -> str:
     """_inbox の保留ノートを破棄する。"""
-    ok = knowledge_store.reject(slug, mcp_core.KNOWLEDGE_DIR)
+    try:
+        ok = knowledge_store.reject(slug, mcp_core.KNOWLEDGE_DIR)
+    except ValueError as exc:
+        return str(exc)
     return f"却下（破棄）: {slug}" if ok else f"_inbox に見つかりません: {slug}"

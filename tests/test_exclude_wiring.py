@@ -1,13 +1,41 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import server
 import session_state
 
 
+class _FakeParserSession:
+    """arf_parser を実 build_pca_matrix で回すための最小セッション。
+
+    load_data はファイルを読まず fixture をそのまま返す（discover_* を回避）。
+    arf_parser が触る属性のみ用意する。
+    """
+
+    def __init__(self, spots):
+        self.features = spots
+        self.filtered_features = spots
+        self.current_file_path = "dummy.arf"
+        self.current_tag_directory = None
+        self.arf_tag_index = {}
+        self.arf_class_index = None
+        self.excluded_samples = set()
+        self.excluded_spots = set()
+        self.last_pca_plot = None
+
+    def load_data(self, file_path, tag_directory=None):
+        self.current_file_path = file_path
+        return self.features
+
+    def maybe_prepend_caveat(self, text, topic=None):
+        return text  # 意味論 caveat / トピック誘導は本テストの対象外（恒等パススルー）
+
+
 def _spot(master_id, entries):
-    # arf_re_pca の loadings 整形（get_pca_loading_features）が spot.Name/MassCenter/RT を
-    # 参照するため、Spot メタデータも付す。MasterAlignmentID は features のリスト位置に一致させる。
+    # loadings 整形（get_pca_loading_features）が spot.Name/MassCenter/RT を参照するため、
+    # Spot メタデータも付す。MasterAlignmentID は features のリスト位置に一致させる。
     return {
         "MasterAlignmentID": master_id,
         "Name": f"Lipid_{master_id}",
@@ -65,20 +93,18 @@ class TestPreprocessExcludeWiring(unittest.TestCase):
         self.assertTrue(any("行列が空" in c for c in out.get("caveats", [])))
 
 
-class TestRePcaExcludeWiring(unittest.TestCase):
-    def setUp(self):
-        session_state.session = server.AnalysisSession()
-        spots = _fixture()
-        session_state.session.features = spots
-        session_state.session.filtered_features = spots
-        session_state.session.current_file_path = "dummy.arf"
-        session_state.session.arf_class_index = None
-        session_state.session.arf_tag_index = None
+class TestParserExcludeWiring(unittest.TestCase):
+    """arf_parser も手動除外(arf_exclude)を PCA 前に反映すること（#1 で統一）。"""
 
-    def test_re_pca_honors_excluded_sample(self):
+    def setUp(self):
+        session_state.session = _FakeParserSession(_fixture())
+
+    def test_parser_honors_excluded_sample(self):
         session_state.session.excluded_samples.add("sB")
-        out = server.arf_re_pca()
-        text = out[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            arf_path = Path(tmp) / "dummy.arf"
+            arf_path.touch()
+            text = server.arf_parser(str(arf_path))
         # 行列形状 (サンプル数 x 特徴量数) に 3 サンプルが反映される
         self.assertIn("(3,", text)
         self.assertIn("手動除外", text)

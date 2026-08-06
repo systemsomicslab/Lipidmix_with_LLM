@@ -6,6 +6,7 @@ index・expand、knowledge inbox。
 """
 import knowledge_store
 import mcp_core
+import session_state
 from mcp_core import mcp, OUTPUT_FORMAT_DOC, PLAYBOOK_DIR
 
 
@@ -20,13 +21,42 @@ from mcp_core import mcp, OUTPUT_FORMAT_DOC, PLAYBOOK_DIR
     mime_type="text/markdown",
 )
 def output_format_reference() -> str:
-    """Return the parser output format and ontology reference for LLM clients."""
+    """Return the shared ontology core; per-parser topics live in sibling resources."""
     try:
-        return OUTPUT_FORMAT_DOC.read_text(encoding="utf-8")
+        text = OUTPUT_FORMAT_DOC.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise FileNotFoundError(
             f"Output format reference was not found: {OUTPUT_FORMAT_DOC}"
         ) from exc
+    # リソースが読まれた＝意味論が既に届いているので、以後パーサー出力へ
+    # ダイジェストを前置しない（条件付きガードの「未読」条件を解除）。
+    session_state.session.output_format_seen = True
+    session_state.session.sections_seen.add("core")
+    return text
+
+
+@mcp.resource(
+    "lipidmix://docs/output-format/{topic}",
+    name="output_format_section",
+    title="Per-parser output format section",
+    description=(
+        "Field-by-field reference for one parser/tool family: arf, arf2, pai2, dcl, "
+        "eic, identity (or core for the shared ontology). Fetch the topic matching "
+        "the output you are about to interpret instead of the whole document."
+    ),
+    mime_type="text/markdown",
+)
+def output_format_section(topic: str) -> str:
+    """トピック別の出力定義を返す（未知トピックは有効一覧付きで ValueError）。"""
+    path = mcp_core.output_format_section_path(topic)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Output format section was not found: {path}") from exc
+    session_state.session.sections_seen.add(topic)
+    if topic == "core":
+        session_state.session.output_format_seen = True
+    return text
 
 
 # --- 知識・ワークフロー蓄積層（knowledge / playbook） ---

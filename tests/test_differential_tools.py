@@ -248,3 +248,87 @@ class TestSiblingArf2Resolution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDifferentialSampleSelection(unittest.TestCase):
+    """比較対象は生体試料のみ。交絡判定は「実際に比較した2群」に対して行う。"""
+
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+
+    def _prime(self, meta, matrix):
+        names = list(meta)
+        session_state.session.feature_matrix = np.asarray(matrix, dtype=float)
+        session_state.session.pp_sample_names = names
+        session_state.session.pp_feature_names = ["f0", "f1"]
+        session_state.session.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.sample_meta = meta
+
+    def test_qc_sample_is_not_counted_into_a_compared_group(self):
+        # QC の Class ID が group_a のトークンを含むと、素通しではプールに紛れ込む。
+        meta = {
+            "a1": {"group": "A", "role": "sample", "batch": "d1"},
+            "a2": {"group": "A", "role": "sample", "batch": "d1"},
+            "a3": {"group": "A", "role": "sample", "batch": "d1"},
+            "b1": {"group": "B", "role": "sample", "batch": "d1"},
+            "b2": {"group": "B", "role": "sample", "batch": "d1"},
+            "b3": {"group": "B", "role": "sample", "batch": "d1"},
+            "QC_1": {"group": "A", "role": "qc", "batch": "d1"},
+        }
+        self._prime(meta, [
+            [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
+            [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
+            [30.0, 5.0],
+        ])
+        out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(out["n_a"], 3, "QC が群 A に数え込まれている")
+        self.assertEqual(out["n_b"], 3)
+        self.assertTrue(
+            any("QC" in c for c in out["caveats"]),
+            f"QC 除外の開示が無い: {out['caveats']}",
+        )
+
+    def test_confounding_is_assessed_after_pooling(self):
+        # Class ID 単位では各群が単一バッチ（細粒度では交絡に見える）が、
+        # プール後の A / B はどちらも d1+d2 を含むので交絡していない。
+        meta = {
+            "a1": {"group": "A_x", "role": "sample", "batch": "d1"},
+            "a2": {"group": "A_x", "role": "sample", "batch": "d1"},
+            "a3": {"group": "A_y", "role": "sample", "batch": "d2"},
+            "a4": {"group": "A_y", "role": "sample", "batch": "d2"},
+            "b1": {"group": "B_x", "role": "sample", "batch": "d1"},
+            "b2": {"group": "B_x", "role": "sample", "batch": "d1"},
+            "b3": {"group": "B_y", "role": "sample", "batch": "d2"},
+            "b4": {"group": "B_y", "role": "sample", "batch": "d2"},
+        }
+        self._prime(meta, [
+            [10.0, 5.0], [11.0, 5.1], [10.5, 4.9], [10.2, 5.0],
+            [50.0, 5.0], [52.0, 5.2], [51.0, 4.8], [50.5, 5.1],
+        ])
+        out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertEqual(out["status"], "success")
+        self.assertEqual({out["n_a"], out["n_b"]}, {4})
+        self.assertFalse(
+            any(c.startswith("交絡:") for c in out["caveats"]),
+            f"プール後は交絡していないのに交絡と報告した: {out['caveats']}",
+        )
+
+    def test_confounding_still_detected_when_pooled_groups_are_confounded(self):
+        meta = {
+            "a1": {"group": "A_x", "role": "sample", "batch": "d1"},
+            "a2": {"group": "A_x", "role": "sample", "batch": "d1"},
+            "a3": {"group": "A_y", "role": "sample", "batch": "d1"},
+            "b1": {"group": "B_x", "role": "sample", "batch": "d2"},
+            "b2": {"group": "B_x", "role": "sample", "batch": "d2"},
+            "b3": {"group": "B_y", "role": "sample", "batch": "d2"},
+        }
+        self._prime(meta, [
+            [10.0, 5.0], [11.0, 5.1], [10.5, 4.9],
+            [50.0, 5.0], [52.0, 5.2], [51.0, 4.8],
+        ])
+        out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertTrue(
+            any(c.startswith("交絡:") for c in out["caveats"]),
+            f"群⟂バッチが完全交絡なのに報告されていない: {out['caveats']}",
+        )

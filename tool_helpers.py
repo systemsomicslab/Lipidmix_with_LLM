@@ -41,8 +41,11 @@ def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
 
     mass_error = pv.mass_error_ppm(observed_mz, formula, adduct)
     adduct_check = pv.adduct_consistency(adduct, ion_mode_name, ontology)
+    msms = pv.msms_evidence(feat)
     class_token = pv.extract_class_token(name, ontology)
     caveats = pv.ether_caveats(name, ontology)
+    if msms["caveat"]:
+        caveats = caveats + [msms["caveat"]]
 
     if name.strip():
         cov = knowledge_store.coverage([f"{name} {ontology}"], mcp_core.KNOWLEDGE_DIR, vocab)
@@ -72,6 +75,7 @@ def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
         feat, _identity_tables(),
         mass_error_band=mass_error["band"],
         adduct_band=adduct_check["band"],
+        msms_band=msms["band"],
     )
 
     return {
@@ -90,13 +94,15 @@ def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
         "analytical_checks": {
             "mass_error": mass_error,
             "adduct_consistency": adduct_check,
+            "msms": msms,
         },
         "biological_plausibility": bio,
         "identity_normalization": identity_block,
         "llm_decision": {
             "instruction": instruction,
             "deterministic_summary": (
-                f"mass_error={mass_error['band']}, adduct={adduct_check['band']}"
+                f"mass_error={mass_error['band']}, adduct={adduct_check['band']}, "
+                f"msms={msms['band']}"
             ),
         },
     }
@@ -274,17 +280,41 @@ def _format_arf_parse_summary(features: list[dict]) -> str:
 def _format_arf_class_filter(stats: dict | None) -> str:
     if not stats or not stats.get("requested_class_ids"):
         return ""
+    # matched_class_ids は「**選択されたサンプルが持つ** Class ID」であって「spec の
+    # 展開先」ではない。統合トークン空間では spec が Class ID の一部だけを選ぶため
+    # （class_ids=["6h"] → ILG/control の 6h サンプルのみ）、Class ID だけを見せると
+    # 「ILG と control の全サンプルが入っている」と誤読され、選択範囲を過大に見せる。
+    # 曖昧さを消せるのは実サンプル名なので、件数と名前を必ず併記する。
     matched = stats.get("matched_class_ids") or []
-    # 部分指定が複数クラスに展開された場合は、実際にマッチしたClass IDも明示する。
+    selected = stats.get("matched_samples") or []
     matched_line = ""
-    if matched and list(matched) != list(stats["requested_class_ids"]):
-        matched_line = f"- **Class IDフィルタ展開先**: `{', '.join(matched)}`\n"
+    if selected:
+        shown = ", ".join(selected[:10])
+        more = f" ほか{len(selected) - 10}件" if len(selected) > 10 else ""
+        class_note = f"（Class ID: {', '.join(matched)}）" if matched else ""
+        matched_line = f"- **選択サンプル**: {len(selected)} 件{class_note}: {shown}{more}\n"
+    # 統合トークン空間ではサンプル名経由で QC/blank を掴み得る。既定で落としたことを
+    # 黙らせず、含める手段（include_roles）とセットで開示する。
+    excluded = stats.get("excluded_by_role") or []
+    excluded_line = ""
+    if excluded:
+        shown = ", ".join(excluded[:10])
+        more = f" ほか{len(excluded) - 10}件" if len(excluded) > 10 else ""
+        excluded_line = (
+            f"- **role により除外**: {len(excluded)} 件（{shown}{more}）。"
+            '含めるには include_roles=["sample", "qc"] を指定\n'
+        )
+    # 「未対応 N 件」は語彙全体の件数。そのうち実際に選択から外れた件数を併記して、
+    # 「N 件が除外された」という読みが実態と食い違わないようにする。
+    dropped_missing = stats.get("missing_samples_excluded") or []
+    missing_note = f"（うち選択から除外 {len(dropped_missing)} 件）" if dropped_missing else ""
     return (
         f"- **Class IDフィルタ**: `{', '.join(stats['requested_class_ids'])}`\n"
         f"{matched_line}"
+        f"{excluded_line}"
         f"- **Class IDフィルタ後**: スポット {stats['after_spots']}/{stats['before_spots']}, "
         f"サンプル別ピーク {stats['after_sample_peaks']}/{stats['before_sample_peaks']}, "
-        f"メタデータ未対応サンプル {stats.get('missing_samples', 0)} 件\n"
+        f"メタデータ未対応サンプル {stats.get('missing_samples', 0)} 件{missing_note}\n"
     )
 
 

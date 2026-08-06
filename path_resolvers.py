@@ -121,7 +121,7 @@ def list_data_files(extension: str | None = None, directory: str | None = None) 
     指定したディレクトリ内にあるファイルパスの一覧を取得します。
     - directory: 探索するディレクトリのパス。省略時は既定のデータディレクトリ
       (環境変数 LIPIDMIX_DATA_DIR または <project>/data) を使用します。
-    - extension: 指定された場合は、その拡張子(例: '.pai2', '.arf2', '.eic.aef')のファイルのみをフィルタします。
+    - extension: 指定された場合は、その拡張子(例: '.pai2', '.arf2', '.EIC.aef')のファイルのみをフィルタします。
     """
     target_dir = Path(directory).expanduser() if directory else mcp_core.DATA_DIR
 
@@ -189,7 +189,7 @@ def resolve_eicaef_file_path(file_path: str | None = None) -> str | None:
     if file_path and os.path.exists(file_path):
         return file_path
 
-    file_paths = list_data_files(extension=".aef")
+    file_paths = list_data_files(extension=".EIC.aef")
     if not file_paths or not isinstance(file_paths, list):
         return None
     real_paths = [p for p in file_paths if os.path.isfile(p)]
@@ -208,6 +208,26 @@ def resolve_pai2_file_path(file_path: str | None = None) -> str | None:
         return file_path
 
     file_paths = list_data_files(extension=".pai2")
+    if not file_paths or not isinstance(file_paths, list):
+        return None
+    real_paths = [p for p in file_paths if os.path.isfile(p)]
+    if not real_paths:
+        return None
+    real_paths = _select_latest_batch(real_paths)  # 複数バッチ混在時は最新バッチへ
+    return _pick_latest(real_paths)  # 重複時は最新版
+
+
+def resolve_dcl_file_path(file_path: str | None = None) -> str | None:
+    """.dcl ファイルのパスを解決するヘルパー（MSDecResult / MS-MS 本体）。
+
+    .dcl は測定ファイル1つにつき1個あるため、指定なしでは最新バッチの先頭を返す。
+    特定サンプルの MS/MS が欲しいときは file_path を明示するか、.pai2 と同名の
+    兄弟ファイルを引く dcl_reader.find_dcl_for_pai2 を使う。
+    """
+    if file_path and os.path.exists(file_path):
+        return file_path
+
+    file_paths = list_data_files(extension=".dcl")
     if not file_paths or not isinstance(file_paths, list):
         return None
     real_paths = [p for p in file_paths if os.path.isfile(p)]
