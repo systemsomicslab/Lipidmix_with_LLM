@@ -177,7 +177,7 @@ QC/ブランク/注入順のいずれかが欠けているためにスキップ�
 
 ### 10.5 手動サンプル/ピーク除外（`arf_exclude`）
 
-PCAスコアプロットで明らかに外れた1サンプルや、特定のピーク（スポット）を**名前/IDで手動除外**するためのツール。`exclusions.py`（MCP非依存の純ロジック層、`prune_spots()` / `roster()`）と `tools_arf.py` の `arf_exclude()` が担う。除外は**可逆・非破壊**で、`session.filtered_features` 自体は変更しない。
+PCAスコアプロットで明らかに外れた1サンプルや、特定のピーク（スポット）を**名前/IDで手動除外**するためのツール。`exclusions.py`（MCP非依存の純ロジック層、`prune_spots()` / `roster()`）と `tools_arf.py` の `arf_exclude()` が担う。除外は**可逆・非破壊**で、`session.arf.filtered_features` 自体は変更しない。
 
 `arf_exclude(exclude_samples=None, exclude_spots=None, mode="add")` は JSON を返す。
 
