@@ -122,7 +122,6 @@ CURRENT_CLASSIFICATION: dict[str, ToolSafety] = {
     "list_reports": READ_ONLY,
     "sample_search": READ_ONLY,
     "record_objective": LOCAL_WRITE,
-    "update_objective": LOCAL_WRITE,
     "write_report": LOCAL_WRITE,
     "save_pca_figure": LOCAL_WRITE,
     "save_volcano_figure": LOCAL_WRITE,
@@ -748,7 +747,6 @@ EXPECTED_ANNOTATIONS = {
     "paper_search": EXTERNAL,
     # --- ローカル書き出し（同じ引数なら同じパスへ上書き＝idempotent） ---
     "record_objective": LOCAL_WRITE,
-    "update_objective": LOCAL_WRITE,
     "write_report": LOCAL_WRITE,
     "save_pca_figure": LOCAL_WRITE,
     "save_volcano_figure": LOCAL_WRITE,
@@ -758,6 +756,9 @@ EXPECTED_ANNOTATIONS = {
     # 書き換える。同じログを2回追記すれば2行増えるので idempotent ではない。
     "log_search": LOCAL_WRITE_APPEND,
     "ingest_stage": LOCAL_WRITE_APPEND,
+    # update_objective の add_subquestions は既存 Q の最大+1 で採番して追記するので、
+    # 同じ引数で再実行すると小問が重複する。冪等ではない。
+    "update_objective": LOCAL_WRITE_APPEND,
     "ingest_promote": DESTRUCTIVE,
     "ingest_reject": DESTRUCTIVE,
 }
@@ -846,9 +847,13 @@ list_data_files = mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))(
 @mcp.tool(annotations=ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 
-# record_objective / update_objective
+# record_objective（ノートを同じパスへ上書きするので冪等）
 @mcp.tool(annotations=ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+
+# update_objective（add_subquestions が追記なので冪等でない）
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 
 # paper_search
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))

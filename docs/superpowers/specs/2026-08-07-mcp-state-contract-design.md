@@ -174,8 +174,13 @@ def missing_state(state: str, required_tools: list[str], message: str) -> str:
 `@mcp.tool(annotations=ToolAnnotations(...))` は使用中の SDK で対応済み。付与方針:
 
 - 解析・検索・読み取り系（29件）: `readOnlyHint=True`
-- レポート/図/objective の書き出し（6件）: `readOnlyHint=False`, `destructiveHint=False`,
-  `idempotentHint=True`（同じ引数で同じパスへ上書きするため）
+- レポート/図/objective の書き出しのうち**同じパスへ上書きするもの**
+  （`write_report` / `save_pca_figure` / `save_volcano_figure` / `save_eic_figure` /
+  `record_objective`）: `readOnlyHint=False`, `destructiveHint=False`, `idempotentHint=True`
+- **追記するもの**（`update_objective` / `log_search` / `ingest_stage`）:
+  `idempotentHint=False`。`update_objective` の `add_subquestions` は既存 Q の最大+1 で
+  採番して追記するため、再実行すると小問が重複する。上書きと追記を取り違えると、
+  クライアントがリプレイ安全と誤認して内容を二重に積み増す。
 - `paper_search`: `openWorldHint=True`, `readOnlyHint=True`
 - `ingest_promote` / `ingest_reject`: `readOnlyHint=False`, `destructiveHint=True`
   （`_inbox` からの移動・削除を伴う）
