@@ -1259,15 +1259,30 @@ class AnnotationDrivenClassificationTests(unittest.TestCase):
                 classify_server_tool(name, annotations=annotations), expected[name], name
             )
 
-    def test_only_one_tool_changes_permission(self) -> None:
-        """権限が変わるのは ingest_review_queue の1件だけ（設計書 §6.1）。"""
+    def test_only_the_two_expected_tools_change_classification(self) -> None:
+        """分類が変わるのは2件だけ（設計書 §6）。それ以外はすべて回帰。"""
         changed = {
             name
             for name in CURRENT_CLASSIFICATION
             if classify_server_tool(name, annotations=ANNOTATIONS[name])
             is not CURRENT_CLASSIFICATION[name]
         }
-        self.assertEqual(changed, {"ingest_review_queue", "ingest_stage"})
+        self.assertEqual(changed, set(EXPECTED_CHANGES) | set(EXPECTED_LABEL_CHANGES))
+
+    def test_only_one_tool_actually_changes_permission(self) -> None:
+        """実行可否が変わるのは ingest_review_queue の1件だけ（設計書 §6.1）。
+
+        LOCAL_WRITE も KNOWLEDGE_MUTATION も decide_server_tool では等しく承認必須
+        なので、ingest_stage は監査ラベルが変わるだけで実行可否は変わらない。
+        """
+        approval_free = {ToolSafety.READ_ONLY}
+        changed = {
+            name
+            for name in CURRENT_CLASSIFICATION
+            if (CURRENT_CLASSIFICATION[name] in approval_free)
+            is not (classify_server_tool(name, annotations=ANNOTATIONS[name]) in approval_free)
+        }
+        self.assertEqual(changed, {"ingest_review_queue"})
 
     def test_open_world_wins_over_read_only(self) -> None:
         """判定順を誤ると paper_search が READ_ONLY に落ちて network ゲートを迂回する。"""
