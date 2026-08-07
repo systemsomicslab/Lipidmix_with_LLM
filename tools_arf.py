@@ -20,6 +20,7 @@ import preprocessing
 import sample_factors
 import session_state
 import tool_helpers
+import volcano_plot
 from mcp_core import mcp
 from msdial_classes import assign_sample_groups, filter_arf_by_class_ids
 from msdial_tags import filter_arf_by_tags
@@ -37,6 +38,7 @@ from tool_helpers import (
     _format_arf_class_filter,
     _format_arf_tag_filter,
 )
+from volcano_plot import VolcanoPlotPayload
 
 __all__ = [
     "arf_list_tags",
@@ -47,6 +49,7 @@ __all__ = [
     "arf_pca_preprocessed",
     "arf_parser",
     "arf_differential",
+    "arf_plot_volcano",
 ]
 
 
@@ -881,10 +884,14 @@ def arf_differential(
                 f"検定できた特徴は {n_tested}/{len(feature_names)} 件のみ（多くが p=NaN）。"
                 "群内 n 不足・分散0・欠損が多い可能性があります（前処理の見直しを検討）。")
         session_state.session.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
+                                     "n_a": n_a, "n_b": n_b,
+                                     "q_threshold": q_threshold,
+                                     "log2fc_threshold": log2fc_threshold,
                                      "results": results, "volcano": volcano}
-        # 全量 volcano（~特徴数）は上の last_differential に保持し save_volcano_figure から
-        # 使う。payload には載せない——先頭の summary が巨大 volcano 配列＋文脈切り詰めで
-        # 埋没し、解釈モデルが有意件数を読めず「全て ns」と誤読する退行を避けるため。
+        # 全量 volcano（~特徴数）は上の last_differential に保持し、arf_plot_volcano
+        # （構造化点列）と save_volcano_figure（PNG）から使う。payload には載せない
+        # ——先頭の summary が巨大 volcano 配列＋文脈切り詰めで埋没し、解釈モデルが
+        # 有意件数を読めず「全て ns」と誤読する退行を避けるため。
         payload = {"status": "success", "kind": "two_group",
                    "group_a": group_a, "group_b": group_b,
                    "resolved_class_ids": resolved,
@@ -892,7 +899,10 @@ def arf_differential(
                    "n_a": n_a, "n_b": n_b,
                    "summary": summary, "caveats": caveats,
                    "volcano_note": "全特徴の volcano 点列は本要約に非同梱。"
-                                   "save_volcano_figure で図示できます。"}
+                                   "arf_plot_volcano で構造化した点列を取得し、"
+                                   "クライアント側で散布図を描画してください。"
+                                   "PNG が必要だとユーザーが明示した場合のみ "
+                                   "save_volcano_figure を実行します。"}
     else:
         return json.dumps({"status": "error",
                            "message": "group_a と group_b の両方を指定してください（2群比較）。"
@@ -900,3 +910,30 @@ def arf_differential(
                                       "関心のある2群を切り出せます。多群 ANOVA は現状非対応です。"},
                           ensure_ascii=False, indent=2)
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def arf_plot_volcano(
+    max_points: int = 3000, title: str | None = None,
+) -> VolcanoPlotPayload:
+    """Return client-neutral plot data for the latest two-group volcano.
+
+    This read-only tool returns structured ``lipidmix.volcano.v1`` JSON only. It does
+    not render an image and does not write files: Use-LLLM may render the points with
+    Plotly, while Claude Desktop or another MCP client may use its own UI. Call
+    ``save_volcano_figure`` only after the user explicitly requests PNG output.
+
+    Run ``arf_differential`` (two-group) first. ``up`` and ``down`` points are always
+    kept in full; only ``ns`` points are thinned to fit ``max_points``. Every count —
+    total, plotted, thinned, and dropped-as-non-finite — is reported in ``selection``,
+    so read it before concluding how many features moved.
+    """
+    last = getattr(session_state.session, "last_differential", None)
+    if not last or last.get("kind") != "two_group" or not last.get("volcano"):
+        raise ValueError(
+            "先に arf_differential（2群比較）を実行してください"
+            "（直近の2群差次的解析の volcano データがありません）。"
+        )
+    return volcano_plot.build_volcano_plot_payload(
+        last, max_points=max_points, title=title,
+    )

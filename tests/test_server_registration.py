@@ -25,6 +25,7 @@ EXPECTED_TOOLS = sorted([
     "arf_list_tags",
     "arf_parser",
     "arf_pca_preprocessed",
+    "arf_plot_volcano",
     "arf_preprocess",
     "eic_parser",
     "eic_plot_chromatograms",

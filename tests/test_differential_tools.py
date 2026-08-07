@@ -58,6 +58,30 @@ class TestArfDifferential(unittest.TestCase):
         vol = session_state.session.last_differential["volcano"]
         self.assertEqual(len(vol), 2)
 
+    def test_volcano_note_points_to_structured_plot_tool(self):
+        # 既存の test_two_group_* と同じ 3+3 サンプルの下地を使う（群内 n>=2 を満たし、
+        # 「n 不足」caveat 経路に入らない構成）。
+        session_state.session.feature_matrix = np.array([
+            [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
+            [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
+        ])
+        names = ["a1", "a2", "a3", "b1", "b2", "b3"]
+        session_state.session.pp_sample_names = names
+        session_state.session.pp_feature_names = ["f0", "f1"]
+        session_state.session.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.sample_meta = {
+            n: {"group": ("A" if n.startswith("a") else "B")} for n in names
+        }
+        out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertIn("arf_plot_volcano", out["volcano_note"])
+        self.assertNotIn("save_volcano_figure で図示", out["volcano_note"])
+        self.assertNotIn("volcano", out)
+        last = session_state.session.last_differential
+        self.assertEqual(last["q_threshold"], 0.05)
+        self.assertEqual(last["log2fc_threshold"], 1.0)
+        self.assertEqual(last["n_a"], 3)
+        self.assertEqual(last["n_b"], 3)
+
 
 class TestArfDifferentialDegenerate(unittest.TestCase):
     def setUp(self):

@@ -123,5 +123,79 @@ class TestBuildVolcanoPlotPayload(unittest.TestCase):
                 volcano_plot.build_volcano_plot_payload(last, max_points=bad)
 
 
+class TestArfPlotVolcanoTool(unittest.TestCase):
+    """ツール層: セッション状態からペイロードを作り、PNG は書かないこと。"""
+
+    def setUp(self):
+        import server
+        import session_state
+        self.server = server
+        self.session_state = session_state
+        self._saved = session_state.session
+        session_state.session = server.AnalysisSession()
+
+    def tearDown(self):
+        self.session_state.session = self._saved
+
+    def test_builds_payload_from_session_differential(self):
+        self.session_state.session.last_differential = {
+            "kind": "two_group", "a": "24M", "b": "9w", "n_a": 6, "n_b": 5,
+            "q_threshold": 0.05, "log2fc_threshold": 1.0,
+            "volcano": [_point("PC 34:1", 1.8, 3.4, "up"),
+                        _point("TG 52:3", 0.2, 0.5, "ns")],
+        }
+        payload = self.server.arf_plot_volcano()
+        self.assertEqual(payload["plot_schema"], "lipidmix.volcano.v1")
+        self.assertEqual(payload["comparison"]["group_a"], "24M")
+        self.assertEqual(len(payload["points"]), 2)
+
+    def test_max_points_and_title_are_forwarded(self):
+        self.session_state.session.last_differential = {
+            "kind": "two_group", "a": "A", "b": "B",
+            "volcano": [_point(f"ns-{i}", 0.1, 0.2, "ns") for i in range(100)],
+        }
+        payload = self.server.arf_plot_volcano(max_points=10, title="custom")
+        self.assertEqual(payload["title"], "custom")
+        self.assertEqual(payload["selection"]["plotted"], 10)
+
+    def test_raises_when_no_differential_result(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.server.arf_plot_volcano()
+        self.assertIn("arf_differential", str(ctx.exception))
+
+    def test_raises_for_non_two_group_result(self):
+        self.session_state.session.last_differential = {
+            "kind": "anova", "volcano": [_point("PC 34:1", 1.8, 3.4, "up")]}
+        with self.assertRaises(ValueError) as ctx:
+            self.server.arf_plot_volcano()
+        self.assertIn("arf_differential", str(ctx.exception))
+
+    def test_writes_no_png(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        self.session_state.session.last_differential = {
+            "kind": "two_group", "a": "A", "b": "B",
+            "volcano": [_point("PC 34:1", 1.8, 3.4, "up")]}
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = os.environ.get("LIPIDMIX_REPORTS_DIR")
+            os.environ["LIPIDMIX_REPORTS_DIR"] = str(Path(tmp) / "reports")
+            try:
+                self.server.arf_plot_volcano()
+                self.assertEqual(list(Path(tmp).rglob("*.png")), [])
+            finally:
+                if saved is None:
+                    os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
+                else:
+                    os.environ["LIPIDMIX_REPORTS_DIR"] = saved
+
+    def test_fastmcp_exposes_output_schema(self):
+        import asyncio
+        tools = asyncio.run(self.server.mcp.list_tools())
+        tool = next(item for item in tools if item.name == "arf_plot_volcano")
+        self.assertIsNotNone(tool.outputSchema)
+        self.assertIn("plot_schema", tool.outputSchema.get("properties", {}))
+
+
 if __name__ == "__main__":
     unittest.main()
