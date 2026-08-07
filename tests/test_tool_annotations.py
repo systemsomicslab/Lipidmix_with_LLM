@@ -18,7 +18,8 @@ READ_ONLY = {"readOnlyHint": True}
 EXTERNAL = {"readOnlyHint": True, "openWorldHint": True}
 LOCAL_WRITE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
 # ファイルを書き、かつ冪等でない（同じ引数の再実行で結果が積み増される）。
-# ingest_stage は _inbox に新規ノートを増やし、log_search は探索ログに行を追記する。
+# ingest_stage は _inbox に新規ノートを増やし、log_search は探索ログに行を追記し、
+# update_objective(add_subquestions=...) は既存 Q の最大+1 で採番して小問を追記する。
 LOCAL_WRITE_APPEND = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
 DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True}
 
@@ -60,7 +61,6 @@ EXPECTED_ANNOTATIONS = {
     "paper_search": EXTERNAL,
     # --- ローカル書き出し（同じ引数なら同じパスへ上書き＝idempotent） ---
     "record_objective": LOCAL_WRITE,
-    "update_objective": LOCAL_WRITE,
     "write_report": LOCAL_WRITE,
     "save_pca_figure": LOCAL_WRITE,
     "save_volcano_figure": LOCAL_WRITE,
@@ -69,7 +69,11 @@ EXPECTED_ANNOTATIONS = {
     "ingest_stage": LOCAL_WRITE_APPEND,
     "ingest_promote": DESTRUCTIVE,
     "ingest_reject": DESTRUCTIVE,
-    # --- 追記書き込み（読み取り系ではない: objective の探索ログに行を追記する） ---
+    # --- 追記書き込み（読み取り系ではない: 既存の最大値+1で採番して追記するため冪等でない） ---
+    # update_objective は add_subquestions が既存 Q の最大+1 で採番して追記する。
+    # log_search / ingest_stage と同じ「追記で結果が積み増される」理由でこの3件が
+    # LOCAL_WRITE_APPEND を共有する。
+    "update_objective": LOCAL_WRITE_APPEND,
     "log_search": LOCAL_WRITE_APPEND,
 }
 

@@ -38,6 +38,7 @@ def _resolve_objective_file(analysis_id: str) -> Path | None:
     return None
 
 
+# record_objective（ノートを同じパスへ上書きするので冪等）
 @mcp.tool(annotations=ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=True))
 def record_objective(
@@ -79,8 +80,9 @@ def record_objective(
     )
 
 
+# update_objective（add_subquestions が既存 Q の最大+1 で採番して追記するため冪等でない）
 @mcp.tool(annotations=ToolAnnotations(
-    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 def update_objective(
     analysis_id: str,
     confirmed_objective: str | None = None,
