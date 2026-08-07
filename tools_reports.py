@@ -10,6 +10,7 @@ import math
 import matplotlib.pyplot as plt
 
 import knowledge_store
+import mcp_errors
 import session_state
 from mcp_core import mcp, _resolve_report_dir, _report_dir_candidates, _build_report_meta
 from tool_helpers import _pca_scatter_arrays
@@ -121,7 +122,10 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
     """
     plot = getattr(session_state.session.arf, "last_pca_plot", None)
     if not plot or not plot.get("points"):
-        return "先に arf_parser / arf_re_pca / pai2_parser 等でPCAを実行してください（PCA結果がありません）。"
+        return mcp_errors.missing_state(
+            "pca_result", ["arf_parser"],
+            "先に arf_parser / arf_re_pca / pai2_parser 等でPCAを実行してください"
+            "（PCA結果がありません）。")
 
     slug = knowledge_store.make_slug(analysis_id)
     reports_dir = _resolve_report_dir()
@@ -160,7 +164,10 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
     """
     last = getattr(session_state.session.arf, "last_differential", None)
     if not last or not last.get("volcano"):
-        return "[error] 直近の差次的解析（volcano データ）がありません。先に arf_differential を実行してください。"
+        return mcp_errors.missing_state(
+            "differential_result", ["arf_differential"],
+            "[error] 直近の差次的解析（volcano データ）がありません。"
+            "先に arf_differential を実行してください。")
 
     slug = knowledge_store.make_slug(analysis_id)
     reports_dir = _resolve_report_dir()
@@ -200,10 +207,10 @@ def save_eic_figure(analysis_id: str, title: str | None = None) -> str:
     """
     plot = getattr(session_state.session.eic, "last_plot", None)
     if not plot or not plot.get("series"):
-        return (
+        return mcp_errors.missing_state(
+            "eic_plot", ["eic_plot_chromatograms", "eic_plot_compounds"],
             "先に eic_plot_chromatograms または eic_plot_compounds を実行してください"
-            "（EICプロット情報がありません）。"
-        )
+            "（EICプロット情報がありません）。")
 
     slug = knowledge_store.make_slug(analysis_id)
     reports_dir = _resolve_report_dir()

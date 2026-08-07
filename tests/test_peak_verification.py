@@ -198,7 +198,7 @@ class VerifyPeakToolTests(unittest.TestCase):
     def test_error_when_not_loaded(self):
         session_state.session.pai2.filtered_features = None
         out = json.loads(server.verify_peak_annotation(peak_id="1"))
-        self.assertEqual(out["status"], "error")
+        self.assertEqual(out["error"]["code"], "missing_state")
 
     def test_error_when_no_selector(self):
         session_state.session.pai2.filtered_features = [_feat()]

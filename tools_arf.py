@@ -15,6 +15,7 @@ from pathlib import Path
 
 import differential
 import exclusions
+import mcp_errors
 import path_resolvers
 import preprocessing
 import sample_factors
@@ -61,7 +62,9 @@ def arf_list_tags() -> str:
         or session_state.session.arf.tag_index is None
         or not str(session_state.session.arf.current_file_path or "").lower().endswith(".arf")
     ):
-        return "先に arf_parser を実行してARFデータとタグファイルを読み込んでください。"
+        return mcp_errors.missing_state(
+            "arf_dataset", ["arf_parser"],
+            "先に arf_parser を実行してARFデータとタグファイルを読み込んでください。")
     return json.dumps(session_state.session.arf.tag_index.get("summary", {}), ensure_ascii=False, indent=2)
 
 
@@ -79,7 +82,9 @@ def arf_list_classes() -> str:
         session_state.session.arf.features is None
         or not str(session_state.session.arf.current_file_path or "").lower().endswith(".arf")
     ):
-        return "先に arf_parser を実行してARFデータを読み込んでください。"
+        return mcp_errors.missing_state(
+            "arf_dataset", ["arf_parser"],
+            "先に arf_parser を実行してARFデータを読み込んでください。")
     class_index = session_state.session.arf.class_index or {}
     class_counts = class_index.get("class_counts", {})
     # 語彙は**常にデータセット全体**（features）から作る。filtered_features を優先すると
@@ -103,9 +108,9 @@ def arf_list_classes() -> str:
 def arf_list_sample_roles() -> str:
     """ロード済み ARF のサンプルを sample/qc/blank に分類して返す（前処理の適用前確認）。"""
     if session_state.session.arf.filtered_features is None:
-        return json.dumps({"status": "error",
-                           "message": "先に arf_parser で ARF を読み込んでください。"},
-                          ensure_ascii=False, indent=2)
+        return mcp_errors.missing_state(
+            "arf_dataset", ["arf_parser"],
+            "先に arf_parser で ARF を読み込んでください。")
     _, sample_names, _ = tool_helpers._pp_build_matrix(session_state.session.arf.filtered_features, ["height"])
     meta = _build_sample_meta(sample_names, session_state.session.arf.class_index)
     counts = {"sample": 0, "qc": 0, "blank": 0}
@@ -177,9 +182,9 @@ def arf_exclude(
     """
     spots = session_state.session.arf.filtered_features
     if spots is None:
-        return json.dumps({"status": "error",
-                           "message": "先に arf_parser で ARF を読み込んでください。"},
-                          ensure_ascii=False, indent=2)
+        return mcp_errors.missing_state(
+            "arf_dataset", ["arf_parser"],
+            "先に arf_parser で ARF を読み込んでください。")
 
     avail_samples, avail_ids = exclusions.roster(spots)
     es = session_state.session.arf.excluded_samples
@@ -256,9 +261,9 @@ def arf_preprocess(
     以降の PCA/差次的解析は session_state.session.feature_matrix（前処理後）を消費する。
     """
     if session_state.session.arf.filtered_features is None:
-        return json.dumps({"status": "error",
-                           "message": "先に arf_parser で ARF を読み込んでください。"},
-                          ensure_ascii=False, indent=2)
+        return mcp_errors.missing_state(
+            "arf_dataset", ["arf_parser"],
+            "先に arf_parser で ARF を読み込んでください。")
     props = props or ["height"]
     # 手動除外（PCA 外れサンプル / 特定ピーク）を行列構築前に適用（非破壊）
     active = exclusions.prune_spots(
@@ -355,7 +360,9 @@ def arf_pca_preprocessed(
     とサンプル名の両方から解決されるため、Class ID に無い時点などでも色分けできる。
     """
     if not _pp_has_preprocessed():
-        return "前処理後の行列がありません。先に arf_preprocess を実行してください。"
+        return mcp_errors.missing_state(
+            "preprocessed_matrix", ["arf_preprocess"],
+            "前処理後の行列がありません。先に arf_preprocess を実行してください。")
     from arf_reader import run_pca, get_pca_loading_features
     matrix = session_state.session.arf.feature_matrix
     sample_names = session_state.session.arf.pp_sample_names
@@ -762,9 +769,9 @@ def arf_differential(
     """
     matrix = getattr(session_state.session.arf, "feature_matrix", None)
     if matrix is None:
-        return json.dumps({"status": "error",
-                           "message": "先に arf_preprocess を実行してください（前処理後行列が必要）。"},
-                          ensure_ascii=False, indent=2)
+        return mcp_errors.missing_state(
+            "preprocessed_matrix", ["arf_preprocess"],
+            "先に arf_preprocess を実行してください（前処理後行列が必要）。")
     sample_names = session_state.session.arf.pp_sample_names
     feature_names = session_state.session.arf.pp_feature_names
     meta = session_state.session.arf.sample_meta or {}
@@ -930,10 +937,14 @@ def arf_plot_volcano(
     """
     last = getattr(session_state.session.arf, "last_differential", None)
     if not last or last.get("kind") != "two_group" or not last.get("volcano"):
-        raise ValueError(
+        # 戻り値型が VolcanoPlotPayload（構造化）なので、失敗時に str を返すと
+        # outputSchema 導出が壊れる。例外の本文にエンベロープを載せる。
+        # FastMCP が "Error executing tool <name>: " を前置するため、
+        # クライアント側は本文中の JSON を切り出して読む必要がある。
+        raise ValueError(mcp_errors.missing_state(
+            "differential_result", ["arf_differential"],
             "先に arf_differential（2群比較）を実行してください"
-            "（直近の2群差次的解析の volcano データがありません）。"
-        )
+            "（直近の2群差次的解析の volcano データがありません）。"))
     return volcano_plot.build_volcano_plot_payload(
         last, max_points=max_points, title=title,
     )

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import knowledge_store
 import mcp_core
+import mcp_errors
 import session_state
 from mcp_core import mcp
 from path_resolvers import resolve_pai2_file_path
@@ -120,10 +121,9 @@ def pai2_inspect_peak(peak_id: str | None = None, peak_name: str | None = None) 
     いずれかを指定する。
     """
     if session_state.session.pai2.filtered_features is None:
-        return json.dumps(
-            {"status": "error", "message": "先に pai2_parser を実行してデータを読み込んでください。"},
-            ensure_ascii=False, indent=2,
-        )
+        return mcp_errors.missing_state(
+            "pai2_dataset", ["pai2_parser"],
+            "先に pai2_parser を実行してデータを読み込んでください。")
 
     details = inspect_peak_details(
         session_state.session.pai2.filtered_features,
@@ -145,11 +145,9 @@ def verify_peak_annotation(
     いずれかを指定する。
     """
     if session_state.session.pai2.filtered_features is None:
-        return json.dumps(
-            {"status": "error", "message": "先に pai2_parser を実行してデータを読み込んでください。"},
-            ensure_ascii=False,
-            indent=2,
-        )
+        return mcp_errors.missing_state(
+            "pai2_dataset", ["pai2_parser"],
+            "先に pai2_parser を実行してデータを読み込んでください。")
     if peak_id is None and peak_name is None:
         return json.dumps(
             {"status": "error", "message": "peak_id か peak_name のいずれかを指定してください。"},

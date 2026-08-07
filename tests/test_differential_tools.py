@@ -15,7 +15,7 @@ class TestArfDifferential(unittest.TestCase):
 
     def test_requires_matrix(self):
         out = json.loads(server.arf_differential(group_a="A", group_b="B"))
-        self.assertEqual(out["status"], "error")
+        self.assertEqual(out["error"]["code"], "missing_state")
 
     def test_two_group_reports_significant_and_caveats(self):
         session_state.session.arf.feature_matrix = np.array([

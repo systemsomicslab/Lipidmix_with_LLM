@@ -12,7 +12,7 @@ class TestPreprocessTools(unittest.TestCase):
 
     def test_list_sample_roles_requires_data(self):
         out = json.loads(server.arf_list_sample_roles())
-        self.assertEqual(out["status"], "error")
+        self.assertEqual(out["error"]["code"], "missing_state")
 
     def test_preprocess_sets_session_matrix(self):
         # minimal fake ARF matrix path: inject via monkeypatch of build helper

@@ -36,7 +36,7 @@ class TestArfExclude(unittest.TestCase):
     def test_requires_data(self):
         session_state.session.arf.filtered_features = None
         out = json.loads(server.arf_exclude(exclude_samples=["sA"]))
-        self.assertEqual(out["status"], "error")
+        self.assertEqual(out["error"]["code"], "missing_state")
 
     def test_add_sample_updates_set_and_counts(self):
         out = json.loads(server.arf_exclude(exclude_samples=["sB"]))

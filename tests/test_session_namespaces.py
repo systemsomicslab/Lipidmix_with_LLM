@@ -160,8 +160,8 @@ class TestPai2ToolsUseTheirOwnState(Pai2ArfIsolationTestCase):
         """ARF を読んだだけで PAI2 ツールが「データあり」と誤認してはいけない。"""
         self.prime_completed_arf_analysis()
         out = json.loads(server.pai2_inspect_peak(peak_name="PC 34:1"))
-        self.assertEqual(out.get("status"), "error")
-        self.assertIn("pai2_parser", out.get("message", ""))
+        self.assertEqual(out["error"]["code"], "missing_state")
+        self.assertIn("pai2_parser", out["error"].get("message", ""))
 
 
 class TestArf2ParserPreservesArfState(unittest.TestCase):
