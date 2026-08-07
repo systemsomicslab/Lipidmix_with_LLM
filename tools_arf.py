@@ -63,7 +63,7 @@ def arf_list_tags() -> str:
         or not str(session_state.session.arf.current_file_path or "").lower().endswith(".arf")
     ):
         return mcp_errors.missing_state(
-            "arf_dataset", ["arf_parser"],
+            "arf_dataset", ["arf_parser", "load_dataset"],
             "先に arf_parser を実行してARFデータとタグファイルを読み込んでください。")
     return json.dumps(session_state.session.arf.tag_index.get("summary", {}), ensure_ascii=False, indent=2)
 
@@ -83,7 +83,7 @@ def arf_list_classes() -> str:
         or not str(session_state.session.arf.current_file_path or "").lower().endswith(".arf")
     ):
         return mcp_errors.missing_state(
-            "arf_dataset", ["arf_parser"],
+            "arf_dataset", ["arf_parser", "load_dataset"],
             "先に arf_parser を実行してARFデータを読み込んでください。")
     class_index = session_state.session.arf.class_index or {}
     class_counts = class_index.get("class_counts", {})
@@ -109,7 +109,7 @@ def arf_list_sample_roles() -> str:
     """ロード済み ARF のサンプルを sample/qc/blank に分類して返す（前処理の適用前確認）。"""
     if session_state.session.arf.filtered_features is None:
         return mcp_errors.missing_state(
-            "arf_dataset", ["arf_parser"],
+            "arf_dataset", ["arf_parser", "load_dataset"],
             "先に arf_parser で ARF を読み込んでください。")
     _, sample_names, _ = tool_helpers._pp_build_matrix(session_state.session.arf.filtered_features, ["height"])
     meta = _build_sample_meta(sample_names, session_state.session.arf.class_index)
@@ -183,7 +183,7 @@ def arf_exclude(
     spots = session_state.session.arf.filtered_features
     if spots is None:
         return mcp_errors.missing_state(
-            "arf_dataset", ["arf_parser"],
+            "arf_dataset", ["arf_parser", "load_dataset"],
             "先に arf_parser で ARF を読み込んでください。")
 
     avail_samples, avail_ids = exclusions.roster(spots)
@@ -262,7 +262,7 @@ def arf_preprocess(
     """
     if session_state.session.arf.filtered_features is None:
         return mcp_errors.missing_state(
-            "arf_dataset", ["arf_parser"],
+            "arf_dataset", ["arf_parser", "load_dataset"],
             "先に arf_parser で ARF を読み込んでください。")
     props = props or ["height"]
     # 手動除外（PCA 外れサンプル / 特定ピーク）を行列構築前に適用（非破壊）

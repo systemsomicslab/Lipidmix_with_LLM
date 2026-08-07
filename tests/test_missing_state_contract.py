@@ -39,27 +39,27 @@ class MissingStateContractTests(unittest.TestCase):
 
     def test_arf_list_tags(self):
         self.assert_missing(
-            server.arf_list_tags(), "arf_dataset", ["arf_parser"], "タグファイル"
+            server.arf_list_tags(), "arf_dataset", ["arf_parser", "load_dataset"], "タグファイル"
         )
 
     def test_arf_list_classes(self):
         self.assert_missing(
-            server.arf_list_classes(), "arf_dataset", ["arf_parser"], "ARFデータ"
+            server.arf_list_classes(), "arf_dataset", ["arf_parser", "load_dataset"], "ARFデータ"
         )
 
     def test_arf_list_sample_roles(self):
         self.assert_missing(
-            server.arf_list_sample_roles(), "arf_dataset", ["arf_parser"], "arf_parser"
+            server.arf_list_sample_roles(), "arf_dataset", ["arf_parser", "load_dataset"], "arf_parser"
         )
 
     def test_arf_exclude(self):
         self.assert_missing(
-            server.arf_exclude(exclude_samples=["x"]), "arf_dataset", ["arf_parser"], "arf_parser"
+            server.arf_exclude(exclude_samples=["x"]), "arf_dataset", ["arf_parser", "load_dataset"], "arf_parser"
         )
 
     def test_arf_preprocess(self):
         self.assert_missing(
-            server.arf_preprocess(), "arf_dataset", ["arf_parser"], "arf_parser"
+            server.arf_preprocess(), "arf_dataset", ["arf_parser", "load_dataset"], "arf_parser"
         )
 
     def test_arf_pca_preprocessed(self):
@@ -105,7 +105,10 @@ class MissingStateContractTests(unittest.TestCase):
 
     def test_save_pca_figure(self):
         self.assert_missing(
-            server.save_pca_figure(analysis_id="x"), "pca_result", ["arf_parser"], "PCA"
+            server.save_pca_figure(analysis_id="x"),
+            "pca_result",
+            ["arf_parser", "arf_pca_preprocessed", "load_dataset"],
+            "PCA",
         )
 
     def test_save_volcano_figure(self):

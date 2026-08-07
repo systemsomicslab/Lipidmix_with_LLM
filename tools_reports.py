@@ -123,7 +123,7 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
     plot = getattr(session_state.session.arf, "last_pca_plot", None)
     if not plot or not plot.get("points"):
         return mcp_errors.missing_state(
-            "pca_result", ["arf_parser"],
+            "pca_result", ["arf_parser", "arf_pca_preprocessed", "load_dataset"],
             "先に arf_parser / arf_re_pca / pai2_parser 等でPCAを実行してください"
             "（PCA結果がありません）。")
 
