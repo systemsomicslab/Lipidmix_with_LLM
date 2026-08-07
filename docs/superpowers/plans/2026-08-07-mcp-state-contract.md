@@ -1495,10 +1495,60 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Files:**
 - Delete: `src/use_lllm/core/mcp_state_policy.py`, `tests/test_mcp_state_policy.py`
-- Modify: `src/use_lllm/core/mcp_registry.py`（`is_replay_safe` 追加）
+- Modify: `src/use_lllm/core/policy.py`（`writes_outside_server` 追加）
+- Modify: `src/use_lllm/core/mcp_registry.py`（`is_replay_safe` / `may_write_files` 追加）
+- Modify: `src/use_lllm/core/settings_store.py`（死んだ定数 `MS_DATA_PARSER` を削除）
 - Modify: `src/use_lllm/general/agent_loop.py`
 - Create: `tests/test_state_recovery.py`
 - Modify: `tests/test_general_agent.py`（`test_reconnect_replays_parser_before_differential` を置換）
+
+### 9.0 残るサーバ固有知識の除去（Task 8 の grep で判明）
+
+`src/` に2件残っている。どちらも本タスクで消す。
+
+1. **`settings_store.py:20` の `MS_DATA_PARSER = "ms-data-parser"`** — どこからも参照されていない
+   死んだ定数。削除するだけ。
+2. **`agent_loop.py` の `PNG_ARTIFACT_TOOLS`** — 「どのツールが PNG を作るか」をサーバの
+   ツール名3件で持っている。annotations 駆動へ置き換える。
+
+`policy.py` に `is_replay_safe` と対になるヘルパを足す:
+
+```python
+def writes_outside_server(annotations: Mapping[str, Any] | None) -> bool:
+    """サーバの外（ファイル・ネットワーク）に副作用を出すと宣言しているか。
+
+    PNG などの成果物を拾う対象を絞るのに使う。宣言が無いツールは False
+    （何も書かないと仮定するのではなく、拾いに行かないという安全側の既定）。
+    """
+    if annotations is None:
+        return False
+    return annotations.get("readOnlyHint") is False
+```
+
+`mcp_registry.py` に `is_replay_safe` と同じ形で公開する:
+
+```python
+    def may_write_files(self, qualified_name: str) -> bool:
+        """そのツールがサーバ外へ書くと宣言しているか（成果物回収の対象判定）。"""
+        try:
+            tool = self.get_tool(qualified_name)
+        except MCPConnectionError:
+            return False
+        return policy_writes_outside_server(tool.description.annotations)
+```
+
+`agent_loop._capture_png_artifacts` の冒頭を差し替える:
+
+```python
+        # 以前は save_pca_figure など特定サーバのツール名3件を直接持っていた。
+        # 汎用クライアントとして、サーバ自身の annotations だけで判断する。
+        # 読み取り専用ツールの出力にたまたま現れたパスは拾わない。
+        if result.is_error or not self.registry.may_write_files(qualified_name):
+            return result
+```
+
+`PNG_ARTIFACT_TOOLS` 定数は削除する。既存の検証（実在・PNG シグネチャ・20MB 上限・
+4件上限・sha256 重複排除）はそのまま残す。
 
 **Interfaces:**
 - Consumes: `read_missing_state` / `MissingState`（Task 7）、`policy.is_replay_safe`（Task 8）
@@ -1700,10 +1750,18 @@ import を差し替える。`from use_lllm.core.mcp_state_policy import (...)` �
 from use_lllm.core.tool_result_contract import MissingState, read_missing_state
 ```
 
-`RegistryLike` プロトコルに追加:
+`RegistryLike` プロトコルに追加（`ollama_tools` の `limit` 既定も `None` へ揃える。
+実体は既に `limit: int | None = None` なのにプロトコル側が `int = 24` のまま古い）:
 
 ```python
+    def ollama_tools(
+        self, query: str | None = None, *, limit: int | None = None,
+        excluded: set[str] | None = None,
+    ) -> list[dict[str, Any]]: ...
+
     def is_replay_safe(self, name: str) -> bool: ...
+
+    def may_write_files(self, name: str) -> bool: ...
 ```
 
 `_call_and_record` の `indicates_missing_state` 部分を置換:
