@@ -116,7 +116,7 @@ def build_volcano_plot_payload(
     max_points: int = 3000,
     title: str | None = None,
 ) -> VolcanoPlotPayload:
-    """`session.last_differential` から描画中立な volcano ペイロードを組み立てる。"""
+    """`session.arf.last_differential` から描画中立な volcano ペイロードを組み立てる。"""
     if isinstance(max_points, bool) or not isinstance(max_points, int) or max_points < 1:
         raise ValueError("max_points must be a positive integer")
 

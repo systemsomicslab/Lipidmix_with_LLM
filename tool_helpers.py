@@ -109,7 +109,7 @@ def _build_verification_dossier(feat: dict, vocab: dict) -> dict:
 
 
 def _pca_scatter_arrays(plot: dict):
-    """session_state.session.last_pca_plot から散布図用の配列とラベルを取り出す（純ロジック）。"""
+    """session_state.session.arf.last_pca_plot から散布図用の配列とラベルを取り出す（純ロジック）。"""
     points = plot.get("points", [])
     xs = [float(p["x"]) for p in points]
     ys = [float(p["y"]) for p in points]
@@ -128,7 +128,7 @@ def _remember_arf_pca_plot(
     title: str,
     groups: dict[str, str | None] | None = None,
 ) -> None:
-    """ARF系PCAのサンプル別スコアを session_state.session.last_pca_plot に保存する。"""
+    """ARF系PCAのサンプル別スコアを session_state.session.arf.last_pca_plot に保存する。"""
     coords = pca_result.get("components", [])
     evr = pca_result["explained_variance_ratio"]
     groups = groups or {}
@@ -139,7 +139,7 @@ def _remember_arf_pca_plot(
             if groups.get(name) is not None:
                 point["group"] = groups[name]
             points.append(point)
-    session_state.session.last_pca_plot = {
+    session_state.session.arf.last_pca_plot = {
         "title": title,
         "x_label": f"PC1 ({evr[0] * 100:.2f}%)",
         "y_label": f"PC2 ({evr[1] * 100:.2f}%)",
@@ -157,7 +157,7 @@ def _format_pca_plot_block(
     """PCAスコアの要約ヘッダ＋群別サンプル数＋座標点列(JSON)を返す。
 
     LLM がこの座標から散布図を自描画できるよう per-sample の点列を ```json
-    フェンスで同梱する。点列は session_state.session.last_pca_plot にも別途保存
+    フェンスで同梱する。点列は session_state.session.arf.last_pca_plot にも別途保存
     され（_remember_arf_pca_plot）、save_pca_figure がユーザー要求時の PNG 化に
     使う。呼び出し側はこのブロックを loadings の後（payload 末尾）に置くこと
     （万一の下流截断で loadings ではなく座標点を失うようにするため）。
@@ -336,4 +336,4 @@ def _pp_build_matrix(features, props):
 
 
 def _pp_has_preprocessed() -> bool:
-    return getattr(session_state.session, "feature_matrix", None) is not None
+    return getattr(session_state.session.arf, "feature_matrix", None) is not None

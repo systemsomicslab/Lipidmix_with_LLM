@@ -313,10 +313,10 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
 
         self._saved_data_dir = mcp_core.DATA_DIR
         self._saved_reports = os.environ.get("LIPIDMIX_REPORTS_DIR")
-        self._saved_plot = session_state.session.last_eic_plot
+        self._saved_plot = session_state.session.eic.last_plot
         mcp_core.DATA_DIR = self.tmp
         os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "fallback")
-        session_state.session.last_eic_plot = None
+        session_state.session.eic.last_plot = None
 
         import tools_eic
 
@@ -332,7 +332,7 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
 
         tools_eic.load_arf2_records = self._saved_loader
         mcp_core.DATA_DIR = self._saved_data_dir
-        session_state.session.last_eic_plot = self._saved_plot
+        session_state.session.eic.last_plot = self._saved_plot
         if self._saved_reports is None:
             os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
         else:
@@ -353,7 +353,7 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
             ["PC(12:0/13:0)", "Ceramide (d18:1/25:0)"],
         )
         self.assertEqual(payload["sample"]["file_id"], 7)
-        self.assertIs(session_state.session.last_eic_plot, payload)
+        self.assertIs(session_state.session.eic.last_plot, payload)
         self.assertEqual(list(self.tmp.rglob("*.png")), [])
 
     def test_no_query_raises(self):

@@ -59,7 +59,7 @@ def build_sample_facets(sample_names, class_index=None, sample_meta=None) -> dic
     - class_index: msdial_classes.discover_arf_class_index の戻り。あれば file_id /
       class_id を名前一致で解決する。**None でも成立**し、その場合はサンプル名の
       トークンだけで選択できる（.mddata が無いフォルダでも因子指定が効く）。
-    - sample_meta: session_state.session.sample_meta 相当。role と group ラベルの
+    - sample_meta: session_state.session.arf.sample_meta 相当。role と group ラベルの
       供給源。arf_differential は class_index を持たず sample_meta["group"] だけを
       持つ経路があるため、group もトークン源として合流させる。
     - role: sample_meta に明示があればそれを優先し、無ければ

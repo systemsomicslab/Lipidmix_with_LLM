@@ -86,17 +86,21 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
         assert len(deserialized_and_formatted_data) > 0
         assert isinstance(deserialized_and_formatted_data[0], dict)
 
-        # 別データセットへ切り替えるので前データ由来の解析成果を破棄してから load する。
-        session_state.session.reset_analysis_state()
-        session_state.session.features = deserialized_and_formatted_data
-        session_state.session.current_file_path = file_path
-        session_state.session.apply_filter({"min_intensity": filter_threshold})
+        # PAI2 専用スロットへ載せる。ARF（多サンプル）の解析基盤とは粒度が違い
+        # 互いに代入不能なので、ARF の前処理行列・差次的結果・手動除外には触れない。
+        # 以前はここで共有 features を上書きし reset_analysis_state() まで呼んでいたため、
+        # ピークを1つ覗くだけで進行中の ARF 解析が無言で消えていた。
+        session_state.session.pai2.load(
+            file_path,
+            deserialized_and_formatted_data,
+            {"min_intensity": filter_threshold},
+        )
 
         # 同名 .dcl の MS/MS を付けておく。verify_peak_annotation が「取得フラグ」ではなく
         # 実スペクトルを根拠に同定確度を語れるようにするため（欠けても解析は続行）。
-        msms_report = _attach_sibling_msms(file_path, session_state.session.features)
+        msms_report = _attach_sibling_msms(file_path, session_state.session.pai2.features)
 
-        summary = summarize_pai2_inventory(session_state.session.filtered_features)
+        summary = summarize_pai2_inventory(session_state.session.pai2.filtered_features)
         summary["msms_attachment"] = msms_report
         text_report = (
             f"### PAI2 解析完了: {Path(file_path).name}\n"
@@ -115,14 +119,14 @@ def pai2_inspect_peak(peak_id: str | None = None, peak_name: str | None = None) 
     返り値には signal_to_noise フィールドが含まれます。peak_id か peak_name の
     いずれかを指定する。
     """
-    if session_state.session.filtered_features is None:
+    if session_state.session.pai2.filtered_features is None:
         return json.dumps(
             {"status": "error", "message": "先に pai2_parser を実行してデータを読み込んでください。"},
             ensure_ascii=False, indent=2,
         )
 
     details = inspect_peak_details(
-        session_state.session.filtered_features,
+        session_state.session.pai2.filtered_features,
         peak_id=peak_id,
         peak_name=peak_name,
     )
@@ -140,7 +144,7 @@ def verify_peak_annotation(
     先に pai2_parser でデータを読み込むこと。peak_id か peak_name の
     いずれかを指定する。
     """
-    if session_state.session.filtered_features is None:
+    if session_state.session.pai2.filtered_features is None:
         return json.dumps(
             {"status": "error", "message": "先に pai2_parser を実行してデータを読み込んでください。"},
             ensure_ascii=False,
@@ -154,7 +158,7 @@ def verify_peak_annotation(
         )
 
     matches = []
-    for feat in session_state.session.filtered_features:
+    for feat in session_state.session.pai2.filtered_features:
         if peak_id is not None and str(feat.get("id")) == str(peak_id):
             matches.append(feat)
         elif (

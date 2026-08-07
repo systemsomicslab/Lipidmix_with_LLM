@@ -119,7 +119,7 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
     解析ツールの返り値に同梱されている）。返り値の相対パスは write_report の本文に
     `![PCA](figures/<analysis_id>_pca.png)` として埋め込める。
     """
-    plot = getattr(session_state.session, "last_pca_plot", None)
+    plot = getattr(session_state.session.arf, "last_pca_plot", None)
     if not plot or not plot.get("points"):
         return "先に arf_parser / arf_re_pca / pai2_parser 等でPCAを実行してください（PCA結果がありません）。"
 
@@ -158,7 +158,7 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
     返り値の相対パスは write_report の本文に
     `![volcano](figures/<analysis_id>_volcano.png)` として埋め込める。
     """
-    last = getattr(session_state.session, "last_differential", None)
+    last = getattr(session_state.session.arf, "last_differential", None)
     if not last or not last.get("volcano"):
         return "[error] 直近の差次的解析（volcano データ）がありません。先に arf_differential を実行してください。"
 
@@ -198,7 +198,7 @@ def save_eic_figure(analysis_id: str, title: str | None = None) -> str:
     （複数物質×1サンプル）でクライアント描画用の構造化情報を作る。通常の対話描画では
     このツールを呼ばず、各MCPクライアントのUIへ描画を任せる。
     """
-    plot = getattr(session_state.session, "last_eic_plot", None)
+    plot = getattr(session_state.session.eic, "last_plot", None)
     if not plot or not plot.get("series"):
         return (
             "先に eic_plot_chromatograms または eic_plot_compounds を実行してください"

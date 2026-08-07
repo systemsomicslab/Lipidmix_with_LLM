@@ -138,7 +138,7 @@ class TestArfPlotVolcanoTool(unittest.TestCase):
         self.session_state.session = self._saved
 
     def test_builds_payload_from_session_differential(self):
-        self.session_state.session.last_differential = {
+        self.session_state.session.arf.last_differential = {
             "kind": "two_group", "a": "24M", "b": "9w", "n_a": 6, "n_b": 5,
             "q_threshold": 0.05, "log2fc_threshold": 1.0,
             "volcano": [_point("PC 34:1", 1.8, 3.4, "up"),
@@ -150,7 +150,7 @@ class TestArfPlotVolcanoTool(unittest.TestCase):
         self.assertEqual(len(payload["points"]), 2)
 
     def test_max_points_and_title_are_forwarded(self):
-        self.session_state.session.last_differential = {
+        self.session_state.session.arf.last_differential = {
             "kind": "two_group", "a": "A", "b": "B",
             "volcano": [_point(f"ns-{i}", 0.1, 0.2, "ns") for i in range(100)],
         }
@@ -164,7 +164,7 @@ class TestArfPlotVolcanoTool(unittest.TestCase):
         self.assertIn("arf_differential", str(ctx.exception))
 
     def test_raises_for_non_two_group_result(self):
-        self.session_state.session.last_differential = {
+        self.session_state.session.arf.last_differential = {
             "kind": "anova", "volcano": [_point("PC 34:1", 1.8, 3.4, "up")]}
         with self.assertRaises(ValueError) as ctx:
             self.server.arf_plot_volcano()
@@ -174,7 +174,7 @@ class TestArfPlotVolcanoTool(unittest.TestCase):
         import os
         import tempfile
         from pathlib import Path
-        self.session_state.session.last_differential = {
+        self.session_state.session.arf.last_differential = {
             "kind": "two_group", "a": "A", "b": "B",
             "volcano": [_point("PC 34:1", 1.8, 3.4, "up")]}
         with tempfile.TemporaryDirectory() as tmp:

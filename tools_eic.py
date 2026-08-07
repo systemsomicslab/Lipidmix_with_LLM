@@ -47,7 +47,7 @@ def eic_parser(file_path: str | None = None) -> str:
         return "データディレクトリに .aef ファイルが見つかりませんでした。"
 
     try:
-        parsed = session_state.session.load_eic_data(file_path)
+        parsed = session_state.session.eic.load_data(file_path)
         if not isinstance(parsed, list):
             return "EIC解析結果がリストではありません。"
 
@@ -92,7 +92,7 @@ def eic_plot_chromatograms(
     payload = build_eic_plot_payload(
         spot, resolved, normalize=normalize, title=title,
     )
-    session_state.session.last_eic_plot = payload
+    session_state.session.eic.last_plot = payload
     return payload
 
 
@@ -170,7 +170,7 @@ def eic_plot_compounds(
         caveats=caveats,
         total_matched=total_matched,
     )
-    session_state.session.last_eic_plot = payload
+    session_state.session.eic.last_plot = payload
     return payload
 
 
@@ -186,7 +186,7 @@ def eic_rank_by_max_intensity(file_path: str | None = None, top_n: int = 20) -> 
         return "データディレクトリに .aef ファイルが見つかりませんでした。"
 
     try:
-        parsed = session_state.session.load_eic_data(file_path)
+        parsed = session_state.session.eic.load_data(file_path)
         if not isinstance(parsed, list):
             return "EIC解析結果がリストではありません。"
 
@@ -215,7 +215,7 @@ def eic_search_by_mz_range(file_path: str | None = None, min_mz: float = 0.0, ma
         return "データディレクトリに .aef ファイルが見つかりませんでした。"
 
     try:
-        parsed = session_state.session.load_eic_data(file_path)
+        parsed = session_state.session.eic.load_data(file_path)
         if not isinstance(parsed, list):
             return "EIC解析結果がリストではありません。"
 
@@ -246,7 +246,7 @@ def eic_search_by_rt_range(file_path: str | None = None, min_rt: float = 0.0, ma
         return "データディレクトリに .aef ファイルが見つかりませんでした。"
 
     try:
-        parsed = session_state.session.load_eic_data(file_path)
+        parsed = session_state.session.eic.load_data(file_path)
         if not isinstance(parsed, list):
             return "EIC解析結果がリストではありません。"
 

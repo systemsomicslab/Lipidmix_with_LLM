@@ -24,7 +24,9 @@ def make_class_index() -> dict:
     }
 
 
-class FakeSession:
+class FakeArfState:
+    """実 ArfState をミラーする（ARF スロットは他パーサと共有されない）。"""
+
     def __init__(self):
         self.current_file_path = None
         self.features = [{
@@ -36,15 +38,22 @@ class FakeSession:
         }]
         self.filtered_features = None
         self.pca_result = None
-        self.arf_tag_index = {}
-        self.arf_class_index = make_class_index()
-        # 手動除外集合（実 AnalysisSession をミラー。空集合なので prune_spots は恒等）
+        self.tag_index = {}
+        self.class_index = make_class_index()
+        # 手動除外集合（実 ArfState をミラー。空集合なので prune_spots は恒等）
         self.excluded_samples = set()
         self.excluded_spots = set()
+        self.feature_matrix = None
+        self.last_pca_plot = None
 
     def load_data(self, file_path, tag_directory=None):
         self.current_file_path = file_path
         return self.features
+
+
+class FakeSession:
+    def __init__(self):
+        self.arf = FakeArfState()
 
     def maybe_prepend_caveat(self, text, topic=None):
         return text  # 意味論 caveat / トピック誘導は本テストの対象外（恒等パススルー）
@@ -93,7 +102,7 @@ class ServerClassFilterTests(unittest.TestCase):
 
         self.assertIn("Class IDフィルタ**: `control`", result)
         self.assertIn("PCA入力行列の形状**: (1, 2)", result)
-        rows = self.session.filtered_features[0]["AlignedPeakProperties"]
+        rows = self.session.arf.filtered_features[0]["AlignedPeakProperties"]
         self.assertEqual([row[1] for row in rows], ["sample_control"])
 
     def test_arf_parser_combines_class_filter_with_intensity_keyword(self):
@@ -112,16 +121,16 @@ class ServerClassFilterTests(unittest.TestCase):
         self.assertIn("Class IDフィルタ**: `treated`", result)
         self.assertIn("PCA入力行列の形状**: (1, 2)", result)
         self.assertIn("適用フィルタ条件", result)
-        rows = self.session.filtered_features[0]["AlignedPeakProperties"]
+        rows = self.session.arf.filtered_features[0]["AlignedPeakProperties"]
         self.assertEqual([row[1] for row in rows], ["sample_treated"])
 
     def test_arf_list_classes_returns_counts(self):
-        self.session.current_file_path = "test.arf"
+        self.session.arf.current_file_path = "test.arf"
         payload = json.loads(server.arf_list_classes())
         self.assertEqual(payload["class_counts"], {"control": 1, "treated": 1})
 
     def test_arf_list_classes_returns_factor_vocabulary(self):
-        self.session.current_file_path = "test.arf"
+        self.session.arf.current_file_path = "test.arf"
         payload = json.loads(server.arf_list_classes())
         self.assertEqual(set(payload["factors_by_position"]["0"]), {"control", "treated"})
 

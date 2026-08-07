@@ -28,15 +28,15 @@ class DifferentialByNameTokenTests(unittest.TestCase):
             "20220901_RAW_control_6h_3_NEG",
             "20220902_RAW_ILG_0h_1_NEG", "20220901_RAW_control_0h_1_NEG",
         ]
-        session_state.session.feature_matrix = np.array([
+        session_state.session.arf.feature_matrix = np.array([
             [50.0, 5.0], [52.0, 5.1], [48.0, 4.9],
             [10.0, 5.0], [11.0, 5.2], [9.5, 4.8],
             [30.0, 5.0], [30.0, 5.0],
         ])
-        session_state.session.pp_sample_names = names
-        session_state.session.pp_feature_names = ["Spot_0_height", "Spot_1_height"]
-        session_state.session.preprocessing_recipe = {"normalize": "median"}
-        session_state.session.sample_meta = {
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["Spot_0_height", "Spot_1_height"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.sample_meta = {
             n: {"group": ("ILG" if "ILG" in n else "control"),
                 "role": "sample", "batch": "d1"}
             for n in names
@@ -114,9 +114,7 @@ class DifferentialByNameTokenTests(unittest.TestCase):
         self.assertIn("3 サンプル", pooled[0])
 
 
-class _ParserFakeSession:
-    """test_server_class_filter.FakeSession と同型だが、サンプル名を差し替えられる版。"""
-
+class _ParserFakeArfState:
     def __init__(self, names):
         self.current_file_path = None
         self.features = [{
@@ -125,14 +123,28 @@ class _ParserFakeSession:
         }]
         self.filtered_features = None
         self.pca_result = None
-        self.arf_tag_index = {}
-        self.arf_class_index = None
+        self.tag_index = {}
+        self.class_index = None
         self.excluded_samples = set()
         self.excluded_spots = set()
+        self.feature_matrix = None
+        self.last_pca_plot = None
+        self.last_differential = None
+        self.sample_meta = {}
+        self.preprocessing_recipe = {}
+        self.pp_sample_names = None
+        self.pp_feature_names = None
 
     def load_data(self, file_path, tag_directory=None):
         self.current_file_path = file_path
         return self.features
+
+
+class _ParserFakeSession:
+    """test_server_class_filter.FakeSession と同型だが、サンプル名を差し替えられる版。"""
+
+    def __init__(self, names):
+        self.arf = _ParserFakeArfState(names)
 
     def maybe_prepend_caveat(self, text, topic=None):
         return text
@@ -176,7 +188,7 @@ class ArfParserFactorTests(unittest.TestCase):
     def test_class_ids_filter_by_name_only_token(self):
         result = self._run(class_ids=["6h"])
         self.assertIn("Class IDフィルタ**: `6h`", result)
-        rows = self.session.filtered_features[0]["AlignedPeakProperties"]
+        rows = self.session.arf.filtered_features[0]["AlignedPeakProperties"]
         self.assertEqual(
             [row[1] for row in rows],
             ["20220901_RAW_control_6h_1_NEG", "20220902_RAW_ILG_6h_1_NEG"],
@@ -189,7 +201,7 @@ class ArfParserFactorTests(unittest.TestCase):
 
     def test_include_roles_brings_qc_back(self):
         self._run(class_ids=["raw"], include_roles=["sample", "qc"])
-        rows = self.session.filtered_features[0]["AlignedPeakProperties"]
+        rows = self.session.arf.filtered_features[0]["AlignedPeakProperties"]
         self.assertIn("20220901_QC_RAW_NEG_1", [row[1] for row in rows])
 
     def test_summary_discloses_selected_samples_not_just_class_ids(self):
@@ -219,11 +231,11 @@ class ArfPcaPreprocessedFactorTests(unittest.TestCase):
     def setUp(self):
         session_state.session = server.AnalysisSession()
         names = ["20220901_RAW_control_0h_1_NEG", "20220902_RAW_ILG_6h_1_NEG"]
-        session_state.session.feature_matrix = np.array([[1.0, 2.0], [3.0, 4.0]])
-        session_state.session.pp_sample_names = names
-        session_state.session.pp_feature_names = ["Spot_0_height", "Spot_1_height"]
-        session_state.session.preprocessing_recipe = {"normalize": "median"}
-        session_state.session.features = []
+        session_state.session.arf.feature_matrix = np.array([[1.0, 2.0], [3.0, 4.0]])
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["Spot_0_height", "Spot_1_height"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.features = []
 
     def test_group_factors_label_the_plot(self):
         with patch.object(server.arf_reader, "run_pca", fake_run_pca), \
@@ -241,7 +253,7 @@ class ArfListClassesVocabularyTests(unittest.TestCase):
             "20220902_RAW_ILG_6h_1_NEG",
             "20220901_QC_RAW_NEG_1",
         ])
-        self.session.current_file_path = "test.arf"
+        self.session.arf.current_file_path = "test.arf"
         self.patcher = patch.object(session_state, "session", self.session)
         self.patcher.start()
 
@@ -284,7 +296,7 @@ class ArfExcludeSpecTests(unittest.TestCase):
             "20220902_RAW_ILG_0h_1_NEG",
             "20220901_RAW_control_6h_1_NEG",
         ]
-        session_state.session.filtered_features = [{
+        session_state.session.arf.filtered_features = [{
             "MasterAlignmentID": 1,
             "AlignedPeakProperties": [_exclude_row(i, n, 10 + i) for i, n in enumerate(names)],
         }]
@@ -307,7 +319,7 @@ class ArfExcludeSpecTests(unittest.TestCase):
         server.arf_exclude(exclude_samples=["ILG_6h"])
         out = json.loads(server.arf_exclude(exclude_samples=["ILG_6h"], mode="remove"))
         self.assertEqual(out["excluded_samples"], [])
-        self.assertEqual(session_state.session.excluded_samples, set())
+        self.assertEqual(session_state.session.arf.excluded_samples, set())
 
     def test_exact_name_still_wins(self):
         out = json.loads(server.arf_exclude(exclude_samples=["20220902_RAW_ILG_6h_1_NEG"]))
@@ -317,7 +329,7 @@ class ArfExcludeSpecTests(unittest.TestCase):
         out = json.loads(server.arf_exclude(exclude_samples=["24h"]))
         self.assertEqual(out["status"], "success")
         self.assertIn("24h", out["unmatched_samples"])
-        self.assertEqual(session_state.session.excluded_samples, set())
+        self.assertEqual(session_state.session.arf.excluded_samples, set())
 
     def test_empty_or_underscore_only_specs_are_unmatched_not_raised(self):
         """split_tokens が空集合を返す spec（空文字/空白/アンダースコアのみ）は
@@ -329,7 +341,7 @@ class ArfExcludeSpecTests(unittest.TestCase):
         for spec in ("", "   ", "___"):
             self.assertIn(spec, out["unmatched_samples"])
         self.assertEqual(out["excluded_samples"], [])
-        self.assertEqual(session_state.session.excluded_samples, set())
+        self.assertEqual(session_state.session.arf.excluded_samples, set())
 
 
 class ArfExcludeQcRoleSpecTests(unittest.TestCase):
@@ -343,7 +355,7 @@ class ArfExcludeQcRoleSpecTests(unittest.TestCase):
             "20220902_RAW_ILG_6h_1_NEG",
             "20220901_QC_RAW_NEG_1",
         ]
-        session_state.session.filtered_features = [{
+        session_state.session.arf.filtered_features = [{
             "MasterAlignmentID": 1,
             "AlignedPeakProperties": [_exclude_row(i, n, 10 + i) for i, n in enumerate(names)],
         }]

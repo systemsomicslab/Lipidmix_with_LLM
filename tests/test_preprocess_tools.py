@@ -16,8 +16,8 @@ class TestPreprocessTools(unittest.TestCase):
 
     def test_preprocess_sets_session_matrix(self):
         # minimal fake ARF matrix path: inject via monkeypatch of build helper
-        session_state.session.filtered_features = [{"AlignedPeakProperties": []}]
-        session_state.session.arf_class_index = None
+        session_state.session.arf.filtered_features = [{"AlignedPeakProperties": []}]
+        session_state.session.arf.class_index = None
 
         def fake_matrix(*a, **k):
             m = np.array([[10.0, 1.0], [20.0, 2.0], [15.0, 1.5]])
@@ -31,8 +31,8 @@ class TestPreprocessTools(unittest.TestCase):
         self.addCleanup(setattr, tool_helpers, "_pp_build_matrix", _orig_build)
         out = json.loads(server.arf_preprocess(normalize="median", impute="half_min"))
         self.assertEqual(out["status"], "success")
-        self.assertIsNotNone(session_state.session.feature_matrix)
-        self.assertEqual(session_state.session.preprocessing_recipe["normalize"], "median")
+        self.assertIsNotNone(session_state.session.arf.feature_matrix)
+        self.assertEqual(session_state.session.arf.preprocessing_recipe["normalize"], "median")
 
 
 class TestPcaPreprocessed(unittest.TestCase):
@@ -45,13 +45,13 @@ class TestPcaPreprocessed(unittest.TestCase):
 
     def test_runs_pca_on_preprocessed_matrix(self):
         import numpy as np
-        session_state.session.feature_matrix = np.array(
+        session_state.session.arf.feature_matrix = np.array(
             [[1.0, 2.0, 3.0], [2.0, 1.0, 0.0], [3.0, 3.0, 3.0], [0.0, 1.0, 2.0]])
-        session_state.session.pp_sample_names = ["a", "b", "c", "d"]
-        session_state.session.pp_feature_names = ["Spot_0_height", "Spot_1_height", "Spot_2_height"]
-        session_state.session.arf_class_index = None
-        session_state.session.features = []  # get_pca_loading_features tolerates empty spots
-        session_state.session.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.pp_sample_names = ["a", "b", "c", "d"]
+        session_state.session.arf.pp_feature_names = ["Spot_0_height", "Spot_1_height", "Spot_2_height"]
+        session_state.session.arf.class_index = None
+        session_state.session.arf.features = []  # get_pca_loading_features tolerates empty spots
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
         self.assertTrue(server._pp_has_preprocessed())
         out = server.arf_pca_preprocessed()
         self.assertIn("PCA", out)
@@ -69,8 +69,8 @@ class TestBlankExclusionFromAnalysisMatrix(unittest.TestCase):
         session_state.session = server.AnalysisSession()
 
     def _prime(self):
-        session_state.session.filtered_features = [{"AlignedPeakProperties": []}]
-        session_state.session.arf_class_index = None
+        session_state.session.arf.filtered_features = [{"AlignedPeakProperties": []}]
+        session_state.session.arf.class_index = None
 
         def fake_matrix(*a, **k):
             m = np.array([
@@ -90,8 +90,8 @@ class TestBlankExclusionFromAnalysisMatrix(unittest.TestCase):
         self._prime()
         out = json.loads(server.arf_preprocess(normalize="none", impute="none"))
         self.assertEqual(out["status"], "success")
-        self.assertEqual(session_state.session.pp_sample_names, ["s1", "s2", "QC_1"])
-        self.assertEqual(session_state.session.feature_matrix.shape[0], 3)
+        self.assertEqual(session_state.session.arf.pp_sample_names, ["s1", "s2", "QC_1"])
+        self.assertEqual(session_state.session.arf.feature_matrix.shape[0], 3)
 
     def test_removal_is_reported_and_caveated(self):
         self._prime()

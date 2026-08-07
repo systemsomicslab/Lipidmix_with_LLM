@@ -128,8 +128,8 @@ class SampleSearchFromDirectoryTests(unittest.TestCase):
 class SampleSearchFromLoadedArfTests(unittest.TestCase):
     def setUp(self):
         session_state.session = server.AnalysisSession()
-        session_state.session.current_file_path = "loaded.arf"
-        session_state.session.features = [{
+        session_state.session.arf.current_file_path = "loaded.arf"
+        session_state.session.arf.features = [{
             "MasterAlignmentID": 1,
             "AlignedPeakProperties": [[i, n, 1.0] for i, n in enumerate(SAMPLES)],
         }]
@@ -149,7 +149,7 @@ class SampleSearchFromLoadedArfTests(unittest.TestCase):
         sample_search は「どのサンプルが存在するか」の発見入口なので、直前の
         フィルタに関わらずデータセット全体を見る。
         """
-        session_state.session.filtered_features = [{
+        session_state.session.arf.filtered_features = [{
             "MasterAlignmentID": 1,
             "AlignedPeakProperties": [[1, "20220902_RAW_ILG_6h_1_NEG", 1.0]],
         }]
@@ -158,7 +158,7 @@ class SampleSearchFromLoadedArfTests(unittest.TestCase):
         self.assertIn("control", payload["token_vocabulary"]["tokens"])
 
     def test_spec_outside_the_prior_filter_still_resolves(self):
-        session_state.session.filtered_features = [{
+        session_state.session.arf.filtered_features = [{
             "MasterAlignmentID": 1,
             "AlignedPeakProperties": [[1, "20220902_RAW_ILG_6h_1_NEG", 1.0]],
         }]

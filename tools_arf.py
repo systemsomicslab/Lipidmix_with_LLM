@@ -57,12 +57,12 @@ __all__ = [
 def arf_list_tags() -> str:
     """List MS-DIAL tags discovered for the currently loaded ARF dataset."""
     if (
-        session_state.session.features is None
-        or session_state.session.arf_tag_index is None
-        or not str(session_state.session.current_file_path or "").lower().endswith(".arf")
+        session_state.session.arf.features is None
+        or session_state.session.arf.tag_index is None
+        or not str(session_state.session.arf.current_file_path or "").lower().endswith(".arf")
     ):
         return "先に arf_parser を実行してARFデータとタグファイルを読み込んでください。"
-    return json.dumps(session_state.session.arf_tag_index.get("summary", {}), ensure_ascii=False, indent=2)
+    return json.dumps(session_state.session.arf.tag_index.get("summary", {}), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
@@ -76,19 +76,19 @@ def arf_list_classes() -> str:
     2トークンに割れる場合（G_uralensis）にずれるため指定には使わない。
     """
     if (
-        session_state.session.features is None
-        or not str(session_state.session.current_file_path or "").lower().endswith(".arf")
+        session_state.session.arf.features is None
+        or not str(session_state.session.arf.current_file_path or "").lower().endswith(".arf")
     ):
         return "先に arf_parser を実行してARFデータを読み込んでください。"
-    class_index = session_state.session.arf_class_index or {}
+    class_index = session_state.session.arf.class_index or {}
     class_counts = class_index.get("class_counts", {})
     # 語彙は**常にデータセット全体**（features）から作る。filtered_features を優先すると
     # 直前の arf_parser(class_ids=...) の絞り込みで語彙が黙って痩せ、「何で絞れるか」を
     # 尋ねる本ツールが「control サンプルは存在しない」と誤答する（class_counts は
     # mddata 全体を見ているため、同じ payload の中で2つのスコープが混在してしまう）。
-    names = sample_factors.arf_sample_names(session_state.session.features)
+    names = sample_factors.arf_sample_names(session_state.session.arf.features)
     facets = sample_factors.build_sample_facets(
-        names, session_state.session.arf_class_index)
+        names, session_state.session.arf.class_index)
     return json.dumps({
         "mddata_path": class_index.get("mddata_path"),
         "class_counts": class_counts,
@@ -102,17 +102,17 @@ def arf_list_classes() -> str:
 @mcp.tool()
 def arf_list_sample_roles() -> str:
     """ロード済み ARF のサンプルを sample/qc/blank に分類して返す（前処理の適用前確認）。"""
-    if session_state.session.filtered_features is None:
+    if session_state.session.arf.filtered_features is None:
         return json.dumps({"status": "error",
                            "message": "先に arf_parser で ARF を読み込んでください。"},
                           ensure_ascii=False, indent=2)
-    _, sample_names, _ = tool_helpers._pp_build_matrix(session_state.session.filtered_features, ["height"])
-    meta = _build_sample_meta(sample_names, session_state.session.arf_class_index)
+    _, sample_names, _ = tool_helpers._pp_build_matrix(session_state.session.arf.filtered_features, ["height"])
+    meta = _build_sample_meta(sample_names, session_state.session.arf.class_index)
     counts = {"sample": 0, "qc": 0, "blank": 0}
     for m in meta.values():
         counts[m["role"]] = counts.get(m["role"], 0) + 1
     for name, m in meta.items():
-        m["excluded"] = name in session_state.session.excluded_samples
+        m["excluded"] = name in session_state.session.arf.excluded_samples
     return json.dumps({"status": "success", "counts": counts, "samples": meta},
                       ensure_ascii=False, indent=2)
 
@@ -128,7 +128,7 @@ def _resolve_exclude_specs(req_samples, avail_samples):
     if not req_samples:
         return [], {}, []
     facets = sample_factors.build_sample_facets(
-        sorted(avail_samples), session_state.session.arf_class_index)
+        sorted(avail_samples), session_state.session.arf.class_index)
     matched: list[str] = []
     resolved: dict[str, list[str]] = {}
     unmatched: list[str] = []
@@ -175,15 +175,15 @@ def arf_exclude(
     - exclude_spots: 除外するスポットの MasterAlignmentID（int）のリスト。
     - mode: add（既定・追加）/ remove（再包含）/ clear（全消去）/ list（現状表示のみ）。
     """
-    spots = session_state.session.filtered_features
+    spots = session_state.session.arf.filtered_features
     if spots is None:
         return json.dumps({"status": "error",
                            "message": "先に arf_parser で ARF を読み込んでください。"},
                           ensure_ascii=False, indent=2)
 
     avail_samples, avail_ids = exclusions.roster(spots)
-    es = session_state.session.excluded_samples
-    esp = session_state.session.excluded_spots
+    es = session_state.session.arf.excluded_samples
+    esp = session_state.session.arf.excluded_spots
     req_samples = list(exclude_samples or [])
     req_spots = list(exclude_spots or [])
     resolved_samples: dict[str, list[str]] = {}
@@ -255,19 +255,19 @@ def arf_preprocess(
 
     以降の PCA/差次的解析は session_state.session.feature_matrix（前処理後）を消費する。
     """
-    if session_state.session.filtered_features is None:
+    if session_state.session.arf.filtered_features is None:
         return json.dumps({"status": "error",
                            "message": "先に arf_parser で ARF を読み込んでください。"},
                           ensure_ascii=False, indent=2)
     props = props or ["height"]
     # 手動除外（PCA 外れサンプル / 特定ピーク）を行列構築前に適用（非破壊）
     active = exclusions.prune_spots(
-        session_state.session.filtered_features,
-        session_state.session.excluded_samples,
-        session_state.session.excluded_spots,
+        session_state.session.arf.filtered_features,
+        session_state.session.arf.excluded_samples,
+        session_state.session.arf.excluded_spots,
     )
     matrix, sample_names, feature_names = tool_helpers._pp_build_matrix(active, props)
-    meta = _build_sample_meta(sample_names, session_state.session.arf_class_index)
+    meta = _build_sample_meta(sample_names, session_state.session.arf.class_index)
     roles = {n: meta[n]["role"] for n in sample_names}
     run_order = {n: meta[n]["run_order"] for n in sample_names}
 
@@ -304,11 +304,11 @@ def arf_preprocess(
             "ため残しています。"
         )
 
-    session_state.session.feature_matrix = matrix2
-    session_state.session.pp_sample_names = pp_sample_names
-    session_state.session.pp_feature_names = kept_feature_names
-    session_state.session.sample_meta = meta
-    session_state.session.preprocessing_recipe = recipe
+    session_state.session.arf.feature_matrix = matrix2
+    session_state.session.arf.pp_sample_names = pp_sample_names
+    session_state.session.arf.pp_feature_names = kept_feature_names
+    session_state.session.arf.sample_meta = meta
+    session_state.session.arf.preprocessing_recipe = recipe
     if len(qc_batches) > 1:
         report.setdefault("caveats", []).append(
             "プールQC が複数バッチ/層に分かれています。全体一律のドリフト補正は近似です。"
@@ -319,8 +319,8 @@ def arf_preprocess(
             f"プールQC が層別（{len(qc_strata)} サブグループ{f': {labels}' if labels else ''}）"
             "と検出されました。全 QC を1系列として扱うドリフト補正/RSD フィルタは近似です。"
         )
-    n_excl_s = len(session_state.session.excluded_samples)
-    n_excl_p = len(session_state.session.excluded_spots)
+    n_excl_s = len(session_state.session.arf.excluded_samples)
+    n_excl_p = len(session_state.session.arf.excluded_spots)
     if n_excl_s or n_excl_p:
         report.setdefault("caveats", []).append(
             f"ユーザ手動除外: サンプル {n_excl_s} 件 / スポット {n_excl_p} 件を除外済み。")
@@ -357,16 +357,16 @@ def arf_pca_preprocessed(
     if not _pp_has_preprocessed():
         return "前処理後の行列がありません。先に arf_preprocess を実行してください。"
     from arf_reader import run_pca, get_pca_loading_features
-    matrix = session_state.session.feature_matrix
-    sample_names = session_state.session.pp_sample_names
-    feature_names = session_state.session.pp_feature_names
+    matrix = session_state.session.arf.feature_matrix
+    sample_names = session_state.session.arf.pp_sample_names
+    feature_names = session_state.session.arf.pp_feature_names
     try:
         pca_result = run_pca(matrix, n_components=components, log_transform=log_transform)
     except Exception as exc:
         return f"[ERROR] PCA 実行に失敗しました: {exc}"
 
     sample_groups = assign_sample_groups(
-        sample_names, session_state.session.arf_class_index, group_levels,
+        sample_names, session_state.session.arf.class_index, group_levels,
         group_factors=group_factors,
     )
     plot_block = _format_pca_plot_block(
@@ -378,14 +378,14 @@ def arf_pca_preprocessed(
     _remember_arf_pca_plot(pca_result, sample_names,
                            title="PCA (preprocessed ARF)", groups=sample_groups)
     loading_features = get_pca_loading_features(
-        pca_result, session_state.session.features or [], feature_names, top_n=top_features,
+        pca_result, session_state.session.arf.features or [], feature_names, top_n=top_features,
     )
     loadings_block = _format_pca_loadings_md(
         loading_features, header="#### 📊 PCA Loadings 寄与度分析（前処理後）\n",
     )
     text = (
         f"### 📈 前処理後 ARF PCA 解析\n"
-        f"- **前処理レシピ**: {session_state.session.preprocessing_recipe}\n"
+        f"- **前処理レシピ**: {session_state.session.arf.preprocessing_recipe}\n"
         f"- **PCA入力行列の形状**: {tuple(matrix.shape)} (サンプル数 x 特徴量数)\n"
         f"- **PC1 説明分散比**: {pca_result['explained_variance_ratio'][0]*100:.2f}%\n"
         f"- **PC2 説明分散比**: {pca_result['explained_variance_ratio'][1]*100:.2f}%\n"
@@ -463,13 +463,13 @@ def arf_parser(
     from arf_reader import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
 
     try:
-        deserialized_and_formatted_data = session_state.session.load_data(file_path, tag_directory=tag_directory)
+        deserialized_and_formatted_data = session_state.session.arf.load_data(file_path, tag_directory=tag_directory)
         if not isinstance(deserialized_and_formatted_data, list):
             return "デシリアライズ結果がリストではありません。"
 
         analysis_data, tag_filter_stats = filter_arf_by_tags(
             deserialized_and_formatted_data,
-            session_state.session.arf_tag_index or {},
+            session_state.session.arf.tag_index or {},
             tag_labels,
             mode=tag_mode,
             scope=tag_scope,
@@ -480,7 +480,7 @@ def arf_parser(
 
         analysis_data, class_filter_stats = filter_arf_by_class_ids(
             analysis_data,
-            session_state.session.arf_class_index,
+            session_state.session.arf.class_index,
             class_ids,
             missing_sample_policy=class_missing_sample_policy,
             include_roles=tuple(include_roles) if include_roles else ("sample",),
@@ -495,13 +495,13 @@ def arf_parser(
                 f"指定された条件（強度 >= {min_intensity}, キーワード: '{annotation_keyword or '指定なし'}'）"
                 "に一致するARFピークが見つかりませんでした。"
             )
-        session_state.session.filtered_features = analysis_data
+        session_state.session.arf.filtered_features = analysis_data
 
         # 手動除外（PCA 外れサンプル / 特定ピーク）を PCA 前に適用（非破壊）
         active_data = exclusions.prune_spots(
             analysis_data,
-            session_state.session.excluded_samples,
-            session_state.session.excluded_spots,
+            session_state.session.arf.excluded_samples,
+            session_state.session.arf.excluded_spots,
         )
 
         peak_df = extract_peak_properties(active_data)
@@ -523,7 +523,7 @@ def arf_parser(
 
         # サンプル別の群ラベル（既定=完全Class ID、group_levels 指定時はその因子で統合）
         sample_groups = assign_sample_groups(
-            sample_names, session_state.session.arf_class_index, group_levels,
+            sample_names, session_state.session.arf.class_index, group_levels,
             group_factors=group_factors,
         )
 
@@ -547,14 +547,14 @@ def arf_parser(
 
         # Loadings 寄与上位（arf_reader の構造化関数 + 共通整形ヘルパー）
         loading_features = get_pca_loading_features(
-            pca_result, session_state.session.features, feature_names, top_n=top_features,
+            pca_result, session_state.session.arf.features, feature_names, top_n=top_features,
         )
         loadings_summary_text = _format_pca_loadings_md(
             loading_features, header="#### 📊 PCA Loadings 寄与度分析 (各極値トップ件数)\n",
         )
 
-        n_excl_s = len(session_state.session.excluded_samples)
-        n_excl_p = len(session_state.session.excluded_spots)
+        n_excl_s = len(session_state.session.arf.excluded_samples)
+        n_excl_p = len(session_state.session.arf.excluded_spots)
         exclude_note = (
             f"- **ユーザ手動除外**: サンプル {n_excl_s} 件 / スポット {n_excl_p} 件\n"
             if (n_excl_s or n_excl_p) else ""
@@ -571,9 +571,9 @@ def arf_parser(
             f"{filter_note}"
             f"{exclude_note}"
             f"{_format_arf_parse_summary(deserialized_and_formatted_data)}"
-            f"{_format_arf_class_summary(session_state.session.arf_class_index)}"
+            f"{_format_arf_class_summary(session_state.session.arf.class_index)}"
             f"{_format_arf_class_filter(class_filter_stats)}"
-            f"{_format_arf_tag_summary(session_state.session.arf_tag_index)}"
+            f"{_format_arf_tag_summary(session_state.session.arf.tag_index)}"
             f"{_format_arf_tag_filter(tag_filter_stats)}"
             f"- **抽出された総ピークレコード数**: {len(peak_df)}\n"
             f"- **平均サンプル数/スポット**: {avg_samples:.2f}\n"
@@ -669,7 +669,7 @@ def _sibling_arf2_path() -> Path | None:
     .arf2 を引くと ID 対応が黙って崩れる。`AlignmentResult_<timestamp>` の語幹が
     一致する兄弟ファイルだけを許し、無ければ None（注釈は諦める）。
     """
-    current = getattr(session_state.session, "current_file_path", None)
+    current = getattr(session_state.session.arf, "current_file_path", None)
     if not current:
         return None
     path = Path(current)
@@ -688,7 +688,7 @@ def _annotate_with_names(rows: list[dict]) -> dict:
     `Spot_474_height` のままだと解釈に到達できないため橋渡しし、出所を name_source で
     開示する。ARF2 は大きいので、ARF で埋まらない ID が残るときだけ読む。
     """
-    spots = {s.get("MasterAlignmentID"): s for s in (session_state.session.features or [])}
+    spots = {s.get("MasterAlignmentID"): s for s in (session_state.session.arf.features or [])}
     unresolved: list[dict] = []
     for row in rows:
         sid = _spot_id_of(row.get("feature"))
@@ -749,7 +749,7 @@ def arf_differential(
     水準にした結果を返さないよう封鎖している）。3群以上を比べたいときは、下記の
     因子トークン・プール指定で関心のある2群を切り出して呼ぶこと。
 
-    先に arf_preprocess を実行して session_state.session.feature_matrix を用意すること
+    先に arf_preprocess を実行して session_state.session.arf.feature_matrix を用意すること
     （未実行ならエラーを返す。生行列への暗黙フォールバックはしない）。
 
     - group_a / group_b: 完全な Class ID（`24M_GF_F`）に加え、**因子トークンによる
@@ -760,14 +760,14 @@ def arf_differential(
       生強度での t 検定/ANOVA は正規性仮定を外れやすいため既定で有効。2群では log2FC も
       log2 空間の群平均差（＝幾何平均比）になる。生スケールで検定したい場合のみ False。
     """
-    matrix = getattr(session_state.session, "feature_matrix", None)
+    matrix = getattr(session_state.session.arf, "feature_matrix", None)
     if matrix is None:
         return json.dumps({"status": "error",
                            "message": "先に arf_preprocess を実行してください（前処理後行列が必要）。"},
                           ensure_ascii=False, indent=2)
-    sample_names = session_state.session.pp_sample_names
-    feature_names = session_state.session.pp_feature_names
-    meta = session_state.session.sample_meta or {}
+    sample_names = session_state.session.arf.pp_sample_names
+    feature_names = session_state.session.arf.pp_feature_names
+    meta = session_state.session.arf.sample_meta or {}
     batch_labels = [(meta.get(n) or {}).get("batch") for n in sample_names]
 
     # 生体試料以外（QC・ブランク）は比較対象から外す。Class ID が group_a/group_b の
@@ -787,7 +787,7 @@ def arf_differential(
             group_labels.append(entry.get("group"))
 
     caveats: list[str] = []
-    recipe = session_state.session.preprocessing_recipe or {}
+    recipe = session_state.session.arf.preprocessing_recipe or {}
     if recipe.get("normalize", "none") == "none":
         caveats.append("正規化が未適用のため log2FC は測定量差を含み得ます（arf_preprocess の normalize を検討）。")
     if log_transform:
@@ -883,7 +883,7 @@ def arf_differential(
             caveats.append(
                 f"検定できた特徴は {n_tested}/{len(feature_names)} 件のみ（多くが p=NaN）。"
                 "群内 n 不足・分散0・欠損が多い可能性があります（前処理の見直しを検討）。")
-        session_state.session.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
+        session_state.session.arf.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
                                      "n_a": n_a, "n_b": n_b,
                                      "q_threshold": q_threshold,
                                      "log2fc_threshold": log2fc_threshold,
@@ -928,7 +928,7 @@ def arf_plot_volcano(
     total, plotted, thinned, and dropped-as-non-finite — is reported in ``selection``,
     so read it before concluding how many features moved.
     """
-    last = getattr(session_state.session, "last_differential", None)
+    last = getattr(session_state.session.arf, "last_differential", None)
     if not last or last.get("kind") != "two_group" or not last.get("volcano"):
         raise ValueError(
             "先に arf_differential（2群比較）を実行してください"

@@ -137,9 +137,9 @@ def _collect_facets(directory):
         # 検索対象は**常にデータセット全体**（features）。filtered_features を優先すると
         # 直前の arf_parser(class_ids=...) の絞り込みで検索空間が黙って痩せ、「どの
         # サンプルが存在するか」を尋ねる本ツールが取りこぼしを起こす。
-        names = sample_factors.arf_sample_names(session.features)
+        names = sample_factors.arf_sample_names(session.arf.features)
         if names:
-            facets = sample_factors.build_sample_facets(names, session.arf_class_index)
+            facets = sample_factors.build_sample_facets(names, session.arf.class_index)
             return facets, "loaded_arf", _loaded_arf_dir(session)
 
     target_dir = Path(directory).expanduser() if directory else mcp_core.DATA_DIR
@@ -160,13 +160,13 @@ def _collect_facets(directory):
 
 def _has_loaded_arf(session) -> bool:
     return (
-        session.features is not None
-        and str(session.current_file_path or "").lower().endswith(".arf")
+        session.arf.features is not None
+        and str(session.arf.current_file_path or "").lower().endswith(".arf")
     )
 
 
 def _loaded_arf_dir(session):
-    path = session.current_file_path
+    path = session.arf.current_file_path
     parent = Path(str(path)).parent
     return parent if parent.is_dir() else None
 

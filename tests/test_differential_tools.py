@@ -18,15 +18,15 @@ class TestArfDifferential(unittest.TestCase):
         self.assertEqual(out["status"], "error")
 
     def test_two_group_reports_significant_and_caveats(self):
-        session_state.session.feature_matrix = np.array([
+        session_state.session.arf.feature_matrix = np.array([
             [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
             [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
         ])
         names = ["a1", "a2", "a3", "b1", "b2", "b3"]
-        session_state.session.pp_sample_names = names
-        session_state.session.pp_feature_names = ["f0", "f1"]
-        session_state.session.preprocessing_recipe = {"normalize": "median"}
-        session_state.session.sample_meta = {
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["f0", "f1"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.sample_meta = {
             n: {"group": ("A" if n.startswith("a") else "B"),
                 "batch": ("d1" if n.startswith("a") else "d2")}
             for n in names
@@ -39,15 +39,15 @@ class TestArfDifferential(unittest.TestCase):
     def test_two_group_payload_omits_full_volcano_but_session_keeps_it(self):
         # 8000字切り詰めで summary が埋没しないよう、payload は全量 volcano を含まず
         # 要約中心にする。全量は session に残し save_volcano_figure から使える。
-        session_state.session.feature_matrix = np.array([
+        session_state.session.arf.feature_matrix = np.array([
             [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
             [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
         ])
         names = ["a1", "a2", "a3", "b1", "b2", "b3"]
-        session_state.session.pp_sample_names = names
-        session_state.session.pp_feature_names = ["f0", "f1"]
-        session_state.session.preprocessing_recipe = {"normalize": "median"}
-        session_state.session.sample_meta = {
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["f0", "f1"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.sample_meta = {
             n: {"group": ("A" if n.startswith("a") else "B")} for n in names
         }
         out = json.loads(server.arf_differential(group_a="A", group_b="B"))
@@ -55,28 +55,28 @@ class TestArfDifferential(unittest.TestCase):
         self.assertIn("volcano_note", out)
         self.assertIn("summary", out)
         # 全量 volcano（全特徴分）は session に残る
-        vol = session_state.session.last_differential["volcano"]
+        vol = session_state.session.arf.last_differential["volcano"]
         self.assertEqual(len(vol), 2)
 
     def test_volcano_note_points_to_structured_plot_tool(self):
         # 既存の test_two_group_* と同じ 3+3 サンプルの下地を使う（群内 n>=2 を満たし、
         # 「n 不足」caveat 経路に入らない構成）。
-        session_state.session.feature_matrix = np.array([
+        session_state.session.arf.feature_matrix = np.array([
             [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
             [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
         ])
         names = ["a1", "a2", "a3", "b1", "b2", "b3"]
-        session_state.session.pp_sample_names = names
-        session_state.session.pp_feature_names = ["f0", "f1"]
-        session_state.session.preprocessing_recipe = {"normalize": "median"}
-        session_state.session.sample_meta = {
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["f0", "f1"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.sample_meta = {
             n: {"group": ("A" if n.startswith("a") else "B")} for n in names
         }
         out = json.loads(server.arf_differential(group_a="A", group_b="B"))
         self.assertIn("arf_plot_volcano", out["volcano_note"])
         self.assertNotIn("save_volcano_figure で図示", out["volcano_note"])
         self.assertNotIn("volcano", out)
-        last = session_state.session.last_differential
+        last = session_state.session.arf.last_differential
         self.assertEqual(last["q_threshold"], 0.05)
         self.assertEqual(last["log2fc_threshold"], 1.0)
         self.assertEqual(last["n_a"], 3)
@@ -91,12 +91,12 @@ class TestArfDifferentialDegenerate(unittest.TestCase):
         n = len(groups)
         if matrix is None:
             matrix = np.arange(1, n * 2 + 1, dtype=float).reshape(n, 2)
-        session_state.session.feature_matrix = matrix
+        session_state.session.arf.feature_matrix = matrix
         names = [f"s{i}" for i in range(n)]
-        session_state.session.pp_sample_names = names
-        session_state.session.pp_feature_names = ["f0", "f1"]
-        session_state.session.preprocessing_recipe = {"normalize": "median"}
-        session_state.session.sample_meta = {names[i]: {"group": groups[i]} for i in range(n)}
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["f0", "f1"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.sample_meta = {names[i]: {"group": groups[i]} for i in range(n)}
 
     def test_empty_requested_group_is_flagged(self):
         # 群名が1件も一致しないなら success を返してはいけない。有意0件を
@@ -126,7 +126,7 @@ class TestSaveVolcano(unittest.TestCase):
         self.assertIn("error", out.lower())
 
     def test_writes_png(self):
-        session_state.session.last_differential = {
+        session_state.session.arf.last_differential = {
             "kind": "two_group", "a": "A", "b": "B",
             "volcano": [
                 {"feature": "f0", "log2fc": 2.0, "neg_log10_p": 3.0, "sig": "up"},
@@ -148,14 +148,14 @@ class TestPooledGroupSpecs(unittest.TestCase):
         classes = ["24M_GF", "24M_GF", "24M_SPF", "24M_SPF",
                    "9w_GF", "9w_GF", "9w_SPF", "9w_SPF"]
         names = [f"s{i}" for i in range(len(classes))]
-        session_state.session.feature_matrix = np.array([
+        session_state.session.arf.feature_matrix = np.array([
             [50.0, 5.0], [52.0, 5.1], [48.0, 4.9], [51.0, 5.0],
             [10.0, 5.0], [11.0, 5.2], [9.5, 4.8], [10.5, 5.1],
         ])
-        session_state.session.pp_sample_names = names
-        session_state.session.pp_feature_names = ["Spot_0_height", "Spot_1_height"]
-        session_state.session.preprocessing_recipe = {"normalize": "median"}
-        session_state.session.sample_meta = {
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["Spot_0_height", "Spot_1_height"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.sample_meta = {
             n: {"group": c} for n, c in zip(names, classes)}
 
     def test_partial_token_pools_class_ids(self):
@@ -195,18 +195,18 @@ class TestTopHitAnnotation(unittest.TestCase):
     def setUp(self):
         session_state.session = server.AnalysisSession()
         names = ["a1", "a2", "a3", "b1", "b2", "b3"]
-        session_state.session.feature_matrix = np.array([
+        session_state.session.arf.feature_matrix = np.array([
             [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
             [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
         ])
-        session_state.session.pp_sample_names = names
-        session_state.session.pp_feature_names = ["Spot_474_height", "Spot_1_height"]
-        session_state.session.preprocessing_recipe = {"normalize": "median"}
-        session_state.session.sample_meta = {
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["Spot_474_height", "Spot_1_height"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.sample_meta = {
             n: {"group": ("A" if n.startswith("a") else "B")} for n in names}
 
     def test_uses_arf_name_when_annotated(self):
-        session_state.session.features = [
+        session_state.session.arf.features = [
             {"MasterAlignmentID": 474, "Name": "BMP 42:10"},
             {"MasterAlignmentID": 1, "Name": "Unknown"},
         ]
@@ -217,7 +217,7 @@ class TestTopHitAnnotation(unittest.TestCase):
         self.assertEqual(top["name_source"], "arf")
 
     def test_falls_back_to_arf2_catalog(self):
-        session_state.session.features = [{"MasterAlignmentID": 474, "Name": "Unknown"}]
+        session_state.session.arf.features = [{"MasterAlignmentID": 474, "Name": "Unknown"}]
         arf2_spots = [{"MasterAlignmentID": 474,
                        "Name": "SL 33:0;O|SL 17:0;O/16:0", "Ontology": "SL"}]
         with mock.patch.object(tools_arf, "_sibling_arf2_path", return_value="dummy.arf2"), \
@@ -231,7 +231,7 @@ class TestTopHitAnnotation(unittest.TestCase):
         self.assertTrue(any("ARF2" in c for c in out["caveats"]))
 
     def test_no_sibling_arf2_leaves_name_none(self):
-        session_state.session.features = [{"MasterAlignmentID": 474, "Name": "Unknown"}]
+        session_state.session.arf.features = [{"MasterAlignmentID": 474, "Name": "Unknown"}]
         with mock.patch.object(tools_arf, "_sibling_arf2_path", return_value=None):
             out = json.loads(server.arf_differential(group_a="A", group_b="B"))
         self.assertIsNone(out["summary"]["top"][0]["name"])
@@ -253,7 +253,7 @@ class TestSiblingArf2Resolution(unittest.TestCase):
             arf2 = os.path.join(d, f"{stem}.arf2")
             open(arf, "wb").close()
             open(arf2, "wb").close()
-            session_state.session.current_file_path = arf
+            session_state.session.arf.current_file_path = arf
             self.assertEqual(str(tools_arf._sibling_arf2_path()), arf2)
 
     def test_rejects_other_batch(self):
@@ -263,7 +263,7 @@ class TestSiblingArf2Resolution(unittest.TestCase):
             open(arf, "wb").close()
             # 別実行の .arf2 しか無い場合は掴まない
             open(os.path.join(d, "AlignmentResult_2026_07_09_17_34_57.arf2"), "wb").close()
-            session_state.session.current_file_path = arf
+            session_state.session.arf.current_file_path = arf
             self.assertIsNone(tools_arf._sibling_arf2_path())
 
     def test_no_loaded_file(self):
@@ -282,11 +282,11 @@ class TestDifferentialSampleSelection(unittest.TestCase):
 
     def _prime(self, meta, matrix):
         names = list(meta)
-        session_state.session.feature_matrix = np.asarray(matrix, dtype=float)
-        session_state.session.pp_sample_names = names
-        session_state.session.pp_feature_names = ["f0", "f1"]
-        session_state.session.preprocessing_recipe = {"normalize": "median"}
-        session_state.session.sample_meta = meta
+        session_state.session.arf.feature_matrix = np.asarray(matrix, dtype=float)
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["f0", "f1"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.sample_meta = meta
 
     def test_qc_sample_is_not_counted_into_a_compared_group(self):
         # QC の Class ID が group_a のトークンを含むと、素通しではプールに紛れ込む。

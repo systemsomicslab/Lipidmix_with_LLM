@@ -40,9 +40,10 @@ def arf2_parser(file_path: str | None = None) -> str:
         # 要約テキストの生成
         text_summary = generate_text_summary(deserialized_data)
 
-        # 将来の検索やフィルタリング用に、カタログデータをセッションに保持しておく
-        session_state.session.current_file_path = file_path
-        session_state.session.features = deserialized_data
+        # 将来の検索やフィルタリング用に、カタログデータを ARF2 専用スロットへ保持する。
+        # ARF（1スポット×1サンプル）とは粒度が違い、サンプル別強度を持たないため、
+        # ARF の解析基盤（features / 前処理行列）を置き換えてはいけない。
+        session_state.session.arf2.load(file_path, deserialized_data)
 
         output_text = (
             f"### 📂 ARF2 カタログデータのパース完了: {Path(file_path).name}\n"

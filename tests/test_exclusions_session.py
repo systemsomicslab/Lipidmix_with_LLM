@@ -10,11 +10,11 @@ class TestExclusionSessionState(unittest.TestCase):
         session_state.session = session_state.AnalysisSession()
 
     def test_defaults_are_empty_sets(self):
-        self.assertEqual(session_state.session.excluded_samples, set())
-        self.assertEqual(session_state.session.excluded_spots, set())
+        self.assertEqual(session_state.session.arf.excluded_samples, set())
+        self.assertEqual(session_state.session.arf.excluded_spots, set())
 
     def test_new_file_load_resets_exclusions(self):
-        s = session_state.session
+        s = session_state.session.arf
         s.excluded_samples.add("sA")
         s.excluded_spots.add(1)
         # 新ファイル読込（deserialize を差し替えてディスク非依存に）
