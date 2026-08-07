@@ -1101,6 +1101,12 @@ class ReadMissingStateTests(unittest.TestCase):
         self.assertIsNone(read_missing_state(""))
         self.assertIsNone(read_missing_state(None))
 
+    def test_non_string_input_never_raises(self) -> None:
+        """全サーバの全ツール結果が通る経路なので、例外を出したら全呼び出しが壊れる。"""
+        for value in (123, 3.14, True, {"a": 1}, [1, 2, 3], object()):
+            with self.subTest(value=value):
+                self.assertIsNone(read_missing_state(value))
+
     def test_json_array_is_not_an_envelope(self) -> None:
         self.assertIsNone(read_missing_state("[1, 2, 3]"))
 
@@ -1168,8 +1174,12 @@ def read_missing_state(result_text: str | None) -> MissingState | None:
     壊れた JSON、別の error code、必須フィールド欠落はすべて None。例外は投げない
     （契約を実装しないサーバの通常の出力が大量に流れてくる経路なので、
     ここで落ちると全ツール呼び出しが壊れる）。
+
+    str 以外は無条件に None。falsy 判定だけでは不十分で、truthy な非文字列
+    （int / dict / list / True）が _candidate_payloads の .find() に届いて
+    AttributeError を投げる。
     """
-    if not result_text:
+    if not isinstance(result_text, str) or not result_text:
         return None
     for candidate in _candidate_payloads(result_text):
         found = _read_one(candidate)
