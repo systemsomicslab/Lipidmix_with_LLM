@@ -58,6 +58,49 @@ class TestArfDifferential(unittest.TestCase):
         vol = session_state.session.arf.last_differential["volcano"]
         self.assertEqual(len(vol), 2)
 
+    def test_discloses_zero_manual_exclusions_when_none_applied(self):
+        # #6: arf_parser/load_dataset の再実行で excluded_samples/excluded_spots が
+        # reset_analysis() によって黙ってゼロ化されても、差次的解析の caveats が
+        # 「除外ゼロ件」を積極的に述べていれば、ユーザーは外れ値込みの統計を
+        # 「除外済みの解析と同じもの」と誤解しない。
+        session_state.session.arf.feature_matrix = np.array([
+            [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
+            [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
+        ])
+        names = ["a1", "a2", "a3", "b1", "b2", "b3"]
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["f0", "f1"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.sample_meta = {
+            n: {"group": ("A" if n.startswith("a") else "B")} for n in names
+        }
+        self.assertEqual(session_state.session.arf.excluded_samples, set())
+        self.assertEqual(session_state.session.arf.excluded_spots, set())
+        out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertTrue(
+            any("現在なし" in c for c in out["caveats"]),
+            f"ゼロ件の手動除外が開示されていない: {out['caveats']}",
+        )
+
+    def test_discloses_active_manual_exclusions(self):
+        session_state.session.arf.feature_matrix = np.array([
+            [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
+            [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
+        ])
+        names = ["a1", "a2", "a3", "b1", "b2", "b3"]
+        session_state.session.arf.pp_sample_names = names
+        session_state.session.arf.pp_feature_names = ["f0", "f1"]
+        session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+        session_state.session.arf.sample_meta = {
+            n: {"group": ("A" if n.startswith("a") else "B")} for n in names
+        }
+        session_state.session.arf.excluded_samples.add("a3")
+        out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertTrue(
+            any("サンプル 1 件" in c for c in out["caveats"]),
+            f"除外の開示が無い: {out['caveats']}",
+        )
+
     def test_volcano_note_points_to_structured_plot_tool(self):
         # 既存の test_two_group_* と同じ 3+3 サンプルの下地を使う（群内 n>=2 を満たし、
         # 「n 不足」caveat 経路に入らない構成）。

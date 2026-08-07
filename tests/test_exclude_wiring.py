@@ -84,6 +84,17 @@ class TestPreprocessExcludeWiring(unittest.TestCase):
         self.assertEqual(out["matrix_shape"][0], 3)
         self.assertTrue(any("手動除外" in c for c in out.get("caveats", [])))
 
+    def test_preprocess_discloses_zero_exclusions_when_none_applied(self):
+        # #6: excluded_samples/excluded_spots が空のとき、開示自体が消えては
+        # いけない。arf_parser/load_dataset の再実行で reset_analysis() が
+        # 除外集合を黙ってゼロ化しても、「除外はゼロ件」という事実そのものは
+        # ここで積極的に述べられる必要がある。
+        out = json.loads(server.arf_preprocess())
+        self.assertTrue(
+            any("現在なし" in c for c in out.get("caveats", [])),
+            f"ゼロ件の手動除外が開示されていない: {out.get('caveats')}",
+        )
+
     def test_preprocess_honors_excluded_spot(self):
         session_state.session.arf.excluded_spots.add(1)
         out = json.loads(server.arf_preprocess())

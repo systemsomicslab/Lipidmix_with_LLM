@@ -173,7 +173,7 @@ def arf_exclude(
     """PCA 外れサンプルや特定ピークを名前/ID で手動除外・再包含する（可逆・非破壊）。
 
     先に arf_parser で ARF を読み込んでおくこと。除外は session に保持され、以降の
-    arf_re_pca / arf_preprocess（→ arf_pca_preprocessed / arf_differential）へ反映される。
+    arf_parser の再実行 / arf_preprocess（→ arf_pca_preprocessed / arf_differential）へ反映される。
     filtered_features 自体は変更しないため、mode="remove"/"clear" で元に戻せる。
 
     引数:
@@ -250,6 +250,20 @@ def arf_exclude(
         payload["caveats"].append(
             "除外の結果、残サンプルまたは残スポットが 0 件です。PCA/差次的解析は実行できません。")
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _manual_exclusion_caveat(n_excl_samples: int, n_excl_spots: int) -> str:
+    """手動除外（arf_exclude）の状態を常に明示するcaveat文を返す。
+
+    非ゼロのときだけ発話すると、arf_parser/load_dataset の再実行で
+    excluded_samples/excluded_spots が reset_analysis() によって黙って
+    ゼロ化されたとき、開示自体も一緒に消えてしまう。ユーザーが外れQC等を
+    除外したつもりのまま、外れ値込みの統計が「同じ解析」として出てくる
+    事故を防ぐため、ゼロ件のときも「現在なし」を積極的に述べる。
+    """
+    if n_excl_samples or n_excl_spots:
+        return f"ユーザ手動除外: サンプル {n_excl_samples} 件 / スポット {n_excl_spots} 件を除外済み。"
+    return "ユーザ手動除外: 現在なし（サンプル0件・スポット0件。arf_exclude による除外は適用されていません）。"
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -331,9 +345,7 @@ def arf_preprocess(
         )
     n_excl_s = len(session_state.session.arf.excluded_samples)
     n_excl_p = len(session_state.session.arf.excluded_spots)
-    if n_excl_s or n_excl_p:
-        report.setdefault("caveats", []).append(
-            f"ユーザ手動除外: サンプル {n_excl_s} 件 / スポット {n_excl_p} 件を除外済み。")
+    report.setdefault("caveats", []).append(_manual_exclusion_caveat(n_excl_s, n_excl_p))
     # 除外が過度で行列が空（残サンプル0 または 残特徴量0）になった場合を前景化する。
     if matrix2.size == 0:
         report.setdefault("caveats", []).append(
@@ -799,6 +811,12 @@ def arf_differential(
             group_labels.append(entry.get("group"))
 
     caveats: list[str] = []
+    caveats.append(
+        _manual_exclusion_caveat(
+            len(session_state.session.arf.excluded_samples),
+            len(session_state.session.arf.excluded_spots),
+        )
+    )
     recipe = session_state.session.arf.preprocessing_recipe or {}
     if recipe.get("normalize", "none") == "none":
         caveats.append("正規化が未適用のため log2FC は測定量差を含み得ます（arf_preprocess の normalize を検討）。")

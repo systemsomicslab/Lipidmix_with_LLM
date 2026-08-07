@@ -242,7 +242,7 @@ def _filter_arf_spots(
     min_intensity: float = 0.0,
     annotation_keyword: str | None = None,
 ) -> list[dict]:
-    """Apply the same lightweight ARF filters used by arf_re_pca."""
+    """Apply the same lightweight ARF filters used by arf_parser."""
     filtered_spots = []
     keyword = annotation_keyword.lower() if annotation_keyword else None
     for spot in features:

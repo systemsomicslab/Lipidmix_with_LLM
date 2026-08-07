@@ -702,7 +702,7 @@ def get_pca_loading_features(pca_result: dict, deserialized_list: list[dict],
     返り値: [{"pc": "PC1", "var_ratio": <%>, "positive": [item...], "negative": [item...]}, ...]
       item = {"id", "value", "annotation", "m_z", "rt"}（feature名 "Spot_<id>_<prop>" から id を取得し
       deserialized_list[id] のメタデータを付与）。
-    server.py の arf_parser / arf_re_pca が共通で利用する。
+    tools_arf.py の arf_parser / arf_pca_preprocessed が共通で利用する。
     """
     loadings = pca_result.get("loadings", [])
     evr = pca_result.get("explained_variance_ratio", [])

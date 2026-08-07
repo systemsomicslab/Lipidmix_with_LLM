@@ -36,7 +36,7 @@ def load_dataset(directory: str | None = None) -> str:
     1. `.arf2`（データセット全体のカタログ＝概観）を要約し、
     2. サンプル別強度を持つ `.arf` で PCA を実行します。フォルダに DriftSpots.arf と
        PeakProperties.arf が併存する場合は、解析に使う **PeakProperties.arf を自動選択** します。
-    以降の `arf_list_classes` / `arf_re_pca` 等はこのセッション状態をそのまま利用できます。
+    以降の `arf_list_classes` / `arf_parser` 等はこのセッション状態をそのまま利用できます。
 
     複数日付（複数回のMS-DIAL処理＝複数バッチ）のファイルが混在していても解析は
     止まりません。ファイル名の `AlignmentResult_<timestamp>` を見て **最新バッチを

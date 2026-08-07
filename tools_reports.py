@@ -127,7 +127,7 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
     if not plot or not plot.get("points"):
         return mcp_errors.missing_state(
             "pca_result", ["arf_parser", "arf_pca_preprocessed", "load_dataset"],
-            "先に arf_parser / arf_re_pca / pai2_parser 等でPCAを実行してください"
+            "先に arf_parser / arf_pca_preprocessed / load_dataset 等でPCAを実行してください"
             "（PCA結果がありません）。")
 
     slug = knowledge_store.make_slug(analysis_id)
