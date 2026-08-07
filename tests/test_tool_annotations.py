@@ -17,7 +17,9 @@ import server
 READ_ONLY = {"readOnlyHint": True}
 EXTERNAL = {"readOnlyHint": True, "openWorldHint": True}
 LOCAL_WRITE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
-STAGE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
+# ファイルを書き、かつ冪等でない（同じ引数の再実行で結果が積み増される）。
+# ingest_stage は _inbox に新規ノートを増やし、log_search は探索ログに行を追記する。
+LOCAL_WRITE_APPEND = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
 DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True}
 
 EXPECTED_ANNOTATIONS = {
@@ -49,7 +51,6 @@ EXPECTED_ANNOTATIONS = {
     "eic_search_by_mz_range": READ_ONLY,
     "eic_search_by_rt_range": READ_ONLY,
     # --- 読み取り系 ---
-    "log_search": READ_ONLY,
     "knowledge_coverage": READ_ONLY,
     "read_report": READ_ONLY,
     "list_reports": READ_ONLY,
@@ -65,9 +66,11 @@ EXPECTED_ANNOTATIONS = {
     "save_volcano_figure": LOCAL_WRITE,
     "save_eic_figure": LOCAL_WRITE,
     # --- knowledge の変更 ---
-    "ingest_stage": STAGE,
+    "ingest_stage": LOCAL_WRITE_APPEND,
     "ingest_promote": DESTRUCTIVE,
     "ingest_reject": DESTRUCTIVE,
+    # --- 追記書き込み（読み取り系ではない: objective の探索ログに行を追記する） ---
+    "log_search": LOCAL_WRITE_APPEND,
 }
 
 

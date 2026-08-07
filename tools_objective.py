@@ -108,7 +108,10 @@ def update_objective(
     return f"objective を更新: {path.name}（更新フィールド={list(updates) or 'なし'}, 追加小問={added}件）"
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+# objective の Markdown に追記する（append_search_log -> write_note）ので read-only ではない。
+# 同じログを2回追記すれば2行増えるため idempotent でもない。
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 def log_search(analysis_id: str, subquestion: str, query: str, hits: int, promoted: int = 0) -> str:
     """探索結果を objective の探索ログに記録する（既探索 Qi の再探索を防ぐ）。
 
