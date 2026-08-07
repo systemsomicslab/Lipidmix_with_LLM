@@ -78,18 +78,28 @@
 | --- | --- | --- |
 | `code` | エラー種別。今回は `missing_state` のみ | 完全一致で判定。未知の code は素通し |
 | `state` | 欠けている状態の識別子 | **不透明**。解釈も比較もしない。ログと開示にのみ使う |
-| `required_tools` | その状態を作るツール名（サーバ名を含まない裸の名前）の**代替候補リスト（OR）** | エラーを返したサーバの名前空間で解決し、先頭から順に「リプレイ安全かつ本セッションで成功実績あり」の最初の1つを使う |
+| `required_tools` | その状態を作るツール名（サーバ名を含まない裸の名前）の**代替候補リスト（OR）**。実際の生成元をすべて列挙する | エラーを返したサーバの名前空間で解決し、「リプレイ安全かつ本セッションで成功実績あり」の候補のうち**直近に成功したもの**を再実行する |
 | `message` | LLM・人間向けの説明 | そのまま LLM へ渡す |
 
 `state` を不透明に保つことで、クライアントが脂質omicsの語彙（`preprocessed_matrix` など）を
 知っている状態を避ける。`required_tools` にサーバ名を含めないのは、同じサーバが別名で
 登録されうるため（クライアント側の名前空間はクライアントが決める）。
 
-**`required_tools` は AND チェーンではなく OR の代替候補**である。`save_eic_figure` の
-`eic_plot`（`eic_plot_chromatograms` でも `eic_plot_compounds` でも作れる）のようなケースを
-素直に表現でき、他の12件は要素1個で済む。連鎖が必要な依存（A を作るには先に B）は、
-A の生成ツール自身が呼ばれたときに再び `missing_state` を返すので、リトライ1段の範囲で
-自然に解決するか、解決しなければ LLM へ委ねられる。
+**`required_tools` は AND チェーンではなく OR の代替候補**である。`eic_plot` は
+`eic_plot_chromatograms` でも `eic_plot_compounds` でも作れる。連鎖が必要な依存
+（A を作るには先に B）は、A の生成ツール自身が呼ばれたときに再び `missing_state` を返すので、
+リトライ1段の範囲で自然に解決するか、解決しなければ LLM へ委ねられる。
+
+**サーバは実際の生成元をすべて列挙する義務がある。** 取りこぼすと2通りに壊れる。
+（a）実際に使われた生成元が漏れていると復旧が不可能になる。実セッション 52ecf212 では
+`load_dataset` だけが呼ばれ `arf_parser` は直接呼ばれていないので、`arf_dataset` の候補に
+`load_dataset` が無いと復旧できない。（b）漏れた候補のほうが新しかった場合、**ユーザーが実際に
+見ていたものとは別の状態が復元される**。`pca_result` を `arf_parser` だけで復旧すると、
+ユーザーが見ていた図が `arf_pca_preprocessed` 由来だったときに別の PCA が「その図」として
+PNG 保存されてしまう。
+
+**クライアントは候補の中から「直近に成功した呼び出し」を選ぶ**（リスト順ではない）。
+ユーザーが最後に見ていた状態を再現するのが目的だからである。
 
 `message` には既存の日本語文面をそのまま入れる。Claude Desktop などエンベロープを解釈しない
 クライアントでも、LLM が読む内容は今と変わらない。
@@ -121,19 +131,26 @@ def missing_state(state: str, required_tools: list[str], message: str) -> str:
 
 | # | ツール（該当行） | 現在の形 | `state` | `required_tools` |
 | --- | --- | --- | --- | --- |
-| 1 | `arf_list_tags`（tools_arf.py:64） | テキスト | `arf_dataset` | `arf_parser` |
-| 2 | `arf_list_classes`（:82） | テキスト | `arf_dataset` | `arf_parser` |
-| 3 | `arf_list_sample_roles`（:107） | JSON | `arf_dataset` | `arf_parser` |
-| 4 | `arf_exclude`（:181） | JSON | `arf_dataset` | `arf_parser` |
-| 5 | `arf_preprocess`（:260） | JSON | `arf_dataset` | `arf_parser` |
-| 6 | `arf_pca_preprocessed`（:358） | テキスト | `preprocessed_matrix` | `arf_preprocess` |
-| 7 | `arf_differential`（:766） | JSON | `preprocessed_matrix` | `arf_preprocess` |
-| 8 | `arf_plot_volcano`（:934） | **例外** | `differential_result` | `arf_differential` |
-| 9 | `pai2_inspect_peak`（tools_pai2.py:124） | JSON | `pai2_dataset` | `pai2_parser` |
-| 10 | `verify_peak_annotation`（:149） | JSON | `pai2_dataset` | `pai2_parser` |
-| 11 | `save_pca_figure`（tools_reports.py:124） | テキスト | `pca_result` | `arf_parser` |
-| 12 | `save_volcano_figure`（:163） | テキスト | `differential_result` | `arf_differential` |
-| 13 | `save_eic_figure`（:204） | テキスト | `eic_plot` | `eic_plot_chromatograms`, `eic_plot_compounds` |
+| 1 | `arf_list_tags` | テキスト | `arf_dataset` | `arf_parser`, `load_dataset` |
+| 2 | `arf_list_classes` | テキスト | `arf_dataset` | `arf_parser`, `load_dataset` |
+| 3 | `arf_list_sample_roles` | JSON | `arf_dataset` | `arf_parser`, `load_dataset` |
+| 4 | `arf_exclude` | JSON | `arf_dataset` | `arf_parser`, `load_dataset` |
+| 5 | `arf_preprocess` | JSON | `arf_dataset` | `arf_parser`, `load_dataset` |
+| 6 | `arf_pca_preprocessed` | テキスト | `preprocessed_matrix` | `arf_preprocess` |
+| 7 | `arf_differential` | JSON | `preprocessed_matrix` | `arf_preprocess` |
+| 8 | `arf_plot_volcano` | **例外** | `differential_result` | `arf_differential` |
+| 9 | `pai2_inspect_peak` | JSON | `pai2_dataset` | `pai2_parser` |
+| 10 | `verify_peak_annotation` | JSON | `pai2_dataset` | `pai2_parser` |
+| 11 | `save_pca_figure` | テキスト | `pca_result` | `arf_parser`, `arf_pca_preprocessed`, `load_dataset` |
+| 12 | `save_volcano_figure` | テキスト | `differential_result` | `arf_differential` |
+| 13 | `save_eic_figure` | テキスト | `eic_plot` | `eic_plot_chromatograms`, `eic_plot_compounds` |
+
+候補は**コードで確認した実際の生成元**である。`arf.features` は `arf_parser`（`arf.load_data`）が
+作り、`load_dataset` は内部で `arf_parser` を呼ぶ（`tools_dataset.py:79`）。`last_pca_plot` は
+`arf_parser`（`tools_arf.py:549`）と `arf_pca_preprocessed`（:385）の2経路が
+`_remember_arf_pca_plot` 経由で書く。`feature_matrix` は `arf_preprocess`（:312）のみ、
+`last_differential` は `arf_differential`（:893）のみ、`eic.last_plot` は
+`eic_plot_chromatograms` と `eic_plot_compounds`（`tools_eic.py:95, 173`）。
 
 `message` には現在の日本語文面をそのまま入れる。
 
@@ -235,7 +252,8 @@ JSON として読めない本文、`error` を持たない本文、未知の `co
 1. ツール結果本文を read_missing_state() に通す。None なら何もしない
 2. envelope なら is_error=True として記録・開示する
 3. required_tools を「そのエラーを返したサーバ」の名前空間で解決する
-4. 候補を先頭から順に見て、次を両方満たす最初の1つを選ぶ（OR。AND チェーンではない）
+4. 候補（OR。AND チェーンではない）のうち次を両方満たす呼び出しを全部集め、
+   その中で **invocation id が最大＝直近に成功したもの**を1つ選ぶ
      - リプレイ安全か: annotations の readOnlyHint or idempotentHint
      - 本セッションで成功した呼び出しが tool_invocations にあるか
 5. 選べたら記録済み引数のまま再実行し、成功したら本命を1回だけリトライする

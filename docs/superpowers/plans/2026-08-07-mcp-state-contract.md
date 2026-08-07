@@ -370,17 +370,17 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 | ツール | `state` | `required_tools` |
 | --- | --- | --- |
-| `arf_list_tags` | `arf_dataset` | `["arf_parser"]` |
-| `arf_list_classes` | `arf_dataset` | `["arf_parser"]` |
-| `arf_list_sample_roles` | `arf_dataset` | `["arf_parser"]` |
-| `arf_exclude` | `arf_dataset` | `["arf_parser"]` |
-| `arf_preprocess` | `arf_dataset` | `["arf_parser"]` |
+| `arf_list_tags` | `arf_dataset` | `["arf_parser", "load_dataset"]` |
+| `arf_list_classes` | `arf_dataset` | `["arf_parser", "load_dataset"]` |
+| `arf_list_sample_roles` | `arf_dataset` | `["arf_parser", "load_dataset"]` |
+| `arf_exclude` | `arf_dataset` | `["arf_parser", "load_dataset"]` |
+| `arf_preprocess` | `arf_dataset` | `["arf_parser", "load_dataset"]` |
 | `arf_pca_preprocessed` | `preprocessed_matrix` | `["arf_preprocess"]` |
 | `arf_differential` | `preprocessed_matrix` | `["arf_preprocess"]` |
 | `arf_plot_volcano` | `differential_result` | `["arf_differential"]` |
 | `pai2_inspect_peak` | `pai2_dataset` | `["pai2_parser"]` |
 | `verify_peak_annotation` | `pai2_dataset` | `["pai2_parser"]` |
-| `save_pca_figure` | `pca_result` | `["arf_parser"]` |
+| `save_pca_figure` | `pca_result` | `["arf_parser", "arf_pca_preprocessed", "load_dataset"]` |
 | `save_volcano_figure` | `differential_result` | `["arf_differential"]` |
 | `save_eic_figure` | `eic_plot` | `["eic_plot_chromatograms", "eic_plot_compounds"]` |
 
