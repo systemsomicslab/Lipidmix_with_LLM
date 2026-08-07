@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import session_state
+from mcp.types import ToolAnnotations
 from mcp_core import mcp
 from path_resolvers import resolve_dcl_file_path
 from dcl_reader import deserialize_dcl, summarize_dcl, get_msms_by_precursor
@@ -21,7 +22,7 @@ __all__ = ["dcl_parser", "dcl_find_msms"]
 _DEFAULT_TOP_PEAKS = 10
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def dcl_parser(file_path: str | None = None, top_n_peaks: int | None = None,
                preview: int = 5) -> str:
     """1つの `.dcl`（MSDecResult）を解析し、MS/MS 在庫の要約と先頭数件を返す。
@@ -67,7 +68,7 @@ def dcl_parser(file_path: str | None = None, top_n_peaks: int | None = None,
     return session_state.session.maybe_prepend_caveat(text, topic="dcl")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def dcl_find_msms(precursor_mz: float, file_path: str | None = None,
                   rt: float | None = None, mz_tol: float = 0.01,
                   rt_tol: float = 0.2, top_n_peaks: int | None = None) -> str:

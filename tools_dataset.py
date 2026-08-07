@@ -9,6 +9,7 @@ from pathlib import Path
 import mcp_core
 import path_resolvers
 import session_state
+from mcp.types import ToolAnnotations
 from mcp_core import mcp
 from path_resolvers import (
     resolve_arf_file_path,
@@ -22,10 +23,12 @@ __all__ = ["list_data_files", "load_dataset"]
 
 # list_data_files は path_resolvers の純関数を MCP ツールとして登録する（同一関数
 # オブジェクトなので resolve_* からの直接呼び出しと一貫する）。
-list_data_files = mcp.tool()(path_resolvers.list_data_files)
+list_data_files = mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))(
+    path_resolvers.list_data_files
+)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def load_dataset(directory: str | None = None) -> str:
     """データフォルダを指定して、最初の標準解析（arf2 概観 → arf 詳細）を一括実行します。
 

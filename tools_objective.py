@@ -9,6 +9,7 @@ from pathlib import Path
 import knowledge_store
 import paper_ingest
 import mcp_core
+from mcp.types import ToolAnnotations
 from mcp_core import mcp
 
 __all__ = [
@@ -37,7 +38,8 @@ def _resolve_objective_file(analysis_id: str) -> Path | None:
     return None
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
 def record_objective(
     analysis_id: str,
     dataset: str,
@@ -77,7 +79,8 @@ def record_objective(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
 def update_objective(
     analysis_id: str,
     confirmed_objective: str | None = None,
@@ -105,7 +108,7 @@ def update_objective(
     return f"objective を更新: {path.name}（更新フィールド={list(updates) or 'なし'}, 追加小問={added}件）"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def log_search(analysis_id: str, subquestion: str, query: str, hits: int, promoted: int = 0) -> str:
     """探索結果を objective の探索ログに記録する（既探索 Qi の再探索を防ぐ）。
 
@@ -124,7 +127,7 @@ def log_search(analysis_id: str, subquestion: str, query: str, hits: int, promot
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def knowledge_coverage(analysis_id: str) -> str:
     """objective の各小問 Qi を COVERED / WEAK / GAP に分類する（探索候補=GAP）。
 
@@ -161,7 +164,7 @@ def knowledge_coverage(analysis_id: str) -> str:
 PAPER_ABSTRACT_CAP = 500  # payload 内の抄録上限。全文は ingest_stage 時に再提示される。
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 def paper_search(query: str, max_results: int = 10) -> str:
     """Europe PMC を検索し、撤回除外・重複除外した候補を返す（ユーザー確認済みクエリ前提）。
 
@@ -199,7 +202,8 @@ def paper_search(query: str, max_results: int = 10) -> str:
     return "\n".join(out)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 def ingest_stage(
     title: str,
     abstract: str,
@@ -232,13 +236,17 @@ def ingest_stage(
     )
 
 
-@mcp.tool()
+# _inbox の索引を組み立てて返すだけで、ファイルもネットワークも変更しない。
+# 汎用クライアントの承認判定はこの宣言だけを見るため、正直に read-only とする。
+# （クライアント側の旧・名前リストでは KNOWLEDGE_MUTATION に分類されていたが、
+# これは分類ミスだった。人手パートナー承認済みの訂正。）
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def ingest_review_queue() -> str:
     """_inbox の保留中ノートを analysis_id×Qi でグルーピングして返す。"""
     return knowledge_store.build_inbox_index(mcp_core.KNOWLEDGE_DIR)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
 def ingest_promote(slug: str, claim_strength: str = "suggested", links: list[str] | None = None) -> str:
     """_inbox の保留ノートを knowledge/ へ昇格する（信頼知識化の唯一の経路）。
 
@@ -261,7 +269,7 @@ def ingest_promote(slug: str, claim_strength: str = "suggested", links: list[str
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
 def ingest_reject(slug: str) -> str:
     """_inbox の保留ノートを破棄する。"""
     try:

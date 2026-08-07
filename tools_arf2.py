@@ -8,6 +8,7 @@ import json
 
 import lipid_identity
 import session_state
+from mcp.types import ToolAnnotations
 from mcp_core import mcp
 from path_resolvers import resolve_arf2_file_path
 from tool_helpers import _identity_tables
@@ -15,7 +16,7 @@ from tool_helpers import _identity_tables
 __all__ = ["arf2_parser", "arf2_annotate_identities"]
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf2_parser(file_path: str | None = None) -> str:
     """
     .arf2 ファイル（MS-DIALの全体カタログ）を解析し、データセットの全体像（メタデータ）を要約して返します。
@@ -58,7 +59,7 @@ def arf2_parser(file_path: str | None = None) -> str:
         return f"[ERROR] ARF2解析に失敗しました: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf2_annotate_identities(file_path: str | None = None, max_rows: int = 50) -> str:
     """指定/自動解決の ARF2 スポット注釈を GOSLIN 正規化・RefMet/LIPID MAPS ID・
     MSI レベルで一括標準化して返す（オフライン、上位 max_rows 件）。

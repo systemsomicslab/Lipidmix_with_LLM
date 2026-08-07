@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import session_state
+from mcp.types import ToolAnnotations
 from mcp_core import mcp
 from path_resolvers import resolve_arf2_file_path, resolve_eicaef_file_path
 from eic_aef_reader import (
@@ -36,7 +37,7 @@ __all__ = [
 ]
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def eic_parser(file_path: str | None = None) -> str:
     """
     .EIC.aef ファイルに対応する解析用関数
@@ -66,7 +67,7 @@ def eic_parser(file_path: str | None = None) -> str:
         return f"EIC解析中にエラーが発生しました: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def eic_plot_chromatograms(
     spot_id: int,
     file_path: str | None = None,
@@ -96,7 +97,7 @@ def eic_plot_chromatograms(
     return payload
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def eic_plot_compounds(
     file_id: int,
     names: list[str] | None = None,
@@ -174,7 +175,7 @@ def eic_plot_compounds(
     return payload
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def eic_rank_by_max_intensity(file_path: str | None = None, top_n: int = 20) -> str:
     """EICスポットを強度（各サンプルのクロマトグラム最大強度の最大値）で降順に返します。
 
@@ -205,7 +206,7 @@ def eic_rank_by_max_intensity(file_path: str | None = None, top_n: int = 20) -> 
         return f"EIC強度上位抽出中にエラーが発生しました: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def eic_search_by_mz_range(file_path: str | None = None, min_mz: float = 0.0, max_mz: float = 1000.0, max_results: int = 20) -> str:
     """
     EICデータのm/z範囲でスポットを検索します。
@@ -236,7 +237,7 @@ def eic_search_by_mz_range(file_path: str | None = None, min_mz: float = 0.0, ma
         return f"EIC m/z検索中にエラーが発生しました: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def eic_search_by_rt_range(file_path: str | None = None, min_rt: float = 0.0, max_rt: float = 20.0, max_results: int = 20) -> str:
     """
     EICデータのRT範囲でスポットを検索します。

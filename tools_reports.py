@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import knowledge_store
 import mcp_errors
 import session_state
+from mcp.types import ToolAnnotations
 from mcp_core import mcp, _resolve_report_dir, _report_dir_candidates, _build_report_meta
 from tool_helpers import _pca_scatter_arrays
 from eic_plot import render_eic_plot
@@ -27,7 +28,8 @@ __all__ = [
 
 
 # --- 解析・解釈レポート（reports/<analysis_id>.md） ---
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
 def write_report(
     analysis_id: str,
     dataset: str,
@@ -67,7 +69,7 @@ def write_report(
     return f"レポートを保存: {path}（status={status}）。read_report('{analysis_id}') で読み戻せます。"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def read_report(analysis_id: str) -> str:
     """過去レポートを読み戻す（候補ディレクトリ横断で最新更新のものを返す）。セッション継続用。
 
@@ -83,7 +85,7 @@ def read_report(analysis_id: str) -> str:
     return newest.read_text(encoding="utf-8")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def list_reports() -> str:
     """既存レポートの1行索引（analysis_id / date / status）を返す。
 
@@ -111,7 +113,8 @@ def list_reports() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
 def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
     """明示的なユーザー要求時だけ、直近のセッションPCA結果をPNGとして保存する。
 
@@ -151,7 +154,8 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
     return f"PCA図を保存: {out_path}\n本文に ![PCA]({rel}) で埋め込めます。"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
 def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
     """明示的なユーザー要求時だけ、直近の差次的解析を volcano プロットのPNGとして
     reports/figures/<analysis_id>_volcano.png に保存し、相対パスを返す。
@@ -197,7 +201,8 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
     return f"volcano図を保存: {out_path}\n本文に ![volcano]({rel}) で埋め込めます。"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
 def save_eic_figure(analysis_id: str, title: str | None = None) -> str:
     """明示的なユーザー要求時だけ、直近EICプロット情報をPNGとして保存する。
 

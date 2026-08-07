@@ -14,6 +14,7 @@ import mcp_core
 import path_resolvers
 import sample_factors
 import session_state
+from mcp.types import ToolAnnotations
 from mcp_core import mcp
 from msdial_classes import discover_arf_class_index
 from msdial_tags import normalize_sample_name
@@ -25,7 +26,7 @@ __all__ = ["sample_search"]
 DEFAULT_EXTENSIONS = (".pai2", ".dcl")
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def sample_search(
     specs: list[str] | None = None,
     directory: str | None = None,

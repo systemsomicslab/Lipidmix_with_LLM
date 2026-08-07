@@ -13,6 +13,7 @@ import knowledge_store
 import mcp_core
 import mcp_errors
 import session_state
+from mcp.types import ToolAnnotations
 from mcp_core import mcp
 from path_resolvers import resolve_pai2_file_path
 from tool_helpers import _build_verification_dossier
@@ -57,7 +58,7 @@ def _attach_sibling_msms(pai2_path: str, features: list[dict]) -> dict:
     return report
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
     """1つの .pai2（単一測定ファイル）を解析し、ピーク在庫の要約を返します。
 
@@ -113,7 +114,7 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
         return f"[ERROR] PAI2 解析に失敗しました: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def pai2_inspect_peak(peak_id: str | None = None, peak_name: str | None = None) -> str:
     """特定のピークについて、強度・S/N・MS/MS相当の情報を返す。
 
@@ -133,7 +134,7 @@ def pai2_inspect_peak(peak_id: str | None = None, peak_name: str | None = None) 
     return json.dumps(details, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def verify_peak_annotation(
     peak_id: str | None = None, peak_name: str | None = None
 ) -> str:

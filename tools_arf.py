@@ -22,6 +22,7 @@ import sample_factors
 import session_state
 import tool_helpers
 import volcano_plot
+from mcp.types import ToolAnnotations
 from mcp_core import mcp
 from msdial_classes import assign_sample_groups, filter_arf_by_class_ids
 from msdial_tags import filter_arf_by_tags
@@ -54,7 +55,11 @@ __all__ = [
 ]
 
 
-@mcp.tool()
+# readOnlyHint の意味: 「サーバの外に副作用が無い」＝ファイルとネットワークを変更
+# しない。ARF ツールは session_state.session.arf を更新するが、これはサーバ自身の
+# 解析セッション状態であり副作用に数えない（その依存は missing_state エンベロープで
+# 伝えるため、annotations で二重に表現しない）。
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf_list_tags() -> str:
     """List MS-DIAL tags discovered for the currently loaded ARF dataset."""
     if (
@@ -68,7 +73,7 @@ def arf_list_tags() -> str:
     return json.dumps(session_state.session.arf.tag_index.get("summary", {}), ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf_list_classes() -> str:
     """絞り込み・群分けに使える因子トークンの一覧を返す（Class ID とサンプル名の両方）。
 
@@ -104,7 +109,7 @@ def arf_list_classes() -> str:
 
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf_list_sample_roles() -> str:
     """ロード済み ARF のサンプルを sample/qc/blank に分類して返す（前処理の適用前確認）。"""
     if session_state.session.arf.filtered_features is None:
@@ -159,7 +164,7 @@ def _resolve_exclude_specs(req_samples, avail_samples):
     return matched, resolved, unmatched
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf_exclude(
     exclude_samples: list[str] | None = None,
     exclude_spots: list[int] | None = None,
@@ -247,7 +252,7 @@ def arf_exclude(
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf_preprocess(
     normalize: str = "none",
     blank_min_fold: float | None = None,
@@ -342,7 +347,7 @@ def arf_preprocess(
 
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf_pca_preprocessed(
     components: int | None = None,
     top_features: int = 10,
@@ -401,7 +406,7 @@ def arf_pca_preprocessed(
     return text
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf_parser(
     file_path: str | None = None,
     props: list[str] | None = None,
@@ -741,7 +746,7 @@ def _annotate_with_names(rows: list[dict]) -> dict:
     return report
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf_differential(
     group_a: str | None = None,
     group_b: str | None = None,
@@ -919,7 +924,7 @@ def arf_differential(
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def arf_plot_volcano(
     max_points: int = 3000, title: str | None = None,
 ) -> VolcanoPlotPayload:
