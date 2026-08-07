@@ -112,10 +112,12 @@ def list_reports() -> str:
 
 @mcp.tool()
 def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
-    """直近のセッションPCA結果からPNGを生成し reports/figures/ に保存する。
+    """明示的なユーザー要求時だけ、直近のセッションPCA結果をPNGとして保存する。
 
-    arf_parser / arf_re_pca / pai2_parser 等でPCAを実行した後に呼ぶ。返り値の相対パスを
-    write_report の本文に `![PCA](figures/<analysis_id>_pca.png)` として埋め込める。
+    先に arf_parser / arf_pca_preprocessed / load_dataset 等でPCAを実行する。通常の
+    対話描画ではこのツールを呼ばず、各MCPクライアントのUIへ描画を任せる（PCA座標は
+    解析ツールの返り値に同梱されている）。返り値の相対パスは write_report の本文に
+    `![PCA](figures/<analysis_id>_pca.png)` として埋め込める。
     """
     plot = getattr(session_state.session, "last_pca_plot", None)
     if not plot or not plot.get("points"):
@@ -147,11 +149,13 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
 
 @mcp.tool()
 def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
-    """直近の差次的解析結果を volcano プロットとして
+    """明示的なユーザー要求時だけ、直近の差次的解析を volcano プロットのPNGとして
     reports/figures/<analysis_id>_volcano.png に保存し、相対パスを返す。
 
-    先に arf_differential（2群比較）を実行して session_state.session.last_differential の
-    volcano データを用意すること。返り値の相対パスは write_report の本文に
+    先に arf_differential（2群比較）を実行する。通常の対話描画ではこのツールを呼ばず、
+    arf_plot_volcano で構造化した点列を返して各MCPクライアントのUIへ描画を任せる。
+    なお本PNGは間引き前の全特徴を描く（arf_plot_volcano は ns 点を間引くことがある）。
+    返り値の相対パスは write_report の本文に
     `![volcano](figures/<analysis_id>_volcano.png)` として埋め込める。
     """
     last = getattr(session_state.session, "last_differential", None)

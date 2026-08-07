@@ -12,6 +12,7 @@ Python prototypes for parsing, analyzing, and exposing MS-DIAL lipidomics data t
 - `arf2_reader.py` - `.arf2` parser and text summary generator.
 - `eic_aef_reader.py` - `.EIC.aef` parser with EIC summaries and m/z or RT search helpers.
 - `eic_plot.py` - Builds the renderer-neutral `lipidmix.eic.v1` line-plot payload and renders it with matplotlib only for an explicitly requested PNG save.
+- `volcano_plot.py` - Builds the renderer-neutral `lipidmix.volcano.v1` scatter payload from the latest two-group differential result, keeping every `up`/`down` point and thinning only `ns` points.
 - `pai2_reader.py` - `.pai2` parser with feature filtering, PCA summaries, top-contributor extraction, and metabolite detail lookup.
 - `dcl_reader.py` - `.dcl` (MSDecResult) parser. Reads MS-DIAL's custom binary deconvoluted MS/MS spectra (not msgpack/lz4), and can attach those spectra to `.pai2` peaks by index (`attach_msms_to_features`).
 - `data_config.py` - Single source of truth for the data search directory. Returns `<project>/data` by default, or the path in the `LIPIDMIX_DATA_DIR` environment variable when set. Used by `server.py` and all `*_reader` parsers.
@@ -85,10 +86,13 @@ MS-DIAL のアラインメント結果は「**個別測定 → サンプル別�
   - MS/MS: `has_msms`（取得有無）/ `ms2_raw_id` / `collision_energies`（衝突エネルギー）/
     `msms_peak_count` / `msms_spectrum`（フラグメント列。**本体は `.pai2` には無く `.dcl` 側**。
     `dcl_reader.attach_msms_to_features()` で充填する）
-- `perform_pca_summary()` … ピーク群の PCA（説明分散比・スコア画像など）。
 - `filter_features_by_params()` … `min_intensity` / `min_sn` 等でフィルタ。
-- `get_top_contributors()` … PCA 主成分への寄与上位ピーク。
-- `inspect_metabolite_details()` … ID／名前指定で 1 ピークの強度・S/N・MS/MS 相当情報を取得。
+- `inspect_peak_details()` … ID／名前指定で 1 ピークの強度・S/N・MS/MS 相当情報を取得。
+- `summarize_pai2_inventory()` … 注釈状況・m/z・RT・強度・S/N の分布と強度上位ピークの在庫要約。
+
+（`perform_pca_summary()` / `get_top_contributors()` は撤去済み。PAI2 は単一測定
+ファイルでサンプル間比較ができず、`[RT, m/z, Height]` の3変数PCAは生物学的仮説を
+検定しないため。詳細は `docs/output_format/pai2.md` の 5.3 節。）
 
 ### `dcl_reader.py` — `.dcl`（デコンボリューション済み MS/MS / `MSDecResult`）
 **MS/MS スペクトル本体**。独自バイナリ（msgpack/lz4 ではない）。`.pai2` とインデックス完全一致。
@@ -192,8 +196,9 @@ Analysis/interpretation report recording:
 - `write_report(analysis_id, dataset, body, status="draft", knowledge_refs=None)` - Overwrite the analysis/interpretation report at `<analysis-folder>/reports/<analysis_id>.md` (falls back to `LIPIDMIX_REPORTS_DIR`, default `<project>/reports`, when the data folder is read-only). `body` is the Markdown body; recommended sections are `## 目的` / `## 実施した解析` / `## 主要な所見` / `## 解釈` / `## 注意点・コンフリクト` / `## 結論`. Keyed by `analysis_id` to the objective record.
 - `read_report(analysis_id)` - Read back a past report (analysis folder then fallback) for session continuity.
 - `list_reports()` - One-line index (analysis_id / date / status) of existing reports.
-- `save_pca_figure(analysis_id, title=None)` - Render the latest session PCA result to `reports/figures/<analysis_id>_pca.png` and return a relative path to embed in the report body as `![PCA](figures/<analysis_id>_pca.png)`.
-- `save_volcano_figure(analysis_id, title=None)` - Render the latest two-group differential result (`arf_differential`) as a volcano plot to `reports/figures/<analysis_id>_volcano.png` and return a relative path to embed as `![volcano](figures/<analysis_id>_volcano.png)`.
+- `arf_plot_volcano(max_points=3000, title=None)` - Return the latest two-group differential result as a renderer-neutral `lipidmix.volcano.v1` payload. Read-only, writes no file. `up`/`down` points are always complete; only `ns` points are thinned, and every count is reported in `selection`.
+- `save_pca_figure(analysis_id, title=None)` - Only when the user explicitly requests PNG output, render the latest session PCA result to `reports/figures/<analysis_id>_pca.png` and return a relative path to embed as `![PCA](figures/<analysis_id>_pca.png)`.
+- `save_volcano_figure(analysis_id, title=None)` - Only when the user explicitly requests PNG output, render the latest two-group differential result as a volcano plot to `reports/figures/<analysis_id>_volcano.png`. Unlike `arf_plot_volcano`, this draws every feature without thinning.
 - `eic_plot_chromatograms(spot_id, file_path=None, file_ids=None, normalize="none", title=None)` - Read selected traces for one CSS1 EIC spot by direct pointer-table access and return structured `lipidmix.eic.v1` plot information. The tool does not render or write an image; each MCP client chooses its own UI renderer.
 - `eic_plot_compounds(file_id, names=None, ontologies=None, file_path=None, arf2_path=None, normalize="none", top_n=24, title=None)` - Overlay several identified compounds' EIC traces for ONE sample and return structured `lipidmix.eic.multi.v1` plot information. Compounds are selected from ARF2 `Name` (case-insensitive substring) and `Ontology` (exact), and each `AlignmentID` is verified against the EIC spot RT and m/z; anything excluded is listed with a reason in `selection.dropped`. The tool renders no image and writes no file.
 - `save_eic_figure(analysis_id, title=None)` - Only when the user explicitly requests PNG output, render the latest EIC plot payload to `reports/figures/<analysis_id>_eic.png`. This is a separate write operation from interactive plotting.

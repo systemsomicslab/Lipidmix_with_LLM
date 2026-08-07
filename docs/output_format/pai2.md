@@ -59,53 +59,18 @@
 | `min_intensity` / `min_height` | `peak_height` の下限 |
 | `min_sn` | `S/N` の下限。S/Nが取得できないピークも除外 |
 
-### 5.3 `perform_pca_summary()`（MCP非公開）
+### 5.3 ピーク属性PCA（撤去済み）
 
-**注意: このピーク属性PCAは MCP ツールからは公開していない。** `pai2_parser()` は `summarize_pai2_inventory()` による在庫要約（5.5節）のみを返す。PAI2 は単一測定ファイルなのでサンプル間比較（オミクスPCA）は原理的にできず、`[RT, m/z, Height]` の3変数PCAは生物学的仮説を検定しない（RT×m/z散布図の言い換えに近い）。関数自体はライブラリ内に残るが、以下は参考仕様である。
+**`perform_pca_summary()` は撤去済みで、コード上に存在しない。** 以前この関数は
+`[RT, m/z, Height]` の3変数PCAと、その散布図のPNGバイト列を返していた。撤去理由:
 
-重要: **このPCAの行はサンプルではなくピーク**である。各ピークを `[RT, m/z, Height]` の3変数で標準化し、ピーク群の分布を2成分に射影する。サンプル間のオミクスPCAではない。
+- **行がサンプルではなくピーク**だった。PAI2 は単一測定ファイルなのでサンプル間比較
+  （オミクスPCA）は原理的にできず、この3変数PCAは生物学的仮説を検定しない
+  （RT×m/z散布図の言い換えに近い）。サンプル間の多変量比較は ARF/ARF2 を使う。
+- 図をPNGとして返す設計自体も現方針（構造化データを返しクライアントが描画、PNGは
+  ユーザーの明示要求時のみ）に反していた。
 
-返り値は `(summary, img_bytes, pca_result, pca_index, filtered_features)`。
-
-| 出力 | 意味 |
-|---|---|
-| `summary` | 下表の解析要約辞書 |
-| `img_bytes` | PCA散布図のPNGバイト列。点=ピーク、色=`m/z` |
-| `pca_result` | `[peak][PC1, PC2]` のスコア行列 |
-| `pca_index` | DataFrameの行インデックス。`filtered_features` と同順 |
-| `filtered_features` | フィルタ通過ピーク |
-
-`summary` の全キー:
-
-| キー | 意味 |
-|---|---|
-| `status` | `success` または `error` |
-| `message` | エラー時の理由 |
-| `total_peaks_initial` | フィルタ前ピーク数 |
-| `total_peaks_filtered` | フィルタ後ピーク数 |
-| `filter_params` | 実際に適用したフィルタ辞書 |
-| `explained_variance.PC1/PC2` | 説明分散比の百分率文字列 |
-| `pca_equation` | 表示用の一般式 `X = T P^T + E` |
-| `sn_summary.available_fraction` | フィルタ後ピークのうちS/Nを取得できた割合 0..1 |
-| `sn_summary.count_with_sn` | S/Nを取得できたピーク数 |
-| `sn_summary.min/median/max` | S/Nの最小・中央値・最大値 |
-| `loadings.PC1_main_factor` | PC1で絶対Loadingが最大の変数名 |
-| `loadings.PC2_main_factor` | PC2で絶対Loadingが最大の変数名 |
-| `loadings.weights.PC1/PC2.RT` | RTのLoading係数 |
-| `loadings.weights.PC1/PC2.m/z` | m/zのLoading係数 |
-| `loadings.weights.PC1/PC2.Height` | HeightのLoading係数 |
-| `top_contributors.PC1/PC2` | 各PCの**スコア絶対値**が大きいピーク。変数Loading上位ではない |
-`top_contributors` / `get_top_contributors()` の1項目:
-
-| キー | 意味 |
-|---|---|
-| `id` | PAI2ピークID |
-| `name` | 候補化合物名 |
-| `score` | 指定PC上のピークスコア。絶対値で順位付けするため正負の両方が入る |
-| `m/z` | ピーク m/z（小数4桁丸め） |
-| `height` | ピーク高さ |
-| `signal_to_noise` | S/N |
-| `rt` | RT（小数2桁丸め） |
+`pai2_parser()` が返すのは `summarize_pai2_inventory()` による在庫要約（5.5節）のみ。
 
 ### 5.4 `inspect_peak_details()`
 

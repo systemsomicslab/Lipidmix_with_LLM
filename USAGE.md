@@ -102,8 +102,9 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 
 | ツール | 機能 |
 |--------|------|
-| `save_pca_figure` | 直近セッションの PCA 結果を PNG 化し `reports/figures/` に保存。 |
-| `save_volcano_figure` | 直近の差次的解析(2群)を volcano プロット PNG として保存。 |
+| `arf_plot_volcano` | 直近の2群差次的解析を `lipidmix.volcano.v1` の点列として返す(read-only・画像なし)。`up`/`down` は全件、`ns` は `max_points` まで等間隔で間引き、件数は `selection` に出る。 |
+| `save_pca_figure` | ユーザーがPNGを明示的に希望した場合だけ、直近セッションの PCA 結果を `reports/figures/` に保存。通常の描画はクライアントUIに任せる。 |
+| `save_volcano_figure` | ユーザーがPNGを明示的に希望した場合だけ、直近の差次的解析(2群)を volcano PNG として保存。通常の描画は `arf_plot_volcano` ＋クライアントUI。本PNGは間引き前の全特徴を描く。 |
 | `save_eic_figure` | ユーザーが明示的に保存を希望した場合だけ、直近のEICプロット情報を PNG 化し `reports/figures/<analysis_id>_eic.png` に保存。Use-LLLMではローカル書き込みとして承認が必要。 |
 | `write_report` | 解析・解釈レポートを `reports/<analysis_id>.md` に上書き保存。 |
 | `read_report` | 過去レポートを読み戻す(最新更新のものを返す。セッション継続用)。 |
