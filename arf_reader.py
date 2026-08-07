@@ -872,13 +872,13 @@ def main():
     parser.add_argument("--export", "-e", help="CSV に書き出すパス")
     parser.add_argument("--pca", action="store_true", help="PCA を実行する")
     parser.add_argument("--output-pca", help="PCA 結果を JSON で保存するパス")
-    parser.add_argument("--output-plot", help="PCA プロットを画像ファイルとして保存するパス (デフォルト: pca_plot.png)")
+    parser.add_argument("--output-plot", default=None, help="PCA プロットを PNG 保存するパス。未指定なら PNG を生成しない")
     parser.add_argument("--output-sample-scores", help="サンプル別PCAスコアプロットを画像ファイルとして保存するパス")
     parser.add_argument("--group-replicates", action="store_true", help="ファイル名からレプリケート番号（_1, _2など）を自動で除外してグループ化する")
     parser.add_argument("--group-regex", type=str, help="特殊なファイル名の場合に、削除したい文字列の正規表現を直接指定")
     parser.add_argument("--plot-distribution", action="store_true", help="脂質クラスごとのPeakHeight分布プロットを作成する")
     parser.add_argument("--filter-name", type=str, help="分布プロットで抽出する脂質名やクラスのキーワード (例: 'EtherPE_P', 'TG')")
-    parser.add_argument("--output-dist-plot", type=str, default="peak_height_dist.png", help="分布プロットの保存先 (デフォルト: peak_height_dist.png)")
+    parser.add_argument("--output-dist-plot", type=str, default=None, help="分布プロットの PNG 保存先。未指定なら PNG を生成しない")
     parser.add_argument("--top-features", "-t", type=int, default=0, help="PCA Loadingから抽出する上位・下位ピーク件数")
     parser.add_argument("--props", nargs="+", default=["height"], 
                         help="PCAに使用するプロパティ (例: height area). m_zやrtは量ではないため非推奨です。")
@@ -932,12 +932,16 @@ def main():
                 # 例: "..._0h_1_NEG" -> "..._0h_NEG" に自動変換される。(_0hは削除されない)
                 regex_pattern = r'_\d+(?=_|$)'
                 
-            plot_peak_height_distribution(
-                peak_df=peak_df, 
-                filter_keyword=args.filter_name, 
-                group_regex=regex_pattern,  # 追加
-                output_file=args.output_dist_plot
-            )
+            # PNG は明示要求時のみ。CLI が黙って画像ファイルを作らないようにする。
+            if args.output_dist_plot:
+                plot_peak_height_distribution(
+                    peak_df=peak_df,
+                    filter_keyword=args.filter_name,
+                    group_regex=regex_pattern,  # 追加
+                    output_file=args.output_dist_plot
+                )
+            else:
+                print("[INFO] --output-dist-plot 未指定のため分布プロット PNG は生成しません")
         else:
             print("[WARNING] 抽出されたPeak Propertyレコードが存在しないため、分布プロットをスキップします。", file=sys.stderr)
     
@@ -982,9 +986,11 @@ def main():
             print(f"\n===== PCA Loadings 寄与上位/下位 {n_show}件 =====")
             extract_top_loading_features(pca_result, deserialized, feature_names, n=n_show)
 
-            # PCAプロットを表示
-            plot_file = args.output_plot or "pca_plot.png"
-            plot_pca(pca_result, sample_names, args.props, file_path, plot_file)
+            # PNG は明示要求時のみ。CLI が黙って画像ファイルを作らないようにする。
+            if args.output_plot:
+                plot_pca(pca_result, sample_names, args.props, file_path, args.output_plot)
+            else:
+                print("[INFO] --output-plot 未指定のため PCA プロット PNG は生成しません")
             
             if args.output_sample_scores:
                 plot_pca_scores_by_sample(pca_result, sample_names, output_file=args.output_sample_scores)
