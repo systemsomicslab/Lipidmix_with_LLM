@@ -1254,6 +1254,8 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 from use_lllm.core.policy import classify_server_tool
 
 # Task 4 でサーバが宣言する annotations と同じ表。片方だけ変わったら落ちる。
+# APPEND 系（追記するので idempotent でない）は ingest_stage / log_search /
+# update_objective の3件。サーバ側 tests/test_tool_annotations.py と一致させること。
 READ_ONLY_ANN = {"readOnlyHint": True}
 EXTERNAL_ANN = {"readOnlyHint": True, "openWorldHint": True}
 LOCAL_WRITE_ANN = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
@@ -1267,7 +1269,7 @@ ANNOTATIONS: dict[str, dict[str, bool]] = {
         else DESTRUCTIVE_ANN
         if name in {"ingest_promote", "ingest_reject"}
         else APPEND_ANN
-        if name in {"ingest_stage", "log_search"}
+        if name in {"ingest_stage", "log_search", "update_objective"}
         else LOCAL_WRITE_ANN
         if CURRENT_CLASSIFICATION[name] is LOCAL_WRITE
         else READ_ONLY_ANN
