@@ -1992,17 +1992,11 @@ grep -rn "arf_\|pai2_\|eic_\|ms-data-parser\|dcl_\|ingest_\|volcano" --include=*
 ```
 Expected: **1件も出ない。** 出たら製品コードに残ったサーバ固有知識なので取り除く（テストのフィクスチャは対象外なので `src/` に限定して検索する）。
 
-- [ ] **Step 4: HISTRY と task.md を更新してコミット**
+- [ ] **Step 4: HISTRY と task.md を更新する（コミットはしない）**
 
 `docs/HISTRY.md` の先頭（`## 2026-08-07 パーサ別セッション状態の分離` の直前）へ節を追加し、`docs/task.md` の「T. パーサ別セッション状態の分離」にある「未着手の関連」を DONE に更新する。
 
-```bash
-cd /c/Users/yuu18/Lipidmix_with_LLM
-git add docs/HISTRY.md docs/task.md
-git commit -m "docs: MCP 状態契約の汎用化を記録
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-```
+**この2ファイルは `.gitignore` の10-11行目で除外された意図的なローカル専用ログである**（2026-06-10 にユーザーが定めた運用）。`git add -f` してはいけない。内容を書き換えるだけで完了とし、このタスクは差分を生まない。
 
 ---
 
