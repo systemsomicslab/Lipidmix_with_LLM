@@ -179,8 +179,12 @@ def missing_state(state: str, required_tools: list[str], message: str) -> str:
 - `paper_search`: `openWorldHint=True`, `readOnlyHint=True`
 - `ingest_promote` / `ingest_reject`: `readOnlyHint=False`, `destructiveHint=True`
   （`_inbox` からの移動・削除を伴う）
-- `ingest_stage`: `readOnlyHint=False`, `destructiveHint=False`（新規ノートを書くだけ）
+- `ingest_stage`: `readOnlyHint=False`, `destructiveHint=False`, `idempotentHint=False`
+  （新規ノートを書くだけ。同じ内容を2回 stage すれば2件できるので冪等でない）
 - `ingest_review_queue`: `readOnlyHint=True`（`build_inbox_index()` を返すだけの純粋な読み取り）
+- `log_search`: `readOnlyHint=False`, `destructiveHint=False`, `idempotentHint=False`
+  （`append_search_log()` → `write_note()` で objective の Markdown を書き換える。
+  同じログを2回追記すれば2行増えるので冪等でない）
 
 ### 4.4 ドキュメント
 
@@ -285,12 +289,21 @@ READ_ONLY に落ち、`network_mode` のゲートを迂回する。`policy.py` �
 
 ## 6. 承認挙動の差分
 
-### 6.1 権限が変わるもの: 1件
+### 6.1 権限が変わるもの: 2件
 
-- **`ingest_review_queue`: 承認必須 → `read_only_auto` 時に自動実行。**
+どちらも既存の名前リストの分類ミスを正すもので、方向は逆である。
+
+- **`ingest_review_queue`: 承認必須 → `read_only_auto` 時に自動実行（緩和）。**
   実装は `knowledge_store.build_inbox_index()` を返すだけの純粋な読み取りで
-  （`tools_objective.py:236-238`）、現在 KNOWLEDGE_MUTATION に入っているのは名前リストの
-  分類ミス。ユーザ承認済みの緩和。
+  （`tools_objective.py:236-238`）、KNOWLEDGE_MUTATION に入っているのは誤分類。
+- **`log_search`: 自動実行 → 承認必須（厳格化）。**
+  `append_search_log()` → `write_note()` で objective の Markdown を書き換えるのに
+  `READ_ONLY_TOOLS` に入っていた。§3.2 の解釈（ファイルを変更しない＝read-only）に
+  照らすと明確な誤分類で、`readOnlyHint=True` を付けるのは事実に反する宣言になる。
+  実運用上の負担は小さい。`log_search` は「`paper_search` を実行したら必ず記録する」
+  運用なので、既に承認必須の `paper_search` の直後に続くだけである。
+
+どちらもユーザ承認済み。
 
 ### 6.2 監査ラベルのみ変わるもの: 1件
 

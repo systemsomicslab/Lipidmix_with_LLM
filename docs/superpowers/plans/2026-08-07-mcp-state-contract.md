@@ -114,7 +114,6 @@ CURRENT_CLASSIFICATION: dict[str, ToolSafety] = {
     "eic_rank_by_max_intensity": READ_ONLY,
     "eic_search_by_mz_range": READ_ONLY,
     "eic_search_by_rt_range": READ_ONLY,
-    "log_search": READ_ONLY,
     "knowledge_coverage": READ_ONLY,
     "pai2_parser": READ_ONLY,
     "pai2_inspect_peak": READ_ONLY,
@@ -139,7 +138,11 @@ CURRENT_CLASSIFICATION: dict[str, ToolSafety] = {
 # ingest_review_queue は build_inbox_index() を返すだけの純粋な読み取りで、
 # KNOWLEDGE_MUTATION に入っているのは名前リストの分類ミス。ユーザ承認済みの緩和。
 EXPECTED_CHANGES: dict[str, ToolSafety] = {
+    # 純粋な読み取りなのに KNOWLEDGE_MUTATION だった（緩和方向の是正）
     "ingest_review_queue": READ_ONLY,
+    # append_search_log() -> write_note() で objective を書き換えるのに
+    # READ_ONLY_TOOLS に入っていた（厳格化方向の是正）
+    "log_search": LOCAL_WRITE,
 }
 
 # 監査ラベルだけ変わるもの。decide_server_tool では LOCAL_WRITE も
@@ -703,7 +706,8 @@ import server
 READ_ONLY = {"readOnlyHint": True}
 EXTERNAL = {"readOnlyHint": True, "openWorldHint": True}
 LOCAL_WRITE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
-STAGE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
+# ファイルを書き、かつ冪等でないもの（同じ引数の再実行で結果が積み増される）
+LOCAL_WRITE_APPEND = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
 DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True}
 
 EXPECTED_ANNOTATIONS = {
@@ -735,7 +739,6 @@ EXPECTED_ANNOTATIONS = {
     "eic_search_by_mz_range": READ_ONLY,
     "eic_search_by_rt_range": READ_ONLY,
     # --- 読み取り系 ---
-    "log_search": READ_ONLY,
     "knowledge_coverage": READ_ONLY,
     "read_report": READ_ONLY,
     "list_reports": READ_ONLY,
@@ -750,8 +753,11 @@ EXPECTED_ANNOTATIONS = {
     "save_pca_figure": LOCAL_WRITE,
     "save_volcano_figure": LOCAL_WRITE,
     "save_eic_figure": LOCAL_WRITE,
-    # --- knowledge の変更 ---
-    "ingest_stage": STAGE,
+    # --- ファイルを書き、冪等でないもの ---
+    # log_search は append_search_log() -> write_note() で objective の Markdown を
+    # 書き換える。同じログを2回追記すれば2行増えるので idempotent ではない。
+    "log_search": LOCAL_WRITE_APPEND,
+    "ingest_stage": LOCAL_WRITE_APPEND,
     "ingest_promote": DESTRUCTIVE,
     "ingest_reject": DESTRUCTIVE,
 }
@@ -833,8 +839,12 @@ list_data_files = mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))(
 `tools_objective.py`:
 
 ```python
-# log_search / knowledge_coverage / ingest_review_queue
+# knowledge_coverage / ingest_review_queue
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+
+# log_search（objective の Markdown に追記するので read-only ではない）
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 
 # record_objective / update_objective
 @mcp.tool(annotations=ToolAnnotations(
@@ -843,7 +853,7 @@ list_data_files = mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))(
 # paper_search
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 
-# ingest_stage
+# ingest_stage（新規ノートを書くだけ。2回 stage すれば2件できるので冪等でない）
 @mcp.tool(annotations=ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False))
 
@@ -1232,7 +1242,7 @@ from use_lllm.core.policy import classify_server_tool
 READ_ONLY_ANN = {"readOnlyHint": True}
 EXTERNAL_ANN = {"readOnlyHint": True, "openWorldHint": True}
 LOCAL_WRITE_ANN = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
-STAGE_ANN = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
+APPEND_ANN = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
 DESTRUCTIVE_ANN = {"readOnlyHint": False, "destructiveHint": True}
 
 ANNOTATIONS: dict[str, dict[str, bool]] = {
@@ -1241,8 +1251,8 @@ ANNOTATIONS: dict[str, dict[str, bool]] = {
         if name == "paper_search"
         else DESTRUCTIVE_ANN
         if name in {"ingest_promote", "ingest_reject"}
-        else STAGE_ANN
-        if name == "ingest_stage"
+        else APPEND_ANN
+        if name in {"ingest_stage", "log_search"}
         else LOCAL_WRITE_ANN
         if CURRENT_CLASSIFICATION[name] is LOCAL_WRITE
         else READ_ONLY_ANN
@@ -1269,8 +1279,8 @@ class AnnotationDrivenClassificationTests(unittest.TestCase):
         }
         self.assertEqual(changed, set(EXPECTED_CHANGES) | set(EXPECTED_LABEL_CHANGES))
 
-    def test_only_one_tool_actually_changes_permission(self) -> None:
-        """実行可否が変わるのは ingest_review_queue の1件だけ（設計書 §6.1）。
+    def test_only_the_expected_tools_change_permission(self) -> None:
+        """実行可否が変わるのは EXPECTED_CHANGES の2件だけ（設計書 §6.1）。
 
         LOCAL_WRITE も KNOWLEDGE_MUTATION も decide_server_tool では等しく承認必須
         なので、ingest_stage は監査ラベルが変わるだけで実行可否は変わらない。
@@ -1282,7 +1292,7 @@ class AnnotationDrivenClassificationTests(unittest.TestCase):
             if (CURRENT_CLASSIFICATION[name] in approval_free)
             is not (classify_server_tool(name, annotations=ANNOTATIONS[name]) in approval_free)
         }
-        self.assertEqual(changed, {"ingest_review_queue"})
+        self.assertEqual(changed, set(EXPECTED_CHANGES))
 
     def test_open_world_wins_over_read_only(self) -> None:
         """判定順を誤ると paper_search が READ_ONLY に落ちて network ゲートを迂回する。"""
