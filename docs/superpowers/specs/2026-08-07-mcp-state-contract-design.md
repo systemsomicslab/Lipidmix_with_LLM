@@ -137,8 +137,14 @@ def missing_state(state: str, required_tools: list[str], message: str) -> str:
 
 `message` には現在の日本語文面をそのまま入れる。
 
-`arf_plot_volcano`（#8）は現在 `ValueError` を送出しており `isError=true` になる。§2 の制約で
-そこにエンベロープを載せられないため、本文で返す形へ揃える。
+`arf_plot_volcano`（#8）だけは扱いが違う。現在 `ValueError` を送出しており `isError=true` に
+なるが、このツールの戻り値は構造化ペイロード `VolcanoPlotPayload`（webUI の描画経路が使う）で、
+失敗時に `str` を返すと §2 の制約2で outputSchema 導出が壊れる。**ここだけは例外を残し、
+例外メッセージの本文にエンベロープを載せる。**
+
+その結果 FastMCP が `Error executing tool arf_plot_volcano: ` を前置するため、クライアント側の
+パーサは**本文全体が JSON でなくても、埋め込まれた JSON オブジェクトを取り出せる**必要がある
+（§5.1 の要件に含める）。
 
 **対象外**: `tools_samples.py:63` の「先に arf_parser で ARF を読み込んでください」は状態不足では
 ない。`sample_search` は ARF ロード前でも動くことが要件で（`.mddata` や実ファイル名から
@@ -181,8 +187,14 @@ def read_missing_state(result_text: str) -> MissingState | None:
     """本文が missing_state エンベロープならそれを返す。違えば None。"""
 ```
 
-JSON として読めない本文、`error` を持たない本文、未知の `code` はすべて `None`。
-エンベロープを実装しないサーバでは単に何も起きない（後方互換）。
+JSON として読めない本文、`error` を持たない本文、未知の `code`、`required_tools` が空または
+文字列でないものは、すべて `None`。例外は投げない（契約を実装しないサーバの通常の出力が大量に
+流れてくる経路なので、ここで落ちると全ツール呼び出しが壊れる）。エンベロープを実装しない
+サーバでは単に何も起きない（後方互換）。
+
+本文全体が JSON でない場合は、**埋め込まれた最初の JSON オブジェクトを切り出して読み直す**。
+§4.2 の `arf_plot_volcano` が例外経由になり、FastMCP が
+`Error executing tool <name>: ` を前置するため。
 
 ### 5.2 削除するもの
 
