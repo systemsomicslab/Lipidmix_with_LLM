@@ -10,6 +10,25 @@
 
 **設計書:** `docs/superpowers/specs/2026-08-07-mcp-state-contract-design.md`
 
+## 実施状況: Task 1-10 完了（2026-08-08）
+
+チェックボックスは実施当時に更新されておらず、2026-08-08 に以下の証拠をもって一括で確定した。
+
+| 確認項目 | コマンド | 結果 |
+| --- | --- | --- |
+| サーバのテスト | `python -m pytest tests/ -q` | 540 passed, 53 subtests passed |
+| クライアントのテスト | `.venv/Scripts/python.exe -m pytest tests/ -q`（Use-LLLM） | 154 passed, 14 subtests passed |
+| サーバの構文 | `python -m compileall -q .`（`.venv*` / `archives` 除外） | exit 0 |
+| Task 10 Step 3 のサーバ固有語彙 | 計画本文の grep をそのまま実行 | 0件 |
+
+**コミット対応（サーバ = `fix/parser-state-isolation`）**: Task 2=`681356c` / Task 3=`619c920`, `cfa8f33`, `a698d65` / Task 4=`644e689`（+訂正 `69fdf5a`,`f2cddd0`,`d0af4da`,`3f25b33`）/ Task 5=`8b4fe49` / Task 6=`0f3d097`。
+**コミット対応（クライアント = `fix/tool-catalog-completeness`）**: Task 1=`ebed498` / Task 7=`9027615`（+`df7122e`）/ Task 8=`fe98991` / Task 9=`08ce474`（+`7af8e68`）。
+
+**計画完了後に見つかった設計の誤り2件**（詳細は `docs/HISTRY.md` 2026-08-08 の節、修正は Use-LLLM の `b102e88` / `f03c055`、仕様の訂正は `f7e4e0c`）:
+
+1. **連鎖依存は1段リトライでは復旧しない**（Critical）。`_recover_missing_state` はリプレイを直接実行するため、リプレイ先自身が `missing_state` を返した時点で打ち切られる。MCP 再接続後は全状態が消えるので、`preprocessed_matrix` / `pca_result` / `differential_result` / `eic_plot` を要求するツールはすべて2段目以降になり復旧不能だった。深さ上限3の再帰復旧へ改めた。
+2. **承認ゲートがリカバリを無効化していた**。リプレイ候補を `registry.decide(...).allowed` でゲートすると `read_only_auto=False`（既定値）で read-only 候補まで弾かれ、新規インストール環境では復旧が一度も発火しない。安全クラスが READ_ONLY かどうかでゲートする形に改めた。
+
 ## Global Constraints
 
 - 対象リポジトリは2つ。**サーバ = `C:\Users\yuu18\Lipidmix_with_LLM`**、**クライアント = `C:\Users\yuu18\Use-LLLM`**（別 git リポジトリ。別々にコミットする）。
@@ -68,7 +87,7 @@
 - Consumes: `use_lllm.core.policy.classify_tool`, `ToolSafety`
 - Produces: `CURRENT_CLASSIFICATION`（40ツール名 → ToolSafety の dict）。Task 7 がこの表を再利用する。
 
-- [ ] **Step 1: スナップショットテストを書く**
+- [x] **Step 1: スナップショットテストを書く**
 
 ```python
 """承認挙動の回帰スナップショット。
@@ -172,17 +191,17 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: テストを走らせて green を確認する**
+- [x] **Step 2: テストを走らせて green を確認する**
 
 Run: `cd /c/Users/yuu18/Use-LLLM && .venv/Scripts/python.exe -m pytest tests/test_approval_snapshot.py -q`
 Expected: PASS（2 passed）。ここで落ちるなら、スナップショットの写し間違いなので `policy.py` の4つの frozenset と突き合わせて直す。
 
-- [ ] **Step 3: 整形と lint**
+- [x] **Step 3: 整形と lint**
 
 Run: `.venv/Scripts/python.exe -m ruff format tests/test_approval_snapshot.py && .venv/Scripts/python.exe -m ruff check tests/test_approval_snapshot.py`
 Expected: `All checks passed!`
 
-- [ ] **Step 4: コミット**
+- [x] **Step 4: コミット**
 
 ```bash
 cd /c/Users/yuu18/Use-LLLM
@@ -207,7 +226,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: `mcp_errors.missing_state(state: str, required_tools: list[str], message: str) -> str`、定数 `mcp_errors.MISSING_STATE = "missing_state"`。Task 3 が全面的に使う。
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 ```python
 """クライアント非依存のエラーエンベロープ。"""
@@ -270,12 +289,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: テストが落ちることを確認する**
+- [x] **Step 2: テストが落ちることを確認する**
 
 Run: `cd /c/Users/yuu18/Lipidmix_with_LLM && python -m pytest tests/test_mcp_errors.py -q`
 Expected: FAIL（`ModuleNotFoundError: No module named 'mcp_errors'`）
 
-- [ ] **Step 3: 実装する**
+- [x] **Step 3: 実装する**
 
 `mcp_errors.py`:
 
@@ -334,12 +353,12 @@ def missing_state(state: str, required_tools: list[str], message: str) -> str:
     )
 ```
 
-- [ ] **Step 4: テストが通ることを確認する**
+- [x] **Step 4: テストが通ることを確認する**
 
 Run: `python -m pytest tests/test_mcp_errors.py -q`
 Expected: PASS（7 passed）
 
-- [ ] **Step 5: コミット**
+- [x] **Step 5: コミット**
 
 ```bash
 cd /c/Users/yuu18/Lipidmix_with_LLM
@@ -386,7 +405,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 | `save_volcano_figure` | `differential_result` | `["arf_differential"]` |
 | `save_eic_figure` | `eic_plot` | `["eic_plot_chromatograms", "eic_plot_compounds"]` |
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 ```python
 """状態不足13箇所が missing_state エンベロープを返すことの契約テスト。
@@ -539,12 +558,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: テストが落ちることを確認する**
+- [x] **Step 2: テストが落ちることを確認する**
 
 Run: `python -m pytest tests/test_missing_state_contract.py -q`
 Expected: FAIL。13件中12件は「エンベロープでない」、`arf_plot_volcano` は `ValueError` が送出されてエラーになる。
 
-- [ ] **Step 3: `tools_arf.py` の8箇所を置換する**
+- [x] **Step 3: `tools_arf.py` の8箇所を置換する**
 
 先頭の import に追加:
 
@@ -601,7 +620,7 @@ import mcp_errors
 
 **この決定は Task 8 のクライアント側パーサに要件を足す**: 本文全体が JSON でなくても、埋め込まれた JSON オブジェクトを取り出せること。
 
-- [ ] **Step 4: `tools_pai2.py` の2箇所を置換する**
+- [x] **Step 4: `tools_pai2.py` の2箇所を置換する**
 
 先頭に `import mcp_errors` を追加し、124 行と 149 行の `json.dumps({"status": "error", "message": "先に pai2_parser …"})` を置換:
 
@@ -611,7 +630,7 @@ import mcp_errors
             "先に pai2_parser を実行してデータを読み込んでください。")
 ```
 
-- [ ] **Step 5: `tools_reports.py` の3箇所を置換する**
+- [x] **Step 5: `tools_reports.py` の3箇所を置換する**
 
 先頭に `import mcp_errors` を追加:
 
@@ -635,7 +654,7 @@ import mcp_errors
             "（EICプロット情報がありません）。")
 ```
 
-- [ ] **Step 6: 契約テストを通す**
+- [x] **Step 6: 契約テストを通す**
 
 Run: `python -m pytest tests/test_missing_state_contract.py -q`
 Expected: PASS（14 passed）。`arf_plot_volcano` のテストは例外送出のままだと落ちるので、そのテストだけ次のように書き換える:
@@ -651,12 +670,12 @@ Expected: PASS（14 passed）。`arf_plot_volcano` のテストは例外送出�
         self.assertEqual(error["required_tools"], ["arf_differential"])
 ```
 
-- [ ] **Step 7: 既存テストへの影響を確認する**
+- [x] **Step 7: 既存テストへの影響を確認する**
 
 Run: `python -m pytest tests/ -q`
 Expected: 既存テストのうち、エラー文面を部分文字列で見ているものが落ちる。落ちたテストは**エンベロープの `message` を見るように直す**（文面自体は変えていないので、`assertIn` の対象を `json.loads(raw)["error"]["message"]` へ移すだけ）。`test_tool_count_is_stable` は Task 6 まで落ちたままでよい。
 
-- [ ] **Step 8: コミット**
+- [x] **Step 8: コミット**
 
 ```bash
 git add tools_arf.py tools_pai2.py tools_reports.py tests/test_missing_state_contract.py tests/
@@ -683,7 +702,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: 全40ツールが `annotations` を持つ。Task 7（承認判定）と Task 9（リプレイ安全性）がこれに依存する。
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 ```python
 """全ツールが MCP 標準 annotations を宣言していることの回帰テスト。
@@ -799,12 +818,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: テストが落ちることを確認する**
+- [x] **Step 2: テストが落ちることを確認する**
 
 Run: `python -m pytest tests/test_tool_annotations.py -q`
 Expected: FAIL（`annotations 未宣言のツール: [...]` に40件並ぶ）
 
-- [ ] **Step 3: 各 `tools_*.py` に annotations を付ける**
+- [x] **Step 3: 各 `tools_*.py` に annotations を付ける**
 
 各ファイル先頭の import に追加:
 
@@ -875,17 +894,17 @@ list_data_files = mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))(
 def ingest_review_queue() -> str:
 ```
 
-- [ ] **Step 4: テストを通す**
+- [x] **Step 4: テストを通す**
 
 Run: `python -m pytest tests/test_tool_annotations.py -q`
 Expected: PASS（4 passed）
 
-- [ ] **Step 5: 全体テスト**
+- [x] **Step 5: 全体テスト**
 
 Run: `python -m pytest tests/ -q`
 Expected: `test_tool_count_is_stable` のみ失敗（Task 6 で直す）
 
-- [ ] **Step 6: コミット**
+- [x] **Step 6: コミット**
 
 ```bash
 git add tools_*.py tests/test_tool_annotations.py
@@ -912,7 +931,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `docs/output_format/core.md`
 
-- [ ] **Step 1: 契約の節を追加する**
+- [x] **Step 1: 契約の節を追加する**
 
 `core.md` の末尾に追加（既存の見出しレベルに合わせること。ファイル冒頭を読んで `##` か `###` かを確認する）:
 
@@ -956,12 +975,12 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
   `idempotentHint=true` で判断できる。
 ```
 
-- [ ] **Step 2: リソースが読めることを確認する**
+- [x] **Step 2: リソースが読めることを確認する**
 
 Run: `python -m pytest tests/test_output_format_sections.py -q`
 Expected: PASS
 
-- [ ] **Step 3: コミット**
+- [x] **Step 3: コミット**
 
 ```bash
 git add docs/output_format/core.md
@@ -979,12 +998,12 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `tests/test_server_registration.py:76-77`
 
-- [ ] **Step 1: 現状の失敗を確認する**
+- [x] **Step 1: 現状の失敗を確認する**
 
 Run: `python -m pytest tests/test_server_registration.py::test_tool_count_is_stable -q`
 Expected: FAIL（`assert 40 == 39`）
 
-- [ ] **Step 2: リテラルの重複を消す**
+- [x] **Step 2: リテラルの重複を消す**
 
 ```python
 def test_tool_count_is_stable():
@@ -995,12 +1014,12 @@ def test_tool_count_is_stable():
     assert len(tools) == len(EXPECTED_TOOLS)
 ```
 
-- [ ] **Step 3: 全体テストが green になることを確認する**
+- [x] **Step 3: 全体テストが green になることを確認する**
 
 Run: `python -m pytest tests/ -q`
 Expected: 全件 PASS（失敗0）
 
-- [ ] **Step 4: コミット**
+- [x] **Step 4: コミット**
 
 ```bash
 git add tests/test_server_registration.py
@@ -1026,7 +1045,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 Task 3 Step 3 の決定により、**本文全体が JSON でなくても埋め込まれた JSON を取り出せる**必要がある（`arf_plot_volcano` は例外経由で `Error executing tool arf_plot_volcano: {...}` になる）。
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 ```python
 """ツール結果契約リーダーの回帰テスト。サーバ固有の知識をここに入れない。"""
@@ -1115,12 +1134,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: テストが落ちることを確認する**
+- [x] **Step 2: テストが落ちることを確認する**
 
 Run: `cd /c/Users/yuu18/Use-LLLM && .venv/Scripts/python.exe -m pytest tests/test_tool_result_contract.py -q`
 Expected: FAIL（`ModuleNotFoundError`）
 
-- [ ] **Step 3: 実装する**
+- [x] **Step 3: 実装する**
 
 ```python
 """MCP ツール結果の契約リーダー。
@@ -1212,12 +1231,12 @@ def _read_one(candidate: str) -> MissingState | None:
     return MissingState(state, tuple(tools), message)
 ```
 
-- [ ] **Step 4: テストを通す**
+- [x] **Step 4: テストを通す**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_tool_result_contract.py -q`
 Expected: PASS（10 passed）
 
-- [ ] **Step 5: 整形・lint・コミット**
+- [x] **Step 5: 整形・lint・コミット**
 
 ```bash
 .venv/Scripts/python.exe -m ruff format src/use_lllm/core/tool_result_contract.py tests/test_tool_result_contract.py
@@ -1246,7 +1265,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: Task 1 の `CURRENT_CLASSIFICATION` / `expected_after_migration()`
 - Produces: `policy.classify_server_tool(tool_name, *, annotations) -> ToolSafety`（`server_name` 引数を落とす）、`policy.is_replay_safe(annotations) -> bool`、`policy.enforce_tool(tool_name, *, annotations, approved, network_mode)`
 
-- [ ] **Step 1: 移行後の期待を検証するテストを追加する**
+- [x] **Step 1: 移行後の期待を検証するテストを追加する**
 
 `tests/test_approval_snapshot.py` に追記:
 
@@ -1328,12 +1347,12 @@ class AnnotationDrivenClassificationTests(unittest.TestCase):
         )
 ```
 
-- [ ] **Step 2: テストが落ちることを確認する**
+- [x] **Step 2: テストが落ちることを確認する**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_approval_snapshot.py -q`
 Expected: FAIL（`classify_server_tool() takes ... positional arguments` — 現在は `server_name` が第1引数）
 
-- [ ] **Step 3: `policy.py` を書き換える**
+- [x] **Step 3: `policy.py` を書き換える**
 
 `READ_ONLY_TOOLS` / `LOCAL_WRITE_TOOLS` / `EXTERNAL_NETWORK_TOOLS` / `KNOWLEDGE_MUTATION_TOOLS` / `BUILTIN_PROFILE_SERVERS` / `classify_tool` / `decide_tool` を削除し、次で置き換える:
 
@@ -1410,7 +1429,7 @@ def enforce_tool(
     return decision
 ```
 
-- [ ] **Step 4: `mcp_client.py` の enforcement をツール発見後へ移す**
+- [x] **Step 4: `mcp_client.py` の enforcement をツール発見後へ移す**
 
 `call_tool`（231-256 行）の `enforce_tool(...)` を `try` の外から、`tools` を取得した直後へ移動:
 
@@ -1457,16 +1476,16 @@ def enforce_tool(
                         ...
 ```
 
-- [ ] **Step 5: `tests/test_policy_server.py` の名前ベーステストを置き換える**
+- [x] **Step 5: `tests/test_policy_server.py` の名前ベーステストを置き換える**
 
 `classify_tool` を import している行と、それを使うテスト（107-146 行付近）を削除する。同等の検証は `tests/test_approval_snapshot.py` が担う。`decide_server_tool` を使うテストは `server_name` 引数のままなので変更不要。
 
-- [ ] **Step 6: テストを通す**
+- [x] **Step 6: テストを通す**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/ -q`
 Expected: `test_approval_snapshot.py` の新テストが PASS。`test_mcp_client.py` / `test_policy_server.py` / `test_foundation_integration.py` で `enforce_tool` のシグネチャ変更に伴う失敗が出たら、呼び出し側を annotations 付きへ直す。
 
-- [ ] **Step 7: 整形・lint・コミット**
+- [x] **Step 7: 整形・lint・コミット**
 
 ```bash
 .venv/Scripts/python.exe -m ruff format src tests
@@ -1554,7 +1573,7 @@ def writes_outside_server(annotations: Mapping[str, Any] | None) -> bool:
 - Consumes: `read_missing_state` / `MissingState`（Task 7）、`policy.is_replay_safe`（Task 8）
 - Produces: `MCPRegistry.is_replay_safe(qualified_name) -> bool`、`GeneralAgentLoop._recover_missing_state(...) -> str | None`
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `tests/test_state_recovery.py`:
 
@@ -1723,12 +1742,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: テストが落ちることを確認する**
+- [x] **Step 2: テストが落ちることを確認する**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_state_recovery.py -q`
 Expected: FAIL（`AttributeError: 'GeneralAgentLoop' object has no attribute '_maybe_recover_and_retry'`）。`FakeOllama` / `response` が `tests/test_general_agent.py` から import できるか確認し、できなければローカルに最小のフェイクを定義する。
 
-- [ ] **Step 3: `MCPRegistry.is_replay_safe` を足す**
+- [x] **Step 3: `MCPRegistry.is_replay_safe` を足す**
 
 ```python
     def is_replay_safe(self, qualified_name: str) -> bool:
@@ -1742,7 +1761,7 @@ Expected: FAIL（`AttributeError: 'GeneralAgentLoop' object has no attribute '_m
 
 import は `from use_lllm.core.policy import ToolDecision, ToolPolicyError, decide_server_tool, is_replay_safe as policy_is_replay_safe`。
 
-- [ ] **Step 4: `agent_loop.py` を書き換える**
+- [x] **Step 4: `agent_loop.py` を書き換える**
 
 import を差し替える。`from use_lllm.core.mcp_state_policy import (...)` を削除し:
 
@@ -1891,13 +1910,13 @@ from use_lllm.core.tool_result_contract import MissingState, read_missing_state
 
 （`resolve_approval` では `approved=True`、変数名は `name` / `arguments`。）
 
-- [ ] **Step 5: 古いモジュールとテストを削除する**
+- [x] **Step 5: 古いモジュールとテストを削除する**
 
 ```bash
 git rm src/use_lllm/core/mcp_state_policy.py tests/test_mcp_state_policy.py
 ```
 
-- [ ] **Step 6: `test_general_agent.py` の再接続リプレイテストを置換する**
+- [x] **Step 6: `test_general_agent.py` の再接続リプレイテストを置換する**
 
 `test_reconnect_replays_parser_before_differential` を削除し、同等シナリオを新機構で書く（`tests/test_state_recovery.py::test_replays_the_named_tool_with_its_recorded_arguments` が既にこれをカバーしているので、`test_general_agent.py` 側は削除のみでよい）。`FakeRegistry` に `is_replay_safe` を足す:
 
@@ -1906,12 +1925,12 @@ git rm src/use_lllm/core/mcp_state_policy.py tests/test_mcp_state_policy.py
         return True
 ```
 
-- [ ] **Step 7: テストを通す**
+- [x] **Step 7: テストを通す**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/ -q`
 Expected: 全件 PASS
 
-- [ ] **Step 8: 整形・lint・コミット**
+- [x] **Step 8: 整形・lint・コミット**
 
 ```bash
 .venv/Scripts/python.exe -m ruff format src tests
@@ -1941,7 +1960,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Files:**
 - Create: スクラッチのみ（リポジトリにはコミットしない）
 
-- [ ] **Step 1: サーバ側の往復をスクラッチで確認する**
+- [x] **Step 1: サーバ側の往復をスクラッチで確認する**
 
 `C:\Users\yuu18\AppData\Local\Temp\claude\C--Users-yuu18-Lipidmix-with-LLM\<session>\scratchpad\verify_contract.py`:
 
@@ -1976,7 +1995,7 @@ print("OK")
 Run: `python <scratchpad>/verify_contract.py`
 Expected: `OK` で終了。`missing_state -> preprocessed_matrix ('arf_preprocess',)` が出る。
 
-- [ ] **Step 2: 両リポジトリの全テストを最終確認する**
+- [x] **Step 2: 両リポジトリの全テストを最終確認する**
 
 ```bash
 cd /c/Users/yuu18/Lipidmix_with_LLM && python -m pytest tests/ -q
@@ -1984,7 +2003,7 @@ cd /c/Users/yuu18/Use-LLLM && .venv/Scripts/python.exe -m pytest tests/ -q
 ```
 Expected: どちらも失敗0
 
-- [ ] **Step 3: クライアントに ms-data-parser の名前が残っていないことを確認する**
+- [x] **Step 3: クライアントに ms-data-parser の名前が残っていないことを確認する**
 
 ```bash
 cd /c/Users/yuu18/Use-LLLM
@@ -1992,7 +2011,7 @@ grep -rn "arf_\|pai2_\|eic_\|ms-data-parser\|dcl_\|ingest_\|volcano" --include=*
 ```
 Expected: **1件も出ない。** 出たら製品コードに残ったサーバ固有知識なので取り除く（テストのフィクスチャは対象外なので `src/` に限定して検索する）。
 
-- [ ] **Step 4: HISTRY と task.md を更新する（コミットはしない）**
+- [x] **Step 4: HISTRY と task.md を更新する（コミットはしない）**
 
 `docs/HISTRY.md` の先頭（`## 2026-08-07 パーサ別セッション状態の分離` の直前）へ節を追加し、`docs/task.md` の「T. パーサ別セッション状態の分離」にある「未着手の関連」を DONE に更新する。
 
