@@ -12,8 +12,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = REPO_ROOT / "docs" / "workflow"
 
 # 呼び出し連鎖行の書式:  `1. └─ lipidmix/arf/reader.py  run_pca()`
+# 分岐（排他的な if/else 経路）は `├─` / `│  └─` で表し、経路の説明を角括弧で
+# 添えてよい: `4. ├─ [specs 省略時] lipidmix/tools/samples.py  _apply_role_filter()`
 CHAIN_RE = re.compile(
-    r"^\s*\d+\.\s*(?:└─\s*)*(?P<path>[\w/]+\.py)\s+(?P<func>[\w.]+)\(\)"
+    r"^\s*\d+\.\s*(?:[└├│─]\s*)*(?:\[[^\]]*\]\s*)?"
+    r"(?P<path>[\w/]+\.py)\s+(?P<func>[\w.]+)\(\)"
 )
 # 節見出し: `## arf_parser`
 HEADING_RE = re.compile(r"^##\s+(?P<tool>[a-z][a-z0-9_]*)\s*$", re.MULTILINE)
@@ -143,6 +146,21 @@ class TestScopeBoundary(unittest.TestCase):
                     )
 
     def test_scope_totals_match_registered_tool_count(self):
-        in_scope_total = sum(len(v) for v in IN_SCOPE.values())
-        self.assertEqual(in_scope_total, 28)
-        self.assertEqual(in_scope_total + len(OUT_OF_SCOPE), 40)
+        """対象範囲の分割が、実際に登録されているツール数と一致することを縛る。
+
+        28 / 12 という分割は設計上の線引きだが、その合計は「全ツールを漏れなく
+        分類した」という主張でもある。リテラルどうしの比較では自分自身を検証して
+        しまうので、実際の登録数を引いて突き合わせる。
+        """
+        import asyncio
+
+        import server
+
+        registered = {t.name for t in asyncio.run(server.mcp.list_tools())}
+        classified = {t for tools in IN_SCOPE.values() for t in tools} | set(OUT_OF_SCOPE)
+        self.assertEqual(
+            classified,
+            registered,
+            "対象範囲の分類と登録済みツールが一致しない",
+        )
+        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 28)
