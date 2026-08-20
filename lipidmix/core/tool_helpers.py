@@ -12,7 +12,7 @@ from lipidmix.msdial import lipid_identity
 import knowledge_store
 from lipidmix.msdial import peak_verification as pv
 from lipidmix.core import session_state
-from pai2_reader import get_signal_to_noise
+from lipidmix.pai2.reader import get_signal_to_noise
 from lipidmix.core import mcp_core
 
 

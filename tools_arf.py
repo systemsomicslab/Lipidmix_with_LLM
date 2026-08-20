@@ -735,7 +735,7 @@ def _annotate_with_names(rows: list[dict]) -> dict:
         report["arf2_lookup"] = "skipped: 同一アラインメントの .arf2 が隣接していません"
         return report
     import io as _io
-    from arf2_reader import deserialize as _arf2_deserialize
+    from lipidmix.arf2.reader import deserialize as _arf2_deserialize
     with open(arf2_path, "rb") as fh:
         catalog = {s.get("MasterAlignmentID"): s for s in _arf2_deserialize(_io.BytesIO(fh.read()))}
     filled = 0

@@ -265,7 +265,7 @@ class TestTopHitAnnotation(unittest.TestCase):
                        "Name": "SL 33:0;O|SL 17:0;O/16:0", "Ontology": "SL"}]
         with mock.patch.object(tools_arf, "_sibling_arf2_path", return_value="dummy.arf2"), \
              mock.patch("builtins.open", mock.mock_open(read_data=b"")), \
-             mock.patch("arf2_reader.deserialize", return_value=arf2_spots):
+             mock.patch("lipidmix.arf2.reader.deserialize", return_value=arf2_spots):
             out = json.loads(server.arf_differential(group_a="A", group_b="B"))
         top = out["summary"]["top"][0]
         self.assertEqual(top["name"], "SL 33:0;O|SL 17:0;O/16:0")

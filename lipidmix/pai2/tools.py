@@ -17,7 +17,7 @@ from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
 from lipidmix.core.path_resolvers import resolve_pai2_file_path
 from lipidmix.core.tool_helpers import _build_verification_dossier
-from pai2_reader import inspect_peak_details, summarize_pai2_inventory
+from lipidmix.pai2.reader import inspect_peak_details, summarize_pai2_inventory
 
 __all__ = [
     "pai2_parser",
@@ -37,7 +37,7 @@ def _attach_sibling_msms(pai2_path: str, features: list[dict]) -> dict:
     あり、欠けても在庫要約は成立するため）。状況は caveat として返し、無言で
     「MS/MS 無し」と誤認させない。
     """
-    from dcl_reader import attach_msms_to_features, deserialize_dcl, find_dcl_for_pai2
+    from lipidmix.dcl.reader import attach_msms_to_features, deserialize_dcl, find_dcl_for_pai2
 
     dcl_path = find_dcl_for_pai2(pai2_path)
     if not dcl_path:
@@ -75,7 +75,7 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
     if filter_threshold is None:
         filter_threshold = 0.0
 
-    from pai2_reader import deserialize
+    from lipidmix.pai2.reader import deserialize
 
     try:
         with open(file_path, 'rb') as f:

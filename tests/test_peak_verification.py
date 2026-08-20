@@ -163,7 +163,7 @@ from pathlib import Path
 import server
 from lipidmix.core import mcp_core
 from lipidmix.core import session_state
-from pai2_reader import IonMode
+from lipidmix.pai2.reader import IonMode
 
 
 def _feat(**over):

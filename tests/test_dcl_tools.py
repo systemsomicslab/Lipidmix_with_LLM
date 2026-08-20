@@ -14,7 +14,7 @@ from pathlib import Path
 from lipidmix.core import mcp_core
 import server
 from lipidmix.core import session_state
-import tools_pai2
+from lipidmix.pai2 import tools as tools_pai2
 
 from tests.dcl_fixture import build_dcl_bytes
 

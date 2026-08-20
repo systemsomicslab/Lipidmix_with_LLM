@@ -27,7 +27,7 @@ class IdentityCandidate(TypedDict):
 
 def load_arf2_records(arf2_path: str | Path) -> list[dict]:
     """.arf2 を読み、`extract_arf2_data` 形式の辞書リストを返す。"""
-    from arf2_reader import deserialize
+    from lipidmix.arf2.reader import deserialize
 
     with open(Path(arf2_path), "rb") as stream:
         return deserialize(stream)

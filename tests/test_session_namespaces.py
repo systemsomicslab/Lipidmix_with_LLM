@@ -18,10 +18,10 @@ import unittest
 
 import numpy as np
 
-import pai2_reader
+from lipidmix.pai2 import reader as pai2_reader
 import server
 from lipidmix.core import session_state
-import tools_pai2
+from lipidmix.pai2 import tools as tools_pai2
 
 
 FAKE_PAI2_PEAKS = [
@@ -171,8 +171,8 @@ class TestArf2ParserPreservesArfState(unittest.TestCase):
         session_state.session = server.AnalysisSession()
 
     def test_arf2_parser_does_not_overwrite_arf_features(self):
-        import arf2_reader
-        import tools_arf2
+        from lipidmix.arf2 import reader as arf2_reader
+        from lipidmix.arf2 import tools as tools_arf2
 
         handle, path = tempfile.mkstemp(suffix=".arf2")
         os.write(handle, b"fake-arf2-bytes")

@@ -1,4 +1,4 @@
-# arf2_reader.py
+# lipidmix/arf2/reader.py
 import io
 import msgpack
 import lz4.block

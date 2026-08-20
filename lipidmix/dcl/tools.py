@@ -14,7 +14,7 @@ from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
 from lipidmix.core.path_resolvers import resolve_dcl_file_path
-from dcl_reader import deserialize_dcl, summarize_dcl, get_msms_by_precursor
+from lipidmix.dcl.reader import deserialize_dcl, summarize_dcl, get_msms_by_precursor
 
 __all__ = ["dcl_parser", "dcl_find_msms"]
 

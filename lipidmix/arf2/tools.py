@@ -27,7 +27,7 @@ def arf2_parser(file_path: str | None = None) -> str:
     if not file_path:
         return "データディレクトリに .arf2 ファイルが見つかりませんでした。"
 
-    from arf2_reader import deserialize, generate_text_summary, summarize_arf2_data
+    from lipidmix.arf2.reader import deserialize, generate_text_summary, summarize_arf2_data
     from pathlib import Path
 
     try:
@@ -72,7 +72,7 @@ def arf2_annotate_identities(file_path: str | None = None, max_rows: int = 50) -
     if not path:
         return json.dumps({"status": "error", "message": ".arf2 が見つかりません。"},
                           ensure_ascii=False, indent=2)
-    from arf2_reader import deserialize as arf2_deserialize
+    from lipidmix.arf2.reader import deserialize as arf2_deserialize
     with open(path, "rb") as fh:
         spots = arf2_deserialize(io.BytesIO(fh.read()))
     tables = _identity_tables()
