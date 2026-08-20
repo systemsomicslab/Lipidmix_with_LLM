@@ -56,7 +56,7 @@ def sample_tokens(sample_name, class_id=None, extra=None) -> frozenset[str]:
 def build_sample_facets(sample_names, class_index=None, sample_meta=None) -> dict[str, SampleFacet]:
     """サンプル名リストから {サンプル名: SampleFacet} を作る（入力順を保持）。
 
-    - class_index: msdial_classes.discover_arf_class_index の戻り。あれば file_id /
+    - class_index: lipidmix.msdial.classes.discover_arf_class_index の戻り。あれば file_id /
       class_id を名前一致で解決する。**None でも成立**し、その場合はサンプル名の
       トークンだけで選択できる（.mddata が無いフォルダでも因子指定が効く）。
     - sample_meta: session_state.session.arf.sample_meta 相当。role と group ラベルの
@@ -261,7 +261,7 @@ def arf_sample_names(features) -> list[str]:
 def _class_lookup(class_index) -> dict[str, dict]:
     """class_index の records を正規化サンプル名で引ける辞書にする。
 
-    msdial_classes.resolve_sample_class を使わないのは、msdial_classes が本モジュール
+    lipidmix.msdial.classes.resolve_sample_class を使わないのは、lipidmix.msdial.classes が本モジュール
     を import する側であり、逆向きの import が循環になるため（session_state.
     _build_sample_meta も同じ理由で同じ引き方をしている）。
     """

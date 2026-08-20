@@ -1,7 +1,7 @@
 """データセット入口ツール: list_data_files, load_dataset。
 
 load_dataset は arf2 概観 → arf PCA を一括実行するオーケストレータ。arf/arf2 ツールを
-呼ぶため tools_arf / tools_arf2 に依存する（依存が最も深く、facade では最後に読み込む）。
+呼ぶため lipidmix.arf.tools / lipidmix.arf2.tools に依存する（依存が最も深く、facade では最後に読み込む）。
 DATA_DIR の差し替えは正準の mcp_core.DATA_DIR に対して行う。
 """
 from pathlib import Path

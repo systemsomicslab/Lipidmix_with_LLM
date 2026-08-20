@@ -1,6 +1,6 @@
 """Client-neutral volcano plot payload built from a two-group differential result.
 
-`eic_plot.py` と同じ役割で、MCP にも matplotlib にも依存しない。`differential.py`
+`lipidmix.plots.eic` と同じ役割で、MCP にも matplotlib にも依存しない。`lipidmix.analysis.differential`
 が作った点列を、クライアントがそのまま描ける形へ整形するだけの純ロジック層。
 
 点数は特徴量数ぶん（数千〜数万件）になりうるため `ns` 点だけを決定的に間引く。

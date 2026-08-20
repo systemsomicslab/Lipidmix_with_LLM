@@ -67,8 +67,8 @@ from lipidmix.core.tool_helpers import (
 
 # --- ツール/リソースの登録＋公開面の再エクスポート ---
 # import 副作用で @mcp.tool / @mcp.resource が mcp に登録される。star import は各
-# モジュールの __all__（＝そのモジュールのツール名）だけを取り込む。tools_dataset は
-# arf/arf2 に依存するため最後に読み込む。
+# モジュールの __all__（＝そのモジュールのツール名）だけを取り込む。
+# lipidmix.tools.dataset は arf/arf2 に依存するため最後に読み込む。
 from lipidmix.tools import resources as tools_resources  # リソース 4 + テンプレート 3
 from lipidmix.tools.objective import *
 from lipidmix.tools.reports import *
