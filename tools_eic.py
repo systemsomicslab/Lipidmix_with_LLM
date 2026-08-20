@@ -20,7 +20,7 @@ from eic_aef_reader import (
     search_eic_by_rt_range,
 )
 from eic_identity_map import load_arf2_records, select_identity_candidates
-from eic_plot import (
+from lipidmix.plots.eic import (
     EICMultiPlotPayload,
     EICPlotPayload,
     build_eic_plot_payload,

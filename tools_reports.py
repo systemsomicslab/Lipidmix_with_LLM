@@ -15,7 +15,7 @@ from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp, _resolve_report_dir, _report_dir_candidates, _build_report_meta
 from lipidmix.core.tool_helpers import _pca_scatter_arrays
-from eic_plot import render_eic_plot
+from lipidmix.plots.eic import render_eic_plot
 
 __all__ = [
     "write_report",

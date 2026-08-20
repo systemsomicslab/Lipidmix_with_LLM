@@ -13,15 +13,15 @@ import json
 import re
 from pathlib import Path
 
-import differential
+from lipidmix.analysis import differential
 import exclusions
 from lipidmix.core import mcp_errors
 from lipidmix.core import path_resolvers
-import preprocessing
+from lipidmix.analysis import preprocessing
 from lipidmix.msdial import sample_factors
 from lipidmix.core import session_state
 from lipidmix.core import tool_helpers
-import volcano_plot
+from lipidmix.plots import volcano as volcano_plot
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
 from lipidmix.msdial.classes import assign_sample_groups, filter_arf_by_class_ids
@@ -40,7 +40,7 @@ from lipidmix.core.tool_helpers import (
     _format_arf_class_filter,
     _format_arf_tag_filter,
 )
-from volcano_plot import VolcanoPlotPayload
+from lipidmix.plots.volcano import VolcanoPlotPayload
 
 __all__ = [
     "arf_list_tags",

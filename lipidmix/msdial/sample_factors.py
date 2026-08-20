@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import preprocessing
+from lipidmix.analysis import preprocessing
 from lipidmix.msdial.tags import normalize_sample_name
 
 

@@ -25,7 +25,7 @@ import os
 import re
 
 import arf_reader
-import preprocessing
+from lipidmix.analysis import preprocessing
 from arf2_reader import deserialize
 from eic_aef_reader import parse_eic_aef_css1
 from pai2_reader import filter_features_by_params

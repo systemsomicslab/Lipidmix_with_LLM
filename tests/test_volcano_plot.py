@@ -7,7 +7,7 @@ selection と caveats の両方に出ることも検証する（「間引かれ�
 import math
 import unittest
 
-import volcano_plot
+from lipidmix.plots import volcano as volcano_plot
 
 
 def _point(feature, log2fc, neg_log10_p, sig):

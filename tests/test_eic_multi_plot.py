@@ -6,7 +6,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-from eic_plot import build_multi_compound_plot_payload, render_eic_plot
+from lipidmix.plots.eic import build_multi_compound_plot_payload, render_eic_plot
 
 
 def _candidate(spot_id, name, ontology, rt, mz):
