@@ -1047,8 +1047,11 @@ Expected: `"serverInfo":{"name":"ms-data-parser"` を含む JSON-RPC 応答が�
 
 - [ ] **Step 5: 設定ファイルが無変更であることを確認する**
 
-Run: `git diff --stat HEAD~7 -- .mcp.json .vscode/mcp.json DEPLOY.md`
+Run: `git diff --stat f7f33b6 -- .mcp.json .vscode/mcp.json DEPLOY.md`
 Expected: 出力なし（3 ファイルとも一度も変更していない）
+
+`f7f33b6` は本作業の起点コミット（計画のコミット）。`HEAD~N` で数えると、途中の
+タスクがコミットを 2 つ作った瞬間にずれるので使わない。
 
 - [ ] **Step 6: 全体スイートを走らせる**
 
@@ -1206,6 +1209,8 @@ class TestChainReferencesResolve(unittest.TestCase):
             if doc in counts:
                 counts[doc] += 1
         for doc, n in counts.items():
+            if not (WORKFLOW_DIR / doc).is_file():
+                continue  # 不在は test_all_expected_documents_exist が報告する
             with self.subTest(doc=doc):
                 self.assertGreater(n, 0, f"{doc} に呼び出し連鎖が 1 行もない")
 
@@ -1213,7 +1218,10 @@ class TestChainReferencesResolve(unittest.TestCase):
 class TestScopeBoundary(unittest.TestCase):
     def test_every_in_scope_tool_has_a_section(self):
         for doc, tools in IN_SCOPE.items():
-            headings = set(HEADING_RE.findall((WORKFLOW_DIR / doc).read_text(encoding="utf-8")))
+            path = WORKFLOW_DIR / doc
+            if not path.is_file():
+                continue  # 不在は test_all_expected_documents_exist が報告する
+            headings = set(HEADING_RE.findall(path.read_text(encoding="utf-8")))
             for tool in tools:
                 with self.subTest(doc=doc, tool=tool):
                     self.assertIn(tool, headings, f"{doc} に `## {tool}` 節がない")
@@ -2092,6 +2100,6 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - [ ] `.venv-1/Scripts/python.exe -m unittest discover -s tests -t .` が失敗・エラーゼロ、`skipped=3`
 - [ ] 既存 535 件が 1 件も欠けていない（import 失敗による収集漏れがない）
 - [ ] `server.mcp` にツール 40 / リソース 4 / テンプレート 3 が登録される
-- [ ] `git diff --stat main -- .mcp.json .vscode/mcp.json DEPLOY.md` が空
+- [ ] `git diff --stat f7f33b6 -- .mcp.json .vscode/mcp.json DEPLOY.md` が空（`f7f33b6` は本作業の起点コミット）
 - [ ] `tests/test_package_layout.py` と `tests/test_workflow_docs.py` が単独でも通る
 - [ ] `docs/workflow/` に 8 文書があり、28 ツールすべてに節がある
