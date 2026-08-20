@@ -6,12 +6,12 @@ DATA_DIR の差し替えは正準の mcp_core.DATA_DIR に対して行う。
 """
 from pathlib import Path
 
-import mcp_core
-import path_resolvers
-import session_state
+from lipidmix.core import mcp_core
+from lipidmix.core import path_resolvers
+from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
-from mcp_core import mcp
-from path_resolvers import (
+from lipidmix.core.mcp_core import mcp
+from lipidmix.core.path_resolvers import (
     resolve_arf_file_path,
     resolve_arf2_file_path,
     _describe_batch_selection,

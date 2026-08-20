@@ -11,7 +11,7 @@ import glob
 import sys
 import pprint
 
-from data_config import get_data_dir
+from lipidmix.core.data_config import get_data_dir
 
 class IonMode(Enum):
     Positive = 0

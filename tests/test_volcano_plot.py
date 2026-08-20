@@ -128,7 +128,7 @@ class TestArfPlotVolcanoTool(unittest.TestCase):
 
     def setUp(self):
         import server
-        import session_state
+        from lipidmix.core import session_state
         self.server = server
         self.session_state = session_state
         self._saved = session_state.session

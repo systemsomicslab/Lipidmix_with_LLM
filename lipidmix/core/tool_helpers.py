@@ -11,9 +11,9 @@ import json
 import lipid_identity
 import knowledge_store
 import peak_verification as pv
-import session_state
+from lipidmix.core import session_state
 from pai2_reader import get_signal_to_noise
-import mcp_core
+from lipidmix.core import mcp_core
 
 
 _IDENTITY_TABLES = None

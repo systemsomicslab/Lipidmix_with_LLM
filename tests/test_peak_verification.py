@@ -161,8 +161,8 @@ import tempfile
 from pathlib import Path
 
 import server
-import mcp_core
-import session_state
+from lipidmix.core import mcp_core
+from lipidmix.core import session_state
 from pai2_reader import IonMode
 
 

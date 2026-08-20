@@ -5,7 +5,7 @@ from unittest import mock
 import numpy as np
 
 import server
-import session_state
+from lipidmix.core import session_state
 import tools_arf
 
 

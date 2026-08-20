@@ -6,8 +6,8 @@ import matplotlib
 matplotlib.use("Agg")  # import server が pyplot を読む前にヘッドレス指定
 
 import server
-import session_state
-import mcp_core
+from lipidmix.core import session_state
+from lipidmix.core import mcp_core
 import knowledge_store
 
 
@@ -152,7 +152,7 @@ class PcaPlotHelperTests(unittest.TestCase):
 
     def test_format_pca_plot_block_includes_points_and_summary(self):
         import json as _json
-        import tool_helpers
+        from lipidmix.core import tool_helpers
         block = tool_helpers._format_pca_plot_block(
             {"components": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]],
              "explained_variance_ratio": [0.24, 0.15]},
@@ -180,7 +180,7 @@ class PcaPlotHelperTests(unittest.TestCase):
         self.assertEqual(payload["points"][0]["pc2"], 2.0)
 
     def test_format_pca_plot_block_no_groups_includes_points_without_group(self):
-        import tool_helpers
+        from lipidmix.core import tool_helpers
         block = tool_helpers._format_pca_plot_block(
             {"components": [[1.0, 2.0], [3.0, 4.0]],
              "explained_variance_ratio": [0.5, 0.3]},

@@ -2,7 +2,7 @@ import io
 import unittest
 
 import arf_reader
-import session_state
+from lipidmix.core import session_state
 
 
 class TestExclusionSessionState(unittest.TestCase):

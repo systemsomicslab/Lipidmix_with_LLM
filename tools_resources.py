@@ -5,9 +5,9 @@ index・expand、knowledge inbox。
 `import tools_resources` するだけでよい。tools_* / server は import しない。
 """
 import knowledge_store
-import mcp_core
-import session_state
-from mcp_core import mcp, OUTPUT_FORMAT_DOC, PLAYBOOK_DIR
+from lipidmix.core import mcp_core
+from lipidmix.core import session_state
+from lipidmix.core.mcp_core import mcp, OUTPUT_FORMAT_DOC, PLAYBOOK_DIR
 
 
 @mcp.resource(

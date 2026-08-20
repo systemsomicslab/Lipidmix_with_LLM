@@ -10,7 +10,7 @@ DATA_DIR は実行時に差し替わるため `mcp_core.DATA_DIR` を動的参�
 import os
 from pathlib import Path
 
-import mcp_core
+from lipidmix.core import mcp_core
 
 # MS-DIALのアライメント結果ファイル名に埋め込まれる処理タイムスタンプ。
 # 例: AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf

@@ -10,13 +10,13 @@ import json
 from pathlib import Path
 
 import knowledge_store
-import mcp_core
-import mcp_errors
-import session_state
+from lipidmix.core import mcp_core
+from lipidmix.core import mcp_errors
+from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
-from mcp_core import mcp
-from path_resolvers import resolve_pai2_file_path
-from tool_helpers import _build_verification_dossier
+from lipidmix.core.mcp_core import mcp
+from lipidmix.core.path_resolvers import resolve_pai2_file_path
+from lipidmix.core.tool_helpers import _build_verification_dossier
 from pai2_reader import inspect_peak_details, summarize_pai2_inventory
 
 __all__ = [

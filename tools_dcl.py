@@ -10,10 +10,10 @@ import しない。
 import json
 from pathlib import Path
 
-import session_state
+from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
-from mcp_core import mcp
-from path_resolvers import resolve_dcl_file_path
+from lipidmix.core.mcp_core import mcp
+from lipidmix.core.path_resolvers import resolve_dcl_file_path
 from dcl_reader import deserialize_dcl, summarize_dcl, get_msms_by_precursor
 
 __all__ = ["dcl_parser", "dcl_find_msms"]

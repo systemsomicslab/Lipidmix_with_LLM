@@ -13,9 +13,11 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from data_config import get_data_dir
+from lipidmix.core.data_config import get_data_dir
 
-BASE_DIR = Path(__file__).parent
+# このファイルは <root>/lipidmix/core/ にある。docs/ knowledge/ playbook/ analyses/
+# reports/ はすべてリポジトリルート基準で解決するため 2 階層上る。
+BASE_DIR = Path(__file__).resolve().parents[2]
 
 # output-format はトピック別に分割してある。一枚岩（約700行）を毎回 pull させると
 # 解釈に不要な節まで文脈を食うため、共通核（core）＋パーサ/ツール別トピックに割り、

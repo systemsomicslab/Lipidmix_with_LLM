@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 import arf_reader
-import session_state
+from lipidmix.core import session_state
 
 
 class TestSemanticsCaveatGuard(unittest.TestCase):

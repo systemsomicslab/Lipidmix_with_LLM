@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 
 import server
-import session_state
-import path_resolvers
+from lipidmix.core import session_state
+from lipidmix.core import path_resolvers
 
 
 def make_class_index() -> dict:

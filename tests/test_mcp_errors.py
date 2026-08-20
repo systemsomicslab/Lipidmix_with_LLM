@@ -2,7 +2,7 @@
 import json
 import unittest
 
-import mcp_errors
+from lipidmix.core import mcp_errors
 
 
 class MissingStateEnvelopeTests(unittest.TestCase):

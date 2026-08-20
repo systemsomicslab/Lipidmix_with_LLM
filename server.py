@@ -26,7 +26,7 @@ import os
 import arf_reader
 
 # --- 設定・状態・ヘルパの再エクスポート（読み取り用） ---
-from mcp_core import (
+from lipidmix.core.mcp_core import (
     mcp,
     BASE_DIR,
     OUTPUT_FORMAT_DOC,
@@ -38,8 +38,8 @@ from mcp_core import (
     _dir_is_writable,
     _first_writable_dir,
 )
-from session_state import AnalysisSession, _build_sample_meta
-from path_resolvers import (
+from lipidmix.core.session_state import AnalysisSession, _build_sample_meta
+from lipidmix.core.path_resolvers import (
     resolve_arf_file_path,
     resolve_arf2_file_path,
     resolve_dcl_file_path,
@@ -49,7 +49,7 @@ from path_resolvers import (
     _describe_batch_selection,
     _filter_arf_spots,
 )
-from tool_helpers import (
+from lipidmix.core.tool_helpers import (
     _identity_tables,
     _build_verification_dossier,
     _pca_scatter_arrays,

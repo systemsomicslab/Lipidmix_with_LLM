@@ -7,10 +7,9 @@ BASE_DIR 系は解決先を間違えても例外を出さず、空のディレ�
 import unittest
 from pathlib import Path
 
-# Task 2 で `from lipidmix.core import data_config, mcp_core, tool_helpers` に差し替える
-import data_config
-import mcp_core
-import tool_helpers
+from lipidmix.core import data_config
+from lipidmix.core import mcp_core
+from lipidmix.core import tool_helpers
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

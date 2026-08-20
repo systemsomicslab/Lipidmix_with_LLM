@@ -349,7 +349,7 @@ def top_eic_spots_by_max_intensity(results, top_n=20):
 
 # --- 実行 ---
 if __name__ == "__main__":
-    from data_config import get_data_dir
+    from lipidmix.core.data_config import get_data_dir
     aef_files = glob.glob(os.path.join(str(get_data_dir()), "*.aef"))  # 探索先は環境変数で上書き可
     path = aef_files[0] if aef_files else None
 

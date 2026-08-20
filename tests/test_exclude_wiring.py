@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 import server
-import session_state
+from lipidmix.core import session_state
 
 
 class _FakeParserArfState:

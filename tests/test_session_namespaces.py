@@ -20,7 +20,7 @@ import numpy as np
 
 import pai2_reader
 import server
-import session_state
+from lipidmix.core import session_state
 import tools_pai2
 
 

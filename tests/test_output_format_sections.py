@@ -14,8 +14,8 @@ import os
 import unittest
 from unittest import mock
 
-import mcp_core
-import session_state
+from lipidmix.core import mcp_core
+from lipidmix.core import session_state
 import tools_resources
 
 

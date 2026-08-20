@@ -5,7 +5,7 @@
 MS-DIAL出力フォルダ（例: 生データと同じフォルダ）を解析対象にできる。
 
 使い方:
-    from data_config import get_data_dir
+    from lipidmix.core.data_config import get_data_dir
     DATA_DIR = get_data_dir()
 
 セッション内で対象を切り替える例 (PowerShell):
@@ -18,7 +18,9 @@ from pathlib import Path
 ENV_VAR = "LIPIDMIX_DATA_DIR"
 
 # リポジトリ直下の data/ を既定とする
-DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "data"
+# mcp_core は data_config を import する側なので、mcp_core.BASE_DIR は参照できない
+# （循環する）。独立に同じ値を計算し、一致は tests/test_package_layout.py で縛る。
+DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
 def get_data_dir() -> Path:

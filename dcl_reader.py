@@ -27,7 +27,7 @@ import struct
 import sys
 from pathlib import Path
 
-from data_config import get_data_dir
+from lipidmix.core.data_config import get_data_dir
 
 DCL_MAGIC = b"DC"
 

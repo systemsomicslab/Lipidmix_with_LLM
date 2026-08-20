@@ -17,7 +17,7 @@ matplotlib.use('Agg')  # 非インタラクティブバックエンドを使用
 import matplotlib.pyplot as plt
 import pprint
 
-from data_config import get_data_dir
+from lipidmix.core.data_config import get_data_dir
 from msdial_classes import get_sample_class_id
 from msdial_tags import get_sample_peak_tag_info
 

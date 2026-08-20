@@ -10,11 +10,11 @@ import math
 import matplotlib.pyplot as plt
 
 import knowledge_store
-import mcp_errors
-import session_state
+from lipidmix.core import mcp_errors
+from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
-from mcp_core import mcp, _resolve_report_dir, _report_dir_candidates, _build_report_meta
-from tool_helpers import _pca_scatter_arrays
+from lipidmix.core.mcp_core import mcp, _resolve_report_dir, _report_dir_candidates, _build_report_meta
+from lipidmix.core.tool_helpers import _pca_scatter_arrays
 from eic_plot import render_eic_plot
 
 __all__ = [

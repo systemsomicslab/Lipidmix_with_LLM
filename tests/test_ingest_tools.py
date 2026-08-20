@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import mcp_core
+from lipidmix.core import mcp_core
 import server
 
 

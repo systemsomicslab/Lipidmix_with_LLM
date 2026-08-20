@@ -10,12 +10,12 @@ msdial_tags。tools_* / server は import しない（循環回避）。
 import json
 from pathlib import Path
 
-import mcp_core
-import path_resolvers
+from lipidmix.core import mcp_core
+from lipidmix.core import path_resolvers
 import sample_factors
-import session_state
+from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
-from mcp_core import mcp
+from lipidmix.core.mcp_core import mcp
 from msdial_classes import discover_arf_class_index
 from msdial_tags import normalize_sample_name
 

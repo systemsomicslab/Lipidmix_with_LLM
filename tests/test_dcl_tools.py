@@ -11,9 +11,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import mcp_core
+from lipidmix.core import mcp_core
 import server
-import session_state
+from lipidmix.core import session_state
 import tools_pai2
 
 from tests.dcl_fixture import build_dcl_bytes
@@ -74,7 +74,7 @@ class DclParserToolTests(unittest.TestCase):
             original = mcp_core.DATA_DIR
             mcp_core.DATA_DIR = directory
             self.addCleanup(setattr, mcp_core, "DATA_DIR", original)
-            from path_resolvers import resolve_dcl_file_path
+            from lipidmix.core.path_resolvers import resolve_dcl_file_path
             self.assertEqual(Path(resolve_dcl_file_path()), newer)
 
 

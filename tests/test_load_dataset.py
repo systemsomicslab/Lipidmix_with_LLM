@@ -13,7 +13,7 @@ from pathlib import Path
 import tempfile
 
 import server
-import mcp_core
+from lipidmix.core import mcp_core
 
 
 class ResolveArfPreferenceTests(unittest.TestCase):

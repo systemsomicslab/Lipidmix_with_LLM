@@ -11,9 +11,9 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import mcp_core
+from lipidmix.core import mcp_core
 import server
-import session_state
+from lipidmix.core import session_state
 from eic_aef_reader import read_eic_spot_css1, read_eic_spots_css1
 
 

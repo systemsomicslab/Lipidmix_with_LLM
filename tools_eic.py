@@ -7,10 +7,10 @@ eic_identity_map / eic_plot。tools_* / server は import しない。
 import json
 from pathlib import Path
 
-import session_state
+from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
-from mcp_core import mcp
-from path_resolvers import resolve_arf2_file_path, resolve_eicaef_file_path
+from lipidmix.core.mcp_core import mcp
+from lipidmix.core.path_resolvers import resolve_arf2_file_path, resolve_eicaef_file_path
 from eic_aef_reader import (
     read_eic_spot_css1,
     read_eic_spots_css1,

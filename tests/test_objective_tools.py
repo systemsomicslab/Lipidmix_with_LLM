@@ -7,7 +7,7 @@ from unittest import mock
 
 import knowledge_store as ks
 import server
-import mcp_core
+from lipidmix.core import mcp_core
 import paper_ingest
 
 

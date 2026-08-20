@@ -8,9 +8,9 @@ from pathlib import Path
 
 import knowledge_store
 import paper_ingest
-import mcp_core
+from lipidmix.core import mcp_core
 from mcp.types import ToolAnnotations
-from mcp_core import mcp
+from lipidmix.core.mcp_core import mcp
 
 __all__ = [
     "record_objective",

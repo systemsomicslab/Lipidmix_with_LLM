@@ -278,8 +278,8 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        import mcp_core
-        import session_state
+        from lipidmix.core import mcp_core
+        from lipidmix.core import session_state
 
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
@@ -326,8 +326,8 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
     def tearDown(self):
         import os
 
-        import mcp_core
-        import session_state
+        from lipidmix.core import mcp_core
+        from lipidmix.core import session_state
         import tools_eic
 
         tools_eic.load_arf2_records = self._saved_loader
@@ -341,7 +341,7 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
 
     def test_returns_multi_payload_and_writes_no_png(self):
         import server
-        import session_state
+        from lipidmix.core import session_state
 
         payload = server.eic_plot_compounds(
             7, names=["ceramide"], ontologies=["PC"],

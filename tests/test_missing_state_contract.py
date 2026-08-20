@@ -7,7 +7,7 @@ import json
 import unittest
 
 import server
-import session_state
+from lipidmix.core import session_state
 
 
 def envelope(raw):
