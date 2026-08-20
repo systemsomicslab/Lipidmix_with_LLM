@@ -331,7 +331,7 @@ def _format_arf_tag_filter(stats: dict | None) -> str:
 
 
 def _pp_build_matrix(features, props):
-    from arf_reader import build_pca_matrix
+    from lipidmix.arf.reader import build_pca_matrix
     return build_pca_matrix(features, use_properties=props)
 
 

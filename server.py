@@ -23,7 +23,7 @@ mcp_core.ANALYSES_DIR / session_state.session）に対して行うこと。
 import os
 
 # patch.object(server.arf_reader, ...) が共有 module 経由で効くよう、module を公開する。
-import arf_reader
+from lipidmix.arf import reader as arf_reader
 
 # --- 設定・状態・ヘルパの再エクスポート（読み取り用） ---
 from lipidmix.core.mcp_core import (
@@ -67,7 +67,7 @@ from tools_objective import *
 from tools_reports import *
 from lipidmix.pai2.tools import *
 from lipidmix.dcl.tools import *
-from tools_arf import *
+from lipidmix.arf.tools import *
 from tools_samples import *  # sample_search
 from lipidmix.arf2.tools import *
 from lipidmix.eic.tools import *

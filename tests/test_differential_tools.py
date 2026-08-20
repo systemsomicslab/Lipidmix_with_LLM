@@ -6,7 +6,7 @@ import numpy as np
 
 import server
 from lipidmix.core import session_state
-import tools_arf
+from lipidmix.arf import tools as tools_arf
 
 
 class TestArfDifferential(unittest.TestCase):

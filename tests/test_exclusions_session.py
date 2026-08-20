@@ -1,7 +1,7 @@
 import io
 import unittest
 
-import arf_reader
+from lipidmix.arf import reader as arf_reader
 from lipidmix.core import session_state
 
 

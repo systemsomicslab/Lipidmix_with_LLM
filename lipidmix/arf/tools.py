@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 from lipidmix.analysis import differential
-import exclusions
+from lipidmix.arf import exclusions
 from lipidmix.core import mcp_errors
 from lipidmix.core import path_resolvers
 from lipidmix.analysis import preprocessing
@@ -380,7 +380,7 @@ def arf_pca_preprocessed(
         return mcp_errors.missing_state(
             "preprocessed_matrix", ["arf_preprocess"],
             "前処理後の行列がありません。先に arf_preprocess を実行してください。")
-    from arf_reader import run_pca, get_pca_loading_features
+    from lipidmix.arf.reader import run_pca, get_pca_loading_features
     matrix = session_state.session.arf.feature_matrix
     sample_names = session_state.session.arf.pp_sample_names
     feature_names = session_state.session.arf.pp_feature_names
@@ -484,7 +484,7 @@ def arf_parser(
         return "データディレクトリに .arf ファイルが見つかりませんでした。"
 
     # 外部モジュールからのインポート
-    from arf_reader import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
+    from lipidmix.arf.reader import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
 
     try:
         deserialized_and_formatted_data = session_state.session.arf.load_data(file_path, tag_directory=tag_directory)

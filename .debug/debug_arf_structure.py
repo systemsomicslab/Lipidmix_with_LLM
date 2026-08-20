@@ -2,7 +2,7 @@ import os
 import io
 import msgpack
 import lz4.block
-from arf_reader import deserialize_lz4_packed_msgpack
+from lipidmix.arf.reader import deserialize_lz4_packed_msgpack
 
 os.chdir('C:/Users/yuu18/Lipidmix_with_LLM')
 path = 'data/AlignmentResult_2026_04_07_14_07_25.arf2'

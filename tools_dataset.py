@@ -16,7 +16,7 @@ from lipidmix.core.path_resolvers import (
     resolve_arf2_file_path,
     _describe_batch_selection,
 )
-from tools_arf import arf_parser
+from lipidmix.arf.tools import arf_parser
 from lipidmix.arf2.tools import arf2_parser
 
 __all__ = ["list_data_files", "load_dataset"]

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 def _entry_file_name(entry) -> str | None:
     """AlignedPeakProperties の1エントリ（生 list）から file_name を導出する。"""
-    from arf_reader import _convert_to_alignment_feature
+    from lipidmix.arf.reader import _convert_to_alignment_feature
     try:
         feature = _convert_to_alignment_feature(entry)
     except Exception:
