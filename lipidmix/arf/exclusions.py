@@ -1,6 +1,6 @@
 """ARF スポットリストに対するサンプル/スポット手動除外（純ロジック層・MCP 非依存）。
 
-preprocessing.py / differential.py と同格の leaf モジュール。行列を組む直前に
+lipidmix.analysis.preprocessing / lipidmix.analysis.differential と同格の leaf モジュール。行列を組む直前に
 filtered_features から除外集合を適用した派生リストを作るために使う。
 サンプルキーは各 AlignedPeakProperties エントリの file_name、スポットキーは
 MasterAlignmentID。build_pca_matrix と同じ file_name 導出を用いる。

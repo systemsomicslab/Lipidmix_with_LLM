@@ -4,8 +4,8 @@ ARF に限らず pai2 / dcl / EIC が使える形で条件検索するための�
 （＝どのファイルを開くか決める前）でも呼べるよう、ロード済み ARF が無ければ
 ディレクトリの .mddata、それも無ければ実ファイル名からサンプル集合を組み立てる。
 
-deps: mcp_core / session_state / path_resolvers / sample_factors / msdial_classes /
-msdial_tags。tools_* / server は import しない（循環回避）。
+deps: mcp_core / session_state / path_resolvers / sample_factors / lipidmix.msdial.classes /
+lipidmix.msdial.tags。tools_* / server は import しない（循環回避）。
 """
 import json
 from pathlib import Path

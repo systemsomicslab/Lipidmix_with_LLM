@@ -1,11 +1,15 @@
 """MCP コア: FastMCP インスタンス・共通設定・状態ディレクトリ・レポート先解決。
 
-このモジュールは依存グラフの **leaf**（stdlib / FastMCP / data_config のみ）。
-tools_* を import してはならない（循環回避の絶対ルール）。
+このモジュールは依存グラフの **leaf**（stdlib / FastMCP / lipidmix.core.data_config のみ）。
+lipidmix.<形式>.tools や lipidmix.tools.* を import してはならない（循環回避の絶対ルール）。
+
+`BASE_DIR` はリポジトリルート（このファイルの 2 階層上）。docs/ knowledge/ playbook/
+analyses/ reports/ はすべてこれを起点に解決する。
 
 `DATA_DIR` は load_dataset により実行時に差し替えられる可変状態。参照は必ず
-`mcp_core.DATA_DIR`（module 修飾・動的）で行い、`from mcp_core import DATA_DIR`
-のようなスナップショット束縛を作らないこと（差し替えが伝播しなくなる）。
+`mcp_core.DATA_DIR`（module 修飾・動的）で行い、
+`from lipidmix.core.mcp_core import DATA_DIR` のようなスナップショット束縛を
+作らないこと（差し替えが伝播しなくなる）。
 """
 import os
 from datetime import date as _date

@@ -2,8 +2,8 @@
 
 依存は mcp_core（DATA_DIR）と stdlib のみの下位レイヤ。tools_* / server は import
 しない。`list_data_files` はここに純関数として置き、MCP ツールとしての登録は上位
-（tools_dataset）が担う — こうすることで resolve_* → list_data_files → DATA_DIR という
-参照が下位で閉じ、tools_dataset との循環を避けられる。
+（lipidmix.tools.dataset）が担う — こうすることで resolve_* → list_data_files → DATA_DIR という
+参照が下位で閉じ、lipidmix.tools.dataset との循環を避けられる。
 
 DATA_DIR は実行時に差し替わるため `mcp_core.DATA_DIR` を動的参照する。
 """

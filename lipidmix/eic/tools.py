@@ -1,8 +1,8 @@
 """EIC/AEF ツール群: eic_parser, eic_plot_chromatograms, eic_plot_compounds,
 eic_rank_by_max_intensity, m/z 範囲検索, RT 範囲検索。
 
-deps: mcp_core / session_state / path_resolvers / eic_aef_reader /
-eic_identity_map / eic_plot。tools_* / server は import しない。
+deps: mcp_core / session_state / path_resolvers / lipidmix.eic.reader /
+lipidmix.eic.identity_map / lipidmix.plots.eic。tools_* / server は import しない。
 """
 import json
 from pathlib import Path

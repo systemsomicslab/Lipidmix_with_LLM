@@ -3,11 +3,11 @@
 MS-DIAL の Class ID は「ユーザーが MS-DIAL 上で入力した1文字列」でしかなく、実験
 デザインの全因子を含むとは限らない（時点・複製・測定日はサンプル名にしか無いことが
 ある）。そのため本モジュールは Class ID とサンプル名のトークンを統合した空間で
-spec を解決し、msdial_classes.py の Class ID 専用ロジックを一般化する。
+spec を解決し、lipidmix.msdial.classes の Class ID 専用ロジックを一般化する。
 
-依存は msdial_tags（normalize_sample_name）と preprocessing（detect_sample_roles）
-のみの leaf。msdial_classes / tools_* / session_state / server は import しない
-（msdial_classes → sample_factors の向きに依存させるため。逆向きは循環になる）。
+依存は lipidmix.msdial.tags（normalize_sample_name）と preprocessing（detect_sample_roles）
+のみの leaf。lipidmix.msdial.classes / tools_* / session_state / server は import しない
+（lipidmix.msdial.classes → sample_factors の向きに依存させるため。逆向きは循環になる）。
 """
 from __future__ import annotations
 
