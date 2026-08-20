@@ -29,12 +29,12 @@ import preprocessing
 from arf2_reader import deserialize
 from eic_aef_reader import parse_eic_aef_css1
 from pai2_reader import filter_features_by_params
-from msdial_classes import (
+from lipidmix.msdial.classes import (
     assign_sample_groups,
     attach_class_ids_to_spots,
     discover_arf_class_index,
 )
-from msdial_tags import (
+from lipidmix.msdial.tags import (
     attach_tags_to_spots,
     discover_arf_tag_index,
     normalize_sample_name,

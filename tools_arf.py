@@ -18,14 +18,14 @@ import exclusions
 from lipidmix.core import mcp_errors
 from lipidmix.core import path_resolvers
 import preprocessing
-import sample_factors
+from lipidmix.msdial import sample_factors
 from lipidmix.core import session_state
 from lipidmix.core import tool_helpers
 import volcano_plot
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
-from msdial_classes import assign_sample_groups, filter_arf_by_class_ids
-from msdial_tags import filter_arf_by_tags
+from lipidmix.msdial.classes import assign_sample_groups, filter_arf_by_class_ids
+from lipidmix.msdial.tags import filter_arf_by_tags
 from lipidmix.core.path_resolvers import resolve_arf_file_path
 from lipidmix.core.session_state import _build_sample_meta
 from lipidmix.core.tool_helpers import (

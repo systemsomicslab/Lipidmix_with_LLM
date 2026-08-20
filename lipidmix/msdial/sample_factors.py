@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import preprocessing
-from msdial_tags import normalize_sample_name
+from lipidmix.msdial.tags import normalize_sample_name
 
 
 @dataclass(frozen=True)

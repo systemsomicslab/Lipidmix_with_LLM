@@ -6,7 +6,7 @@ lipid_identity。tools_* / server は import しない。
 import io
 import json
 
-import lipid_identity
+from lipidmix.msdial import lipid_identity
 from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp

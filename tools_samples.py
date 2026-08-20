@@ -12,12 +12,12 @@ from pathlib import Path
 
 from lipidmix.core import mcp_core
 from lipidmix.core import path_resolvers
-import sample_factors
+from lipidmix.msdial import sample_factors
 from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
-from msdial_classes import discover_arf_class_index
-from msdial_tags import normalize_sample_name
+from lipidmix.msdial.classes import discover_arf_class_index
+from lipidmix.msdial.tags import normalize_sample_name
 
 __all__ = ["sample_search"]
 

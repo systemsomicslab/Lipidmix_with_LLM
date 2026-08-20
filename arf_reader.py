@@ -18,8 +18,8 @@ import matplotlib.pyplot as plt
 import pprint
 
 from lipidmix.core.data_config import get_data_dir
-from msdial_classes import get_sample_class_id
-from msdial_tags import get_sample_peak_tag_info
+from lipidmix.msdial.classes import get_sample_class_id
+from lipidmix.msdial.tags import get_sample_peak_tag_info
 
 
 class IonMode(Enum):

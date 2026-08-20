@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import peak_verification as pv
+from lipidmix.msdial import peak_verification as pv
 
 
 # MS-DIAL は Name に信頼度の限定子接頭辞を付ける（実データ NEG で 317/856=37%）。

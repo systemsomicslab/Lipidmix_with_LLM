@@ -2,7 +2,7 @@
 
 import unittest
 
-import peak_verification as pv
+from lipidmix.msdial import peak_verification as pv
 
 
 class FormulaMassTests(unittest.TestCase):

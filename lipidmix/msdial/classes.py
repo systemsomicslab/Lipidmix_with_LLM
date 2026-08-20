@@ -11,8 +11,8 @@ import zipfile
 import lz4.block
 import msgpack
 
-from msdial_tags import normalize_sample_name
-from sample_factors import (
+from lipidmix.msdial.tags import normalize_sample_name
+from lipidmix.msdial.sample_factors import (
     arf_sample_names,
     assign_factor_groups,
     build_sample_facets,

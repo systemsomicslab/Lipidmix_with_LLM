@@ -1,8 +1,8 @@
 import unittest
 
-from msdial_classes import assign_sample_groups, filter_arf_by_class_ids
-from msdial_tags import normalize_sample_name
-from sample_factors import (
+from lipidmix.msdial.classes import assign_sample_groups, filter_arf_by_class_ids
+from lipidmix.msdial.tags import normalize_sample_name
+from lipidmix.msdial.sample_factors import (
     SampleFacet,
     arf_sample_names,
     assign_factor_groups,

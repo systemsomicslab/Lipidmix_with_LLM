@@ -8,9 +8,9 @@ session への参照は session_state.session（動的）で行う。
 from pathlib import Path
 import json
 
-import lipid_identity
+from lipidmix.msdial import lipid_identity
 import knowledge_store
-import peak_verification as pv
+from lipidmix.msdial import peak_verification as pv
 from lipidmix.core import session_state
 from pai2_reader import get_signal_to_noise
 from lipidmix.core import mcp_core
