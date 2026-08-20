@@ -5,10 +5,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import knowledge_store as ks
+from lipidmix.corpus import knowledge_store as ks
 import server
-import mcp_core
-import paper_ingest
+from lipidmix.core import mcp_core
+from lipidmix.corpus import paper_ingest
 
 
 class ObjectiveStoreTests(unittest.TestCase):

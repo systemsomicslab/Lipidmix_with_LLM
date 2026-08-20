@@ -7,8 +7,8 @@ import os
 import unittest
 from unittest import mock
 
-import arf_reader
-import session_state
+from lipidmix.arf import reader as arf_reader
+from lipidmix.core import session_state
 
 
 class TestSemanticsCaveatGuard(unittest.TestCase):
@@ -50,11 +50,11 @@ class TestSemanticsCaveatGuard(unittest.TestCase):
             out = s.maybe_prepend_caveat("BODY")
         self.assertTrue(out.startswith(session_state.SEMANTICS_CAVEAT))
 
-    def test_flags_survive_reset_analysis_state(self):
+    def test_flags_survive_arf_reset_analysis(self):
         s = session_state.session
         s.maybe_prepend_caveat("BODY")  # caveat_emitted -> True
         s.output_format_seen = True
-        s.reset_analysis_state()
+        s.arf.reset_analysis()
         # データ切替のたびに再注入しないため、両フラグは保持される
         self.assertTrue(s.caveat_emitted)
         self.assertTrue(s.output_format_seen)
@@ -81,7 +81,7 @@ class TestResourceReadClearsGuard(unittest.TestCase):
         session_state.session = session_state.AnalysisSession()
 
     def test_reading_resource_sets_seen(self):
-        import tools_resources
+        from lipidmix.tools import resources as tools_resources
         self.assertFalse(session_state.session.output_format_seen)
         text = tools_resources.output_format_reference()
         self.assertIn("オントロジー", text)

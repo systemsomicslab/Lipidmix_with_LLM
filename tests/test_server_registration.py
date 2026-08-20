@@ -73,8 +73,11 @@ EXPECTED_TEMPLATES = sorted([
 
 
 def test_tool_count_is_stable():
+    # ツール数の正準は EXPECTED_TOOLS。ここに数値リテラルを置くと、
+    # ツール追加時に EXPECTED_TOOLS だけ更新されて数値が取り残される
+    # （f981cf3 で実際に起きた）。
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 39
+    assert len(tools) == len(EXPECTED_TOOLS)
 
 
 def test_tool_names_snapshot():

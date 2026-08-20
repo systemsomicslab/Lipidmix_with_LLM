@@ -11,10 +11,10 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import mcp_core
+from lipidmix.core import mcp_core
 import server
-import session_state
-from eic_aef_reader import read_eic_spot_css1, read_eic_spots_css1
+from lipidmix.core import session_state
+from lipidmix.eic.reader import read_eic_spot_css1, read_eic_spots_css1
 
 
 def _write_css1(path: Path, spots: list[dict]) -> None:
@@ -184,14 +184,14 @@ class EicPlotToolTests(unittest.TestCase):
         }])
         self._saved_data_dir = mcp_core.DATA_DIR
         self._saved_reports = os.environ.get("LIPIDMIX_REPORTS_DIR")
-        self._saved_plot = session_state.session.last_eic_plot
+        self._saved_plot = session_state.session.eic.last_plot
         mcp_core.DATA_DIR = self.tmp
         os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "fallback")
-        session_state.session.last_eic_plot = None
+        session_state.session.eic.last_plot = None
 
     def tearDown(self):
         mcp_core.DATA_DIR = self._saved_data_dir
-        session_state.session.last_eic_plot = self._saved_plot
+        session_state.session.eic.last_plot = self._saved_plot
         if self._saved_reports is None:
             os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
         else:
@@ -208,7 +208,7 @@ class EicPlotToolTests(unittest.TestCase):
         for actual, expected in zip(payload["series"][0]["x"], [3.1, 3.25, 3.4]):
             self.assertAlmostEqual(actual, expected, places=5)
         self.assertEqual(payload["series"][0]["y"], [0.5, 1.0, 0.2])
-        self.assertIs(session_state.session.last_eic_plot, payload)
+        self.assertIs(session_state.session.eic.last_plot, payload)
         self.assertEqual(list(self.tmp.rglob("*.png")), [])
 
     def test_fastmcp_exposes_output_schema(self):

@@ -1,13 +1,16 @@
 """ms-data-parser MCP サーバのファサード。
 
-実体は機能別モジュールへ分割されている（依存の浅い順）:
-    mcp_core        … FastMCP インスタンス・設定・状態ディレクトリ・レポート先解決
-    session_state   … AnalysisSession と session シングルトン
-    path_resolvers  … データファイルのパス解決・バッチ選択
-    tool_helpers    … 整形/identity/検証ドシエ/前処理行列ヘルパ
-    tools_resources … @mcp.resource ×6
-    tools_objective / tools_reports / tools_pai2 / tools_arf / tools_arf2 /
-    tools_eic / tools_dataset … @mcp.tool 群
+実体は lipidmix/ 配下へ機能別に分割されている（依存の浅い順）:
+    lipidmix.core     … FastMCP インスタンス・設定・セッション状態・パス解決・共通ヘルパ
+    lipidmix.msdial   … MS-DIAL 固有のサイドカー解析（tags.xml / .mddata）・同定・検証
+    lipidmix.analysis … 入力形式に依存しない数値処理（前処理・差次的解析）
+    lipidmix.plots    … レンダラ中立の payload 組み立て（volcano / eic）
+    lipidmix.arf / arf2 / pai2 / dcl / eic
+                      … 形式ごとのバイナリパーサ（reader）と MCP ツール（tools）
+    lipidmix.corpus   … 蓄積ノートの純ロジック（knowledge_store / paper_ingest）
+    lipidmix.tools    … 形式に紐づかない MCP 公開層（入口・サンプル検索・目的・レポート・リソース）
+
+呼び出し連鎖の詳細は docs/workflow/ を参照。
 
 このファイルは薄い層に徹する:
   (1) 各モジュールを import して mcp にツール/リソースを登録する
@@ -15,18 +18,22 @@
       server.arf_reader / server.AnalysisSession / server.KNOWLEDGE_DIR 等）を再エクスポートする
   (3) __main__ で mcp.run() する
 
-可変状態（DATA_DIR / KNOWLEDGE_DIR / ANALYSES_DIR / session）の**正準**は mcp_core /
-session_state 側にある。ここでの再エクスポートは読み取り用の束縛にすぎないため、
-差し替えは必ず正準モジュール（mcp_core.DATA_DIR / mcp_core.KNOWLEDGE_DIR /
-mcp_core.ANALYSES_DIR / session_state.session）に対して行うこと。
+`.mcp.json` / `.vscode/mcp.json` がこのファイルを絶対パスで指しているため、
+ルートから動かしてはならない。
+
+可変状態（DATA_DIR / KNOWLEDGE_DIR / ANALYSES_DIR / session）の**正準**は
+lipidmix.core.mcp_core / lipidmix.core.session_state 側にある。ここでの再エクスポートは
+読み取り用の束縛にすぎないため、差し替えは必ず正準モジュール
+（mcp_core.DATA_DIR / mcp_core.KNOWLEDGE_DIR / mcp_core.ANALYSES_DIR /
+session_state.session）に対して行うこと。
 """
 import os
 
 # patch.object(server.arf_reader, ...) が共有 module 経由で効くよう、module を公開する。
-import arf_reader
+from lipidmix.arf import reader as arf_reader
 
 # --- 設定・状態・ヘルパの再エクスポート（読み取り用） ---
-from mcp_core import (
+from lipidmix.core.mcp_core import (
     mcp,
     BASE_DIR,
     OUTPUT_FORMAT_DOC,
@@ -38,8 +45,8 @@ from mcp_core import (
     _dir_is_writable,
     _first_writable_dir,
 )
-from session_state import AnalysisSession, _build_sample_meta
-from path_resolvers import (
+from lipidmix.core.session_state import AnalysisSession, _build_sample_meta
+from lipidmix.core.path_resolvers import (
     resolve_arf_file_path,
     resolve_arf2_file_path,
     resolve_dcl_file_path,
@@ -49,7 +56,7 @@ from path_resolvers import (
     _describe_batch_selection,
     _filter_arf_spots,
 )
-from tool_helpers import (
+from lipidmix.core.tool_helpers import (
     _identity_tables,
     _build_verification_dossier,
     _pca_scatter_arrays,
@@ -60,18 +67,18 @@ from tool_helpers import (
 
 # --- ツール/リソースの登録＋公開面の再エクスポート ---
 # import 副作用で @mcp.tool / @mcp.resource が mcp に登録される。star import は各
-# モジュールの __all__（＝そのモジュールのツール名）だけを取り込む。tools_dataset は
-# arf/arf2 に依存するため最後に読み込む。
-import tools_resources  # 6 リソース
-from tools_objective import *
-from tools_reports import *
-from tools_pai2 import *
-from tools_dcl import *
-from tools_arf import *
-from tools_samples import *  # sample_search
-from tools_arf2 import *
-from tools_eic import *
-from tools_dataset import *  # list_data_files, load_dataset
+# モジュールの __all__（＝そのモジュールのツール名）だけを取り込む。
+# lipidmix.tools.dataset は arf/arf2 に依存するため最後に読み込む。
+from lipidmix.tools import resources as tools_resources  # リソース 4 + テンプレート 3
+from lipidmix.tools.objective import *
+from lipidmix.tools.reports import *
+from lipidmix.pai2.tools import *
+from lipidmix.dcl.tools import *
+from lipidmix.arf.tools import *
+from lipidmix.tools.samples import *  # sample_search
+from lipidmix.arf2.tools import *
+from lipidmix.eic.tools import *
+from lipidmix.tools.dataset import *  # list_data_files, load_dataset
 
 
 if __name__ == "__main__":

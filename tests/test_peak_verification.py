@@ -2,7 +2,7 @@
 
 import unittest
 
-import peak_verification as pv
+from lipidmix.msdial import peak_verification as pv
 
 
 class FormulaMassTests(unittest.TestCase):
@@ -161,9 +161,9 @@ import tempfile
 from pathlib import Path
 
 import server
-import mcp_core
-import session_state
-from pai2_reader import IonMode
+from lipidmix.core import mcp_core
+from lipidmix.core import session_state
+from lipidmix.pai2.reader import IonMode
 
 
 def _feat(**over):
@@ -184,34 +184,34 @@ def _feat(**over):
 
 class VerifyPeakToolTests(unittest.TestCase):
     def setUp(self):
-        self._orig_features = session_state.session.filtered_features
+        self._orig_features = session_state.session.pai2.filtered_features
         self._orig_knowledge = mcp_core.KNOWLEDGE_DIR
         self._tmp = tempfile.TemporaryDirectory()
         mcp_core.KNOWLEDGE_DIR = Path(self._tmp.name) / "knowledge"
         mcp_core.KNOWLEDGE_DIR.mkdir()
 
     def tearDown(self):
-        session_state.session.filtered_features = self._orig_features
+        session_state.session.pai2.filtered_features = self._orig_features
         mcp_core.KNOWLEDGE_DIR = self._orig_knowledge
         self._tmp.cleanup()
 
     def test_error_when_not_loaded(self):
-        session_state.session.filtered_features = None
+        session_state.session.pai2.filtered_features = None
         out = json.loads(server.verify_peak_annotation(peak_id="1"))
-        self.assertEqual(out["status"], "error")
+        self.assertEqual(out["error"]["code"], "missing_state")
 
     def test_error_when_no_selector(self):
-        session_state.session.filtered_features = [_feat()]
+        session_state.session.pai2.filtered_features = [_feat()]
         out = json.loads(server.verify_peak_annotation())
         self.assertEqual(out["status"], "error")
 
     def test_not_found(self):
-        session_state.session.filtered_features = [_feat()]
+        session_state.session.pai2.filtered_features = [_feat()]
         out = json.loads(server.verify_peak_annotation(peak_id="999"))
         self.assertEqual(out["status"], "not_found")
 
     def test_success_shape_and_bands(self):
-        session_state.session.filtered_features = [_feat()]
+        session_state.session.pai2.filtered_features = [_feat()]
         out = json.loads(server.verify_peak_annotation(peak_id="1"))
         self.assertEqual(out["status"], "success")
         self.assertEqual(out["identity"]["name"], "PC 34:1")
@@ -221,12 +221,12 @@ class VerifyPeakToolTests(unittest.TestCase):
         self.assertIn("class_token", out["biological_plausibility"])
 
     def test_unknown_formula_degrades_to_unknown_band(self):
-        session_state.session.filtered_features = [_feat(formula="Unknown")]
+        session_state.session.pai2.filtered_features = [_feat(formula="Unknown")]
         out = json.loads(server.verify_peak_annotation(peak_id="1"))
         self.assertEqual(out["analytical_checks"]["mass_error"]["band"], "UNKNOWN")
 
     def test_ether_caveat_surfaced(self):
-        session_state.session.filtered_features = [_feat(name="PE O-38:5", ontology="PE", id=2)]
+        session_state.session.pai2.filtered_features = [_feat(name="PE O-38:5", ontology="PE", id=2)]
         out = json.loads(server.verify_peak_annotation(peak_id="2"))
         self.assertTrue(out["biological_plausibility"]["caveats"])
 
@@ -239,7 +239,7 @@ class VerifyPeakToolTests(unittest.TestCase):
             "tags: [annotation, plasmalogen]\n---\n\n本文\n",
             encoding="utf-8",
         )
-        session_state.session.filtered_features = [_feat(name="PE 38:5", ontology="PE", id=3)]
+        session_state.session.pai2.filtered_features = [_feat(name="PE 38:5", ontology="PE", id=3)]
         out = json.loads(server.verify_peak_annotation(peak_id="3"))
         self.assertIn(
             "pe-p-vs-pe-o-annotation",
@@ -247,7 +247,7 @@ class VerifyPeakToolTests(unittest.TestCase):
         )
 
     def test_multiple_matches_wrapped(self):
-        session_state.session.filtered_features = [_feat(id=1), _feat(id=2)]
+        session_state.session.pai2.filtered_features = [_feat(id=1), _feat(id=2)]
         out = json.loads(server.verify_peak_annotation(peak_name="PC"))
         self.assertEqual(out["status"], "success")
         self.assertIn("matches", out)

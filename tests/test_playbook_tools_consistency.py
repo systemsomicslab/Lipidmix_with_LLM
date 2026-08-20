@@ -9,7 +9,7 @@ import asyncio
 import unittest
 
 import server
-import knowledge_store as ks
+from lipidmix.corpus import knowledge_store as ks
 
 
 class PlaybookToolConsistencyTests(unittest.TestCase):

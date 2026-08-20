@@ -6,7 +6,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-from eic_plot import build_multi_compound_plot_payload, render_eic_plot
+from lipidmix.plots.eic import build_multi_compound_plot_payload, render_eic_plot
 
 
 def _candidate(spot_id, name, ontology, rt, mz):
@@ -278,8 +278,8 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        import mcp_core
-        import session_state
+        from lipidmix.core import mcp_core
+        from lipidmix.core import session_state
 
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
@@ -313,12 +313,12 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
 
         self._saved_data_dir = mcp_core.DATA_DIR
         self._saved_reports = os.environ.get("LIPIDMIX_REPORTS_DIR")
-        self._saved_plot = session_state.session.last_eic_plot
+        self._saved_plot = session_state.session.eic.last_plot
         mcp_core.DATA_DIR = self.tmp
         os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "fallback")
-        session_state.session.last_eic_plot = None
+        session_state.session.eic.last_plot = None
 
-        import tools_eic
+        from lipidmix.eic import tools as tools_eic
 
         self._saved_loader = tools_eic.load_arf2_records
         tools_eic.load_arf2_records = lambda _path: self.records
@@ -326,13 +326,13 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
     def tearDown(self):
         import os
 
-        import mcp_core
-        import session_state
-        import tools_eic
+        from lipidmix.core import mcp_core
+        from lipidmix.core import session_state
+        from lipidmix.eic import tools as tools_eic
 
         tools_eic.load_arf2_records = self._saved_loader
         mcp_core.DATA_DIR = self._saved_data_dir
-        session_state.session.last_eic_plot = self._saved_plot
+        session_state.session.eic.last_plot = self._saved_plot
         if self._saved_reports is None:
             os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
         else:
@@ -341,7 +341,7 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
 
     def test_returns_multi_payload_and_writes_no_png(self):
         import server
-        import session_state
+        from lipidmix.core import session_state
 
         payload = server.eic_plot_compounds(
             7, names=["ceramide"], ontologies=["PC"],
@@ -353,7 +353,7 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
             ["PC(12:0/13:0)", "Ceramide (d18:1/25:0)"],
         )
         self.assertEqual(payload["sample"]["file_id"], 7)
-        self.assertIs(session_state.session.last_eic_plot, payload)
+        self.assertIs(session_state.session.eic.last_plot, payload)
         self.assertEqual(list(self.tmp.rglob("*.png")), [])
 
     def test_no_query_raises(self):

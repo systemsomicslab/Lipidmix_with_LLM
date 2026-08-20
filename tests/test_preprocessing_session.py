@@ -24,8 +24,14 @@ class TestSampleMeta(unittest.TestCase):
 
     def test_session_has_new_attrs(self):
         s = server.AnalysisSession()
-        self.assertIsNone(s.feature_matrix)
-        self.assertEqual(s.preprocessing_recipe, {})
+        self.assertIsNone(s.arf.feature_matrix)
+        self.assertEqual(s.arf.preprocessing_recipe, {})
+
+    def test_parser_slots_are_independent_objects(self):
+        """パーサ別スロットが同一オブジェクトを共有していないこと。"""
+        s = server.AnalysisSession()
+        slots = [s.arf, s.arf2, s.pai2, s.eic]
+        self.assertEqual(len({id(slot) for slot in slots}), len(slots))
 
 
 if __name__ == "__main__":

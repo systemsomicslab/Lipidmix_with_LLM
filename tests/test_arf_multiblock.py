@@ -4,7 +4,7 @@ import unittest
 import lz4.block
 import msgpack
 
-import arf_reader
+from lipidmix.arf import reader as arf_reader
 
 
 def make_peak_row(file_id: int, sample_name: str, height: float, mz: float, rt: float) -> list:

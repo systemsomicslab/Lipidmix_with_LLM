@@ -4,26 +4,33 @@ Python prototypes for parsing, analyzing, and exposing MS-DIAL lipidomics data t
 
 ## What is included
 
-- `server.py` - FastMCP server named `ms-data-parser`. It exposes tools for listing files, loading a dataset (`load_dataset`), parsing MS-DIAL data, running PCA summaries, and querying EIC data by m/z or RT. It also serves the knowledge/playbook indexes as MCP resources.
-- `knowledge_store.py` - Pure-logic layer for the accumulation notes: parses note frontmatter, builds the dynamic `knowledge`/`playbook` indexes, and expands a note with its `[[link]]` neighbors under a structural budget.
-- `arf_reader.py` - `.arf` parser and command-line analysis script. It can export peak properties, run PCA, create PCA plots, group replicates, plot peak-height distributions, and inspect top loading features.
-- `msdial_tags.py` - Parser and filter engine for MS-DIAL `*_tags.xml` sidecars. It joins per-sample tags by `FileName` + `MasterPeakID` and alignment tags by `MasterAlignmentID`.
-- `msdial_classes.py` - Reads user-defined Class ID values (`AnalysisFileClass`) from `.mddata`, resolves `.mddata` from `.mdproject` or the ARF directory, and filters ARF sample rows before PCA.
-- `arf2_reader.py` - `.arf2` parser and text summary generator.
-- `eic_aef_reader.py` - `.EIC.aef` parser with EIC summaries and m/z or RT search helpers.
-- `eic_plot.py` - Builds the renderer-neutral `lipidmix.eic.v1` line-plot payload and renders it with matplotlib only for an explicitly requested PNG save.
-- `volcano_plot.py` - Builds the renderer-neutral `lipidmix.volcano.v1` scatter payload from the latest two-group differential result, keeping every `up`/`down` point and thinning only `ns` points.
-- `pai2_reader.py` - `.pai2` parser with feature filtering, PCA summaries, top-contributor extraction, and metabolite detail lookup.
-- `dcl_reader.py` - `.dcl` (MSDecResult) parser. Reads MS-DIAL's custom binary deconvoluted MS/MS spectra (not msgpack/lz4), and can attach those spectra to `.pai2` peaks by index (`attach_msms_to_features`).
-- `data_config.py` - Single source of truth for the data search directory. Returns `<project>/data` by default, or the path in the `LIPIDMIX_DATA_DIR` environment variable when set. Used by `server.py` and all `*_reader` parsers.
+- `server.py` - FastMCP server named `ms-data-parser`. It exposes tools for listing files, loading a dataset (`load_dataset`), parsing MS-DIAL data, running PCA summaries, and querying EIC data by m/z or RT. It also serves the knowledge/playbook indexes as MCP resources. Implementation lives under `lipidmix/`; `server.py` stays at the repo root because `.mcp.json` and `.vscode/mcp.json` point at it by absolute path.
+- `lipidmix/corpus/knowledge_store.py` - Pure-logic layer for the accumulation notes: parses note frontmatter, builds the dynamic `knowledge`/`playbook` indexes, and expands a note with its `[[link]]` neighbors under a structural budget.
+- `lipidmix/arf/reader.py` - `.arf` parser and command-line analysis script. It can export peak properties, run PCA, create PCA plots, group replicates, plot peak-height distributions, and inspect top loading features.
+- `lipidmix/msdial/tags.py` - Parser and filter engine for MS-DIAL `*_tags.xml` sidecars. It joins per-sample tags by `FileName` + `MasterPeakID` and alignment tags by `MasterAlignmentID`.
+- `lipidmix/msdial/classes.py` - Reads user-defined Class ID values (`AnalysisFileClass`) from `.mddata`, resolves `.mddata` from `.mdproject` or the ARF directory, and filters ARF sample rows before PCA.
+- `lipidmix/arf2/reader.py` - `.arf2` parser and text summary generator.
+- `lipidmix/eic/reader.py` - `.EIC.aef` parser with EIC summaries and m/z or RT search helpers.
+- `lipidmix/plots/eic.py` - Builds the renderer-neutral `lipidmix.eic.v1` line-plot payload and renders it with matplotlib only for an explicitly requested PNG save.
+- `lipidmix/plots/volcano.py` - Builds the renderer-neutral `lipidmix.volcano.v1` scatter payload from the latest two-group differential result, keeping every `up`/`down` point and thinning only `ns` points.
+- `lipidmix/pai2/reader.py` - `.pai2` parser with feature filtering, PCA summaries, top-contributor extraction, and metabolite detail lookup.
+- `lipidmix/dcl/reader.py` - `.dcl` (MSDecResult) parser. Reads MS-DIAL's custom binary deconvoluted MS/MS spectra (not msgpack/lz4), and can attach those spectra to `.pai2` peaks by index (`attach_msms_to_features`).
+- `lipidmix/core/data_config.py` - Single source of truth for the data search directory. Returns `<project>/data` by default, or the path in the `LIPIDMIX_DATA_DIR` environment variable when set. Used by `server.py` and all `*_reader` parsers.
 - `check.py` - Scratch / pseudo-workspace for temporary experiments and quick code verification. Treat it as a throwaway sandbox: write exploratory code here, and once something works, copy the good code into its proper module and clear `check.py` back out. Nothing should depend on `check.py`, and it is not expected to retain content between tasks.
 - `docs/HISTRY.md` - Development and fact log. Record the timeline of work, findings from investigations, and design decisions here. Fine-grained development history goes in this file.
 - `docs/task.md` - Task management. Track development progress, plans, and task status (`TODO`/`DOING`/`DONE`/`HOLD`) here. Detailed facts behind each task live in `docs/HISTRY.md`.
 - `docs/schema/*.md` - MS-DIAL C# MessagePack schema definitions used as the authoritative index reference for the binary parsers: `AlignmentSpotProperty.md` (→ `.arf2`), `AlignmentChromPeakFeature.md` (→ `.arf` per-sample rows), `ChromatogramPeakFeature.md` (→ `.pai2`). These are the only first-hand record of the MessagePack key numbers; consult them before changing any reader's index constants.
-- `data/` - Default MS-DIAL data directory used by the parsers and MCP tools. Override with the `LIPIDMIX_DATA_DIR` environment variable to point the parsers and `server.py` at any MS-DIAL output folder (e.g. the folder holding the raw acquisition files). All file discovery goes through `data_config.get_data_dir()`.
+- `data/` - Default MS-DIAL data directory used by the parsers and MCP tools. Override with the `LIPIDMIX_DATA_DIR` environment variable to point the parsers and `server.py` at any MS-DIAL output folder (e.g. the folder holding the raw acquisition files). All file discovery goes through `lipidmix.core.data_config.get_data_dir()`.
 - `*.png`, `pca_result.json`, `output_peaks.csv` - Generated analysis artifacts from prior runs.
 - `knowledge/`, `playbook/`, `analyses/` - Accumulation layer. `knowledge/` holds literature-derived notes (citation required), `playbook/` holds reusable analysis workflows, and `analyses/` holds per-experiment objective records. See `docs/HISTRY.md` (2026-06-13).
-- `tests/` - Unit tests (`python -m unittest discover -s tests -t .`). The parser modules `arf_reader.py`/`arf2_reader.py`/`eic_aef_reader.py`/`pai2_reader.py`/`dcl_reader.py` live at the repo root (formerly misleadingly named `test_*.py`).
+- `tests/` - Unit tests (`python -m unittest discover -s tests -t .`, run from the repo root). The parser modules live under `lipidmix/<format>/reader.py`; only `server.py` and `check.py` remain at the repo root.
+- `lipidmix/` - 実装本体。入力形式ごと（`arf/` `arf2/` `pai2/` `dcl/` `eic/`）に
+  パーサ（`reader.py`）と MCP ツール（`tools.py`）を置き、形式に依存しない数値処理を
+  `analysis/`、レンダラ中立の描画 payload を `plots/`、FastMCP インスタンスと
+  セッション状態を `core/` に分けている。各ツールがどのファイルのどの関数を
+  どの順に呼ぶかは `docs/workflow/` を参照。
+- `docs/workflow/*.md` - パーサ系・プロット系 28 ツールの呼び出し連鎖。
+  行番号は持たず、参照の実在は `tests/test_workflow_docs.py` が AST で検証している。
 
 ## Supported data formats
 
@@ -41,7 +48,10 @@ MS-DIAL のアラインメント結果は「**個別測定 → サンプル別�
 さらに MS/MS スペクトル本体は別ファイル（`.dcl`）に格納される。各パーサが取得できる情報は以下の通り。
 各ファイルが対応する C# スキーマ（Key インデックスの正解表）は `docs/*.md` を参照。
 
-### `arf_reader.py` — `.arf`（アライン後・サンプル別ピーク / `AlignmentChromPeakFeature`）
+### `lipidmix/arf/reader.py` — `.arf`（アライン後・サンプル別ピーク / `AlignmentChromPeakFeature`）
+
+> 呼び出し順は [docs/workflow/arf.md](docs/workflow/arf.md) を参照。
+
 **1スポット = 全サンプル分の検出ピーク行**を持つ。サンプル間比較・PCA の主データ源。
 
 - `deserialize()` … スポット辞書のリスト。各スポット: `MasterAlignmentID` / `AlignmentID` /
@@ -57,9 +67,12 @@ MS-DIAL のアラインメント結果は「**個別測定 → サンプル別�
   - ※ `MasterPeakID = -2` かつ `IsGapFilled = True` のサンプルはギャップフィル（そのサンプルで未検出）。
 - `build_pca_matrix()` + `run_pca()` … サンプル×特徴量の PCA。**説明分散比 / サンプル別スコア(PC1,PC2) /
   Loadings 寄与上位（正負, アノテ・m/z・RT付き）** を取得。
-- CLI（`python arf_reader.py --pca`）でデシリアライズ結果と PCA 結果を表示。ファイルは `--file`/`--index` で指定。
+- CLI（`python -m lipidmix.arf.reader --pca`）でデシリアライズ結果と PCA 結果を表示。ファイルは `--file`/`--index` で指定。
 
-### `arf2_reader.py` — `.arf2`（アライン後・スポット代表 / `AlignmentSpotProperty`）
+### `lipidmix/arf2/reader.py` — `.arf2`（アライン後・スポット代表 / `AlignmentSpotProperty`）
+
+> 呼び出し順は [docs/workflow/arf2.md](docs/workflow/arf2.md) を参照。
+
 **サンプル別の生データを持たない軽量なメタ層**（= LLM に渡しやすい層）。PCA は不可。
 
 - `deserialize()` / `extract_arf2_data()` … 1スポット = 22項目:
@@ -74,7 +87,10 @@ MS-DIAL のアラインメント結果は「**個別測定 → サンプル別�
   RT・m/z 範囲 / 強度中央値 / イオンモード分布 / **S/N 中央値 / 脂質クラス分布(上位)**。
 - `format_spots_as_table(delimiter)` … 全スポットを CSV/TSV 化（LLM へ渡す軽量符号化。整形 JSON より大幅に低トークン）。
 
-### `pai2_reader.py` — `.pai2`（個別測定・検出ピーク / `ChromatogramPeakFeature`）
+### `lipidmix/pai2/reader.py` — `.pai2`（個別測定・検出ピーク / `ChromatogramPeakFeature`）
+
+> 呼び出し順は [docs/workflow/pai2.md](docs/workflow/pai2.md) を参照。
+
 **1ファイル = 1サンプルの全検出ピーク**（アライン前）。サンプル単体の詳細・MS/MS 参照を持つ。
 
 - `deserialize()` / `_convert_to_peakfeature()` … 1ピークあたり:
@@ -94,7 +110,10 @@ MS-DIAL のアラインメント結果は「**個別測定 → サンプル別�
 ファイルでサンプル間比較ができず、`[RT, m/z, Height]` の3変数PCAは生物学的仮説を
 検定しないため。詳細は `docs/output_format/pai2.md` の 5.3 節。）
 
-### `dcl_reader.py` — `.dcl`（デコンボリューション済み MS/MS / `MSDecResult`）
+### `lipidmix/dcl/reader.py` — `.dcl`（デコンボリューション済み MS/MS / `MSDecResult`）
+
+> 呼び出し順は [docs/workflow/dcl.md](docs/workflow/dcl.md) を参照。
+
 **MS/MS スペクトル本体**。独自バイナリ（msgpack/lz4 ではない）。`.pai2` とインデックス完全一致。
 
 - `deserialize_dcl(path, include_spectrum, top_n_peaks)` … 1結果あたり:
@@ -107,7 +126,10 @@ MS-DIAL のアラインメント結果は「**個別測定 → サンプル別�
 - `find_dcl_for_pai2()` … `.pai2` と同名の `.dcl` を探索。
 - `attach_msms_to_features()` … `.pai2` ピークに実フラグメントを索引対応で付与（m/z 差で安全弁）。
 
-### `eic_aef_reader.py` — `.EIC.aef`（抽出イオンクロマトグラム / EIC）
+### `lipidmix/eic/reader.py` — `.EIC.aef`（抽出イオンクロマトグラム / EIC）
+
+> 呼び出し順は [docs/workflow/eic.md](docs/workflow/eic.md) を参照。
+
 スポットごとの **EIC（クロマトグラム）と各サンプルのピークトップ**を持つ。
 
 - `parse_eic_aef_css1(path, include_chromatogram)` … 1スポット: `spot_id` / `rt` / `ri` /
@@ -119,7 +141,7 @@ MS-DIAL のアラインメント結果は「**個別測定 → サンプル別�
 - `top_eic_spots_by_peak_top()` … ピークトップ強度の上位スポット抽出。
 
 ### 共通: データ探索先の指定
-全パーサと `server.py` は探索ディレクトリを `data_config.get_data_dir()` から取得する。
+全パーサと `server.py` は探索ディレクトリを `lipidmix.core.data_config.get_data_dir()` から取得する。
 環境変数 `LIPIDMIX_DATA_DIR` を設定するとそのフォルダ（MS-DIAL の出力一式）を対象にできる
 （未設定時は `<project>/data`）。
 
@@ -242,25 +264,25 @@ group_levels=["gf", "spf"]` compares gf vs spf within the cerebellum subset.
 Parse an `.arf` file and export peak properties:
 
 ```bash
-python arf_reader.py --file "data/AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf" --export output_peaks.csv
+python -m lipidmix.arf.reader --file "data/AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf" --export output_peaks.csv
 ```
 
 Run PCA from an `.arf` file and save outputs:
 
 ```bash
-python arf_reader.py --file "data/AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf" --pca --output-pca pca_result.json --output-plot pca_plot.png --output-sample-scores sample_scores.png
+python -m lipidmix.arf.reader --file "data/AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf" --pca --output-pca pca_result.json --output-plot pca_plot.png --output-sample-scores sample_scores.png
 ```
 
 Show top PCA loading features:
 
 ```bash
-python arf_reader.py --file "data/AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf" --pca --top-features 10 --props height
+python -m lipidmix.arf.reader --file "data/AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf" --pca --top-features 10 --props height
 ```
 
 Run the `.arf2` summary script:
 
 ```bash
-python arf2_reader.py
+python -m lipidmix.arf2.reader
 ```
 
 Run the unit tests:

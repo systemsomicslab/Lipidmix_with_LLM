@@ -2,7 +2,7 @@ import json
 import unittest
 
 import server
-import session_state
+from lipidmix.core import session_state
 
 
 class TestVerifyHasIdentityBlock(unittest.TestCase):

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import dcl_reader
+from lipidmix.dcl import reader as dcl_reader
 
 from tests.dcl_fixture import build_dcl_bytes
 

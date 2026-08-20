@@ -14,7 +14,7 @@ obj/
 photos/
 workspace/
 debug/
-analysis/
+/analysis/
 # analyses/ と knowledge/ はセッション毎に育つ蓄積物なので、既に追跡済みの
 # 種ノート以外は追跡しない（gitignore は追跡済みファイルには影響しない）。
 # playbook/ は版管理された再利用手順で、GATEWAY 手順2 (lipidmix://playbook/index)
