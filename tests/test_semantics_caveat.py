@@ -81,7 +81,7 @@ class TestResourceReadClearsGuard(unittest.TestCase):
         session_state.session = session_state.AnalysisSession()
 
     def test_reading_resource_sets_seen(self):
-        import tools_resources
+        from lipidmix.tools import resources as tools_resources
         self.assertFalse(session_state.session.output_format_seen)
         text = tools_resources.output_format_reference()
         self.assertIn("オントロジー", text)

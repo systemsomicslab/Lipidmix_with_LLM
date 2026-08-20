@@ -9,7 +9,7 @@ from pathlib import Path
 import json
 
 from lipidmix.msdial import lipid_identity
-import knowledge_store
+from lipidmix.corpus import knowledge_store
 from lipidmix.msdial import peak_verification as pv
 from lipidmix.core import session_state
 from lipidmix.pai2.reader import get_signal_to_noise

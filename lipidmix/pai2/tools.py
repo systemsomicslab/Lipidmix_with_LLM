@@ -9,7 +9,7 @@ import io
 import json
 from pathlib import Path
 
-import knowledge_store
+from lipidmix.corpus import knowledge_store
 from lipidmix.core import mcp_core
 from lipidmix.core import mcp_errors
 from lipidmix.core import session_state

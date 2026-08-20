@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import knowledge_store
-from knowledge_store import (
+from lipidmix.corpus import knowledge_store
+from lipidmix.corpus.knowledge_store import (
     Note,
     build_index,
     coverage,

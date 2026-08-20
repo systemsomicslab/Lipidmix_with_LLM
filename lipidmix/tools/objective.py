@@ -6,8 +6,8 @@ paper_ingest（下位レイヤ）。tools_* / server は import しない。
 """
 from pathlib import Path
 
-import knowledge_store
-import paper_ingest
+from lipidmix.corpus import knowledge_store
+from lipidmix.corpus import paper_ingest
 from lipidmix.core import mcp_core
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp

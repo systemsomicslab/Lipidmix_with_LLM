@@ -19,7 +19,7 @@ import re
 
 import httpx
 
-import knowledge_store as ks
+from lipidmix.corpus import knowledge_store as ks
 
 EUROPEPMC_SEARCH_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 CROSSREF_WORKS_URL = "https://api.crossref.org/works/"

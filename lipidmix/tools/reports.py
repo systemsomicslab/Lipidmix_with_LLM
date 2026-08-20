@@ -9,7 +9,7 @@ import math
 
 import matplotlib.pyplot as plt
 
-import knowledge_store
+from lipidmix.corpus import knowledge_store
 from lipidmix.core import mcp_errors
 from lipidmix.core import session_state
 from mcp.types import ToolAnnotations

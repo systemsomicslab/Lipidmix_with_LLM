@@ -16,7 +16,7 @@ from unittest import mock
 
 from lipidmix.core import mcp_core
 from lipidmix.core import session_state
-import tools_resources
+from lipidmix.tools import resources as tools_resources
 
 
 # 分割で絶対に失ってはならない意味論。トピック -> そのトピックに必ず残る語。

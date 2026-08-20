@@ -2,9 +2,9 @@
 index・expand、knowledge inbox。
 
 このモジュールを import すると副作用でリソースが mcp に登録される。server は
-`import tools_resources` するだけでよい。tools_* / server は import しない。
+`from lipidmix.tools import resources as tools_resources` するだけでよい。tools_* / server は import しない。
 """
-import knowledge_store
+from lipidmix.corpus import knowledge_store
 from lipidmix.core import mcp_core
 from lipidmix.core import session_state
 from lipidmix.core.mcp_core import mcp, OUTPUT_FORMAT_DOC, PLAYBOOK_DIR

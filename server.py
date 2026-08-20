@@ -62,16 +62,16 @@ from lipidmix.core.tool_helpers import (
 # import 副作用で @mcp.tool / @mcp.resource が mcp に登録される。star import は各
 # モジュールの __all__（＝そのモジュールのツール名）だけを取り込む。tools_dataset は
 # arf/arf2 に依存するため最後に読み込む。
-import tools_resources  # 6 リソース
-from tools_objective import *
-from tools_reports import *
+from lipidmix.tools import resources as tools_resources  # 6 リソース
+from lipidmix.tools.objective import *
+from lipidmix.tools.reports import *
 from lipidmix.pai2.tools import *
 from lipidmix.dcl.tools import *
 from lipidmix.arf.tools import *
-from tools_samples import *  # sample_search
+from lipidmix.tools.samples import *  # sample_search
 from lipidmix.arf2.tools import *
 from lipidmix.eic.tools import *
-from tools_dataset import *  # list_data_files, load_dataset
+from lipidmix.tools.dataset import *  # list_data_files, load_dataset
 
 
 if __name__ == "__main__":

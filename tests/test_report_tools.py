@@ -8,7 +8,7 @@ matplotlib.use("Agg")  # import server が pyplot を読む前にヘッドレス
 import server
 from lipidmix.core import session_state
 from lipidmix.core import mcp_core
-import knowledge_store
+from lipidmix.corpus import knowledge_store
 
 
 class WriteLocationHelpers(unittest.TestCase):
