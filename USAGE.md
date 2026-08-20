@@ -1,4 +1,4 @@
-# USAGE — ms-data-parser MCP ツール一覧(全39ツール)
+# USAGE — ms-data-parser MCP ツール一覧(全40ツール)
 
 MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.EIC.aef`)を解析し、PCA・差次的解析・
 アノテーション検証・文献探索・レポート記録までを行う MCP サーバーのツール群です。
@@ -9,6 +9,10 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
    → arf_pca_preprocessed / arf_differential → save_*_figure
    → record_objective → knowledge_coverage → paper_search → ingest_* → write_report
 ```
+
+この文書は各ツールの**外形**（引数と用途）を扱います。内部でどのファイルのどの関数を
+どの順に呼ぶかは [docs/workflow/](docs/workflow/index.md) を、出力フィールドの意味は
+[docs/output_format/](docs/output_format/core.md) を参照してください。
 
 ---
 
