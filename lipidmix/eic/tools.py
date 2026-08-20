@@ -11,7 +11,7 @@ from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
 from lipidmix.core.path_resolvers import resolve_arf2_file_path, resolve_eicaef_file_path
-from eic_aef_reader import (
+from lipidmix.eic.reader import (
     read_eic_spot_css1,
     read_eic_spots_css1,
     summarize_eic_data,
@@ -19,7 +19,7 @@ from eic_aef_reader import (
     search_eic_by_mz_range,
     search_eic_by_rt_range,
 )
-from eic_identity_map import load_arf2_records, select_identity_candidates
+from lipidmix.eic.identity_map import load_arf2_records, select_identity_candidates
 from lipidmix.plots.eic import (
     EICMultiPlotPayload,
     EICPlotPayload,

@@ -70,7 +70,7 @@ from lipidmix.dcl.tools import *
 from tools_arf import *
 from tools_samples import *  # sample_search
 from lipidmix.arf2.tools import *
-from tools_eic import *
+from lipidmix.eic.tools import *
 from tools_dataset import *  # list_data_files, load_dataset
 
 

@@ -318,7 +318,7 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
         os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "fallback")
         session_state.session.eic.last_plot = None
 
-        import tools_eic
+        from lipidmix.eic import tools as tools_eic
 
         self._saved_loader = tools_eic.load_arf2_records
         tools_eic.load_arf2_records = lambda _path: self.records
@@ -328,7 +328,7 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
 
         from lipidmix.core import mcp_core
         from lipidmix.core import session_state
-        import tools_eic
+        from lipidmix.eic import tools as tools_eic
 
         tools_eic.load_arf2_records = self._saved_loader
         mcp_core.DATA_DIR = self._saved_data_dir

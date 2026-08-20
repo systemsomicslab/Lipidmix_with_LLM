@@ -27,7 +27,7 @@ import re
 import arf_reader
 from lipidmix.analysis import preprocessing
 from lipidmix.arf2.reader import deserialize
-from eic_aef_reader import parse_eic_aef_css1
+from lipidmix.eic.reader import parse_eic_aef_css1
 from lipidmix.pai2.reader import filter_features_by_params
 from lipidmix.msdial.classes import (
     assign_sample_groups,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TypedDict
 
-from eic_identity_map import IdentityCandidate, verify_spot_match
+from lipidmix.eic.identity_map import IdentityCandidate, verify_spot_match
 from lipidmix.msdial.classes import parse_analysis_file_classes, resolve_mddata_path
 
 
