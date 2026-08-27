@@ -77,10 +77,14 @@ PCA 直前に非破壊で適用される（手順 7）。
 前提: `arf_parser` または `load_dataset` 実行済み（未実行なら手順 2 で `MissingState`）
 状態変更: なし。前処理を**適用せず**に sample/qc/blank の分類だけを返す。
 
+返り値は列名を 1 回だけ出す TSV 表（sample / role / group / batch / run_order /
+excluded）。全行で同じ値になる `batch_source` はヘッダ行にまとめる。
+
 1. lipidmix/arf/tools.py  arf_list_sample_roles()
 2. └─ lipidmix/core/mcp_errors.py  missing_state()
 3. └─ lipidmix/core/tool_helpers.py  _pp_build_matrix()
 4. └─ lipidmix/core/session_state.py  _build_sample_meta()
+5. └─ lipidmix/arf2/reader.py  format_spots_as_table()
 
 ## arf_exclude
 
@@ -167,21 +171,27 @@ QC / blank は群ラベルを `None` にして両群のどちらにも寄らせ�
 9. └─ lipidmix/arf/tools.py  _annotate_with_names()
 10. │  └─ lipidmix/arf/tools.py  _spot_id_of()
 11. │  └─ lipidmix/arf/tools.py  _sibling_arf2_path()
-12. │  └─ lipidmix/arf2/reader.py  deserialize()
+12. │  └─ lipidmix/arf2/reader.py  load_catalog()
 13. └─ lipidmix/analysis/differential.py  volcano_data()
 
 ## arf_plot_volcano
 
 前提: `arf_differential` 実行済み（未実行なら手順 2 で `MissingState`）
-状態変更: なし。`lipidmix.volcano.v1` payload を返すだけで、画像は生成しない。
+状態変更: なし。ファイルは書かない。
 
-戻り値型が構造化（`VolcanoPlotPayload`）なので、前提不足は文字列ではなく
-`ValueError` の本文にエンベロープを載せて返す。FastMCP が
-`Error executing tool ...: ` を前置するため、クライアントは本文中の JSON を切り出す。
+**既定は画像**（`output="image"`）。サーバ側で描いた PNG を、件数を書いた 1 行の
+キャプションと一緒に返す。座標点列（`lipidmix.volcano.v1`）が要るクライアントは
+`output="payload"` か env `LIPIDMIX_PLOT_OUTPUT=payload`。payload モードでは
+`up` / `down` の点は全件残し、`ns` の点だけ `max_points` に収まるよう間引く。
 
-`up` / `down` の点は全件残し、`ns` の点だけ間引く。PNG が必要なときは
-`save_volcano_figure`（[plots.md](plots.md)）を明示的に呼ぶ。
+画像は間引かず全特徴を描く（間引きは payload のトークン対策であって図には不要）。
+キャプションに up / down / ns / 検定不能の件数を書くのは、件数を図から読み取らせない
+ため。PNG をファイルに保存したいときは `save_volcano_figure`（[plots.md](plots.md)）。
 
 1. lipidmix/arf/tools.py  arf_plot_volcano()
 2. └─ lipidmix/core/mcp_errors.py  missing_state()
-3. └─ lipidmix/plots/volcano.py  build_volcano_plot_payload()
+3. └─ lipidmix/plots/render.py  resolve_plot_output()
+4. ├─ [output=payload] lipidmix/plots/volcano.py  build_volcano_plot_payload()
+5. └─ [output=image] lipidmix/arf/tools.py  _volcano_counts()
+6.    └─ lipidmix/plots/volcano.py  render_volcano_plot()
+7.    └─ lipidmix/plots/render.py  figure_to_png()

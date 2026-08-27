@@ -7,12 +7,12 @@ MS/MS は同定確度の最強証拠だが、MS-DIAL は実スペクトルを `.
 deps: mcp_core / session_state / path_resolvers / dcl_reader。tools_* / server は
 import しない。
 """
-import json
 from pathlib import Path
 
 from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
+from lipidmix.core.serialization import json_payload
 from lipidmix.core.path_resolvers import resolve_dcl_file_path
 from lipidmix.dcl.reader import deserialize_dcl, summarize_dcl, get_msms_by_precursor
 
@@ -22,7 +22,7 @@ __all__ = ["dcl_parser", "dcl_find_msms"]
 _DEFAULT_TOP_PEAKS = 10
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def dcl_parser(file_path: str | None = None, top_n_peaks: int | None = None,
                preview: int = 5) -> str:
     """1つの `.dcl`（MSDecResult）を解析し、MS/MS 在庫の要約と先頭数件を返す。
@@ -63,12 +63,12 @@ def dcl_parser(file_path: str | None = None, top_n_peaks: int | None = None,
     }
     text = (
         f"### DCL 解析完了: {Path(resolved).name}\n"
-        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + json_payload(payload)
     )
     return session_state.session.maybe_prepend_caveat(text, topic="dcl")
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def dcl_find_msms(precursor_mz: float, file_path: str | None = None,
                   rt: float | None = None, mz_tol: float = 0.01,
                   rt_tol: float = 0.2, top_n_peaks: int | None = None) -> str:
@@ -79,20 +79,16 @@ def dcl_find_msms(precursor_mz: float, file_path: str | None = None,
     """
     resolved = resolve_dcl_file_path(file_path)
     if not resolved:
-        return json.dumps(
-            {"status": "error", "message": "データディレクトリに .dcl ファイルが見つかりませんでした。"},
-            ensure_ascii=False, indent=2,
-        )
+        return json_payload({"status": "error", "message": "データディレクトリに .dcl ファイルが見つかりませんでした。"})
     limit = _DEFAULT_TOP_PEAKS if top_n_peaks is None else (top_n_peaks or None)
     try:
         results = deserialize_dcl(resolved, include_spectrum=True, top_n_peaks=limit)
     except Exception as exc:  # noqa: BLE001
-        return json.dumps({"status": "error", "message": f"DCL 解析に失敗しました: {exc}"},
-                          ensure_ascii=False, indent=2)
+        return json_payload({"status": "error", "message": f"DCL 解析に失敗しました: {exc}"})
 
     hits = get_msms_by_precursor(results, precursor_mz, tol=mz_tol, rt=rt, rt_tol=rt_tol)
     if not hits:
-        return json.dumps({
+        return json_payload({
             "status": "not_found",
             "message": (
                 f"precursor m/z={precursor_mz}（±{mz_tol}"
@@ -100,9 +96,9 @@ def dcl_find_msms(precursor_mz: float, file_path: str | None = None,
                 + f"）に一致する MS/MS は {Path(resolved).name} にありません。"
                 "MS/MS 未取得のピークである可能性を、同定確度の判断に反映すること。"
             ),
-        }, ensure_ascii=False, indent=2)
+        })
 
-    return json.dumps({
+    return json_payload({
         "status": "success",
         "file": Path(resolved).name,
         "query": {"precursor_mz": precursor_mz, "mz_tol": mz_tol,
@@ -118,4 +114,4 @@ def dcl_find_msms(precursor_mz: float, file_path: str | None = None,
             }
             for r in hits
         ],
-    }, ensure_ascii=False, indent=2)
+    })

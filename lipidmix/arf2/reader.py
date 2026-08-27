@@ -219,6 +219,30 @@ def generate_text_summary(deserialized_list: List[dict]) -> str:
 
     return text
 
+# 同一ファイルの再デシリアライズを避けるキャッシュ。.arf2 は実データで 714〜19,388
+# スポットあり、差次的解析の名前補完・EIC の同定照合・同定注釈の3経路がそれぞれ
+# 独立に開いて読み直していた。ファイルが MS-DIAL で作り直されたら読み直すよう、
+# パスだけでなく mtime とサイズもキーに含める。保持は1件（大きいので溜めない）。
+_CATALOG_CACHE: dict[tuple, list] = {}
+
+
+def load_catalog(file_path) -> list:
+    """`.arf2` のスポット一覧を返す（同一ファイルなら再パースしない）。
+
+    返すリストは**共有**されるため、呼び出し側は変更しないこと（読み取り専用）。
+    """
+    path = os.fspath(file_path)
+    stat = os.stat(path)
+    key = (os.path.abspath(path), stat.st_mtime_ns, stat.st_size)
+    cached = _CATALOG_CACHE.get(key)
+    if cached is None:
+        with open(path, "rb") as handle:
+            cached = deserialize(io.BytesIO(handle.read()))
+        _CATALOG_CACHE.clear()
+        _CATALOG_CACHE[key] = cached
+    return cached
+
+
 def format_spots_as_table(deserialized_list: List[dict], delimiter: str = "\t",
                           columns: Optional[List[str]] = None) -> str:
     """スポット辞書のリストを CSV/TSV テーブル文字列に変換する（LLMへ渡す軽量符号化）。

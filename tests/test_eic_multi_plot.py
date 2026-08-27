@@ -1,3 +1,4 @@
+import json
 import unittest
 
 import matplotlib
@@ -343,18 +344,60 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
         import server
         from lipidmix.core import session_state
 
-        payload = server.eic_plot_compounds(
+        payload = json.loads(server.eic_plot_compounds(
             7, names=["ceramide"], ontologies=["PC"],
             file_path=str(self.path), arf2_path=str(self.arf2),
-        )
+            output="payload",
+        ))
         self.assertEqual(payload["plot_schema"], "lipidmix.eic.multi.v1")
         self.assertEqual(
             [item["label"] for item in payload["series"]],
             ["PC(12:0/13:0)", "Ceramide (d18:1/25:0)"],
         )
         self.assertEqual(payload["sample"]["file_id"], 7)
-        self.assertIs(session_state.session.eic.last_plot, payload)
+        # 戻り値は最小形の JSON 文字列だが、save_eic_figure が使うセッション側は
+        # dict のまま保持されている。
+        self.assertEqual(session_state.session.eic.last_plot, payload)
         self.assertEqual(list(self.tmp.rglob("*.png")), [])
+
+    def test_default_output_is_an_image_with_a_selection_caption(self):
+        """既定は画像＋キャプション。何を描き何を落としたかはキャプションに残す。"""
+        import server
+        from mcp.server.fastmcp import Image
+
+        caption, image = server.eic_plot_compounds(
+            7, names=["ceramide"], ontologies=["PC"],
+            file_path=str(self.path), arf2_path=str(self.arf2),
+        )
+        self.assertIsInstance(image, Image)
+        self.assertIn("PC(12:0/13:0)", caption)
+        self.assertIn("Ceramide (d18:1/25:0)", caption)
+        self.assertEqual(list(self.tmp.rglob("*.png")), [])
+
+    def test_environment_variable_flips_the_deployment_default(self):
+        import os
+
+        import server
+
+        saved = os.environ.get("LIPIDMIX_PLOT_OUTPUT")
+        os.environ["LIPIDMIX_PLOT_OUTPUT"] = "payload"
+        try:
+            payload = json.loads(server.eic_plot_compounds(
+                7, ontologies=["PC"],
+                file_path=str(self.path), arf2_path=str(self.arf2),
+            ))
+        finally:
+            if saved is None:
+                os.environ.pop("LIPIDMIX_PLOT_OUTPUT", None)
+            else:
+                os.environ["LIPIDMIX_PLOT_OUTPUT"] = saved
+        self.assertEqual(payload["plot_schema"], "lipidmix.eic.multi.v1")
+
+    def test_default_top_n_is_small_enough_to_read(self):
+        """既定 24 本は payload を実測 119,768 字まで膨らませ図も判読不能だった。"""
+        from lipidmix.eic.tools import DEFAULT_COMPOUND_TOP_N
+
+        self.assertLessEqual(DEFAULT_COMPOUND_TOP_N, 8)
 
     def test_no_query_raises(self):
         import server
@@ -385,63 +428,48 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
         self.assertTrue(png.is_file())
         self.assertIn("figures/overlay-eic_eic.png", message)
 
-    def test_fastmcp_exposes_output_schema(self):
+    def test_fastmcp_does_not_publish_an_output_schema(self):
+        """outputSchema を publish しない（structured_output=False）。
+
+        publish すると payload が content と structuredContent へ二重に載る
+        （実測 119,768 字 → 305,760 字）。クライアントは content のテキストから
+        `plot_schema` を読む契約。
+        """
         import asyncio
 
         import server
 
         tools = asyncio.run(server.mcp.list_tools())
         tool = next(item for item in tools if item.name == "eic_plot_compounds")
-        self.assertIsNotNone(tool.outputSchema)
-        self.assertIn("plot_schema", tool.outputSchema.get("properties", {}))
+        self.assertIsNone(tool.outputSchema)
 
 
-def _resolve_source_schema(output_schema: dict) -> dict:
-    """Follow the ``source`` property's ``$ref`` into ``$defs`` (or return it inline)."""
-    source = output_schema["properties"]["source"]
-    ref = source.get("$ref")
-    if ref is None:
-        return source
-    def_name = ref.rsplit("/", 1)[-1]
-    return output_schema["$defs"][def_name]
-
-
-class PublishedOutputSchemaRegressionTests(unittest.TestCase):
+class PlotSourceShapeRegressionTests(unittest.TestCase):
     """Important 1: widening PlotSource must not leak into eic_plot_chromatograms.
 
-    ``PlotSource`` must stay a strict ``file``/``file_name`` TypedDict so FastMCP's
-    published ``eic_plot_chromatograms`` outputSchema keeps requiring both fields
-    and never grows an ``arf2_file`` property that ``lipidmix.eic.v1`` never emits.
-    The new ``arf2_file`` field belongs only to ``eic_plot_compounds`` via a
-    separate ``MultiPlotSource`` TypedDict.
+    ``PlotSource`` must stay a strict ``file``/``file_name`` TypedDict; the
+    ``arf2_file`` field belongs only to ``eic_plot_compounds`` via a separate
+    ``MultiPlotSource`` TypedDict.
+
+    以前は FastMCP が publish する outputSchema でこれを縛っていたが、payload の
+    二重送出を止めるため outputSchema を出さなくなった（structured_output=False）。
+    契約の実体は TypedDict そのものなので、そちらを直接検査する。
     """
 
-    def test_single_spot_source_schema_is_unchanged(self):
-        import asyncio
+    def test_single_spot_source_shape_is_unchanged(self):
+        from lipidmix.plots.eic import PlotSource
 
-        import server
+        self.assertEqual(set(PlotSource.__annotations__), {"file", "file_name"})
+        self.assertEqual(set(PlotSource.__required_keys__), {"file", "file_name"})
 
-        tools = asyncio.run(server.mcp.list_tools())
-        tool = next(item for item in tools if item.name == "eic_plot_chromatograms")
-        source_schema = _resolve_source_schema(tool.outputSchema)
+    def test_multi_compound_source_shape_has_all_three_fields(self):
+        from lipidmix.plots.eic import MultiPlotSource
+
         self.assertEqual(
-            set(source_schema["properties"]), {"file", "file_name"},
-        )
-        self.assertEqual(set(source_schema["required"]), {"file", "file_name"})
-
-    def test_multi_compound_source_schema_has_all_three_fields(self):
-        import asyncio
-
-        import server
-
-        tools = asyncio.run(server.mcp.list_tools())
-        tool = next(item for item in tools if item.name == "eic_plot_compounds")
-        source_schema = _resolve_source_schema(tool.outputSchema)
-        self.assertEqual(
-            set(source_schema["properties"]), {"file", "file_name", "arf2_file"},
+            set(MultiPlotSource.__annotations__), {"file", "file_name", "arf2_file"},
         )
         self.assertEqual(
-            set(source_schema["required"]), {"file", "file_name", "arf2_file"},
+            set(MultiPlotSource.__required_keys__), {"file", "file_name", "arf2_file"},
         )
 
 

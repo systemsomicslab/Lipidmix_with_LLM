@@ -20,7 +20,7 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 
 | ツール | 機能 |
 |--------|------|
-| `list_data_files` | 指定ディレクトリ内のファイル一覧を取得。`extension`(例 `.arf2`)でフィルタ可。 |
+| `list_data_files` | 指定ディレクトリ内のファイル一覧を拡張子別に取得。**既定は解析できる拡張子のみ**(.arf/.arf2/.pai2/.dcl/.EIC.aef/.mddata/.mdproject)。測定生データ(.wiff 等)も見たいときは `all_files=True`。`extension`(例 `.arf2`)で絞り込みも可。 |
 | `load_dataset` | MS-DIAL 出力フォルダの**入口**。arf2 概観→arf 詳細PCAを一括実行。最新バッチ・PeakProperties.arf を自動選択し、以降のツールの既定探索先を更新。 |
 | `sample_search` | 因子トークン(`ILG_6h` 等)でサンプルを検索し、`file_id` と `.pai2`/`.dcl` の実パスを返す。specs 省略で語彙一覧。ARF ロード前でも動く。 |
 
@@ -29,7 +29,7 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 | ツール | 機能 |
 |--------|------|
 | `arf2_parser` | `.arf2`(全体カタログ)を解析しメタデータ概観を要約。サンプル別強度は含まないため多変量解析は不可。 |
-| `arf2_annotate_identities` | ARF2 スポット注釈を GOSLIN 正規化・RefMet/LIPID MAPS ID・MSI レベルで一括標準化(オフライン、上位 `max_rows` 件)。MSI はクラス上限の保守評価。 |
+| `arf2_annotate_identities` | ARF2 スポット注釈を GOSLIN 正規化・RefMet/LIPID MAPS ID・MSI レベルで一括標準化し TSV 表で返す(オフライン)。**ファイル先頭から `max_rows` 件**で強度順ではない(総数と未表示件数はヘッダ行に出る)。MSI はクラス上限の保守評価。 |
 
 ## 3. ARF 解析(サンプル別強度・PCA・差次的解析)
 
@@ -38,7 +38,7 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 | `arf_parser` | `.arf` を読み込み PCA を実行。スコアプロット用JSON＋Loading上位を返す。タグ/Class ID/群色分け・log変換・検出率足切りに加え、強度閾値(`min_intensity`)・アノテーションキーワード(`annotation_keyword`)でのフィルタも吸収。フィルタ条件を変えた再PCAは引数を変えて本ツールを再呼び出しする(再パースは走らない)。 |
 | `arf_list_classes` | 現在の ARF データセットで利用可能な MS-DIAL Class ID 値を一覧。 |
 | `arf_list_tags` | ロード済み ARF データセットの MS-DIAL タグを一覧。 |
-| `arf_list_sample_roles` | サンプルを sample/qc/blank に分類して返す(前処理適用前の確認)。 |
+| `arf_list_sample_roles` | サンプルを sample/qc/blank に分類し TSV 表で返す(前処理適用前の確認)。列= sample/role/group/batch/run_order/excluded。 |
 | `arf_exclude` | PCA 外れサンプルや特定ピークを名前/ID で手動除外・再包含(可逆・非破壊)。 |
 | `arf_preprocess` | ロード済み ARF 行列に前処理レシピ(正規化・補完・ブランク/QC RSD 足切り・ドリフト補正)を適用し session を更新。 |
 | `arf_pca_preprocessed` | `arf_preprocess` 後の前処理済み行列で PCA を実行(生行列経路とは独立)。 |
@@ -49,16 +49,16 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 | ツール | 機能 |
 |--------|------|
 | `eic_parser` | `.EIC.aef` を解析しテキスト要約を返す。 |
-| `eic_search_by_mz_range` | m/z 範囲でスポットを検索。 |
+| `eic_search_by_mz_range` | m/z 範囲でスポットを検索。既定上限は **1500**(TG/DGDG/CL など m/z 1000 超の脂質を既定で切り落とさないため)。 |
 | `eic_search_by_rt_range` | RT 範囲でスポットを検索。 |
 | `eic_rank_by_max_intensity` | 各試料のクロマトグラム最大強度の最大値で降順に並べた強度上位ランキングを返す。 |
 | `eic_plot_chromatograms` | 指定 `spot_id` のEIC系列を読み、クライアント中立の構造化プロット情報(`lipidmix.eic.v1`)を返す。`file_ids` で最大12試料を選択でき、画像生成・ファイル保存は行わない。 |
-| `eic_plot_compounds` | 脂質名/オントロジーで選んだ複数物質のEICを、指定 `file_id` の**1試料分だけ**同一グラフへ重ねる構造化プロット情報(`lipidmix.eic.multi.v1`)を返す。ARF2の同定をrt/mzで検証し、除外した物質は `selection.dropped` に理由付きで残す。画像生成・ファイル保存は行わない。 |
+| `eic_plot_compounds` | 脂質名/オントロジーで選んだ複数物質のEICを、指定 `file_id` の**1試料分だけ**同一グラフへ重ねる。**既定はPNG画像＋1行キャプション**(`output="image"`)。点列(`lipidmix.eic.multi.v1`)が要るクライアントは `output="payload"` または env `LIPIDMIX_PLOT_OUTPUT=payload`。重ねる本数の既定は **8本**。ARF2の同定をrt/mzで検証し、除外した物質は `selection.dropped` に理由付きで残す。ファイル保存はしない。 |
 
 ### EICの描画フロー
 
 1. `eic_search_by_mz_range` または `eic_search_by_rt_range` で描画対象の `spot_id` を確認する。
-2. `eic_plot_chromatograms(spot_id, file_ids=...)` を呼び、`series[].x` / `series[].y`、軸、試料、ピーク範囲を含む構造化プロット情報を取得する。
+2. `eic_plot_chromatograms(spot_id, file_ids=...)` を呼び、`series[].x` / `series[].y`、軸、試料、ピーク範囲を含む構造化プロット情報を取得する(座標は4桁に丸め済み)。
 3. 描画方法はクライアントに任せる。Use-LLLMではPlotlyのインタラクティブな線グラフとして表示し、Claude Desktop等は各UIの描画方式を使用する。
 4. 通常の対話描画ではPNGを生成しない。ユーザーがPNGの生成・保存を明示的に希望した場合だけ `save_eic_figure` を実行する。
 
@@ -106,9 +106,9 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 
 | ツール | 機能 |
 |--------|------|
-| `arf_plot_volcano` | 直近の2群差次的解析を `lipidmix.volcano.v1` の点列として返す(read-only・画像なし)。`up`/`down` は全件、`ns` は `max_points` まで等間隔で間引き、件数は `selection` に出る。 |
+| `arf_plot_volcano` | 直近の2群差次的解析を volcano 図として返す。**既定はPNG画像＋件数入りキャプション**(`output="image"`、全特徴を描画)。点列(`lipidmix.volcano.v1`)が要るクライアントは `output="payload"` または env `LIPIDMIX_PLOT_OUTPUT=payload` —— その場合 `up`/`down` は全件、`ns` は `max_points`(既定800)まで等間隔で間引き、件数は `selection` に出る。ファイル保存はしない。 |
 | `save_pca_figure` | ユーザーがPNGを明示的に希望した場合だけ、直近セッションの PCA 結果を `reports/figures/` に保存。通常の描画はクライアントUIに任せる。 |
-| `save_volcano_figure` | ユーザーがPNGを明示的に希望した場合だけ、直近の差次的解析(2群)を volcano PNG として保存。通常の描画は `arf_plot_volcano` ＋クライアントUI。本PNGは間引き前の全特徴を描く。 |
+| `save_volcano_figure` | ユーザーが**ファイルとしての**PNGを希望した場合だけ、直近の差次的解析(2群)を volcano PNG として保存(レポート埋め込み用)。画面で見るだけなら `arf_plot_volcano` が画像を直接返す。描画関数は共通なので同じ図。 |
 | `save_eic_figure` | ユーザーが明示的に保存を希望した場合だけ、直近のEICプロット情報を PNG 化し `reports/figures/<analysis_id>_eic.png` に保存。Use-LLLMではローカル書き込みとして承認が必要。 |
 | `write_report` | 解析・解釈レポートを `reports/<analysis_id>.md` に上書き保存。 |
 | `read_report` | 過去レポートを読み戻す(最新更新のものを返す。セッション継続用)。 |

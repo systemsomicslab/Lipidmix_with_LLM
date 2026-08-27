@@ -12,7 +12,7 @@ flowchart TD
     LD --> BATCH[path_resolvers._describe_batch_selection]
     LD --> A2[arf2_parser → arf2.md]
     LD --> A1[arf_parser → arf.md]
-    LDF[list_data_files] --> PR[path_resolvers.list_data_files<br/>同一関数オブジェクト]
+    LDF[list_data_files] --> PR[path_resolvers.list_data_files<br/>純関数（絶対パスのリスト）]
     SS[sample_search] --> SF[msdial.sample_factors]
 ```
 
@@ -21,10 +21,17 @@ flowchart TD
 前提: なし
 状態変更: なし
 
-`lipidmix/tools/dataset.py` で純関数を MCP ツールとして登録しているだけで、専用の
-ラッパ関数は存在しない。`resolve_*_file_path` から呼ばれる関数と同一オブジェクト。
+ツール層（`tools/dataset.py`）は純関数（`path_resolvers.list_data_files`、
+`resolve_*_file_path` から呼ばれるのと同じもの）の結果を拡張子ごとにまとめて返す。
+**既定は解析できる拡張子だけ**（.arf / .arf2 / .pai2 / .dcl / .EIC.aef / .mddata /
+.mdproject）。MS-DIAL の出力フォルダには測定生データ（.wiff 等）が同居し、実データでは
+495 ファイル中 7 割以上がそれだった。全部見たいときだけ `all_files=True`。
 
-1. lipidmix/core/path_resolvers.py  list_data_files()
+純関数側は見つからなければ**空リスト**を返す。文面（「存在しません」等）を持つのは
+ツール層だけで、以前のようにエラー文字列がパスの位置に紛れ込むことはない。
+
+1. lipidmix/tools/dataset.py  list_data_files()
+2. └─ lipidmix/core/path_resolvers.py  list_data_files()
 
 ## load_dataset
 

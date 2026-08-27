@@ -90,10 +90,19 @@ class TestSampleRolesExcludedFlag(unittest.TestCase):
 
     def test_roles_mark_excluded_samples(self):
         session_state.session.arf.excluded_samples.add("sB")
-        out = json.loads(server.arf_list_sample_roles())
-        self.assertEqual(out["status"], "success")
-        self.assertTrue(out["samples"]["sB"]["excluded"])
-        self.assertFalse(out["samples"]["sA"]["excluded"])
+        rows = _parse_tsv(server.arf_list_sample_roles())
+        self.assertEqual(rows["sB"]["excluded"], "True")
+        self.assertEqual(rows["sA"]["excluded"], "False")
+
+
+def _parse_tsv(text: str) -> dict[str, dict[str, str]]:
+    """`# ` で始まるヘッダ行を捨て、TSV 表を {sample: 行} に読み直す。"""
+    lines = [line for line in text.splitlines() if line and not line.startswith("#")]
+    columns = lines[0].split("\t")
+    return {
+        dict(zip(columns, line.split("\t")))["sample"]: dict(zip(columns, line.split("\t")))
+        for line in lines[1:]
+    }
 
 
 if __name__ == "__main__":

@@ -11,9 +11,10 @@ structuredContent を捨てる。さらに FastMCP は戻り値アノテーシ�
 outputSchema を導出するため、`-> str` のツールが失敗時だけ dict を返すこともできない。
 機械可読なエラーはテキストに載せるしかない。
 
-このモジュールは依存グラフの leaf（stdlib のみ）。tools_* / server を import しない。
+このモジュールは依存グラフの leaf（stdlib と同じく leaf の
+lipidmix.core.serialization のみ）。tools_* / server を import しない。
 """
-import json
+from lipidmix.core.serialization import json_payload
 
 MISSING_STATE = "missing_state"
 
@@ -38,15 +39,11 @@ def missing_state(state: str, required_tools: list[str], message: str) -> str:
         raise ValueError("required_tools は必須です（状態を作れるツールの候補）。")
     if not message:
         raise ValueError("message は必須です（LLM と人間が読む説明）。")
-    return json.dumps(
-        {
+    return json_payload({
             "error": {
                 "code": MISSING_STATE,
                 "state": state,
                 "required_tools": list(required_tools),
                 "message": message,
             }
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
+        })

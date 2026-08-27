@@ -26,11 +26,14 @@ class IdentityCandidate(TypedDict):
 
 
 def load_arf2_records(arf2_path: str | Path) -> list[dict]:
-    """.arf2 を読み、`extract_arf2_data` 形式の辞書リストを返す。"""
-    from lipidmix.arf2.reader import deserialize
+    """.arf2 を読み、`extract_arf2_data` 形式の辞書リストを返す。
 
-    with open(Path(arf2_path), "rb") as stream:
-        return deserialize(stream)
+    実体は `arf2.reader.load_catalog`（同一ファイルなら再パースしない共有キャッシュ）。
+    返るリストは共有されるため変更しないこと。
+    """
+    from lipidmix.arf2.reader import load_catalog
+
+    return load_catalog(Path(arf2_path))
 
 
 def _matches(record: dict, name_queries: list[str], ontology_set: set[str]) -> bool:

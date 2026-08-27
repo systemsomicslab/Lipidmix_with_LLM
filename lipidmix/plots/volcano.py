@@ -1,7 +1,9 @@
 """Client-neutral volcano plot payload built from a two-group differential result.
 
-`lipidmix.plots.eic` と同じ役割で、MCP にも matplotlib にも依存しない。`lipidmix.analysis.differential`
-が作った点列を、クライアントがそのまま描ける形へ整形するだけの純ロジック層。
+`lipidmix.plots.eic` と同じ役割で、MCP に依存しない。`lipidmix.analysis.differential`
+が作った点列を、クライアントがそのまま描ける形へ整形する純ロジック層＋
+（`render_eic_plot` と同じく）明示的に図が要るときだけ使う matplotlib 描画。
+matplotlib は関数内 import に留め、payload 組み立てだけを使う経路には載せない。
 
 点数は特徴量数ぶん（数千〜数万件）になりうるため `ns` 点だけを決定的に間引く。
 `up`/`down` を切らないのは、有意点を落とすと図の意味が壊れるため。
@@ -16,6 +18,15 @@ VOLCANO_PLOT_SCHEMA = "lipidmix.volcano.v1"
 DEFAULT_Q_THRESHOLD = 0.05
 DEFAULT_LOG2FC_THRESHOLD = 1.0
 _SIGNIFICANT = ("up", "down")
+
+# 点座標の丸め桁数。log2FC も -log10(p) も図と解釈に効くのは小数 2〜3 桁までで、
+# 4 桁あれば十分。
+POINT_DIGITS = 4
+
+# payload モードの既定点数。特徴量数は実データで 714〜19,388 件あり、旧既定の
+# 3000 は「ほぼ全点」＝間引きが働かない値だった。up/down は常に全件残るので、
+# ns をこの範囲に収めても有意点の情報は落ちない。
+DEFAULT_MAX_POINTS = 800
 
 
 class PlotAxis(TypedDict):
@@ -113,7 +124,7 @@ def _subsample(points: list[dict], quota: int) -> list[dict]:
 def build_volcano_plot_payload(
     last_differential: dict,
     *,
-    max_points: int = 3000,
+    max_points: int = DEFAULT_MAX_POINTS,
     title: str | None = None,
 ) -> VolcanoPlotPayload:
     """`session.arf.last_differential` から描画中立な volcano ペイロードを組み立てる。"""
@@ -160,11 +171,14 @@ def build_volcano_plot_payload(
         "（q と p は別量なので破線位置と有意判定は厳密には一致しません）。"
     )
 
+    # 座標は 4 桁で丸める。float の既定 repr は 17 桁まで出す（-0.17092926812859943）
+    # ため、数百〜数千点の payload では桁の大半が図にも解釈にも寄与しない尾数で
+    # 埋まる。実測で 1 点あたり 104 字 → 約 70 字。
     points: list[VolcanoPoint] = [
         {
             "feature": str(point.get("feature") or ""),
-            "log2fc": float(point["log2fc"]),
-            "neg_log10_p": float(point["neg_log10_p"]),
+            "log2fc": round(float(point["log2fc"]), POINT_DIGITS),
+            "neg_log10_p": round(float(point["neg_log10_p"]), POINT_DIGITS),
             "sig": str(point.get("sig") or "ns"),
         }
         for point in significant + ns_plotted
@@ -209,3 +223,31 @@ def build_volcano_plot_payload(
         },
         "caveats": caveats,
     }
+
+
+# 配色は Use-LLLM の volcano-plot.js と一致させてある（PNG と画面で色が入れ替わる
+# と、同じ図の話をしているのか判別できなくなる）。
+SIG_COLORS = {"up": "#c0392b", "down": "#2471a3", "ns": "#95a5a6"}
+
+
+def render_volcano_plot(last_differential: dict, title: str | None = None):
+    """直近の2群差次的解析を volcano の matplotlib Figure にする。
+
+    点列は payload（間引き済み）ではなく `session.arf.last_differential` の**全量**
+    から描く。間引きは payload のトークン対策であって、図には不要なため。
+    `save_volcano_figure`（PNG 保存）と `arf_plot_volcano`（画像返し）の共通描画。
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    for sig in ("ns", "up", "down"):
+        pts = [p for p in last_differential.get("volcano") or []
+               if p["sig"] == sig and _is_drawable(p)]
+        if pts:
+            ax.scatter([p["log2fc"] for p in pts], [p["neg_log10_p"] for p in pts],
+                       s=12, c=SIG_COLORS[sig], label=sig, alpha=0.7)
+    ax.set_xlabel("log2 fold change")
+    ax.set_ylabel("-log10 p")
+    ax.set_title(title or f"Volcano ({last_differential.get('a')} vs {last_differential.get('b')})")
+    ax.legend()
+    return fig

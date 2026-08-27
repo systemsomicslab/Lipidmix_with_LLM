@@ -116,30 +116,75 @@ def _describe_batch_selection(directory: Path) -> str | None:
     )
 
 
-def list_data_files(extension: str | None = None, directory: str | None = None) -> list[str]:
-    """
-    指定したディレクトリ内にあるファイルパスの一覧を取得します。
-    - directory: 探索するディレクトリのパス。省略時は既定のデータディレクトリ
-      (環境変数 LIPIDMIX_DATA_DIR または <project>/data) を使用します。
-    - extension: 指定された場合は、その拡張子(例: '.pai2', '.arf2', '.EIC.aef')のファイルのみをフィルタします。
+# このサーバのパーサが読める拡張子。MS-DIAL の出力フォルダには測定生データ
+# （.wiff / .wiff.scan / .wiff2 / .timeseries.data / .txt）が同居し、実データでは
+# 495 ファイル中 7 割以上がそれだった。既定でそこまで列挙すると、入口ツールの
+# 戻り値だけで 46,977 字（≒1万数千トークン）を占める。
+ANALYSABLE_EXTENSIONS: tuple[str, ...] = (
+    ".arf", ".arf2", ".pai2", ".dcl", ".EIC.aef", ".mddata", ".mdproject",
+)
+
+
+def list_data_files(
+    extension: str | None = None,
+    directory: str | None = None,
+    all_files: bool = False,
+) -> list[str]:
+    """データディレクトリ内のファイルの絶対パス一覧を返す（純関数）。
+
+    - directory: 探索するディレクトリ。省略時は既定のデータディレクトリ
+      (環境変数 LIPIDMIX_DATA_DIR または <project>/data)。
+    - extension: 指定するとその拡張子（例 '.pai2', '.arf2', '.EIC.aef'）だけに絞る。
+    - all_files: extension 未指定のとき、解析対象外の拡張子まで含めるか。
+
+    見つからない場合・ディレクトリが無い場合は**空リスト**を返す。以前はここで
+    エラー文面を1要素のリストとして返していたため、呼び出し側5箇所が
+    「メッセージをパスとして掴まない」よう `os.path.isfile` で防御していた。
     """
     target_dir = Path(directory).expanduser() if directory else mcp_core.DATA_DIR
-
-    if not target_dir.exists():
-        return [f"データディレクトリが存在しません: {target_dir}"]
     if not target_dir.is_dir():
-        return [f"指定されたパスはディレクトリではありません: {target_dir}"]
+        return []
+
+    if extension is not None:
+        suffixes: tuple[str, ...] = (extension,)
+    elif all_files:
+        suffixes = ()
+    else:
+        suffixes = ANALYSABLE_EXTENSIONS
 
     file_paths = []
     for file in target_dir.iterdir():
-        if file.is_file():
-            if extension is None or str(file).endswith(extension):
-                file_paths.append(str(file.absolute()))
-
-    if not file_paths:
-        return [f"条件に一致するファイルが存在しません。 (ディレクトリ: {target_dir}, 拡張子: {extension})"]
-
+        if not file.is_file():
+            continue
+        if suffixes and not str(file).endswith(suffixes):
+            continue
+        file_paths.append(str(file.absolute()))
     return file_paths
+
+
+def _resolve_data_file(
+    extension: str,
+    file_path: str | None = None,
+    prefer_suffix: str | None = None,
+) -> str | None:
+    """拡張子から解析対象ファイルを1つ選ぶ（全リゾルバの共通実装）。
+
+    明示パスがあればそれを優先し、無ければ (1) 複数バッチ混在なら最新バッチへ絞り、
+    (2) `prefer_suffix` に一致するものがあればそちらを優先し、(3) 重複時は最新版を
+    採る。この 3 段は形式によらず同じなので、拡張子と優先条件だけを変えて共有する。
+    """
+    if file_path and os.path.exists(file_path):
+        return file_path
+
+    real_paths = [p for p in list_data_files(extension=extension) if os.path.isfile(p)]
+    if not real_paths:
+        return None
+    real_paths = _select_latest_batch(real_paths)  # 複数バッチ混在時は最新バッチへ
+    if prefer_suffix:
+        preferred = [p for p in real_paths if p.lower().endswith(prefer_suffix)]
+        if preferred:
+            return _pick_latest(preferred)
+    return _pick_latest(real_paths)  # 重複時は最新版
 
 
 def resolve_arf_file_path(file_path: str | None = None) -> str | None:
@@ -149,54 +194,17 @@ def resolve_arf_file_path(file_path: str | None = None) -> str | None:
     PCA等に使うサンプル別強度を持つのは **PeakProperties.arf** の方。両者がある場合は
     PeakProperties.arf を自動選択する（無ければ先頭にフォールバック）。
     """
-    if file_path and os.path.exists(file_path):
-        return file_path
-
-    file_paths = list_data_files(extension=".arf")
-    if not file_paths or not isinstance(file_paths, list):
-        return None
-    # list_data_files はファイル不在時にエラーメッセージ文字列を1要素で返すため、
-    # 実在するファイルパスだけに絞る（メッセージをパスとして掴まないように）。
-    real_paths = [p for p in file_paths if os.path.isfile(p)]
-    if not real_paths:
-        return None
-    # 複数日付（複数バッチ）が混在していれば最新バッチに絞る。
-    real_paths = _select_latest_batch(real_paths)
-    # 重複（旧版/新版）があれば最新版を選ぶ。PeakProperties を優先したうえで最新を採用。
-    preferred = [p for p in real_paths if p.lower().endswith("peakproperties.arf")]
-    if preferred:
-        return _pick_latest(preferred)
-    return _pick_latest(real_paths)
+    return _resolve_data_file(".arf", file_path, prefer_suffix="peakproperties.arf")
 
 
 def resolve_arf2_file_path(file_path: str | None = None) -> str | None:
     """.arf2ファイルのパスを解決するヘルパー"""
-    if file_path and os.path.exists(file_path):
-        return file_path
-
-    file_paths = list_data_files(extension=".arf2")
-    if not file_paths or not isinstance(file_paths, list):
-        return None
-    real_paths = [p for p in file_paths if os.path.isfile(p)]
-    if not real_paths:
-        return None
-    real_paths = _select_latest_batch(real_paths)  # 複数バッチ混在時は最新バッチへ
-    return _pick_latest(real_paths)  # 重複時は最新版
+    return _resolve_data_file(".arf2", file_path)
 
 
 def resolve_eicaef_file_path(file_path: str | None = None) -> str | None:
     """EIC.aefファイルのパスを解決するヘルパー"""
-    if file_path and os.path.exists(file_path):
-        return file_path
-
-    file_paths = list_data_files(extension=".EIC.aef")
-    if not file_paths or not isinstance(file_paths, list):
-        return None
-    real_paths = [p for p in file_paths if os.path.isfile(p)]
-    if not real_paths:
-        return None
-    real_paths = _select_latest_batch(real_paths)  # 複数バッチ混在時は最新バッチへ
-    return _pick_latest(real_paths)  # 重複時は最新版
+    return _resolve_data_file(".EIC.aef", file_path)
 
 
 def resolve_pai2_file_path(file_path: str | None = None) -> str | None:
@@ -204,17 +212,7 @@ def resolve_pai2_file_path(file_path: str | None = None) -> str | None:
 
     複数日付（複数バッチ）が混在していても最新バッチの .pai2 を自動選択する。
     """
-    if file_path and os.path.exists(file_path):
-        return file_path
-
-    file_paths = list_data_files(extension=".pai2")
-    if not file_paths or not isinstance(file_paths, list):
-        return None
-    real_paths = [p for p in file_paths if os.path.isfile(p)]
-    if not real_paths:
-        return None
-    real_paths = _select_latest_batch(real_paths)  # 複数バッチ混在時は最新バッチへ
-    return _pick_latest(real_paths)  # 重複時は最新版
+    return _resolve_data_file(".pai2", file_path)
 
 
 def resolve_dcl_file_path(file_path: str | None = None) -> str | None:
@@ -224,17 +222,7 @@ def resolve_dcl_file_path(file_path: str | None = None) -> str | None:
     特定サンプルの MS/MS が欲しいときは file_path を明示するか、.pai2 と同名の
     兄弟ファイルを引く dcl_reader.find_dcl_for_pai2 を使う。
     """
-    if file_path and os.path.exists(file_path):
-        return file_path
-
-    file_paths = list_data_files(extension=".dcl")
-    if not file_paths or not isinstance(file_paths, list):
-        return None
-    real_paths = [p for p in file_paths if os.path.isfile(p)]
-    if not real_paths:
-        return None
-    real_paths = _select_latest_batch(real_paths)  # 複数バッチ混在時は最新バッチへ
-    return _pick_latest(real_paths)  # 重複時は最新版
+    return _resolve_data_file(".dcl", file_path)
 
 
 def _filter_arf_spots(

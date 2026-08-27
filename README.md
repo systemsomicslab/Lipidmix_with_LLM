@@ -11,19 +11,21 @@ Python prototypes for parsing, analyzing, and exposing MS-DIAL lipidomics data t
 - `lipidmix/msdial/classes.py` - Reads user-defined Class ID values (`AnalysisFileClass`) from `.mddata`, resolves `.mddata` from `.mdproject` or the ARF directory, and filters ARF sample rows before PCA.
 - `lipidmix/arf2/reader.py` - `.arf2` parser and text summary generator.
 - `lipidmix/eic/reader.py` - `.EIC.aef` parser with EIC summaries and m/z or RT search helpers.
-- `lipidmix/plots/eic.py` - Builds the renderer-neutral `lipidmix.eic.v1` line-plot payload and renders it with matplotlib only for an explicitly requested PNG save.
-- `lipidmix/plots/volcano.py` - Builds the renderer-neutral `lipidmix.volcano.v1` scatter payload from the latest two-group differential result, keeping every `up`/`down` point and thinning only `ns` points.
+- `lipidmix/plots/eic.py` - Builds the renderer-neutral `lipidmix.eic.v1` line-plot payload and renders it with matplotlib when an image is requested (the default for `eic_plot_compounds`) or a PNG is saved.
+- `lipidmix/plots/volcano.py` - Builds the renderer-neutral `lipidmix.volcano.v1` scatter payload from the latest two-group differential result (keeping every `up`/`down` point and thinning only `ns` points), and renders the same data with matplotlib for `arf_plot_volcano`'s image mode and `save_volcano_figure`.
+- `lipidmix/plots/render.py` - Turns a matplotlib figure into PNG bytes for the image-returning tools. Image cost scales with pixel count (roughly `width x height / 750` tokens), so the default dpi is deliberately low.
+- `lipidmix/core/serialization.py` - `json_payload()` (minimal-token JSON: no `indent`, no ASCII escaping) and `round_floats()`. Every tool result ends up in an LLM's context, so the server never pretty-prints.
 - `lipidmix/pai2/reader.py` - `.pai2` parser with feature filtering, PCA summaries, top-contributor extraction, and metabolite detail lookup.
 - `lipidmix/dcl/reader.py` - `.dcl` (MSDecResult) parser. Reads MS-DIAL's custom binary deconvoluted MS/MS spectra (not msgpack/lz4), and can attach those spectra to `.pai2` peaks by index (`attach_msms_to_features`).
 - `lipidmix/core/data_config.py` - Single source of truth for the data search directory. Returns `<project>/data` by default, or the path in the `LIPIDMIX_DATA_DIR` environment variable when set. Used by `server.py` and all `*_reader` parsers.
 - `check.py` - Scratch / pseudo-workspace for temporary experiments and quick code verification. Treat it as a throwaway sandbox: write exploratory code here, and once something works, copy the good code into its proper module and clear `check.py` back out. Nothing should depend on `check.py`, and it is not expected to retain content between tasks.
-- `docs/HISTRY.md` - Development and fact log. Record the timeline of work, findings from investigations, and design decisions here. Fine-grained development history goes in this file.
-- `docs/task.md` - Task management. Track development progress, plans, and task status (`TODO`/`DOING`/`DONE`/`HOLD`) here. Detailed facts behind each task live in `docs/HISTRY.md`.
+- `docs/HISTRY.md` - Development and fact log. Record the timeline of work, findings from investigations, and design decisions here. Fine-grained development history goes in this file. **Untracked (local-only log)** - it is listed in `.gitignore`, so a clean checkout does not contain it.
+- `docs/task.md` - Task management. Track development progress, plans, and task status (`TODO`/`DOING`/`DONE`/`HOLD`) here. Detailed facts behind each task live in `docs/HISTRY.md`. **Untracked (local-only)**, like `HISTRY.md`.
 - `docs/schema/*.md` - MS-DIAL C# MessagePack schema definitions used as the authoritative index reference for the binary parsers: `AlignmentSpotProperty.md` (→ `.arf2`), `AlignmentChromPeakFeature.md` (→ `.arf` per-sample rows), `ChromatogramPeakFeature.md` (→ `.pai2`). These are the only first-hand record of the MessagePack key numbers; consult them before changing any reader's index constants.
 - `data/` - Default MS-DIAL data directory used by the parsers and MCP tools. Override with the `LIPIDMIX_DATA_DIR` environment variable to point the parsers and `server.py` at any MS-DIAL output folder (e.g. the folder holding the raw acquisition files). All file discovery goes through `lipidmix.core.data_config.get_data_dir()`.
-- `*.png`, `pca_result.json`, `output_peaks.csv` - Generated analysis artifacts from prior runs.
+- `archives/` - Reference-only holding area for the 2026-07 local-LLM agent (`local_llm_agent/`) and interpretation-quality evaluation code (`interp_eval/`, plus the kidney-aging evaluation outputs). The live server does not import any of it. Untracked.
 - `knowledge/`, `playbook/`, `analyses/` - Accumulation layer. `knowledge/` holds literature-derived notes (citation required), `playbook/` holds reusable analysis workflows, and `analyses/` holds per-experiment objective records. See `docs/HISTRY.md` (2026-06-13).
-- `tests/` - Unit tests (`python -m unittest discover -s tests -t .`, run from the repo root). The parser modules live under `lipidmix/<format>/reader.py`; only `server.py` and `check.py` remain at the repo root.
+- `tests/` - Unit tests (`python -m pytest tests -q`, run from the repo root; 563 tests). `python -m unittest discover -s tests -t .` also works but collects 5 fewer - it cannot pick up the plain function tests in `tests/test_server_registration.py`. The parser modules live under `lipidmix/<format>/reader.py`; only `server.py` and `check.py` remain at the repo root.
 - `lipidmix/` - 実装本体。入力形式ごと（`arf/` `arf2/` `pai2/` `dcl/` `eic/`）に
   パーサ（`reader.py`）と MCP ツール（`tools.py`）を置き、形式に依存しない数値処理を
   `analysis/`、レンダラ中立の描画 payload を `plots/`、FastMCP インスタンスと
@@ -46,7 +48,7 @@ The current Python workflow targets these MS-DIAL outputs:
 
 MS-DIAL のアラインメント結果は「**個別測定 → サンプル別ピーク → スポット代表**」の3層に分かれ、
 さらに MS/MS スペクトル本体は別ファイル（`.dcl`）に格納される。各パーサが取得できる情報は以下の通り。
-各ファイルが対応する C# スキーマ（Key インデックスの正解表）は `docs/*.md` を参照。
+各ファイルが対応する C# スキーマ（Key インデックスの正解表）は `docs/schema/*.md` を参照。
 
 ### `lipidmix/arf/reader.py` — `.arf`（アライン後・サンプル別ピーク / `AlignmentChromPeakFeature`）
 
@@ -163,7 +165,17 @@ numpy
 matplotlib
 pandas
 scikit-learn
+scipy
+pygoslin
+httpx
+plotly
+python-dotenv
 ```
+
+On the development machine these are installed in `C:/Python314`, which is the
+interpreter `.mcp.json` and `.vscode/mcp.json` point at. `.venv-1/` is a separate
+environment left over from the 2026-07 local-LLM experiments and is not used for
+normal development or testing.
 
 ## FastMCP server
 
@@ -183,7 +195,7 @@ For team use, keep this server local on each member's machine and point only
 Available MCP tools include:
 
 - `load_dataset(directory=None)` - Entry point. Given an MS-DIAL output folder, runs the standard initial analysis (arf2 overview -> arf PCA), auto-selecting the latest `*PeakProperties.arf` when duplicates exist, and primes the session. When the folder mixes files from several MS-DIAL runs (multiple dates/batches), every resolver auto-selects the **latest batch** by the `AlignmentResult_<timestamp>` embedded in the filenames (across `.arf`/`.arf2`/`.pai2`/`.aef`); `load_dataset` reports which batch it chose and skips older ones.
-- `list_data_files(extension=None, directory=None)` - List files in the given `directory` (defaults to the configured data directory: `LIPIDMIX_DATA_DIR` or `<project>/data`), optionally filtered by extension.
+- `list_data_files(extension=None, directory=None, all_files=False)` - List files in the given `directory` (defaults to the configured data directory: `LIPIDMIX_DATA_DIR` or `<project>/data`), grouped by extension. By default only the extensions this server can parse are listed (`.arf`, `.arf2`, `.pai2`, `.dcl`, `.EIC.aef`, `.mddata`, `.mdproject`) — an MS-DIAL folder is mostly raw acquisition files (`.wiff` and friends), which made this tool's result 47,000 characters on real data. Pass `all_files=True` to see everything, or `extension` to narrow further.
 - `pai2_parser(file_path, filter_threshold=None)` - Parse one `.pai2` (a single measurement file's peak list) and return a peak-inventory summary: annotation counts, m/z / RT / height / S/N distributions, and top peaks by height. No PCA — PAI2 is a single sample, so cross-sample (omics) PCA is not meaningful here; use ARF/ARF2 for multi-sample multivariate analysis. MS/MS lives in the sibling `.dcl` (`dcl_index` matches list order) and is **attached automatically** — the result reports it under `summary.msms_attachment`.
 - `dcl_parser(file_path=None, top_n_peaks=None, preview=5)` - Parse one `.dcl` (MSDecResult: deconvoluted MS/MS) and return an inventory summary plus the leading results with their top fragments. `top_n_peaks` defaults to 10; pass `0` for every fragment.
 - `dcl_find_msms(precursor_mz, file_path=None, rt=None, mz_tol=0.01, rt_tol=0.2, top_n_peaks=None)` - Look up the MS/MS for a precursor m/z (optionally disambiguated by RT) to check whether the fragments an annotation predicts are actually present. A `not_found` result means "no MS/MS was acquired here", **not** "the fragments are absent".
@@ -200,7 +212,7 @@ Available MCP tools include:
 - `arf2_annotate_identities(file_path=None, max_rows=50)` - Offline identity standardization for the ARF2 spot catalog: GOSLIN-normalized name, bundled RefMet name / LIPID MAPS category, and a conservative MSI level per spot. (`verify_peak_annotation` also gains an `identity_normalization` block combining GOSLIN + reference mapping + an MSI-level heuristic that never asserts Level 1.)
 - `eic_parser(file_path=None)` - Parse and summarize `.EIC.aef`.
 - `eic_rank_by_max_intensity(file_path=None, top_n=20)` - Return EIC spots ranked by intensity (each sample's max chromatogram intensity, taken across samples). Replaces the old `eicaef_top_peak_tops`, which ranked by `peak_top` (a retention-time coordinate, not intensity).
-- `eic_search_by_mz_range(file_path=None, min_mz=0.0, max_mz=1000.0, max_results=20)` - Search EIC spots by m/z range.
+- `eic_search_by_mz_range(file_path=None, min_mz=0.0, max_mz=1500.0, max_results=20)` - Search EIC spots by m/z range. The default upper bound is 1500 because TG, DGDG, AHexCer and CL species sit above m/z 1000 (13% of the spots in a real liver POS dataset, most of them annotated).
 - `eic_search_by_rt_range(file_path=None, min_rt=0.0, max_rt=20.0, max_results=20)` - Search EIC spots by retention-time range.
 
 Objective lifecycle and gap-driven literature discovery (see `docs/HISTRY.md`):
@@ -218,11 +230,11 @@ Analysis/interpretation report recording:
 - `write_report(analysis_id, dataset, body, status="draft", knowledge_refs=None)` - Overwrite the analysis/interpretation report at `<analysis-folder>/reports/<analysis_id>.md` (falls back to `LIPIDMIX_REPORTS_DIR`, default `<project>/reports`, when the data folder is read-only). `body` is the Markdown body; recommended sections are `## 目的` / `## 実施した解析` / `## 主要な所見` / `## 解釈` / `## 注意点・コンフリクト` / `## 結論`. Keyed by `analysis_id` to the objective record.
 - `read_report(analysis_id)` - Read back a past report (analysis folder then fallback) for session continuity.
 - `list_reports()` - One-line index (analysis_id / date / status) of existing reports.
-- `arf_plot_volcano(max_points=3000, title=None)` - Return the latest two-group differential result as a renderer-neutral `lipidmix.volcano.v1` payload. Read-only, writes no file. `up`/`down` points are always complete; only `ns` points are thinned, and every count is reported in `selection`.
+- `arf_plot_volcano(max_points=800, title=None, output=None)` - Show the latest two-group volcano. Read-only, writes no file. **By default it returns a server-rendered PNG plus a one-line caption carrying the up/down/ns counts** — a coordinate payload costs tens of thousands of tokens and an LLM cannot read a point cloud. Pass `output="payload"` (or set `LIPIDMIX_PLOT_OUTPUT=payload` for a client that draws its own interactive chart) to get the renderer-neutral `lipidmix.volcano.v1` payload instead; there, `up`/`down` points are always complete, only `ns` points are thinned, and every count is reported in `selection`.
 - `save_pca_figure(analysis_id, title=None)` - Only when the user explicitly requests PNG output, render the latest session PCA result to `reports/figures/<analysis_id>_pca.png` and return a relative path to embed as `![PCA](figures/<analysis_id>_pca.png)`.
-- `save_volcano_figure(analysis_id, title=None)` - Only when the user explicitly requests PNG output, render the latest two-group differential result as a volcano plot to `reports/figures/<analysis_id>_volcano.png`. Unlike `arf_plot_volcano`, this draws every feature without thinning.
+- `save_volcano_figure(analysis_id, title=None)` - Only when the user wants the PNG written to a file (for embedding in a report), render the latest two-group differential result to `reports/figures/<analysis_id>_volcano.png`. It shares its drawing code with `arf_plot_volcano`'s image mode, so the two figures match.
 - `eic_plot_chromatograms(spot_id, file_path=None, file_ids=None, normalize="none", title=None)` - Read selected traces for one CSS1 EIC spot by direct pointer-table access and return structured `lipidmix.eic.v1` plot information. The tool does not render or write an image; each MCP client chooses its own UI renderer.
-- `eic_plot_compounds(file_id, names=None, ontologies=None, file_path=None, arf2_path=None, normalize="none", top_n=24, title=None)` - Overlay several identified compounds' EIC traces for ONE sample and return structured `lipidmix.eic.multi.v1` plot information. Compounds are selected from ARF2 `Name` (case-insensitive substring) and `Ontology` (exact), and each `AlignmentID` is verified against the EIC spot RT and m/z; anything excluded is listed with a reason in `selection.dropped`. The tool renders no image and writes no file.
+- `eic_plot_compounds(file_id, names=None, ontologies=None, file_path=None, arf2_path=None, normalize="none", top_n=8, title=None, output=None)` - Overlay several identified compounds' EIC traces for ONE sample. **By default it returns a server-rendered PNG plus a one-line caption**; pass `output="payload"` (or set `LIPIDMIX_PLOT_OUTPUT=payload`) for the structured `lipidmix.eic.multi.v1` plot information. Compounds are selected from ARF2 `Name` (case-insensitive substring) and `Ontology` (exact), and each `AlignmentID` is verified against the EIC spot RT and m/z; anything excluded is listed with a reason in `selection.dropped`. The tool renders no image and writes no file.
 - `save_eic_figure(analysis_id, title=None)` - Only when the user explicitly requests PNG output, render the latest EIC plot payload to `reports/figures/<analysis_id>_eic.png`. This is a separate write operation from interactive plotting.
 
 The server also exposes MCP **resources**: `lipidmix://docs/output-format` (the shared ontology core) and `lipidmix://docs/output-format/{topic}` for `arf`, `arf2`, `pai2`, `dcl`, `eic`, `identity` (per-parser field definitions, fetched on demand — parser output carries a pointer to its own topic until it has been read), `lipidmix://knowledge/index` and `lipidmix://playbook/index` (dynamic, one line per note), `lipidmix://{knowledge,playbook}/expand/{slug}` (a note plus its 1-hop `[[link]]` neighbors within a structural budget), and `lipidmix://knowledge/inbox` (pending discovery notes awaiting review).
@@ -288,17 +300,21 @@ python -m lipidmix.arf2.reader
 Run the unit tests:
 
 ```bash
-python -m unittest discover -s tests -t .
+python -m pytest tests -q
 ```
 
 ## Data and output conventions
 
-- Put MS-DIAL example files in `data/` when using the MCP server defaults.
+- Put MS-DIAL example files in `data/` when using the MCP server defaults, or point `LIPIDMIX_DATA_DIR` at any MS-DIAL output folder.
 - The parser scripts can also accept explicit paths where implemented.
-- Generated plots and CSV/JSON outputs are written to the current working directory unless an output path is provided.
-- The repository already contains several generated artifacts, including `pca_plot.png`, `sample_scores.png`, `ether_pe_grouped.png`, `pca_result.json`, and `output_peaks.csv`.
+- CLI runs write plots and CSV/JSON to the current working directory unless an output path is provided. No generated artifacts are checked in.
+- MCP figure tools (`save_pca_figure` / `save_volcano_figure` / `save_eic_figure`) write under `reports/figures/` next to the analysis record, falling back to `LIPIDMIX_REPORTS_DIR` (default `<project>/reports`) when the data folder is read-only.
+- `data/`, `analyses/`, `archives/`, and `docs/HISTRY.md` / `docs/task.md` are untracked; `knowledge/` tracks only the seed notes. A clean checkout will not have them.
 
 ## Current caveats
 
-- `server.py` is the single MCP entry point. (The former `fastmcp_msdial_cli.py` stub, which imported a non-existent `msdial_reader` module, has been removed.)
-- Some scripts are development utilities and may assume files exist in `data/` or use hard-coded example search paths.
+- `server.py` is the single MCP entry point and must stay at the repo root, because `.mcp.json` and `.vscode/mcp.json` reference it by absolute path.
+- Mutable state (`DATA_DIR`, `KNOWLEDGE_DIR`, `ANALYSES_DIR`, `session`) is canonical in `lipidmix.core.mcp_core` / `lipidmix.core.session_state`. The names re-exported from `server` are read-only bindings, so patch the canonical module instead.
+- Multi-group one-way ANOVA in `arf_differential` is deliberately disabled: MS-DIAL metadata carries no factor→level mapping. Carve out two groups instead.
+- `archives/` holds the 2026-07 local-LLM agent and interpretation-quality evaluation code, kept for reference only. Nothing in the live server imports it, and it needs extra `PYTHONPATH` entries to run.
+- Some scripts under `.debug/` are development utilities and may assume files exist in `data/` or use hard-coded example search paths.

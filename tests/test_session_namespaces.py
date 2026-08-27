@@ -141,12 +141,12 @@ class TestPai2ParserPreservesArfState(Pai2ArfIsolationTestCase):
     def test_arf_list_sample_roles_still_runs_after_pai2_parser(self):
         self.prime_completed_arf_analysis()
         self.run_pai2_parser()
-        out = json.loads(server.arf_list_sample_roles())
-        self.assertNotEqual(
-            out.get("status"),
-            "error",
+        out = server.arf_list_sample_roles()
+        self.assertNotIn(
+            "missing_state", out,
             "pai2_parser 後に ARF のサンプル一覧が引けなくなっている",
         )
+        self.assertIn("# サンプル役割一覧", out)
 
 
 class TestPai2ToolsUseTheirOwnState(Pai2ArfIsolationTestCase):
