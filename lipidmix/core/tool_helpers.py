@@ -122,6 +122,40 @@ def _pca_scatter_arrays(plot: dict):
     )
 
 
+#: PCA スコア座標の丸め桁数。散布図の位置にも群分離の判断にも 4 桁で足りる。
+_PCA_DIGITS = 4
+
+
+def _pca_points(
+    pca_result: dict,
+    sample_names: list[str],
+    groups: dict[str, str | None] | None = None,
+) -> list[tuple[float, float, str, str | None]]:
+    """PC1/PC2 座標・サンプル名・群ラベルの組を返す（座標点列の唯一の生成元）。
+
+    LLM へ返す整形（`_format_pca_plot_block`）とセッション保存（`_remember_arf_pca_plot`）
+    は、キー名が違うだけの同じ点列を作っていた。片方だけ直すと図と保存結果がずれるため、
+    生成はここに一本化して各所は射影するだけにする。
+    """
+    coords = pca_result.get("components", [])
+    groups = groups or {}
+    points = []
+    for index, name in enumerate(sample_names):
+        if index < len(coords) and len(coords[index]) >= 2:
+            points.append((
+                round(float(coords[index][0]), _PCA_DIGITS),
+                round(float(coords[index][1]), _PCA_DIGITS),
+                name,
+                groups.get(name),
+            ))
+    return points
+
+
+def _pca_axis_labels(pca_result: dict) -> tuple[str, str]:
+    evr = pca_result["explained_variance_ratio"]
+    return f"PC1 ({evr[0] * 100:.2f}%)", f"PC2 ({evr[1] * 100:.2f}%)"
+
+
 def _remember_arf_pca_plot(
     pca_result: dict,
     sample_names: list[str],
@@ -129,20 +163,17 @@ def _remember_arf_pca_plot(
     groups: dict[str, str | None] | None = None,
 ) -> None:
     """ARF系PCAのサンプル別スコアを session_state.session.arf.last_pca_plot に保存する。"""
-    coords = pca_result.get("components", [])
-    evr = pca_result["explained_variance_ratio"]
-    groups = groups or {}
+    x_label, y_label = _pca_axis_labels(pca_result)
     points = []
-    for i, name in enumerate(sample_names):
-        if i < len(coords) and len(coords[i]) >= 2:
-            point = {"x": float(coords[i][0]), "y": float(coords[i][1]), "label": name}
-            if groups.get(name) is not None:
-                point["group"] = groups[name]
-            points.append(point)
+    for x, y, name, group in _pca_points(pca_result, sample_names, groups):
+        point = {"x": x, "y": y, "label": name}
+        if group is not None:
+            point["group"] = group
+        points.append(point)
     session_state.session.arf.last_pca_plot = {
         "title": title,
-        "x_label": f"PC1 ({evr[0] * 100:.2f}%)",
-        "y_label": f"PC2 ({evr[1] * 100:.2f}%)",
+        "x_label": x_label,
+        "y_label": y_label,
         "points": points,
     }
 
@@ -164,7 +195,7 @@ def _format_pca_plot_block(
     """
     groups = groups or {}
     evr = pca_result["explained_variance_ratio"]
-    coords = pca_result.get("components", [])
+    x_label, y_label = _pca_axis_labels(pca_result)
     lines = [
         intro.rstrip("\n"),
         f"- {title}",
@@ -179,21 +210,12 @@ def _format_pca_plot_block(
         lines.append(f"- サンプル数: {len(sample_names)}")
 
     points = []
-    for i, name in enumerate(sample_names):
-        if i < len(coords) and len(coords[i]) >= 2:
-            point = {
-                "pc1": round(float(coords[i][0]), 4),
-                "pc2": round(float(coords[i][1]), 4),
-                "sample": name,
-            }
-            if groups.get(name) is not None:
-                point["group"] = groups[name]
-            points.append(point)
-    plot_data = {
-        "x_label": f"PC1 ({evr[0] * 100:.2f}%)",
-        "y_label": f"PC2 ({evr[1] * 100:.2f}%)",
-        "points": points,
-    }
+    for x, y, name, group in _pca_points(pca_result, sample_names, groups):
+        point = {"pc1": x, "pc2": y, "sample": name}
+        if group is not None:
+            point["group"] = group
+        points.append(point)
+    plot_data = {"x_label": x_label, "y_label": y_label, "points": points}
     lines.append(
         "- 上記座標から散布図を描画してください（group があれば群ごとに色分け・凡例付き）。"
         "PNG が必要なときのみ save_pca_figure を実行します。"

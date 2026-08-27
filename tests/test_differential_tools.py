@@ -260,13 +260,20 @@ class TestTopHitAnnotation(unittest.TestCase):
         self.assertEqual(top["name_source"], "arf")
 
     def test_falls_back_to_arf2_catalog(self):
+        import tempfile
+        from pathlib import Path
+
         session_state.session.arf.features = [{"MasterAlignmentID": 474, "Name": "Unknown"}]
         arf2_spots = [{"MasterAlignmentID": 474,
                        "Name": "SL 33:0;O|SL 17:0;O/16:0", "Ontology": "SL"}]
-        with mock.patch.object(tools_arf, "_sibling_arf2_path", return_value="dummy.arf2"), \
-             mock.patch("builtins.open", mock.mock_open(read_data=b"")), \
-             mock.patch("lipidmix.arf2.reader.deserialize", return_value=arf2_spots):
-            out = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        # 実ファイルを置く。読み出しは load_catalog 経由（パス+mtime+サイズをキーに
+        # 再パースを避けるキャッシュ）で、実在しないパスは stat の時点で落ちる。
+        with tempfile.TemporaryDirectory() as tmp:
+            sibling = Path(tmp) / "AlignmentResult_2026_01_01_00_00_00.arf2"
+            sibling.write_bytes(b"")
+            with mock.patch.object(tools_arf, "_sibling_arf2_path", return_value=sibling), \
+                 mock.patch("lipidmix.arf2.reader.deserialize", return_value=arf2_spots):
+                out = json.loads(server.arf_differential(group_a="A", group_b="B"))
         top = out["summary"]["top"][0]
         self.assertEqual(top["name"], "SL 33:0;O|SL 17:0;O/16:0")
         self.assertEqual(top["ontology"], "SL")

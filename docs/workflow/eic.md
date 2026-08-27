@@ -70,7 +70,8 @@ flowchart TD
 状態変更: `session` に `lipidmix.eic.v1` payload を記録。画像は作らない。
 
 `file_ids` で最大 12 試料まで選べる。1 スポット分だけを CSS1 から直接読むので、
-`session.eic` の全件ロードは経由しない。
+`session.eic` の全件ロードは経由しない。座標は 4 桁に丸めて返す（RT 0.0001 分・
+m/z 4 桁で図にも解釈にも足り、float の既定 repr の 17 桁は空白同然のため）。
 
 1. lipidmix/eic/tools.py  eic_plot_chromatograms()
 2. └─ lipidmix/core/path_resolvers.py  resolve_eicaef_file_path()
@@ -80,18 +81,24 @@ flowchart TD
 ## eic_plot_compounds
 
 前提: 描画対象の脂質名/オントロジーと `file_id`（**1 試料分だけ**を重ねる）
-状態変更: `session` に `lipidmix.eic.multi.v1` payload を記録。画像は作らない。
+状態変更: `session` に `lipidmix.eic.multi.v1` payload を記録。ファイルは書かない。
+
+**既定は画像**（`output="image"`）。サーバ側で描いた PNG を、何を描き何を落としたかを
+書いた 1 行のキャプションと一緒に返す。点列が要るクライアントは `output="payload"` か
+env `LIPIDMIX_PLOT_OUTPUT=payload`（[plots.md](plots.md) 参照）。重ねる本数の既定は
+8 本 —— それ以上は 1 枚の図として判読できず、payload も比例して膨らむ。
 
 ARF2 の同定候補を rt/mz で照合し、外れた物質は `selection.dropped` に理由付きで残る。
-照合（手順 9）は候補選抜の中ではなく payload 組み立ての中で走る —— 実際に読み出した
+照合（手順 10）は候補選抜の中ではなく payload 組み立ての中で走る —— 実際に読み出した
 EIC スポットと突き合わせないと検証にならないため。
 
 1. lipidmix/eic/tools.py  eic_plot_compounds()
-2. └─ lipidmix/core/path_resolvers.py  resolve_eicaef_file_path()
-3. └─ lipidmix/core/path_resolvers.py  resolve_arf2_file_path()
-4. └─ lipidmix/eic/identity_map.py  load_arf2_records()
-5. │  └─ lipidmix/arf2/reader.py  deserialize()
-6. └─ lipidmix/eic/identity_map.py  select_identity_candidates()
-7. └─ lipidmix/eic/reader.py  read_eic_spots_css1()
-8. └─ lipidmix/plots/eic.py  build_multi_compound_plot_payload()
-9. │  └─ lipidmix/eic/identity_map.py  verify_spot_match()
+2. └─ lipidmix/plots/render.py  resolve_plot_output()
+3. └─ lipidmix/core/path_resolvers.py  resolve_eicaef_file_path()
+4. └─ lipidmix/core/path_resolvers.py  resolve_arf2_file_path()
+5. └─ lipidmix/eic/identity_map.py  load_arf2_records()
+6. │  └─ lipidmix/arf2/reader.py  load_catalog()
+7. └─ lipidmix/eic/identity_map.py  select_identity_candidates()
+8. └─ lipidmix/eic/reader.py  read_eic_spots_css1()
+9. └─ lipidmix/plots/eic.py  build_multi_compound_plot_payload()
+10. │  └─ lipidmix/eic/identity_map.py  verify_spot_match()

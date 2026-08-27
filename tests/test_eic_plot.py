@@ -1,4 +1,5 @@
 import asyncio
+import json
 import builtins
 import os
 import struct
@@ -199,23 +200,27 @@ class EicPlotToolTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_returns_structured_plot_data_without_writing_png(self):
-        payload = server.eic_plot_chromatograms(
+        payload = json.loads(server.eic_plot_chromatograms(
             0, file_path=str(self.path), file_ids=[7], normalize="per_trace_max",
-        )
+        ))
         self.assertEqual(payload["plot_schema"], "lipidmix.eic.v1")
         self.assertEqual(payload["plot_type"], "line")
         self.assertEqual(payload["axes"]["x"]["unit"], "min")
         for actual, expected in zip(payload["series"][0]["x"], [3.1, 3.25, 3.4]):
             self.assertAlmostEqual(actual, expected, places=5)
         self.assertEqual(payload["series"][0]["y"], [0.5, 1.0, 0.2])
-        self.assertIs(session_state.session.eic.last_plot, payload)
+        self.assertEqual(session_state.session.eic.last_plot, payload)
         self.assertEqual(list(self.tmp.rglob("*.png")), [])
 
-    def test_fastmcp_exposes_output_schema(self):
+    def test_fastmcp_does_not_publish_an_output_schema(self):
+        """outputSchema を publish しない（structured_output=False）。
+
+        publish すると payload が content と structuredContent へ二重に載る。
+        クライアントは content のテキストから `plot_schema` を読む契約。
+        """
         tools = asyncio.run(server.mcp.list_tools())
         tool = next(item for item in tools if item.name == "eic_plot_chromatograms")
-        self.assertIsNotNone(tool.outputSchema)
-        self.assertIn("plot_schema", tool.outputSchema.get("properties", {}))
+        self.assertIsNone(tool.outputSchema)
 
     def test_png_is_written_only_by_explicit_save_tool(self):
         server.eic_plot_chromatograms(0, file_path=str(self.path), file_ids=[7])

@@ -229,9 +229,13 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 
 ### 11.2.1 `arf_plot_volcano` の返り値（`lipidmix.volcano.v1`）
 
-`arf_differential`（2群）の後に呼ぶ read-only ツール。画像は作らず、クライアントが
-そのまま描ける散布図データを返す。通常の対話描画はこちらを使い、PNG はユーザーが
-明示的に希望したときだけ `save_volcano_figure` で作る。
+`arf_differential`（2群）の後に呼ぶ read-only ツール。**既定（`output="image"`）では
+サーバ側で描いた PNG と件数入りの1行キャプションを返す**ので、以下の表は
+`output="payload"`（または env `LIPIDMIX_PLOT_OUTPUT=payload`）でクライアントが自分で
+描くときの契約。ファイルとして PNG を残したいときだけ `save_volcano_figure` を呼ぶ。
+
+画像モードでは間引きをせず全特徴を描く。**有意件数はキャプションの
+`up=` / `down=` / `ns=` を読むこと**（図の点を数えない）。
 
 | フィールド | 意味 |
 |------------|------|
@@ -247,7 +251,7 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 | `selection.plotted` | 実際に返した点数 |
 | `selection.significant_total` / `significant_plotted` | 有意点の総数と返した数。**常に一致する**（有意点は間引かない） |
 | `selection.ns_total` / `ns_plotted` | `ns` 点の総数と返した数。間引きが起きるとここが乖離する |
-| `selection.max_points` | 要求した上限点数（既定3000） |
+| `selection.max_points` | 要求した上限点数（既定800。`up`/`down` は上限に関わらず全件残る） |
 | `selection.dropped_nonfinite` | `log2fc` か `p` が有限でなく描画対象外にした件数。**「有意でない」という意味ではない**（分散0・欠損・片群のみ検出などで検定不能だったもの） |
 
 `selection.plotted < selection.total` のとき、図は全点ではない。有意件数の判断は必ず

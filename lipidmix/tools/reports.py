@@ -5,8 +5,6 @@ write/read/list_reports, save_pca_figure, save_volcano_figure, save_eic_figure�
 session_state / tool_helpers / knowledge_store / matplotlib。
 tools_* / server は import しない。
 """
-import math
-
 import matplotlib.pyplot as plt
 
 from lipidmix.corpus import knowledge_store
@@ -16,6 +14,7 @@ from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp, _resolve_report_dir, _report_dir_candidates, _build_report_meta
 from lipidmix.core.tool_helpers import _pca_scatter_arrays
 from lipidmix.plots.eic import render_eic_plot
+from lipidmix.plots.volcano import render_volcano_plot
 
 __all__ = [
     "write_report",
@@ -29,7 +28,7 @@ __all__ = [
 
 # --- 解析・解釈レポート（reports/<analysis_id>.md） ---
 @mcp.tool(annotations=ToolAnnotations(
-    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True), structured_output=False)
 def write_report(
     analysis_id: str,
     dataset: str,
@@ -69,7 +68,7 @@ def write_report(
     return f"レポートを保存: {path}（status={status}）。read_report('{analysis_id}') で読み戻せます。"
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def read_report(analysis_id: str) -> str:
     """過去レポートを読み戻す（候補ディレクトリ横断で最新更新のものを返す）。セッション継続用。
 
@@ -85,7 +84,7 @@ def read_report(analysis_id: str) -> str:
     return newest.read_text(encoding="utf-8")
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def list_reports() -> str:
     """既存レポートの1行索引（analysis_id / date / status）を返す。
 
@@ -114,7 +113,7 @@ def list_reports() -> str:
 
 
 @mcp.tool(annotations=ToolAnnotations(
-    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True), structured_output=False)
 def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
     """明示的なユーザー要求時だけ、直近のセッションPCA結果をPNGとして保存する。
 
@@ -155,7 +154,7 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
 
 
 @mcp.tool(annotations=ToolAnnotations(
-    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True), structured_output=False)
 def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
     """明示的なユーザー要求時だけ、直近の差次的解析を volcano プロットのPNGとして
     reports/figures/<analysis_id>_volcano.png に保存し、相対パスを返す。
@@ -178,19 +177,9 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
     figures_dir = reports_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    colors = {"up": "#c0392b", "down": "#2471a3", "ns": "#95a5a6"}
-    fig, ax = plt.subplots(figsize=(6, 5))
-    for sig in ("ns", "up", "down"):
-        pts = [p for p in last["volcano"] if p["sig"] == sig
-               and p["log2fc"] is not None and math.isfinite(p["log2fc"])
-               and math.isfinite(p["neg_log10_p"])]
-        if pts:
-            ax.scatter([p["log2fc"] for p in pts], [p["neg_log10_p"] for p in pts],
-                       s=12, c=colors[sig], label=sig, alpha=0.7)
-    ax.set_xlabel("log2 fold change")
-    ax.set_ylabel("-log10 p")
-    ax.set_title(title or f"Volcano ({last.get('a')} vs {last.get('b')})")
-    ax.legend()
+    # 描画は arf_plot_volcano（画像返し）と共有する。色や軸がツール間でずれると
+    # 「画面で見た図」と「レポートに貼った図」が別物になるため。
+    fig = render_volcano_plot(last, title=title)
     out_path = figures_dir / f"{slug}_volcano.png"
     try:
         fig.savefig(out_path, dpi=120, bbox_inches="tight")
@@ -202,7 +191,7 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
 
 
 @mcp.tool(annotations=ToolAnnotations(
-    readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True), structured_output=False)
 def save_eic_figure(analysis_id: str, title: str | None = None) -> str:
     """明示的なユーザー要求時だけ、直近EICプロット情報をPNGとして保存する。
 

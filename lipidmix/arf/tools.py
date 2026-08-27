@@ -9,7 +9,6 @@ arf_reader（arf_reader は関数内 import で、テストの patch.object(serv
 _filter_arf_spots / _pp_build_matrix はテストが差し替える対象なので、正準定義元を
 module 修飾（path_resolvers.* / tool_helpers.*）で参照し patch が確実に効くようにする。
 """
-import json
 import re
 from pathlib import Path
 
@@ -21,9 +20,13 @@ from lipidmix.analysis import preprocessing
 from lipidmix.msdial import sample_factors
 from lipidmix.core import session_state
 from lipidmix.core import tool_helpers
+from lipidmix.plots import render as plot_render
 from lipidmix.plots import volcano as volcano_plot
+from mcp.server.fastmcp import Image
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
+from lipidmix.core.serialization import json_payload
+from lipidmix.arf2.reader import format_spots_as_table
 from lipidmix.msdial.classes import assign_sample_groups, filter_arf_by_class_ids
 from lipidmix.msdial.tags import filter_arf_by_tags
 from lipidmix.core.path_resolvers import resolve_arf_file_path
@@ -40,7 +43,6 @@ from lipidmix.core.tool_helpers import (
     _format_arf_class_filter,
     _format_arf_tag_filter,
 )
-from lipidmix.plots.volcano import VolcanoPlotPayload
 
 __all__ = [
     "arf_list_tags",
@@ -59,7 +61,7 @@ __all__ = [
 # しない。ARF ツールは session_state.session.arf を更新するが、これはサーバ自身の
 # 解析セッション状態であり副作用に数えない（その依存は missing_state エンベロープで
 # 伝えるため、annotations で二重に表現しない）。
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf_list_tags() -> str:
     """List MS-DIAL tags discovered for the currently loaded ARF dataset."""
     if (
@@ -70,10 +72,10 @@ def arf_list_tags() -> str:
         return mcp_errors.missing_state(
             "arf_dataset", ["arf_parser", "load_dataset"],
             "先に arf_parser を実行してARFデータとタグファイルを読み込んでください。")
-    return json.dumps(session_state.session.arf.tag_index.get("summary", {}), ensure_ascii=False, indent=2)
+    return json_payload(session_state.session.arf.tag_index.get("summary", {}))
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf_list_classes() -> str:
     """絞り込み・群分けに使える因子トークンの一覧を返す（Class ID とサンプル名の両方）。
 
@@ -99,19 +101,25 @@ def arf_list_classes() -> str:
     names = sample_factors.arf_sample_names(session_state.session.arf.features)
     facets = sample_factors.build_sample_facets(
         names, session_state.session.arf.class_index)
-    return json.dumps({
+    return json_payload({
         "mddata_path": class_index.get("mddata_path"),
         "class_counts": class_counts,
         "factors_by_position": _class_factors_by_position(class_counts.keys()),
         "sample_token_vocabulary": sample_factors.token_vocabulary(facets),
-    }, ensure_ascii=False, indent=2)
+    })
 
 
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf_list_sample_roles() -> str:
-    """ロード済み ARF のサンプルを sample/qc/blank に分類して返す（前処理の適用前確認）。"""
+    """ロード済み ARF のサンプルを sample/qc/blank に分類し、TSV 表で返す（前処理の適用前確認）。
+
+    列は sample / role / group / batch / run_order / excluded。`group` は
+    group_levels 未指定時の既定＝完全 Class ID。`batch` は MS-DIAL に専用項目が
+    無いためファイル名中の8桁日付からの推定で、その出所（`batch_source`）は
+    全行共通なのでヘッダ行にまとめてある。
+    """
     if session_state.session.arf.filtered_features is None:
         return mcp_errors.missing_state(
             "arf_dataset", ["arf_parser", "load_dataset"],
@@ -121,10 +129,26 @@ def arf_list_sample_roles() -> str:
     counts = {"sample": 0, "qc": 0, "blank": 0}
     for m in meta.values():
         counts[m["role"]] = counts.get(m["role"], 0) + 1
-    for name, m in meta.items():
-        m["excluded"] = name in session_state.session.arf.excluded_samples
-    return json.dumps({"status": "success", "counts": counts, "samples": meta},
-                      ensure_ascii=False, indent=2)
+    # 同じ 6 キーをサンプル数ぶん繰り返す JSON より、列名 1 回の TSV のほうが安い
+    # （実データ 60 サンプルで 12,418 字 → 約 2,600 字）。
+    rows = [
+        {
+            "sample": name,
+            "role": m["role"],
+            "group": m["group"],
+            "batch": m["batch"],
+            "run_order": m["run_order"],
+            "excluded": name in session_state.session.arf.excluded_samples,
+        }
+        for name, m in meta.items()
+    ]
+    sources = {m["batch_source"] for m in meta.values() if m["batch_source"]}
+    header = (
+        f"# サンプル役割一覧: sample={counts['sample']} / qc={counts['qc']} / blank={counts['blank']}"
+        f"（計 {len(rows)} 件）\n"
+        f"# batch の出所: {', '.join(sorted(sources)) or '不明（ファイル名に日付なし）'}"
+    )
+    return f"{header}\n{format_spots_as_table(rows)}"
 
 
 def _resolve_exclude_specs(req_samples, avail_samples):
@@ -164,7 +188,7 @@ def _resolve_exclude_specs(req_samples, avail_samples):
     return matched, resolved, unmatched
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf_exclude(
     exclude_samples: list[str] | None = None,
     exclude_spots: list[int] | None = None,
@@ -226,9 +250,8 @@ def arf_exclude(
             caveats.append(
                 f"未一致スポット {unmatched_spots} は現データに存在しません（無視）。")
     else:
-        return json.dumps({"status": "error",
-                           "message": f"unknown mode: {mode!r}（add/remove/clear/list）"},
-                          ensure_ascii=False, indent=2)
+        return json_payload({"status": "error",
+                           "message": f"unknown mode: {mode!r}（add/remove/clear/list）"})
 
     pruned = exclusions.prune_spots(spots, es, esp)
     pruned_names, pruned_ids = exclusions.roster(pruned)
@@ -249,7 +272,7 @@ def arf_exclude(
     if pruned_names == set() or pruned_ids == set():
         payload["caveats"].append(
             "除外の結果、残サンプルまたは残スポットが 0 件です。PCA/差次的解析は実行できません。")
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return json_payload(payload)
 
 
 def _manual_exclusion_caveat(n_excl_samples: int, n_excl_spots: int) -> str:
@@ -266,7 +289,7 @@ def _manual_exclusion_caveat(n_excl_samples: int, n_excl_spots: int) -> str:
     return "ユーザ手動除外: 現在なし（サンプル0件・スポット0件。arf_exclude による除外は適用されていません）。"
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf_preprocess(
     normalize: str = "none",
     blank_min_fold: float | None = None,
@@ -354,12 +377,12 @@ def arf_preprocess(
     report["status"] = "success"
     report["matrix_shape"] = list(matrix2.shape)
     report["recipe"] = recipe
-    return json.dumps(report, ensure_ascii=False, indent=2)
+    return json_payload(report)
 
 
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf_pca_preprocessed(
     components: int | None = None,
     top_features: int = 10,
@@ -418,7 +441,7 @@ def arf_pca_preprocessed(
     return text
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf_parser(
     file_path: str | None = None,
     props: list[str] | None = None,
@@ -734,10 +757,8 @@ def _annotate_with_names(rows: list[dict]) -> dict:
     if not arf2_path:
         report["arf2_lookup"] = "skipped: 同一アラインメントの .arf2 が隣接していません"
         return report
-    import io as _io
-    from lipidmix.arf2.reader import deserialize as _arf2_deserialize
-    with open(arf2_path, "rb") as fh:
-        catalog = {s.get("MasterAlignmentID"): s for s in _arf2_deserialize(_io.BytesIO(fh.read()))}
+    from lipidmix.arf2.reader import load_catalog
+    catalog = {s.get("MasterAlignmentID"): s for s in load_catalog(arf2_path)}
     filled = 0
     for row in unresolved:
         spot = catalog.get(row["spot_id"])
@@ -758,7 +779,7 @@ def _annotate_with_names(rows: list[dict]) -> dict:
     return report
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf_differential(
     group_a: str | None = None,
     group_b: str | None = None,
@@ -838,8 +859,7 @@ def arf_differential(
             group_labels, resolved, resolved_samples = _pool_group_labels(
                 sample_names, group_labels, group_a, group_b)
         except ValueError as exc:
-            return json.dumps({"status": "error", "message": str(exc)},
-                              ensure_ascii=False, indent=2)
+            return json_payload({"status": "error", "message": str(exc)})
 
         # 交絡は「実際に比較した2群」に対して見る。プール前の Class ID 単位で判定すると、
         # 細粒度ラベルほど各群が単一バッチになりやすく偽の交絡警告を出す（プールすれば
@@ -934,40 +954,77 @@ def arf_differential(
                                    "PNG が必要だとユーザーが明示した場合のみ "
                                    "save_volcano_figure を実行します。"}
     else:
-        return json.dumps({"status": "error",
+        return json_payload({"status": "error",
                            "message": "group_a と group_b の両方を指定してください（2群比較）。"
                                       "完全 Class ID か因子トークン（例 group_a='24M', group_b='9w'）で"
-                                      "関心のある2群を切り出せます。多群 ANOVA は現状非対応です。"},
-                          ensure_ascii=False, indent=2)
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+                                      "関心のある2群を切り出せます。多群 ANOVA は現状非対応です。"})
+    return json_payload(payload)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf_plot_volcano(
-    max_points: int = 3000, title: str | None = None,
-) -> VolcanoPlotPayload:
-    """Return client-neutral plot data for the latest two-group volcano.
+    max_points: int = volcano_plot.DEFAULT_MAX_POINTS,
+    title: str | None = None,
+    output: str | None = None,
+) -> list | str:
+    """Show the latest two-group volcano — as a PNG image by default.
 
-    This read-only tool returns structured ``lipidmix.volcano.v1`` JSON only. It does
-    not render an image and does not write files: Use-LLLM may render the points with
-    Plotly, while Claude Desktop or another MCP client may use its own UI. Call
-    ``save_volcano_figure`` only after the user explicitly requests PNG output.
+    Run ``arf_differential`` (two-group) first. Read-only; writes no file.
 
-    Run ``arf_differential`` (two-group) first. ``up`` and ``down`` points are always
-    kept in full; only ``ns`` points are thinned to fit ``max_points``. Every count —
-    total, plotted, thinned, and dropped-as-non-finite — is reported in ``selection``,
-    so read it before concluding how many features moved.
+    ``output="image"`` (the default) renders the plot server-side and returns it as
+    an image block plus a one-line caption, so the figure appears directly in the
+    chat. ``output="payload"`` instead returns the client-neutral
+    ``lipidmix.volcano.v1`` JSON for a client that draws its own interactive chart
+    (Use-LLLM's Plotly view); the deployment default can be flipped with the
+    ``LIPIDMIX_PLOT_OUTPUT`` environment variable.
+
+    Prefer the image: the coordinate payload costs tens of thousands of tokens and
+    an LLM cannot read a point cloud usefully — the numbers you should reason about
+    (counts, top hits, caveats) are in ``arf_differential``'s own result. In payload
+    mode, ``up``/``down`` points are always kept in full and only ``ns`` points are
+    thinned to fit ``max_points``; every count is reported in ``selection``. The
+    image always draws every feature.
+
+    Call ``save_volcano_figure`` only when the user wants the PNG written to disk.
     """
     last = getattr(session_state.session.arf, "last_differential", None)
     if not last or last.get("kind") != "two_group" or not last.get("volcano"):
-        # 戻り値型が VolcanoPlotPayload（構造化）なので、失敗時に str を返すと
-        # outputSchema 導出が壊れる。例外の本文にエンベロープを載せる。
-        # FastMCP が "Error executing tool <name>: " を前置するため、
-        # クライアント側は本文中の JSON を切り出して読む必要がある。
-        raise ValueError(mcp_errors.missing_state(
+        return mcp_errors.missing_state(
             "differential_result", ["arf_differential"],
             "先に arf_differential（2群比較）を実行してください"
-            "（直近の2群差次的解析の volcano データがありません）。"))
-    return volcano_plot.build_volcano_plot_payload(
-        last, max_points=max_points, title=title,
+            "（直近の2群差次的解析の volcano データがありません）。")
+    try:
+        mode = plot_render.resolve_plot_output(output)
+    except ValueError as exc:
+        return json_payload({"status": "error", "message": str(exc)})
+    if mode == plot_render.PAYLOAD:
+        # 最小形の JSON 文字列で返す。FastMCP は dict の戻り値を indent=2 で整形する
+        # ため、数百点の payload では実測 86,403 字 → 約 5 万字の差が出る。
+        # クライアント（Use-LLLM の volcano-plot.js）は content のテキストを parse する。
+        return json_payload(volcano_plot.build_volcano_plot_payload(
+            last, max_points=max_points, title=title,
+        ))
+
+    counts = _volcano_counts(last)
+    png = plot_render.figure_to_png(volcano_plot.render_volcano_plot(last, title=title))
+    caption = (
+        f"Volcano: {last.get('a')} (n={last.get('n_a')}) vs {last.get('b')} (n={last.get('n_b')})"
+        f" — 全 {counts['total']} 特徴のうち up={counts['up']} / down={counts['down']} /"
+        f" ns={counts['ns']}（検定不能 {counts['nonfinite']} 件は非描画）。"
+        f" しきい値 q<{last.get('q_threshold')}, |log2FC|>={last.get('log2fc_threshold')}。"
+        " 個々の特徴量名と統計値は arf_differential の結果を参照。"
     )
+    return [caption, Image(data=png, format="png")]
+
+
+def _volcano_counts(last: dict) -> dict:
+    """画像のキャプション用に有意/非有意の件数を数える（図から読み取らせない）。"""
+    points = list(last.get("volcano") or [])
+    drawable = [p for p in points if volcano_plot._is_drawable(p)]
+    return {
+        "total": len(points),
+        "up": sum(1 for p in drawable if p.get("sig") == "up"),
+        "down": sum(1 for p in drawable if p.get("sig") == "down"),
+        "ns": sum(1 for p in drawable if p.get("sig") not in ("up", "down")),
+        "nonfinite": len(points) - len(drawable),
+    }

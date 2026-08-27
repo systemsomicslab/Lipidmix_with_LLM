@@ -5,8 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TypedDict
 
+from lipidmix.core.serialization import round_floats
 from lipidmix.eic.identity_map import IdentityCandidate, verify_spot_match
 from lipidmix.msdial.classes import parse_analysis_file_classes, resolve_mddata_path
+
+
+# 座標の丸め桁数。RT は分単位で 4 桁（0.0001 分 = 6 ms）あれば図も解釈も足り、
+# m/z も 4 桁が慣例。float の既定 repr は 17 桁まで出すため、1 トレース 200 点
+# × 60 サンプルでは桁の大半が無意味な尾数になる（実測 -36%）。
+POINT_DIGITS = 4
 
 
 class PlotAxis(TypedDict):
@@ -239,7 +246,7 @@ def build_eic_plot_payload(
     plot_title = title or (
         f"EIC spot {spot['spot_id']} | m/z {spot['mz']:.4f} | RT {spot['rt']:.2f} min"
     )
-    return {
+    return round_floats({
         "plot_schema": "lipidmix.eic.v1",
         "plot_type": "line",
         "title": plot_title,
@@ -270,7 +277,7 @@ def build_eic_plot_payload(
             ],
         },
         "caveats": caveats,
-    }
+    }, POINT_DIGITS)
 
 
 def _dropped(candidate: IdentityCandidate, reason: str) -> DroppedCompound:
@@ -455,7 +462,7 @@ def build_multi_compound_plot_payload(
     sample_label = str(sample_name) if sample_name else f"FileID {int(file_id)}"
     plot_title = title or f"EIC overlay | {len(series)} compounds | {sample_label}"
 
-    return {
+    return round_floats({
         "plot_schema": MULTI_PLOT_SCHEMA,
         "plot_type": "line",
         "title": plot_title,
@@ -495,7 +502,7 @@ def build_multi_compound_plot_payload(
             ],
         },
         "caveats": notes,
-    }
+    }, POINT_DIGITS)
 
 
 def render_eic_plot(payload, title: str | None = None):

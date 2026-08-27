@@ -6,7 +6,6 @@ PAI2 は単一サンプルなのでサンプル間比較（オミクス PCA）�
 tool_helpers / pai2_reader / knowledge_store。tools_* / server は import しない。
 """
 import io
-import json
 from pathlib import Path
 
 from lipidmix.corpus import knowledge_store
@@ -15,6 +14,7 @@ from lipidmix.core import mcp_errors
 from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
+from lipidmix.core.serialization import json_payload
 from lipidmix.core.path_resolvers import resolve_pai2_file_path
 from lipidmix.core.tool_helpers import _build_verification_dossier
 from lipidmix.pai2.reader import inspect_peak_details, summarize_pai2_inventory
@@ -58,7 +58,7 @@ def _attach_sibling_msms(pai2_path: str, features: list[dict]) -> dict:
     return report
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
     """1つの .pai2（単一測定ファイル）を解析し、ピーク在庫の要約を返します。
 
@@ -106,7 +106,7 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
         summary["msms_attachment"] = msms_report
         text_report = (
             f"### PAI2 解析完了: {Path(file_path).name}\n"
-            + json.dumps(summary, indent=2, ensure_ascii=False)
+            + json_payload(summary)
         )
         return session_state.session.maybe_prepend_caveat(text_report, topic="pai2")
 
@@ -114,7 +114,7 @@ def pai2_parser(file_path: str, filter_threshold: float | None = None) -> str:
         return f"[ERROR] PAI2 解析に失敗しました: {str(e)}"
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def pai2_inspect_peak(peak_id: str | None = None, peak_name: str | None = None) -> str:
     """特定のピークについて、強度・S/N・MS/MS相当の情報を返す。
 
@@ -131,10 +131,10 @@ def pai2_inspect_peak(peak_id: str | None = None, peak_name: str | None = None) 
         peak_id=peak_id,
         peak_name=peak_name,
     )
-    return json.dumps(details, indent=2, ensure_ascii=False)
+    return json_payload(details)
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def verify_peak_annotation(
     peak_id: str | None = None, peak_name: str | None = None
 ) -> str:
@@ -150,11 +150,7 @@ def verify_peak_annotation(
             "pai2_dataset", ["pai2_parser"],
             "先に pai2_parser を実行してデータを読み込んでください。")
     if peak_id is None and peak_name is None:
-        return json.dumps(
-            {"status": "error", "message": "peak_id か peak_name のいずれかを指定してください。"},
-            ensure_ascii=False,
-            indent=2,
-        )
+        return json_payload({"status": "error", "message": "peak_id か peak_name のいずれかを指定してください。"})
 
     matches = []
     for feat in session_state.session.pai2.filtered_features:
@@ -168,13 +164,9 @@ def verify_peak_annotation(
             matches.append(feat)
 
     if not matches:
-        return json.dumps(
-            {"status": "not_found", "message": "指定された代謝物がフィルタ済みデータ内に見つかりませんでした。"},
-            ensure_ascii=False,
-            indent=2,
-        )
+        return json_payload({"status": "not_found", "message": "指定された代謝物がフィルタ済みデータ内に見つかりませんでした。"})
 
     vocab = knowledge_store.load_vocab(mcp_core.KNOWLEDGE_DIR)
     dossiers = [_build_verification_dossier(feat, vocab) for feat in matches]
     payload = dossiers[0] if len(dossiers) == 1 else {"status": "success", "matches": dossiers}
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return json_payload(payload)

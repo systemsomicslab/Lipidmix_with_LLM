@@ -7,7 +7,6 @@ ARF に限らず pai2 / dcl / EIC が使える形で条件検索するための�
 deps: mcp_core / session_state / path_resolvers / sample_factors / lipidmix.msdial.classes /
 lipidmix.msdial.tags。tools_* / server は import しない（循環回避）。
 """
-import json
 from pathlib import Path
 
 from lipidmix.core import mcp_core
@@ -16,6 +15,7 @@ from lipidmix.msdial import sample_factors
 from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
+from lipidmix.core.serialization import json_payload
 from lipidmix.msdial.classes import discover_arf_class_index
 from lipidmix.msdial.tags import normalize_sample_name
 
@@ -26,7 +26,7 @@ __all__ = ["sample_search"]
 DEFAULT_EXTENSIONS = (".pai2", ".dcl")
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def sample_search(
     specs: list[str] | None = None,
     directory: str | None = None,
@@ -70,7 +70,7 @@ def sample_search(
     cleaned = [str(s) for s in specs or [] if str(s).strip()]
     if not cleaned:
         kept, dropped = _apply_role_filter(facets, roles)
-        return json.dumps({
+        return json_payload({
             "status": "success",
             "source": source,
             "directory": str(target_dir) if target_dir else None,
@@ -80,21 +80,21 @@ def sample_search(
             "excluded_by_role": sorted(dropped),
             "samples": [_describe(f, target_dir, exts) for f in kept.values()],
             "token_vocabulary": sample_factors.token_vocabulary(kept),
-        }, ensure_ascii=False, indent=2)
+        })
 
     try:
         matches, excluded = sample_factors.expand_sample_specs(
             cleaned, facets, include_roles=roles)
     except ValueError as exc:
-        return json.dumps({
+        return json_payload({
             "status": "error",
             "message": str(exc),
             "token_vocabulary": vocabulary,
-        }, ensure_ascii=False, indent=2)
+        })
 
     selected = {n for names in matches.values() for n in names}
     ordered = [f for f in facets.values() if f.name in selected]
-    return json.dumps({
+    return json_payload({
         "status": "success",
         "source": source,
         "directory": str(target_dir) if target_dir else None,
@@ -104,11 +104,11 @@ def sample_search(
         "matched": len(ordered),
         "excluded_by_role": sorted({n for names in excluded.values() for n in names}),
         "samples": [_describe(f, target_dir, exts) for f in ordered],
-    }, ensure_ascii=False, indent=2)
+    })
 
 
 def _error(message: str) -> str:
-    return json.dumps({"status": "error", "message": message}, ensure_ascii=False, indent=2)
+    return json_payload({"status": "error", "message": message})
 
 
 def _apply_role_filter(facets, roles):

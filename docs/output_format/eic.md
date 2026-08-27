@@ -83,8 +83,11 @@ PNGが必要だとユーザーが明示した場合に限り、先に得たプ�
 
 ### 8.6 `eic_plot_compounds()` の描画契約
 
-`eic_plot_compounds()` は**複数物質 × 1サンプル**のオーバーレイ用に、クライアント中立の
-構造化JSON `plot_schema="lipidmix.eic.multi.v1"` を返す。8.5節と同じく画像は作らない。
+`eic_plot_compounds()` は**複数物質 × 1サンプル**のオーバーレイを返す。**既定
+（`output="image"`）ではサーバ側で描いた PNG と、何を描き何を落としたかを書いた1行の
+キャプション**を返し、ファイルは書かない。以下の構造化JSON
+`plot_schema="lipidmix.eic.multi.v1"` は `output="payload"`（または env
+`LIPIDMIX_PLOT_OUTPUT=payload`）でクライアントが自分で描くときの契約。
 
 - **1呼び出し1サンプル**。`file_id` は必須。複数サンプルを比べるときはサンプルごとに
   呼び出し、図を並べる。1物質×全サンプルの比較は従来どおり `eic_plot_chromatograms`。
@@ -99,7 +102,7 @@ PNGが必要だとユーザーが明示した場合に限り、先に得たプ�
   EICスポットは `rt`/`mz` の一致（±0.02 min / ±0.01 Da）を検証しており、通らなかった
   物質は描画されない。除外理由は `rt_mismatch` / `mz_mismatch`（ID対応の崩れ）、
   `spot_out_of_range`、`file_id_absent`（その試料にトレースが無い）、
-  `below_top_n`（`top_n` 件からあふれた）の5種。**図に無い＝試料に無い、ではない。**
+  `below_top_n`（`top_n` 件からあふれた。既定 8 件）の5種。**図に無い＝試料に無い、ではない。**
   `dropped[]` は毎回、除外された物質を1件残らず列挙する。
 - `caveats[]` は `dropped[]` を理由ごとに1行へ要約したもの（例:
   `"below_top_n で 276 件を除外しました（詳細は selection.dropped）。"`）。ただし

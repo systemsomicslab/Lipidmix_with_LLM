@@ -78,14 +78,19 @@ class MissingStateContractTests(unittest.TestCase):
             "arf_preprocess",
         )
 
-    def test_arf_plot_volcano_puts_the_envelope_in_the_exception(self):
-        """戻り値が構造化ペイロードなので、ここだけ例外の本文にエンベロープを載せる。"""
-        with self.assertRaises(ValueError) as ctx:
-            server.arf_plot_volcano()
-        error = envelope(str(ctx.exception))
-        self.assertIsNotNone(error)
-        self.assertEqual(error["state"], "differential_result")
-        self.assertEqual(error["required_tools"], ["arf_differential"])
+    def test_arf_plot_volcano(self):
+        """他の12ツールと同じく、素の戻り値としてエンベロープを返す。
+
+        以前は outputSchema 導出のため戻り値型が構造化に固定されており、失敗時に
+        str を返せず例外の本文にエンベロープを載せていた。structured_output=False に
+        した今はその制約が無いので、例外経由の特例を廃して契約を揃えてある。
+        """
+        self.assert_missing(
+            server.arf_plot_volcano(),
+            "differential_result",
+            ["arf_differential"],
+            "arf_differential",
+        )
 
     def test_pai2_inspect_peak(self):
         self.assert_missing(

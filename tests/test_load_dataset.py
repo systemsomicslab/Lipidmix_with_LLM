@@ -281,5 +281,58 @@ class ResolveArfCrossBatchTests(unittest.TestCase):
             self.assertTrue(resolved.endswith("2026_06_01_09_00_00_PeakProperties.arf"))
 
 
+class ListDataFilesTests(unittest.TestCase):
+    """入口ツールの一覧が、解析できないファイルで文脈を埋めないことを縛る。
+
+    MS-DIAL の出力フォルダには測定生データ（.wiff / .wiff.scan / .wiff2 /
+    .timeseries.data / .txt）が同居し、実データでは 495 ファイル中 7 割以上が
+    それだった。既定でそこまで返すと入口ツールの戻り値だけで 46,977 字になる。
+    """
+
+    def setUp(self):
+        self._orig_data_dir = mcp_core.DATA_DIR
+        self._tmp = tempfile.TemporaryDirectory()
+        self.directory = Path(self._tmp.name)
+        for name in ("AlignmentResult_2026_01_01_00_00_00_PeakProperties.arf",
+                     "AlignmentResult_2026_01_01_00_00_00.arf2",
+                     "s1.pai2", "s1.dcl", "study.mddata",
+                     "s1.wiff", "s1.wiff.scan", "s1.wiff2",
+                     "s1.timeseries.data", "s1.txt", "s1_tags.xml"):
+            (self.directory / name).write_bytes(b"")
+        mcp_core.DATA_DIR = self.directory
+
+    def tearDown(self):
+        mcp_core.DATA_DIR = self._orig_data_dir
+        self._tmp.cleanup()
+
+    def test_raw_acquisition_files_are_excluded_by_default(self):
+        out = server.list_data_files()
+        for parseable in (".arf", ".arf2", ".pai2", ".dcl", ".mddata"):
+            self.assertIn(parseable, out)
+        for raw in ("s1.wiff", "s1.timeseries.data", "s1.txt"):
+            self.assertNotIn(raw, out)
+
+    def test_all_files_opts_back_in(self):
+        out = server.list_data_files(all_files=True)
+        self.assertIn("s1.wiff", out)
+
+    def test_extension_filter_still_narrows(self):
+        out = server.list_data_files(extension=".pai2")
+        self.assertIn("s1.pai2", out)
+        self.assertNotIn("s1.dcl", out)
+
+    def test_missing_directory_is_reported_not_returned_as_a_path(self):
+        """純関数側は空リストを返し、文面はツール側だけが持つ。
+
+        以前は純関数がエラー文面を1要素のリストで返しており、リゾルバ5箇所が
+        「メッセージをパスとして掴まない」よう防御していた。
+        """
+        from lipidmix.core import path_resolvers
+
+        missing = str(self.directory / "no-such-dir")
+        self.assertEqual(path_resolvers.list_data_files(directory=missing), [])
+        self.assertIn("存在しません", server.list_data_files(directory=missing))
+
+
 if __name__ == "__main__":
     unittest.main()

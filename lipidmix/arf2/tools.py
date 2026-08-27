@@ -3,20 +3,20 @@
 deps: mcp_core / session_state / path_resolvers / tool_helpers / arf2_reader /
 lipid_identity。tools_* / server は import しない。
 """
-import io
-import json
+from pathlib import Path
 
 from lipidmix.msdial import lipid_identity
 from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
+from lipidmix.core.serialization import json_payload
 from lipidmix.core.path_resolvers import resolve_arf2_file_path
 from lipidmix.core.tool_helpers import _identity_tables
 
 __all__ = ["arf2_parser", "arf2_annotate_identities"]
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf2_parser(file_path: str | None = None) -> str:
     """
     .arf2 ファイル（MS-DIALの全体カタログ）を解析し、データセットの全体像（メタデータ）を要約して返します。
@@ -28,7 +28,6 @@ def arf2_parser(file_path: str | None = None) -> str:
         return "データディレクトリに .arf2 ファイルが見つかりませんでした。"
 
     from lipidmix.arf2.reader import deserialize, generate_text_summary, summarize_arf2_data
-    from pathlib import Path
 
     try:
         # ARF2データの読み込み
@@ -59,10 +58,14 @@ def arf2_parser(file_path: str | None = None) -> str:
         return f"[ERROR] ARF2解析に失敗しました: {str(e)}"
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def arf2_annotate_identities(file_path: str | None = None, max_rows: int = 50) -> str:
     """指定/自動解決の ARF2 スポット注釈を GOSLIN 正規化・RefMet/LIPID MAPS ID・
-    MSI レベルで一括標準化して返す（オフライン、上位 max_rows 件）。
+    MSI レベルで一括標準化し、TSV 表で返す（オフライン）。
+
+    **返すのはファイル先頭から max_rows 件だけ**で、強度順でも MSI 順でもない。
+    総スポット数と残り件数はヘッダ行に出るので、カタログ全体を見たと思わないこと。
+    絞り込みには `arf_parser(annotation_keyword=...)` や `arf2_parser` の概観を使う。
 
     ARF2 には MS/MS 取得フラグ・精密質量誤差が無いため、MSI は保守的にクラス上限で
     評価する（`has_msms=False`, バンドは UNKNOWN）。より確度の高い MSI 評価は個別ピークの
@@ -70,11 +73,9 @@ def arf2_annotate_identities(file_path: str | None = None, max_rows: int = 50) -
     """
     path = resolve_arf2_file_path(file_path)
     if not path:
-        return json.dumps({"status": "error", "message": ".arf2 が見つかりません。"},
-                          ensure_ascii=False, indent=2)
-    from lipidmix.arf2.reader import deserialize as arf2_deserialize
-    with open(path, "rb") as fh:
-        spots = arf2_deserialize(io.BytesIO(fh.read()))
+        return json_payload({"status": "error", "message": ".arf2 が見つかりません。"})
+    from lipidmix.arf2.reader import format_spots_as_table, load_catalog
+    spots = load_catalog(path)
     tables = _identity_tables()
     rows = []
     for spot in spots[:max_rows]:
@@ -90,5 +91,14 @@ def arf2_annotate_identities(file_path: str | None = None, max_rows: int = 50) -
                      "refmet": block["reference"]["refmet_name"],
                      "lipid_maps_category": block["reference"]["lipid_maps_category"],
                      "msi_level": block["msi"]["level"]})
-    return json.dumps({"status": "success", "count": len(rows), "rows": rows},
-                      ensure_ascii=False, indent=2)
+    if not rows:
+        return "ARF2 にスポットがありません。"
+    # 列名を1回だけ出す TSV。同じ6キーを行数ぶん繰り返す JSON に対し、実データ
+    # 50 行で 9,145 字 → 1,387 字（-85%）になる。
+    header = (
+        f"# ARF2 同定注釈（{Path(path).name}）\n"
+        f"# 総スポット {len(spots)} 件のうち先頭 {len(rows)} 件（ファイル順・"
+        f"強度順ではない）。残り {max(0, len(spots) - len(rows))} 件は未表示。\n"
+        f"# MSI はクラス上限の保守的推定（ARF2 に MS/MS 取得フラグと質量誤差が無いため）。"
+    )
+    return f"{header}\n{format_spots_as_table(rows)}"
