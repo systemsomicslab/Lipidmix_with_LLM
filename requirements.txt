@@ -10,3 +10,4 @@ pygoslin
 httpx
 plotly
 python-dotenv
+rdkit

@@ -47,3 +47,31 @@ def missing_state(state: str, required_tools: list[str], message: str) -> str:
                 "message": message,
             }
         })
+
+
+MZTAB_ERROR_CODES = frozenset({
+    "MZTAB_NOT_FOUND",
+    "MZTAB_STRUCTURE_INVALID",
+    "QUANTIFICATION_CONFLICT",
+    "AMBIGUOUS_PRIMARY_MZTAB",
+    "UNSUPPORTED_AREA_CONSOLE",
+    "SAMPLE_DESIGN_MISSING",
+    "COMPANION_ARTIFACT_MISSING",
+    "ARTIFACT_HASH_MISMATCH",
+    "POLARITY_MISMATCH",
+})
+
+
+def mztab_error(code: str, message: str, details: dict | None = None) -> str:
+    """mzTab-M 処理固有のエラーを機械可読エンベロープで返す。
+
+    code は MZTAB_ERROR_CODES の値を使う。missing_state とは用途が異なる:
+    こちらはバリデーション失敗・契約違反のような確定エラーで、
+    「前提状態が無い」という復旧可能な状態不足とは意味が異なる。
+    """
+    if not code or not message:
+        raise ValueError("code と message は必須です。")
+    payload: dict = {"code": code, "message": message}
+    if details is not None:
+        payload["details"] = details
+    return json_payload({"error": payload})
