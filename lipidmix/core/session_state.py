@@ -278,6 +278,9 @@ class AnalysisSession:
         # 読まれるたびに増える。未読トピックのツール出力にだけ誘導1行を足す。
         self.sections_seen: set[str] = set()
 
+        # --- mzTab-M / DatasetState スロット（session.arf とは独立） ---
+        self.dataset = None  # DatasetState | None
+
     def section_hint(self, topic: str) -> str | None:
         """未読トピックなら、該当セクションを引くよう促す1行を返す。既読なら None。
 
