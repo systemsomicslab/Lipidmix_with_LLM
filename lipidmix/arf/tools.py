@@ -9,11 +9,14 @@ arf_reader（arf_reader は関数内 import で、テストの patch.object(serv
 _filter_arf_spots / _pp_build_matrix はテストが差し替える対象なので、正準定義元を
 module 修飾（path_resolvers.* / tool_helpers.*）で参照し patch が確実に効くようにする。
 """
+import math
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from lipidmix.analysis import differential
 from lipidmix.arf import exclusions
+from lipidmix.arf import identity_join
 from lipidmix.core import mcp_errors
 from lipidmix.core import path_resolvers
 from lipidmix.analysis import preprocessing
@@ -54,6 +57,7 @@ __all__ = [
     "arf_parser",
     "arf_differential",
     "arf_plot_volcano",
+    "arf_export_differential",
 ]
 
 
@@ -968,6 +972,114 @@ def arf_differential(
                                       "完全 Class ID か因子トークン（例 group_a='24M', group_b='9w'）で"
                                       "関心のある2群を切り出せます。多群 ANOVA は現状非対応です。"})
     return json_payload(payload)
+
+
+_EXPORT_COLUMNS = [
+    "spot_id", "name", "name_source", "ontology", "inchikey",
+    "inchikey_source", "msi_level", "mz", "rt", "log2fc",
+    "p_value", "q_value", "mean_a", "mean_b", "significant",
+]
+
+
+def _format_export_number(value, format_spec: str) -> str:
+    """有限の数値だけを書き出し、欠測・NaN・inf は空欄にする。"""
+    if value is None:
+        return ""
+    number = float(value)
+    if not math.isfinite(number):
+        return ""
+    return format(number, format_spec)
+
+
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+    structured_output=False)
+def arf_export_differential(output_path: str) -> str:
+    """差次的結果を InChIKey 付きの 1 ファイルへ書き出す（spec §6.1）。
+
+    先に arf_preprocess → arf_differential を実行しておくこと。同一
+    アラインメントの兄弟 .arf2 から同定情報を MasterAlignmentID で結合する。
+    濃縮解析の背景を保つため、有意な行だけでなく InChIKey が付いた全行を出す。
+    """
+    last = getattr(session_state.session.arf, "last_differential", None)
+    if not last or last.get("kind") != "two_group":
+        return mcp_errors.missing_state(
+            "two_group_differential", ["arf_differential"],
+            "先に arf_preprocess → arf_differential（2群）を実行してください。")
+
+    arf2_path = _sibling_arf2_path()
+    if not arf2_path:
+        return mcp_errors.missing_state(
+            "sibling_arf2", ["arf_parser"],
+            "同一アラインメントの .arf2 が隣接していません。InChIKey を補えないため"
+            "書き出しません（空欄のまま出すと、下流でパスウェイ無しと区別できません）。")
+
+    from lipidmix.arf2.reader import load_catalog
+    catalog = {spot.get("MasterAlignmentID"): spot
+               for spot in load_catalog(arf2_path)}
+    rows, report = identity_join.join_identity(last.get("results") or [], catalog)
+
+    q_threshold = last.get("q_threshold")
+    log2fc_threshold = last.get("log2fc_threshold")
+
+    def _is_significant(row: dict) -> bool:
+        q_value = row.get("q_value")
+        log2fc = row.get("log2fc")
+        if q_value is None or log2fc is None:
+            return False
+        if not (math.isfinite(q_value) and math.isfinite(log2fc)):
+            return False
+        return q_value <= q_threshold and abs(log2fc) >= log2fc_threshold
+
+    meta = [
+        "# contract_version = 1",
+        f"# exported_at = {datetime.now(timezone.utc).isoformat()}",
+        f"# source_arf = {getattr(session_state.session.arf, 'current_file_path', '')}",
+        f"# source_arf2 = {arf2_path}",
+        f"# group_a = {last['a']}\tn_a = {last['n_a']}",
+        f"# group_b = {last['b']}\tn_b = {last['n_b']}",
+        "# log2fc_sign = positive means group_b is higher",
+        f"# q_threshold = {q_threshold}\tlog2fc_threshold = {log2fc_threshold}"
+        f"\tlog_transform = {str(bool(last.get('log_transform'))).lower()}",
+        f"# preprocess = {getattr(session_state.session.arf, 'preprocessing_recipe', None)}",
+        f"# n_features_total = {report['n_features_total']}"
+        f"\tn_with_inchikey = {report['n_with_inchikey']}"
+        f"\tn_unannotated = {report['n_unannotated']}",
+        "# msi_level は .arf2 由来の注釈確度。MS/MS の有無ではない",
+    ]
+
+    lines = [*meta, "\t".join(_EXPORT_COLUMNS)]
+    for row in rows:
+        lines.append("\t".join([
+            str(row["spot_id"]), row["name"], "arf2", row["ontology"],
+            row["inchikey"], "arf2", "",
+            _format_export_number(row["mz"], ".4f"),
+            _format_export_number(row["rt"], ".4f"),
+            _format_export_number(row["log2fc"], ".6f"),
+            _format_export_number(row["p_value"], ".6g"),
+            _format_export_number(row["q_value"], ".6g"),
+            _format_export_number(row["mean_a"], ".6g"),
+            _format_export_number(row["mean_b"], ".6g"),
+            "true" if _is_significant(row) else "false",
+        ]))
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    return json_payload({
+        "status": "success",
+        "output_path": str(out),
+        "contract_version": 1,
+        "group_a": last["a"],
+        "group_b": last["b"],
+        "n_features_total": report["n_features_total"],
+        "n_with_inchikey": report["n_with_inchikey"],
+        "n_unannotated": report["n_unannotated"],
+        "log2fc_sign": "log2fc は正なら group_b が高い（上昇）。",
+        "note": ("n_unannotated は注釈が付かず書き出さなかった行数です。"
+                 "「変化が無かった」ではなく「調べていない」行です。"),
+    })
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
