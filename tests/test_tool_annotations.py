@@ -39,6 +39,8 @@ EXPECTED_ANNOTATIONS = {
     # --- データセット入口 ---
     "list_data_files": READ_ONLY,
     "load_dataset": READ_ONLY,
+    "dataset_load": LOCAL_WRITE,
+    "dataset_status": READ_ONLY,
     # --- DCL / PAI2 / EIC ---
     "dcl_parser": READ_ONLY,
     "dcl_find_msms": READ_ONLY,

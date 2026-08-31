@@ -44,6 +44,8 @@ EXPECTED_TOOLS = sorted([
     "load_dataset",
     "log_search",
     "pai2_inspect_peak",
+    "dataset_load",
+    "dataset_status",
     "dcl_find_msms",
     "dcl_parser",
     "pai2_parser",
