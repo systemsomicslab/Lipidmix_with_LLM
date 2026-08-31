@@ -133,8 +133,14 @@ def _welch_t(a, b):
 
 
 def _log2fc(mean_a, mean_b, pseudo_count):
-    num = max(mean_a, 0.0) + pseudo_count
-    den = max(mean_b, 0.0) + pseudo_count
+    """log2 fold change。**正なら group_b が高い（＝上昇）**。
+
+    慣習（log2FC = log2(比較対象 / 基準)）に合わせる。group_a が基準（対照）、
+    group_b が比較対象である。2026-08-31 に向きを反転した（旧実装は
+    正 = group_a が高い、で慣習と逆だった）。過去の解析結果とは符号が逆になる。
+    """
+    num = max(mean_b, 0.0) + pseudo_count
+    den = max(mean_a, 0.0) + pseudo_count
     return math.log2(num / den)
 
 
@@ -142,10 +148,11 @@ def two_group_test(matrix, feature_names, group_labels, group_a, group_b,
                    *, log2=True, pseudo_count=1.0, log_transform=False):
     """群 a/b について特徴量ごとに Welch t 検定と log2 fold change を計算する。
 
-    log_transform=True のときは log2(x+pseudo_count) 空間で検定し、log2FC も
-    log2 空間の群平均差（＝幾何平均比の log2）とする。MS 強度は対数正規に近く、
-    生強度での t 検定は正規性仮定を外れやすいため、こちらが推奨経路。
-    mean_a/mean_b は解釈用に常に生強度平均を返す。
+    **log2fc は正なら group_b が高い（上昇）。** group_a が基準（対照）、
+    group_b が比較対象である。log_transform=True のときは log2(x+pseudo_count)
+    空間で検定し、log2FC も log2 空間の群平均差（＝幾何平均比の log2）とする。
+    MS 強度は対数正規に近く、生強度での t 検定は正規性仮定を外れやすいため、
+    こちらが推奨経路。mean_a/mean_b は解釈用に常に生強度平均を返す。
     """
     matrix = np.asarray(matrix, dtype=float)
     labels = np.asarray(group_labels)
@@ -161,7 +168,7 @@ def two_group_test(matrix, feature_names, group_labels, group_a, group_b,
             la, lb = _log2_transform(a, pseudo_count), _log2_transform(b, pseudo_count)
             t, p = _welch_t(la, lb)
             lm_a, lm_b = _safe_mean(la), _safe_mean(lb)
-            fc = (lm_a - lm_b) if (log2 and math.isfinite(lm_a) and math.isfinite(lm_b)) else math.nan
+            fc = (lm_b - lm_a) if (log2 and math.isfinite(lm_a) and math.isfinite(lm_b)) else math.nan
         else:
             t, p = _welch_t(a, b)
             fc = _log2fc(mean_a, mean_b, pseudo_count) if (log2 and math.isfinite(mean_a) and math.isfinite(mean_b)) else math.nan

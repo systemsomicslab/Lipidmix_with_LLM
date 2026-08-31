@@ -222,7 +222,7 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 
 ### 11.2 統計
 
-- **2群比較**（`group_a` と `group_b` を指定）: 特徴量ごとに Welch t 検定（等分散を仮定しない）と log2 fold change を計算する。`log2fc = log2((mean_a + 擬似カウント) / (mean_b + 擬似カウント))`（**正=群Aで高い**、擬似カウント既定1.0でゼロ割回避）。小n・分散0・全欠損は `p=NaN`。
+- **2群比較**（`group_a` と `group_b` を指定）: 特徴量ごとに Welch t 検定（等分散を仮定しない）と log2 fold change を計算する。`log2fc = log2((mean_b + 擬似カウント) / (mean_a + 擬似カウント))`（**正=群Bで高い**。group_a が基準（対照）、group_b が比較対象。擬似カウント既定1.0でゼロ割回避。2026-08-31 に慣習（log2FC=log2(比較対象/基準)）へ合わせて符号を反転した）。小n・分散0・全欠損は `p=NaN`。
 - **多群ANOVAは現状非対応**: MS-DIAL メタに「因子（加齢/菌叢等）→水準」の対応が無く、因子を安全に選べない（誤って全 Class ID を水準にした結果を返さないよう封鎖）。3群以上を比べたいときは `group_a`/`group_b` の因子トークン・プール指定で関心のある2群を切り出す。`differential.one_way_anova()` 自体は関数として残るが、MCP からは露出しない。
 - **多重検定補正**: いずれも Benjamini-Hochberg で `p → q`（FDR）を付与（NaN は補正から除外し位置は保持）。p値は scipy があれば正確（無ければ近似フォールバック）。
 - **volcano**: 2群比較のみ。各点は `feature` / `log2fc` / `neg_log10_p` / `sig`（`up`=q≤閾値かつlog2fc≥+閾値 / `down`=q≤閾値かつlog2fc≤−閾値 / `ns`）。全特徴分の点列は `session.last_differential["volcano"]` に保持し、`arf_plot_volcano()`（構造化点列）と `save_volcano_figure()`（PNG）の両方がここから読む。**`arf_differential()` の応答 payload には全量 volcano を同梱せず**、`summary`（`n_tested`/`n_significant`/`n_up`/`n_down`＋有意上位 `top`）中心の要約と `volcano_note` のみを返す（先頭の結論が巨大配列＋文脈切り詰めで埋没し「全て ns」と誤読される退行を避けるため）。
@@ -240,7 +240,7 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 | フィールド | 意味 |
 |------------|------|
 | `points[].feature` | 特徴量名（`differential` の `feature`） |
-| `points[].log2fc` | log2 fold change（x軸）。**正=群Aで高い** |
+| `points[].log2fc` | log2 fold change（x軸）。**正=群Bで高い** |
 | `points[].neg_log10_p` | `-log10(p)`（y軸）。`q` ではなく **`p`** |
 | `points[].sig` | `up` / `down` / `ns` |
 | `thresholds` | 判定に使った `q` と `log2fc` のしきい値 |
