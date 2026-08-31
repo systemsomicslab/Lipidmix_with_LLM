@@ -20,6 +20,7 @@ EXPECTED_TOOLS = sorted([
     "arf2_parser",
     "arf_differential",
     "arf_exclude",
+    "arf_export_differential",
     "arf_list_classes",
     "arf_list_sample_roles",
     "arf_list_tags",

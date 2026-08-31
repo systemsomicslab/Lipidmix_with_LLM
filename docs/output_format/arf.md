@@ -268,3 +268,22 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 4. **退化（検定不能）**: 検定できた特徴が0件なら「全特徴で p=NaN。群が空・分散0・正規化での試料NaN化の可能性。『有意0件』を『群間差なし』と解釈しない」と警告。0件でなくても特徴数の20%未満しか検定できなければ注記する。これにより「本当に有意差が無い（n_tested 健全）」と「そもそも検定できていない（n_tested≈0）」を区別できる。
 
 LLMはこれらを解釈結果・報告書の注意点として必ず引用すること。統計値は「事実」だが、交絡・小nの下での因果的解釈は保留し、人間の判断に委ねる（既存の分業に整合）。
+
+### 11.4 `arf_export_differential` — 差次的結果のエクスポート契約
+
+`arf_preprocess` → `arf_differential`（2群）の後に呼ぶ。同一アラインメントの
+兄弟 `.arf2` から InChIKey・Ontology・m/z・RT を `MasterAlignmentID` で結合し、
+1 ファイルに書き出す。**兄弟 `.arf2` が無ければ書き出さない**（InChIKey 空欄の行を
+出すと、下流で「パスウェイが無い化合物」と区別が付かなくなるため）。
+
+`#` 始まりのメタ行に来歴（`contract_version` / `group_a` / `group_b` /
+`log2fc_sign` / 閾値 / `n_features_total` / `n_with_inchikey` / `n_unannotated`）を置き、
+続けて TSV 本体を置く。列は
+`spot_id / name / name_source / ontology / inchikey / inchikey_source / msi_level /
+mz / rt / log2fc / p_value / q_value / mean_a / mean_b / significant`。
+
+**有意な行だけでなく、InChIKey が付いた全行を書き出す。** 下流の濃縮解析は
+「検出された化合物」を背景に取る必要があり、有意な行だけでは背景が作れない。
+
+`msi_level` は `.arf2` 由来の注釈確度であり、**MS/MS の有無ではない**
+（`.arf2` は MS/MS 取得フラグを持たない）。
