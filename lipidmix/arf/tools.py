@@ -908,6 +908,9 @@ def arf_differential(
             )
             + "。指定トークンは Class ID とサンプル名の両方から解決されます。"
         )
+        caveats.append(
+            f"log2FC の向き: 正なら {group_b} が高い（上昇）、負なら {group_a} が高い（低下）。"
+            "2026-08-31 に慣習へ合わせて反転したため、それ以前の出力とは符号が逆である。")
         results = differential.two_group_test(matrix, feature_names, group_labels,
                                               group_a, group_b, log_transform=log_transform)
         results = differential.add_fdr(results)
@@ -937,6 +940,9 @@ def arf_differential(
                                      "n_a": n_a, "n_b": n_b,
                                      "q_threshold": q_threshold,
                                      "log2fc_threshold": log2fc_threshold,
+                                     "contract_version": 1,
+                                     "log2fc_sign": "positive means group_b is higher",
+                                     "log_transform": log_transform,
                                      "results": results, "volcano": volcano}
         # 全量 volcano（~特徴数）は上の last_differential に保持し、arf_plot_volcano
         # （構造化点列）と save_volcano_figure（PNG）から使う。payload には載せない
@@ -948,6 +954,9 @@ def arf_differential(
                    "resolved_samples": resolved_samples,
                    "n_a": n_a, "n_b": n_b,
                    "summary": summary, "caveats": caveats,
+                   "differential_contract_version": 1,
+                   "log2fc_sign": ("log2fc は正なら group_b が高い（上昇）。"
+                                   "2026-08-31 以前の出力とは符号が逆である。"),
                    "volcano_note": "全特徴の volcano 点列は本要約に非同梱。"
                                    "arf_plot_volcano で構造化した点列を取得し、"
                                    "クライアント側で散布図を描画してください。"
