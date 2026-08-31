@@ -222,10 +222,10 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 
 ### 11.2 統計
 
-- **2群比較**（`group_a` と `group_b` を指定）: 特徴量ごとに Welch t 検定（等分散を仮定しない）と log2 fold change を計算する。`log2fc = log2((mean_a + 擬似カウント) / (mean_b + 擬似カウント))`（**正=群Aで高い**、擬似カウント既定1.0でゼロ割回避）。小n・分散0・全欠損は `p=NaN`。
+- **2群比較**（`group_a` と `group_b` を指定）: 特徴量ごとに Welch t 検定（等分散を仮定しない）と log2 fold change を計算する。`log2fc = log2((mean_b + 擬似カウント) / (mean_a + 擬似カウント))`（**正=群Bで高い（上昇）**。group_a が基準（対照）、group_b が比較対象。擬似カウント既定1.0でゼロ割回避。2026-08-31 に慣習（log2FC=log2(比較対象/基準)）へ合わせて符号を反転した——それ以前の出力とは符号が逆）。小n・分散0・全欠損は `p=NaN`。
 - **多群ANOVAは現状非対応**: MS-DIAL メタに「因子（加齢/菌叢等）→水準」の対応が無く、因子を安全に選べない（誤って全 Class ID を水準にした結果を返さないよう封鎖）。3群以上を比べたいときは `group_a`/`group_b` の因子トークン・プール指定で関心のある2群を切り出す。`differential.one_way_anova()` 自体は関数として残るが、MCP からは露出しない。
 - **多重検定補正**: いずれも Benjamini-Hochberg で `p → q`（FDR）を付与（NaN は補正から除外し位置は保持）。p値は scipy があれば正確（無ければ近似フォールバック）。
-- **volcano**: 2群比較のみ。各点は `feature` / `log2fc` / `neg_log10_p` / `sig`（`up`=q≤閾値かつlog2fc≥+閾値 / `down`=q≤閾値かつlog2fc≤−閾値 / `ns`）。全特徴分の点列は `session.last_differential["volcano"]` に保持し、`arf_plot_volcano()`（構造化点列）と `save_volcano_figure()`（PNG）の両方がここから読む。**`arf_differential()` の応答 payload には全量 volcano を同梱せず**、`summary`（`n_tested`/`n_significant`/`n_up`/`n_down`＋有意上位 `top`）中心の要約と `volcano_note` のみを返す（先頭の結論が巨大配列＋文脈切り詰めで埋没し「全て ns」と誤読される退行を避けるため）。
+- **volcano**: 2群比較のみ。各点は `feature` / `log2fc` / `neg_log10_p` / `sig`（`up`=q≤閾値かつlog2fc≥+閾値（群Bで高い＝上昇） / `down`=q≤閾値かつlog2fc≤−閾値（群Aで高い＝低下） / `ns`）。全特徴分の点列は `session.last_differential["volcano"]` に保持し、`arf_plot_volcano()`（構造化点列）と `save_volcano_figure()`（PNG）の両方がここから読む。**`arf_differential()` の応答 payload には全量 volcano を同梱せず**、`summary`（`n_tested`/`n_significant`/`n_up`/`n_down`＋有意上位 `top`）中心の要約と `volcano_note` のみを返す（先頭の結論が巨大配列＋文脈切り詰めで埋没し「全て ns」と誤読される退行を避けるため）。
 
 ### 11.2.1 `arf_plot_volcano` の返り値（`lipidmix.volcano.v1`）
 
@@ -240,7 +240,7 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 | フィールド | 意味 |
 |------------|------|
 | `points[].feature` | 特徴量名（`differential` の `feature`） |
-| `points[].log2fc` | log2 fold change（x軸）。**正=群Aで高い** |
+| `points[].log2fc` | log2 fold change（x軸）。**正=群Bで高い（上昇）** |
 | `points[].neg_log10_p` | `-log10(p)`（y軸）。`q` ではなく **`p`** |
 | `points[].sig` | `up` / `down` / `ns` |
 | `thresholds` | 判定に使った `q` と `log2fc` のしきい値 |
@@ -268,3 +268,26 @@ PCAスコアプロットで明らかに外れた1サンプルや、特定のピ�
 4. **退化（検定不能）**: 検定できた特徴が0件なら「全特徴で p=NaN。群が空・分散0・正規化での試料NaN化の可能性。『有意0件』を『群間差なし』と解釈しない」と警告。0件でなくても特徴数の20%未満しか検定できなければ注記する。これにより「本当に有意差が無い（n_tested 健全）」と「そもそも検定できていない（n_tested≈0）」を区別できる。
 
 LLMはこれらを解釈結果・報告書の注意点として必ず引用すること。統計値は「事実」だが、交絡・小nの下での因果的解釈は保留し、人間の判断に委ねる（既存の分業に整合）。
+
+### 11.4 `arf_export_differential` — 差次的結果のエクスポート契約
+
+`arf_preprocess` → `arf_differential`（2群）の後に呼ぶ。同一アラインメントの
+兄弟 `.arf2` から InChIKey・Ontology・m/z・RT を `MasterAlignmentID` で結合し、
+1 ファイルに書き出す。**兄弟 `.arf2` が無ければ書き出さない**（InChIKey 空欄の行を
+出すと、下流で「パスウェイが無い化合物」と区別が付かなくなるため）。
+直近の差次的結果が現行の `contract_version` / `log2fc_sign` と一致しない場合も、
+向きを偽装せず `arf_differential` の再実行を要求する。InChIKey 付き行が 0 件なら、
+下流が拒否する本文 0 行のファイルを成功扱いで残さない。
+
+`#` 始まりのメタ行に来歴（`contract_version` / `group_a` / `group_b` /
+`log2fc_sign` / 閾値 / `n_features_total` / `n_with_inchikey` / `n_unannotated`）を置き、
+続けて TSV 本体を置く。列は
+`spot_id / name / name_source / ontology / inchikey / inchikey_source / msi_level /
+mz / rt / log2fc / p_value / q_value / mean_a / mean_b / significant`。
+
+**有意な行だけでなく、InChIKey が付いた全行を書き出す。** 下流の濃縮解析は
+「検出された化合物」を背景に取る必要があり、有意な行だけでは背景が作れない。
+
+`msi_level` は `.arf2` 由来の注釈確度であり、**MS/MS の有無ではない**
+（`.arf2` は MS/MS 取得フラグを持たない）。`arf2_annotate_identities` と同じ
+保守的なクラス上限を使う。

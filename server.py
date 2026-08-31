@@ -79,6 +79,7 @@ from lipidmix.tools.samples import *  # sample_search
 from lipidmix.arf2.tools import *
 from lipidmix.eic.tools import *
 from lipidmix.tools.dataset import *  # list_data_files, load_dataset
+from lipidmix.tools.mztab_tools import *  # dataset_load, dataset_status
 
 
 if __name__ == "__main__":

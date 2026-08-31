@@ -9,6 +9,25 @@ from lipidmix.core import session_state
 from lipidmix.arf import tools as tools_arf
 
 
+def _run_preprocess_and_differential():
+    """arf_differential の前準備（前処理後行列 + サンプルメタ）を session に積む。
+
+    既存テスト（TestArfDifferential 内）と同じ 3+3 サンプルの下地。呼び出し側が
+    続けて server.arf_differential(group_a="A", group_b="B") を呼ぶ想定。
+    """
+    session_state.session.arf.feature_matrix = np.array([
+        [10.0, 5.0], [11.0, 5.1], [9.5, 4.9],
+        [50.0, 5.0], [52.0, 5.2], [48.0, 4.8],
+    ])
+    names = ["a1", "a2", "a3", "b1", "b2", "b3"]
+    session_state.session.arf.pp_sample_names = names
+    session_state.session.arf.pp_feature_names = ["f0", "f1"]
+    session_state.session.arf.preprocessing_recipe = {"normalize": "median"}
+    session_state.session.arf.sample_meta = {
+        n: {"group": ("A" if n.startswith("a") else "B")} for n in names
+    }
+
+
 class TestArfDifferential(unittest.TestCase):
     def setUp(self):
         session_state.session = server.AnalysisSession()
@@ -406,3 +425,26 @@ class TestDifferentialSampleSelection(unittest.TestCase):
             any(c.startswith("交絡:") for c in out["caveats"]),
             f"群⟂バッチが完全交絡なのに報告されていない: {out['caveats']}",
         )
+
+
+class TestDifferentialSignDisclosure(unittest.TestCase):
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+
+    def test_payload_and_state_disclose_sign(self):
+        """符号の向きが payload と session 状態の両方に出ること。
+
+        向きは 2026-08-31 に反転したため、古い出力と区別できないと
+        解釈が静かに逆転する。
+        """
+        _run_preprocess_and_differential()   # 同ファイルの既存ヘルパに合わせる
+        payload = json.loads(server.arf_differential(group_a="A", group_b="B"))
+        self.assertEqual(payload["differential_contract_version"], 1)
+        self.assertIn("group_b", payload["log2fc_sign"])
+        # ブリーフは `server.session_state...` と書くが、server は wildcard import
+        # （from lipidmix.arf.tools import *）経由で __all__ に無い session_state を
+        # 再エクスポートしていないため AttributeError になる。本ファイルの既存テスト
+        # （例: line 122 の last = session_state.session.arf.last_differential）に
+        # 倣い、直接 import した session_state を参照する。
+        state = session_state.session.arf.last_differential
+        self.assertEqual(state["contract_version"], 1)

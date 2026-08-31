@@ -39,6 +39,8 @@ EXPECTED_ANNOTATIONS = {
     # --- データセット入口 ---
     "list_data_files": READ_ONLY,
     "load_dataset": READ_ONLY,
+    "dataset_load": LOCAL_WRITE,
+    "dataset_status": READ_ONLY,
     # --- DCL / PAI2 / EIC ---
     "dcl_parser": READ_ONLY,
     "dcl_find_msms": READ_ONLY,
@@ -65,6 +67,7 @@ EXPECTED_ANNOTATIONS = {
     "save_pca_figure": LOCAL_WRITE,
     "save_volcano_figure": LOCAL_WRITE,
     "save_eic_figure": LOCAL_WRITE,
+    "arf_export_differential": LOCAL_WRITE,
     # --- knowledge の変更 ---
     "ingest_stage": LOCAL_WRITE_APPEND,
     "ingest_promote": DESTRUCTIVE,

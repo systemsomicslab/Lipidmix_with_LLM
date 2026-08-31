@@ -35,14 +35,32 @@ class TestTwoGroup(unittest.TestCase):
         by_feat = {r["feature"]: r for r in res}
         self.assertLess(by_feat["f0"]["p"], 0.05)
         self.assertGreater(by_feat["f1"]["p"], 0.05)
-        # log2fc = log2(mean_a / mean_b); f0 is much lower in A (~10) than B (50),
-        # so a strong negative fold change is expected. (Plan convention: A>B => +.)
-        self.assertLess(by_feat["f0"]["log2fc"], -1.0)
+        # log2fc = log2(mean_b / mean_a)。f0 は A(~10) より B(50) が高いので正。
+        self.assertGreater(by_feat["f0"]["log2fc"], 1.0)
 
     def test_missing_group_member_gives_nan(self):
         matrix = np.array([[10.0], [np.nan]])
         res = diff.two_group_test(matrix, ["f0"], ["A", "B"], "A", "B")
         self.assertTrue(math.isnan(res[0]["p"]))
+
+    def test_log2fc_positive_when_group_b_higher(self):
+        # 慣習: log2FC = log2(比較対象 / 基準)。group_a が基準、group_b が比較対象。
+        # B(40) が A(10) より高いので正になる。log2((40+1)/(10+1)) ≒ 1.898
+        matrix = np.array([[10.0], [10.0], [10.0], [40.0], [40.0], [40.0]])
+        labels = ["A", "A", "A", "B", "B", "B"]
+        res = diff.two_group_test(matrix, ["f0"], labels, "A", "B",
+                                  log_transform=False)
+        self.assertGreater(res[0]["log2fc"], 1.85)
+        self.assertLess(res[0]["log2fc"], 1.95)
+
+    def test_log2fc_sign_is_same_in_log_space(self):
+        # log_transform=True の分岐でも向きが一致すること（2 分岐あるので両方を固定する）
+        matrix = np.array([[10.0], [10.0], [10.0], [40.0], [40.0], [40.0]])
+        labels = ["A", "A", "A", "B", "B", "B"]
+        res = diff.two_group_test(matrix, ["f0"], labels, "A", "B",
+                                  log_transform=True)
+        self.assertGreater(res[0]["log2fc"], 1.85)
+        self.assertLess(res[0]["log2fc"], 1.95)
 
 
 class TestAnova(unittest.TestCase):
@@ -101,8 +119,8 @@ class TestLogTransform(unittest.TestCase):
         ])
         labels = ["A", "A", "A", "B", "B", "B"]
         res = diff.two_group_test(matrix, ["f0"], labels, "A", "B", log_transform=True)
-        # log2 space mean difference ~ log2(10/50) ~ -2.3; raw means still reported.
-        self.assertLess(res[0]["log2fc"], -2.0)
+        # log2 空間の群平均差 ~ log2(50/10) ~ +2.3。生の平均は従来どおり返る。
+        self.assertGreater(res[0]["log2fc"], 2.0)
         self.assertGreater(res[0]["mean_a"], 9.0)  # raw mean, not log mean
         self.assertLess(res[0]["p"], 0.05)
 

@@ -27,7 +27,7 @@ IN_SCOPE: dict[str, tuple[str, ...]] = {
     "arf.md": (
         "arf_parser", "arf_list_classes", "arf_list_tags", "arf_list_sample_roles",
         "arf_exclude", "arf_preprocess", "arf_pca_preprocessed", "arf_differential",
-        "arf_plot_volcano",
+        "arf_export_differential", "arf_plot_volcano",
     ),
     "arf2.md": ("arf2_parser", "arf2_annotate_identities"),
     "pai2.md": ("pai2_parser", "pai2_inspect_peak", "verify_peak_annotation"),
@@ -37,6 +37,7 @@ IN_SCOPE: dict[str, tuple[str, ...]] = {
         "eic_rank_by_max_intensity", "eic_plot_chromatograms", "eic_plot_compounds",
     ),
     "plots.md": ("save_pca_figure", "save_volcano_figure", "save_eic_figure"),
+    "mztab.md": ("dataset_load", "dataset_status"),
 }
 
 # 今回の範囲外。文書に混入したら落とす（線引きを固定するため）。
@@ -163,4 +164,4 @@ class TestScopeBoundary(unittest.TestCase):
             registered,
             "対象範囲の分類と登録済みツールが一致しない",
         )
-        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 28)
+        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 31)
