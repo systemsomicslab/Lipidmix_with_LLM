@@ -396,13 +396,32 @@ DatasetState
   quantification_measure       peak_height | peak_area_above_zero
   feature_matrix               samples x features
   assay_metadata               sample design and file mapping
-  feature_metadata             mz, rt, names, identifiers, SML/SMF/SME links
+  feature_metadata             mz, rt, names, identifiers (含 inchikey + inchikey_source), SML/SMF/SME links
   feature_qc                   detected/gap-filled flags
   evidence_index               feature/sample -> DCL/PAI2/EIC references
   preprocessing_state          parameters + transformed matrix
   analysis_results             PCA/differential/QC
-  provenance                   handoff + validators + warnings
+  provenance                   handoff + validators + warnings + inchikey_rdkit_available
 ```
+
+`feature_metadata` の `identifiers` フィールドは、各フィーチャーに対して次の構造を持つ。
+
+```json
+{
+  "inchikey": "ABCDEFGHIJKLMNO-UVWXYZABCD-N",
+  "inchikey_source": "database_identifier",
+  "smiles": "CCCC...",
+  "inchi": "InChI=1S/..."
+}
+```
+
+`inchikey_source` の語彙は §23.2 で定義した `"database_identifier"` / `"inchi_derived"` /
+`"smiles_derived"` / `"arf2_catalog"` / `"pai2_peak"` / `"none"` に統一する。
+ARF 経路では `.arf2` Key 16 から読んだ値に `"arf2_catalog"` を付ける。
+
+`AnalysisSession` への追加スロット: `session.dataset: DatasetState | None = None`。
+CLAUDE.md の「新しいパーサを足すときも専用スロットを作ること」の規約に従う。
+mzTab-M データを `session.arf` に格納してはならない（既存 ARF 解析を破壊する）。
 
 `session.mztab` を単独追加するだけではARF専用の前処理・PCA・差次的解析が二重化するため、
 `DatasetState` を共通解析層の正準とする。既存 `session.arf` 等は形式固有の詳細・後方互換用途として
@@ -475,6 +494,11 @@ DatasetState
 MCP toolの失敗は、既存の `missing_state` と同様に機械可読なエンベロープで返す。LLM向けmessageだけで
 成否を表現しない。
 
+実装上の補足: `mcp_errors.py` には現在 `missing_state` 1種のみ存在する。上記エラーコードを追加するには
+同ファイルに `mztab_error(code: str, message: str, details: dict | None = None) -> str` を追加し、
+`json_payload({"error": {"code": code, "message": message, "details": details}})` を返す形にする。
+既存 `missing_state` との互換は維持する（クライアントは `code` で分岐する）。
+
 ## 16. 将来のDB連携境界
 
 ### 16.1 `repository-context`
@@ -513,6 +537,10 @@ library provenanceを返す。候補順位はスペクトル証拠に基づき�
 - mzTab-M 2.0 parser、validator、fixtureをLipidmixへ追加する。
 - 実ファイルとARFのHeight/Area照合を自動テスト化する。
 - `DatasetState` と `dataset_load/status` を追加する。
+- `AnalysisSession` に `session.dataset: DatasetState | None` スロットを追加する。
+- `lipidmix/mztab/identity.py` に `derive_inchikey()` を実装する（§23）。
+- `requirements.txt` に `rdkit` を追加し、optional fallback 動作を確認する。
+- `mcp_errors.py` に `mztab_error()` ファクトリを追加する（§15）。
 
 ### Phase 2: handoff v2とsidecar
 
@@ -588,13 +616,155 @@ Phase 5は上流・下流連携の必須条件にしない。
 - 初期段階でmzTab-M 2.1、GC-MS、imaging、DIA proteomics等へ範囲を広げること。
 - 既存のMassBank設計specを本specへ統合・変更すること。
 
-## 22. 未決事項
+## 22. 決定済み事項（旧・未決）
 
-実装計画へ進む前に、次の2点だけユーザ判断を得る。
+2026-08-31 にユーザ判断を得て確定した。
 
-1. 自動運転の既定定量値を、現行Lipidmix互換の `peak_height` とするか、実験系で重視する
-   `peak_area_above_zero` とするか。現行Consoleを使う間は前者だけが自動運転可能である。
-2. sample manifestをMS-DIAL実行前の必須入力にするか、初回はmzTab-Mから候補を生成して
-   `needs_input` で承認するか。
+1. **自動運転の既定定量値**: `peak_height`。現行 Lipidmix と互換であり、現行 Console
+   は Height しか出せないため。Console で Area を要求すると実行前に `UNSUPPORTED_AREA_CONSOLE` で
+   停止する（§8.2）。
 
-この2点以外は本specの契約として固定し、決定後に別ファイルの実装計画へ分解する。
+2. **sample manifest タイミング**: 初回は mzTab-M の assay ID・study variable・sample name
+   から雛形を自動生成し、`needs_input` でユーザ承認を取る。実験デザインが判定できない場合は
+   `SAMPLE_DESIGN_MISSING` で停止する。承認後は handoff に記録して固定する。
+
+3. **mzTab-M専用エラーのエンベロープ**: まず `mztab_error()` を `mcp_errors.py` に別途追加する。
+   将来的に `missing_state` と統合して汎用 `mcp_error()` にする（Phase 4 以降のタスク）。
+
+4. **rdkit 依存**: `requirements.txt` に追加する。Python 3.14 との互換性は導入時に
+   `pip install rdkit` の成否で確認する。rdkit 非インストール時は smiles/inchi 経路が
+   silent fallback し、database_identifier から直接読める行のみ動作する（§23.4）。
+
+## 23. SME同定情報からのInChIKey導出（SMILES→InChIKey機構）
+
+### 23.1 背景と問題
+
+現行の ARF/ARF2 経路では `.arf2` Key 16 と `.pai2` Key 29 に MS-DIAL が直接 InChIKey を書き込むため、
+下流での InChIKey 導出は不要だった。mzTab-M では SME 行の各フィールドが MS-DIAL バージョンや
+同定エンジンにより以下のように揺れる。
+
+| フィールド | MS-DIAL v5.5 の実挙動 | 可用性 |
+| --- | --- | --- |
+| `database_identifier` | InChIKey 形式が多いが空欄・非InChIKey もある | 不確実 |
+| `smiles` | 同定済み化合物は通常あり | 比較的確実 |
+| `inchi` | 一部バージョンのみ | 不安定 |
+| `chemical_formula` | 化学式のみ（InChIKey 導出不能） | 確実だが不十分 |
+
+`DatasetState.feature_metadata` の `identifiers` に InChIKey を確実に持たせないと、
+`massbank-context` 照合・パスウェイ解析・`arf_export_differential` 相当の下流出力が
+すべて動かない。InChIKey 不在行の扱い（落とすか残すか）は `identity_join.py` の方針と
+整合させる必要がある。
+
+### 23.2 導出優先順位
+
+`feature_metadata` 構築時に 1 行ごとに以下を順に試みる。最初に成功した段階で停止する。
+
+```text
+1. database_identifier が InChIKey 正規表現に合致
+   パターン: ^[A-Z]{14}-[A-Z]{10}-[A-Z]$
+   source: "database_identifier"
+
+2. inchi 文字列が存在 → InChI → InChIKey（RDKit / 標準InChI ライブラリ）
+   source: "inchi_derived"
+
+3. smiles 文字列が存在 → RDKit でパース → InChI → InChIKey
+   source: "smiles_derived"
+
+4. すべて失敗 → None
+   source: "none"
+```
+
+`inchikey_source` は `_EXPORT_COLUMNS` に既に存在する契約フィールドであり、
+同じ語彙を `feature_metadata` にも使う。値は不透明な文字列として下流が保持し、
+パスウェイ照合側はこれを信頼度の参考に使えるが、照合可否の判断にのみ使う。
+
+### 23.3 実装方針
+
+```python
+# lipidmix/mztab/identity.py — 純関数
+
+_INCHIKEY_RE = re.compile(r'^[A-Z]{14}-[A-Z]{10}-[A-Z]$')
+
+def derive_inchikey(
+    database_identifier: str | None,
+    inchi: str | None,
+    smiles: str | None,
+) -> tuple[str | None, str]:
+    """SME フィールドから InChIKey を導出する。戻り値: (inchikey, source)。
+
+    source は "database_identifier" / "inchi_derived" / "smiles_derived" / "none"。
+    RDKit が利用不可の場合、smiles / inchi 経路は None を返す（エラーにしない）。
+    """
+    if database_identifier and _INCHIKEY_RE.match(database_identifier.strip()):
+        return database_identifier.strip(), "database_identifier"
+    try:
+        from rdkit import Chem
+        from rdkit.Chem.inchi import MolToInchi, InchiToInchiKey
+        if inchi:
+            ik = InchiToInchiKey(inchi.strip())
+            if ik:
+                return ik, "inchi_derived"
+        if smiles:
+            mol = Chem.MolFromSmiles(smiles.strip())
+            if mol:
+                inchi_str = MolToInchi(mol)
+                if inchi_str:
+                    ik = InchiToInchiKey(inchi_str)
+                    if ik:
+                        return ik, "smiles_derived"
+    except ImportError:
+        pass  # RDKit 非インストール時は下の None fallback へ
+    return None, "none"
+```
+
+この関数は副作用ゼロの純関数であり、mzTab-M パーサが `DatasetState` を構築する際に
+各 SMF/SME 行を処理する内部ステップとして呼ぶ。ファイル I/O なし。
+
+### 23.4 RDKit 依存方針
+
+- `requirements.txt` に `rdkit` を追加する（`pip install rdkit` で Python 3.12+ から利用可）。
+- RDKit が無い場合は `smiles_derived` / `inchi_derived` 経路が silent fallback する。
+  `DatasetState.provenance.inchikey_rdkit_available: bool` でその状態を記録し、
+  `dataset_status` ツールから参照できるようにする。
+- RDKit の存在は mzTab-M 読み込み自体の必須条件にしない。
+  `database_identifier` から直接読める行は RDKit なしで動作する。
+
+### 23.5 `dataset_status` の開示
+
+`dataset_status` が返す `feature_metadata` 要約に `inchikey_coverage` を含める。
+
+```json
+{
+  "inchikey_coverage": {
+    "total_features": 1345,
+    "with_inchikey": 942,
+    "by_source": {
+      "database_identifier": 912,
+      "smiles_derived": 28,
+      "inchi_derived": 2,
+      "none": 403
+    },
+    "rdkit_available": true
+  }
+}
+```
+
+### 23.6 `identity_join.py` との整合
+
+現行 `join_identity` は InChIKey 無し行を落とし、落とした件数を report に返す。
+mzTab-M 経路でも同じ方針を取る: `inchikey_source == "none"` の行は、パスウェイ照合・
+差次的エクスポートでは除外し、除外件数を機械可読に報告する。
+統計解析（PCA・t 検定）は InChIKey 不在行を含む全行を対象にする。
+
+### 23.7 Phase 1 への組み込み
+
+§18 Phase 1 の実装範囲に以下を追加する。
+
+- `lipidmix/mztab/identity.py` に `derive_inchikey()` を実装する。
+- `requirements.txt` に `rdkit` を追加する。
+- `DatasetState.feature_metadata` 構築時に呼ぶ。
+- `tests/test_mztab_identity.py` に以下を含む unit test を作る:
+  - InChIKey 正規表現の合致・不合致ケース。
+  - RDKit を mock して smiles_derived 経路を検証するケース。
+  - すべて None のケース（source `"none"`）。
+  - 無効 SMILES（パースエラー）を渡したとき例外でなく `(None, "none")` を返すケース。
