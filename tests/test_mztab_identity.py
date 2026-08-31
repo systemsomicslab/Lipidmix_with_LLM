@@ -63,6 +63,17 @@ def test_derive_returns_none_on_invalid_smiles(monkeypatch):
     assert ik is None
     assert src == "none"
 
+def test_derive_from_inchi_with_rdkit(monkeypatch):
+    mock_rdkit = MagicMock()
+    mock_rdkit.Chem.inchi.InchiToInchiKey.return_value = _VALID_IK
+    monkeypatch.setitem(sys.modules, "rdkit", mock_rdkit)
+    monkeypatch.setitem(sys.modules, "rdkit.Chem", mock_rdkit.Chem)
+    monkeypatch.setitem(sys.modules, "rdkit.Chem.inchi", mock_rdkit.Chem.inchi)
+
+    ik, src = derive_inchikey(None, "InChI=1S/test", None)
+    assert ik == _VALID_IK
+    assert src == "inchi_derived"
+
 def test_database_identifier_takes_priority_over_smiles():
     ik, src = derive_inchikey(_VALID_IK, None, _PC362_SMILES)
     assert src == "database_identifier"
