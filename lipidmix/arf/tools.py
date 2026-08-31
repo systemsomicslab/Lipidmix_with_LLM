@@ -1,7 +1,8 @@
 """ARF（PeakProperties 等・サンプル別強度）ツール群。
 
 arf_list_tags/classes/sample_roles, arf_exclude, arf_preprocess,
-arf_pca_preprocessed, arf_parser, arf_differential。deps: mcp_core / session_state /
+arf_pca_preprocessed, arf_parser, arf_differential, arf_export_differential。
+deps: mcp_core / session_state /
 path_resolvers / tool_helpers / msdial_* / preprocessing / differential /
 arf_reader（arf_reader は関数内 import で、テストの patch.object(server.arf_reader)
 が共有 module 経由で効くようにする）。
@@ -20,7 +21,7 @@ from lipidmix.arf import identity_join
 from lipidmix.core import mcp_errors
 from lipidmix.core import path_resolvers
 from lipidmix.analysis import preprocessing
-from lipidmix.msdial import sample_factors
+from lipidmix.msdial import lipid_identity, sample_factors
 from lipidmix.core import session_state
 from lipidmix.core import tool_helpers
 from lipidmix.plots import render as plot_render
@@ -979,6 +980,8 @@ _EXPORT_COLUMNS = [
     "inchikey_source", "msi_level", "mz", "rt", "log2fc",
     "p_value", "q_value", "mean_a", "mean_b", "significant",
 ]
+_DIFFERENTIAL_CONTRACT_VERSION = 1
+_LOG2FC_SIGN = "positive means group_b is higher"
 
 
 def _format_export_number(value, format_spec: str) -> str:
@@ -1006,6 +1009,12 @@ def arf_export_differential(output_path: str) -> str:
         return mcp_errors.missing_state(
             "two_group_differential", ["arf_differential"],
             "先に arf_preprocess → arf_differential（2群）を実行してください。")
+    if (last.get("contract_version") != _DIFFERENTIAL_CONTRACT_VERSION
+            or last.get("log2fc_sign") != _LOG2FC_SIGN):
+        return mcp_errors.missing_state(
+            "compatible_two_group_differential", ["arf_differential"],
+            "直近の差次的結果は現行エクスポート契約と互換性がありません。"
+            "arf_differential（2群）を再実行してください。")
 
     arf2_path = _sibling_arf2_path()
     if not arf2_path:
@@ -1018,6 +1027,15 @@ def arf_export_differential(output_path: str) -> str:
     catalog = {spot.get("MasterAlignmentID"): spot
                for spot in load_catalog(arf2_path)}
     rows, report = identity_join.join_identity(last.get("results") or [], catalog)
+    if not rows:
+        return json_payload({
+            "status": "error",
+            "message": ("InChIKey が付いた特徴が 0 件のため書き出しません。"
+                        "下流のパスウェイ解析に使える背景集合がありません。"),
+            "n_features_total": report["n_features_total"],
+            "n_with_inchikey": 0,
+            "n_unannotated": report["n_unannotated"],
+        })
 
     q_threshold = last.get("q_threshold")
     log2fc_threshold = last.get("log2fc_threshold")
@@ -1032,13 +1050,13 @@ def arf_export_differential(output_path: str) -> str:
         return q_value <= q_threshold and abs(log2fc) >= log2fc_threshold
 
     meta = [
-        "# contract_version = 1",
+        f"# contract_version = {last['contract_version']}",
         f"# exported_at = {datetime.now(timezone.utc).isoformat()}",
         f"# source_arf = {getattr(session_state.session.arf, 'current_file_path', '')}",
         f"# source_arf2 = {arf2_path}",
         f"# group_a = {last['a']}\tn_a = {last['n_a']}",
         f"# group_b = {last['b']}\tn_b = {last['n_b']}",
-        "# log2fc_sign = positive means group_b is higher",
+        f"# log2fc_sign = {last['log2fc_sign']}",
         f"# q_threshold = {q_threshold}\tlog2fc_threshold = {log2fc_threshold}"
         f"\tlog_transform = {str(bool(last.get('log_transform'))).lower()}",
         f"# preprocess = {getattr(session_state.session.arf, 'preprocessing_recipe', None)}",
@@ -1049,10 +1067,20 @@ def arf_export_differential(output_path: str) -> str:
     ]
 
     lines = [*meta, "\t".join(_EXPORT_COLUMNS)]
+    identity_tables = tool_helpers._identity_tables()
     for row in rows:
+        identity_name = row["name"]
+        if identity_name.strip().lower() == "unknown":
+            identity_name = ""
+        identity = lipid_identity.build_identity_block(
+            {"name": identity_name, "ontology": row["ontology"], "has_msms": False},
+            identity_tables,
+            mass_error_band="UNKNOWN",
+            adduct_band="UNKNOWN",
+        )
         lines.append("\t".join([
             str(row["spot_id"]), row["name"], "arf2", row["ontology"],
-            row["inchikey"], "arf2", "",
+            row["inchikey"], "arf2", str(identity["msi"]["level"]),
             _format_export_number(row["mz"], ".4f"),
             _format_export_number(row["rt"], ".4f"),
             _format_export_number(row["log2fc"], ".6f"),
@@ -1070,7 +1098,7 @@ def arf_export_differential(output_path: str) -> str:
     return json_payload({
         "status": "success",
         "output_path": str(out),
-        "contract_version": 1,
+        "contract_version": last["contract_version"],
         "group_a": last["a"],
         "group_b": last["b"],
         "n_features_total": report["n_features_total"],

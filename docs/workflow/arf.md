@@ -180,13 +180,16 @@ QC / blank は群ラベルを `None` にして両群のどちらにも寄らせ�
 
 前提: `arf_differential`（2群）実行済み、かつ読み込み中の `.arf` と同一語幹の
 兄弟 `.arf2` が存在すること。どちらかが無ければ `MissingState` を返し、ファイルは
-書かない。状態変更: なし。指定された `output_path` へ契約 TSV を上書きする。
+書かない。差次的結果の契約版・符号が現行値と違う場合も再実行を要求する。
+状態変更: なし。指定された `output_path` へ契約 TSV を上書きする。
 
 `session.arf.last_differential` の全特徴を、`.arf2` の `MasterAlignmentID` で
 InChIKey・Ontology・m/z・RT と結合する。InChIKey が無い特徴は本文から除外するが、
 `n_unannotated` に件数を残す。有意行だけに絞らないため、下流の濃縮解析は検出化合物を
 背景として使える。NaN / inf の数値セルは文字列化せず空欄にし、下流の契約リーダが
-欠測として扱える形にする。
+欠測として扱える形にする。InChIKey 付き行が 0 件なら、本文 0 行の不適合ファイルを
+残さずエラーにする。`msi_level` は `arf2_annotate_identities` と同じ保守的な
+クラス上限であり、MS/MS 取得有無を表さない。
 
 1. lipidmix/arf/tools.py  arf_export_differential()
 2. └─ lipidmix/core/mcp_errors.py  missing_state()

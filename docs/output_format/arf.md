@@ -275,6 +275,9 @@ LLMはこれらを解釈結果・報告書の注意点として必ず引用す�
 兄弟 `.arf2` から InChIKey・Ontology・m/z・RT を `MasterAlignmentID` で結合し、
 1 ファイルに書き出す。**兄弟 `.arf2` が無ければ書き出さない**（InChIKey 空欄の行を
 出すと、下流で「パスウェイが無い化合物」と区別が付かなくなるため）。
+直近の差次的結果が現行の `contract_version` / `log2fc_sign` と一致しない場合も、
+向きを偽装せず `arf_differential` の再実行を要求する。InChIKey 付き行が 0 件なら、
+下流が拒否する本文 0 行のファイルを成功扱いで残さない。
 
 `#` 始まりのメタ行に来歴（`contract_version` / `group_a` / `group_b` /
 `log2fc_sign` / 閾値 / `n_features_total` / `n_with_inchikey` / `n_unannotated`）を置き、
@@ -286,4 +289,5 @@ mz / rt / log2fc / p_value / q_value / mean_a / mean_b / significant`。
 「検出された化合物」を背景に取る必要があり、有意な行だけでは背景が作れない。
 
 `msi_level` は `.arf2` 由来の注釈確度であり、**MS/MS の有無ではない**
-（`.arf2` は MS/MS 取得フラグを持たない）。
+（`.arf2` は MS/MS 取得フラグを持たない）。`arf2_annotate_identities` と同じ
+保守的なクラス上限を使う。

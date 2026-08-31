@@ -52,6 +52,35 @@ class TestExportDifferential(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "missing_state")
         self.assertEqual(payload["error"]["state"], "sibling_arf2")
 
+    def test_rejects_stale_log2fc_contract_before_writing(self):
+        """旧符号の状態へ新契約ラベルを付けて書き出してはならない。"""
+        session_state.session.arf.last_differential["log2fc_sign"] = (
+            "positive means group_a is higher")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "differential.tsv"
+            arf2 = Path(tmp) / "AlignmentResult_2026_01_01_00_00_00.arf2"
+            arf2.write_bytes(b"")
+            with patch("lipidmix.arf.tools._sibling_arf2_path", return_value=arf2):
+                payload = json.loads(server.arf_export_differential(str(out)))
+            self.assertFalse(out.exists())
+        self.assertEqual(payload["error"]["code"], "missing_state")
+        self.assertEqual(payload["error"]["state"], "compatible_two_group_differential")
+
+    def test_rejects_export_when_no_row_has_inchikey(self):
+        """consumer が拒否する本文 0 行のファイルを成功扱いで残さない。"""
+        self.catalog[0]["InChIKey"] = ""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "differential.tsv"
+            arf2 = Path(tmp) / "AlignmentResult_2026_01_01_00_00_00.arf2"
+            arf2.write_bytes(b"")
+            with patch("lipidmix.arf.tools._sibling_arf2_path", return_value=arf2), \
+                 patch("lipidmix.arf2.reader.load_catalog", return_value=self.catalog):
+                payload = json.loads(server.arf_export_differential(str(out)))
+            self.assertFalse(out.exists())
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["n_with_inchikey"], 0)
+        self.assertIn("InChIKey", payload["message"])
+
     def test_writes_meta_and_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "differential.tsv"
@@ -80,6 +109,7 @@ class TestExportDifferential(unittest.TestCase):
         self.assertEqual(cells["mz"], "760.5851")
         self.assertEqual(cells["rt"], "12.3400")
         self.assertEqual(cells["log2fc"], "1.900000")
+        self.assertEqual(cells["msi_level"], "3")
 
     def test_significant_flag_uses_stored_thresholds(self):
         with tempfile.TemporaryDirectory() as tmp:
