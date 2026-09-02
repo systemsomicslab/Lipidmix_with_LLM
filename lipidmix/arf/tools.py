@@ -12,7 +12,6 @@ module 修飾（path_resolvers.* / tool_helpers.*）で参照し patch が確実
 """
 import math
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
 from lipidmix.analysis import differential
@@ -1040,24 +1039,23 @@ def arf_export_differential(output_path: str) -> str:
             return False
         return q_value <= q_threshold and abs(log2fc) >= log2fc_threshold
 
-    meta = [
-        f"# contract_version = {last['contract_version']}",
-        f"# exported_at = {datetime.now(timezone.utc).isoformat()}",
-        f"# source_arf = {getattr(session_state.session.arf, 'current_file_path', '')}",
-        f"# source_arf2 = {arf2_path}",
-        f"# group_a = {last['a']}\tn_a = {last['n_a']}",
-        f"# group_b = {last['b']}\tn_b = {last['n_b']}",
-        f"# log2fc_sign = {last['log2fc_sign']}",
-        f"# q_threshold = {q_threshold}\tlog2fc_threshold = {log2fc_threshold}"
-        f"\tlog_transform = {str(bool(last.get('log_transform'))).lower()}",
-        f"# preprocess = {getattr(session_state.session.arf, 'preprocessing_recipe', None)}",
-        f"# n_features_total = {report['n_features_total']}"
-        f"\tn_with_inchikey = {report['n_with_inchikey']}"
-        f"\tn_unannotated = {report['n_unannotated']}",
-        "# msi_level は .arf2 由来の注釈確度。MS/MS の有無ではない",
-    ]
+    meta = export_contract.build_meta(
+        group_a=last["a"], n_a=last["n_a"],
+        group_b=last["b"], n_b=last["n_b"],
+        q_threshold=q_threshold, log2fc_threshold=log2fc_threshold,
+        log_transform=last.get("log_transform"),
+        n_features_total=report["n_features_total"],
+        n_with_inchikey=report["n_with_inchikey"],
+        n_unannotated=report["n_unannotated"],
+        msi_note="# msi_level は .arf2 由来の注釈確度。MS/MS の有無ではない",
+        source_lines=[
+            f"# source_arf = {getattr(session_state.session.arf, 'current_file_path', '')}",
+            f"# source_arf2 = {arf2_path}",
+        ],
+        preprocess_line=f"# preprocess = {getattr(session_state.session.arf, 'preprocessing_recipe', None)}",
+    )
 
-    lines = [*meta, "\t".join(_EXPORT_COLUMNS)]
+    lines = [*meta, "\t".join(export_contract.EXPORT_COLUMNS)]
     identity_tables = tool_helpers._identity_tables()
     for row in rows:
         identity_name = row["name"]
@@ -1069,18 +1067,20 @@ def arf_export_differential(output_path: str) -> str:
             mass_error_band="UNKNOWN",
             adduct_band="UNKNOWN",
         )
-        lines.append("\t".join([
-            str(row["spot_id"]), row["name"], "arf2", row["ontology"],
-            row["inchikey"], "arf2", str(identity["msi"]["level"]),
-            _format_export_number(row["mz"], ".4f"),
-            _format_export_number(row["rt"], ".4f"),
-            _format_export_number(row["log2fc"], ".6f"),
-            _format_export_number(row["p_value"], ".6g"),
-            _format_export_number(row["q_value"], ".6g"),
-            _format_export_number(row["mean_a"], ".6g"),
-            _format_export_number(row["mean_b"], ".6g"),
-            "true" if _is_significant(row) else "false",
-        ]))
+        lines.append(export_contract.format_row({
+            "spot_id": row["spot_id"],
+            "name": row["name"],
+            "name_source": "arf2",
+            "ontology": row["ontology"],
+            "inchikey": row["inchikey"],
+            "inchikey_source": "arf2",
+            "msi_level": identity["msi"]["level"],
+            "mz": row["mz"], "rt": row["rt"],
+            "log2fc": row["log2fc"],
+            "p_value": row["p_value"], "q_value": row["q_value"],
+            "mean_a": row["mean_a"], "mean_b": row["mean_b"],
+            "significant": _is_significant(row),
+        }))
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -163,3 +163,61 @@ def test_dataset_differential_does_not_touch_arf_slot():
     dataset_differential(group_a=a, group_b=b)
     assert session_state.session.arf.feature_matrix is None
     assert getattr(session_state.session.arf, "last_differential", None) is None
+
+
+# ---------- dataset_export_differential ----------
+
+def test_dataset_export_requires_differential(tmp_path):
+    _load_ds()
+    from lipidmix.tools.dataset_analysis_tools import dataset_export_differential
+    parsed = json.loads(dataset_export_differential(str(tmp_path / "out.tsv")))
+    assert parsed["error"]["code"] == MISSING_STATE
+    assert parsed["error"]["required_tools"] == ["dataset_differential"]
+
+
+def test_dataset_export_writes_contract_format(tmp_path):
+    from lipidmix.analysis.export_contract import CONTRACT_VERSION, EXPORT_COLUMNS
+    _load_ds()
+    from lipidmix.tools.dataset_analysis_tools import (
+        dataset_differential, dataset_export_differential, dataset_preprocess,
+    )
+    dataset_preprocess()
+    a, b = _groups(session_state.session.dataset)
+    dataset_differential(group_a=a, group_b=b)
+
+    out = tmp_path / "diff.tsv"
+    parsed = json.loads(dataset_export_differential(str(out)))
+    assert parsed["status"] == "success"
+    assert parsed["contract_version"] == CONTRACT_VERSION
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    meta = [l for l in lines if l.startswith("#")]
+    assert f"# contract_version = {CONTRACT_VERSION}" in meta
+    assert any("id_space = mztab_smf_id" in l for l in meta)
+    header = next(l for l in lines if not l.startswith("#"))
+    assert header.split("\t") == EXPORT_COLUMNS
+    body = [l for l in lines if not l.startswith("#")][1:]
+    assert len(body) == 20
+    # p_value / q_value が空欄でないこと（初版の欠陥の回帰テスト）
+    cols = body[0].split("\t")
+    assert cols[EXPORT_COLUMNS.index("p_value")] != ""
+    assert cols[EXPORT_COLUMNS.index("q_value")] != ""
+    assert cols[EXPORT_COLUMNS.index("inchikey")] != ""
+
+
+def test_dataset_export_refuses_without_inchikey(tmp_path):
+    """InChIKey が 0 件なら書かずに拒否する（arf_export_differential と同じ理由）。"""
+    ds = _load_ds()
+    ds.feature_metadata = {fid: {"name": None, "mz": None, "rt": None,
+                                 "inchikey": None, "inchikey_source": "none"}
+                           for fid in ds.feature_ids}
+    from lipidmix.tools.dataset_analysis_tools import (
+        dataset_differential, dataset_export_differential, dataset_preprocess,
+    )
+    dataset_preprocess()
+    a, b = _groups(session_state.session.dataset)
+    dataset_differential(group_a=a, group_b=b)
+    out = tmp_path / "diff.tsv"
+    parsed = json.loads(dataset_export_differential(str(out)))
+    assert parsed["status"] == "error"
+    assert not out.exists()
