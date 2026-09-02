@@ -23,13 +23,15 @@ ARF 経路（`docs/workflow/arf.md`）と同じ純関数を共有している。
 
 1. lipidmix/tools/dataset_analysis_tools.py  dataset_differential()
 2. └─ lipidmix/analysis/dataset_analysis.py  run_dataset_differential()
-3.    └─ lipidmix/analysis/differential.py  two_group_test()
-4.    └─ lipidmix/analysis/differential.py  add_fdr()
-5.    └─ lipidmix/analysis/differential.py  summarize_two_group()
-6.    └─ lipidmix/analysis/differential.py  volcano_data()
+3.    └─ lipidmix/analysis/differential.py  check_confounding()
+4.    └─ lipidmix/analysis/differential.py  two_group_test()
+5.    └─ lipidmix/analysis/differential.py  add_fdr()
+6.    └─ lipidmix/analysis/differential.py  summarize_two_group()
+7.    └─ lipidmix/analysis/differential.py  volcano_data()
 
 ## dataset_export_differential
 
 1. lipidmix/tools/dataset_analysis_tools.py  dataset_export_differential()
-2. └─ lipidmix/analysis/export_contract.py  build_meta()
-3. └─ lipidmix/analysis/export_contract.py  format_row()
+2. └─ lipidmix/tools/dataset_analysis_tools.py  _is_significant()
+3. └─ lipidmix/analysis/export_contract.py  build_meta()
+4. └─ lipidmix/analysis/export_contract.py  format_row()

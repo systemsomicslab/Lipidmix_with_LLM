@@ -36,7 +36,7 @@
 | 文書 | 対象 | ツール数 |
 |---|---|---|
 | [dataset.md](dataset.md) | データセット投入の入口 | 3 |
-| [arf.md](arf.md) | `.arf` — サンプル別強度・PCA・差次的解析 | 9 |
+| [arf.md](arf.md) | `.arf` — サンプル別強度・PCA・差次的解析 | 10 |
 | [arf2.md](arf2.md) | `.arf2` — スポット代表カタログ | 2 |
 | [pai2.md](pai2.md) | `.pai2` — 単一測定のピークと MS/MS 検証 | 3 |
 | [dcl.md](dcl.md) | `.dcl` — デコンボリューション済み MS/MS | 2 |
