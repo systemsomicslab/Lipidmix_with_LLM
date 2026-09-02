@@ -5,7 +5,7 @@
 ## このリポジトリは何か
 
 MS-DIAL（リピドミクス LC-MS 解析ソフト）のバイナリ出力を読み、LLM から使える形で公開する
-**MCP サーバ `ms-data-parser`**。ツール 40・リソース 4・リソーステンプレート 3。
+**MCP サーバ `ms-data-parser`**。ツール 51・リソース 4・リソーステンプレート 3。
 対象形式は `.arf`（アライン後・サンプル別ピーク）/ `.arf2`（スポット代表）/ `.pai2`（個別測定）/
 `.dcl`（デコンボリューション済み MS/MS、独自バイナリ）/ `.EIC.aef`（クロマトグラム）。
 解析（PCA・前処理/QC・差次的解析）に加え、文献知識と再利用手順の蓄積層（`knowledge/` `playbook/`
@@ -19,8 +19,10 @@ MS-DIAL（リピドミクス LC-MS 解析ソフト）のバイナリ出力を読
 C:/Python314/python.exe -m pytest tests -q
 ```
 
-- 全 **563 件**（`-m unittest discover -s tests -t .` は 5 件少ない。差は
-  `tests/test_server_registration.py` の関数形式テストで、pytest でしか拾えない）。**リポジトリルートから実行する**。
+- 全 **734 件**（`-m unittest discover -s tests -t .` はこれより少ない〔実測 578〕。差は
+  pytest 関数形式で書かれた複数のテストファイル（`test_dataset_state.py` `test_console_runner.py`
+  `test_mztab_tools.py` 等、mzTab/Console/DatasetState 層で追加）で、`unittest.TestCase` を継承しない
+  ため unittest discover では拾えない）。**リポジトリルートから `pytest` で実行する**。
 - MCP サーバ起動: `C:/Python314/python.exe server.py`（既定 stdio）。
 - パーサ単体の CLI: `python -m lipidmix.arf.reader --file <path> --pca` など（README「Command-line examples」）。
 
@@ -41,9 +43,12 @@ NAS 共有運用向け）/ `LIPIDMIX_TRANSPORT` `LIPIDMIX_HOST` `LIPIDMIX_PORT`�
 ```
 lipidmix/core/      FastMCP インスタンス・設定・セッション状態・パス解決・共通ヘルパ（依存グラフの leaf）
 lipidmix/msdial/    MS-DIAL 固有サイドカー（*_tags.xml / .mddata）・同定・ピーク検証・サンプル因子
-lipidmix/analysis/  入力形式に依存しない数値処理（前処理/QC・差次的解析）
+lipidmix/analysis/  入力形式に依存しない数値処理（前処理/QC・PCA・差次的解析・エクスポート契約）
 lipidmix/plots/     描画 payload の組み立てと matplotlib 描画（volcano / eic / render）
 lipidmix/{arf,arf2,pai2,dcl,eic}/   形式ごとの reader.py（パーサ）と tools.py（MCP ツール）
+lipidmix/mztab/     mzTab-M リーダ・DatasetState 構築
+lipidmix/console/   MS-DIAL Console 実行層（job_manager / runner / output_collector / sidecar）
+lipidmix/handoff/   Console 成果物の受け渡しスキーマ（analysis-job.json）
 lipidmix/corpus/    蓄積ノートの純ロジック（knowledge_store / paper_ingest）
 lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプル検索・目的・レポート・リソース）
 ```
@@ -65,6 +70,14 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
   （`lipidmix/core/mcp_errors.py` の `missing_state`）。クライアントはこれを読んでリプレイする契約。
 - **reader の MessagePack Key インデックスの正解表は `docs/schema/*.md`**（MS-DIAL の C# クラス定義）。
   インデックス定数を変える前に必ず参照する。推測で直さない。
+- **`run_pca` の正準は `lipidmix/analysis/pca.py`**。`lipidmix/arf/reader.py` の同名は後方互換の
+  再エクスポートで、ARF テストが `patch.object(server.arf_reader, "run_pca", ...)` で module 属性
+  としてこの束縛を差し替えてモックしている。**消すとモックが効かなくなり、テストは緑のまま
+  実物の scikit-learn PCA が走り出す。**
+- **差次的エクスポートの列定義は `lipidmix/analysis/export_contract.py` が唯一の正準**。
+  ARF（`arf_export_differential`）と mzTab-M（`dataset_export_differential`）の両経路がここを
+  共有しており、**別リポジトリ（massbank-context）との契約**でもある。列の追加・改名・並べ替えは
+  `CONTRACT_VERSION` の引き上げと下流の同時更新なしにやってはいけない。
 - **ツールの戻り値を肥大させない**。戻り値はそのまま LLM の文脈を占め、結論が埋没する。
   守るべき決まりごと:
   - JSON は `lipidmix.core.serialization.json_payload()` で返す（`json.dumps(..., indent=2)`
@@ -83,9 +96,9 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 
 | 知りたいこと | 見る場所 |
 |---|---|
-| ツールの引数・用途（全 40） | `USAGE.md` |
+| ツールの引数・用途（`USAGE.md` 自体は Console/DatasetState 系ツールが未反映で実測 51 件から陳腐化） | `USAGE.md` |
 | 出力フィールドの**意味**（行の粒度・脂質名文法・必須注意） | `docs/output_format/core.md` ＋ トピック別（`arf` `arf2` `pai2` `dcl` `eic` `identity`）。MCP リソース `lipidmix://docs/output-format[/{topic}]` としても配信 |
-| ツールが**どのファイルのどの関数をどの順に呼ぶか** | `docs/workflow/`（8 文書・パーサ/プロット系 28 ツール分）。行番号は書かない規約 |
+| ツールが**どのファイルのどの関数をどの順に呼ぶか** | `docs/workflow/`（9 文書・35 ツール分。範囲外 16 ツールは対象外）。行番号は書かない規約 |
 | MessagePack の Key 番号 | `docs/schema/*.md` |
 | 設計判断の経緯・調査で判明した事実 | `docs/HISTRY.md`（綴りはこのまま。**追跡外＝ローカル専用ログ**） |
 | 進行中/完了タスク | `docs/task.md`（**追跡外**。ステータス = TODO/DOING/DONE/HOLD） |
