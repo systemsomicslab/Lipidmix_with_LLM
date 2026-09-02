@@ -45,6 +45,8 @@ OUT_OF_SCOPE: tuple[str, ...] = (
     "record_objective", "update_objective", "log_search", "knowledge_coverage",
     "paper_search", "ingest_stage", "ingest_review_queue", "ingest_promote",
     "ingest_reject", "write_report", "read_report", "list_reports",
+    # Console 実行層（Phase 2 追加・ワークフロー文書は Phase 2 完了後に追加）
+    "console_plan", "console_run", "console_status", "job_list",
 )
 
 

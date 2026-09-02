@@ -1,0 +1,200 @@
+"""analysis-job.json のスキーマ定義と読み書き。
+
+AnalysisJob はジョブの永続スナップショット。MCP サーバ再起動後の再開・GUI 表示・
+hash 検証に使う。ファイルはデータフォルダ内のランディレクトリに置き、
+リポジトリには書き込まない（lipidmix/console/job_manager.py が保証する）。
+
+このモジュールは依存グラフの leaf（stdlib のみ）。tools_* / server を import しない。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
+
+SCHEMA_VERSION = "analysis-job.v1"
+
+JobStatus = Literal["planned", "running", "needs_input", "completed", "failed"]
+Polarity = Literal["positive", "negative"]
+MeasureType = Literal["peak_height", "peak_area_above_zero"]
+OmicsType = Literal["lipidomics", "metabolomics"]
+
+
+@dataclass
+class MztabEntry:
+    path: str
+    polarity: Polarity
+    measure: MeasureType
+    sha256: str
+    validation: dict = field(default_factory=dict)
+
+
+@dataclass
+class Artifact:
+    path: str
+    role: str
+    format: str
+    sha256: str
+
+
+@dataclass
+class SampleManifest:
+    path: str
+    sha256: str
+    status: Literal["pending", "approved", "auto_generated"] = "pending"
+
+
+@dataclass
+class AnalysisJob:
+    schema: str
+    job_id: str
+    status: JobStatus
+    created_at: str
+    updated_at: str
+    dataset_root: str
+    input_count: int
+    software_name: str
+    software_version: str
+    execution_mode: str
+    method_file: str
+    omics: OmicsType
+    polarity: Polarity
+    measure: MeasureType
+    run_dir: str
+    primary_mztab_files: list[MztabEntry] = field(default_factory=list)
+    artifacts: list[Artifact] = field(default_factory=list)
+    sample_manifest: SampleManifest | None = None
+    warnings: list[str] = field(default_factory=list)
+    error: str | None = None
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(_to_dict(self), ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def load(path: Path) -> "AnalysisJob":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("schema") != SCHEMA_VERSION:
+            raise ValueError(
+                f"analysis-job schema mismatch: expected {SCHEMA_VERSION!r}, got {data.get('schema')!r}"
+            )
+        return _from_dict(data)
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# ---------- シリアライズ補助 ----------
+
+def _to_dict(job: AnalysisJob) -> dict:
+    return {
+        "schema": job.schema,
+        "job_id": job.job_id,
+        "status": job.status,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "source": {
+            "dataset_root": job.dataset_root,
+            "input_count": job.input_count,
+        },
+        "software": {
+            "name": job.software_name,
+            "version": job.software_version,
+            "execution_mode": job.execution_mode,
+            "method_file": job.method_file,
+        },
+        "project": {
+            "omics": job.omics,
+            "polarity": job.polarity,
+            "measure": job.measure,
+        },
+        "run_dir": job.run_dir,
+        "primary_mztab_files": [
+            {
+                "path": e.path,
+                "polarity": e.polarity,
+                "measure": e.measure,
+                "sha256": e.sha256,
+                "validation": e.validation,
+            }
+            for e in job.primary_mztab_files
+        ],
+        "artifacts": [
+            {"path": a.path, "role": a.role, "format": a.format, "sha256": a.sha256}
+            for a in job.artifacts
+        ],
+        "sample_manifest": (
+            {
+                "path": job.sample_manifest.path,
+                "sha256": job.sample_manifest.sha256,
+                "status": job.sample_manifest.status,
+            }
+            if job.sample_manifest
+            else None
+        ),
+        "warnings": job.warnings,
+        "error": job.error,
+    }
+
+
+def _from_dict(d: dict) -> AnalysisJob:
+    src = d.get("source", {})
+    sw = d.get("software", {})
+    proj = d.get("project", {})
+
+    mztab = [
+        MztabEntry(
+            path=e["path"],
+            polarity=e["polarity"],
+            measure=e["measure"],
+            sha256=e.get("sha256", ""),
+            validation=e.get("validation", {}),
+        )
+        for e in d.get("primary_mztab_files", [])
+    ]
+    artifacts = [
+        Artifact(path=a["path"], role=a["role"], format=a["format"], sha256=a.get("sha256", ""))
+        for a in d.get("artifacts", [])
+    ]
+    sm_raw = d.get("sample_manifest")
+    sample_manifest = (
+        SampleManifest(
+            path=sm_raw["path"],
+            sha256=sm_raw.get("sha256", ""),
+            status=sm_raw.get("status", "pending"),
+        )
+        if sm_raw
+        else None
+    )
+    return AnalysisJob(
+        schema=d["schema"],
+        job_id=d["job_id"],
+        status=d["status"],
+        created_at=d["created_at"],
+        updated_at=d["updated_at"],
+        dataset_root=src.get("dataset_root", ""),
+        input_count=src.get("input_count", 0),
+        software_name=sw.get("name", "MS-DIAL"),
+        software_version=sw.get("version", ""),
+        execution_mode=sw.get("execution_mode", "console"),
+        method_file=sw.get("method_file", ""),
+        omics=proj.get("omics", "lipidomics"),
+        polarity=proj.get("polarity", "positive"),
+        measure=proj.get("measure", "peak_height"),
+        run_dir=d.get("run_dir", ""),
+        primary_mztab_files=mztab,
+        artifacts=artifacts,
+        sample_manifest=sample_manifest,
+        warnings=d.get("warnings", []),
+        error=d.get("error"),
+    )

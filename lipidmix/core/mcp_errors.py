@@ -49,6 +49,28 @@ def missing_state(state: str, required_tools: list[str], message: str) -> str:
         })
 
 
+CONSOLE_ERROR_CODES = frozenset({
+    "MSDIAL_EXE_NOT_FOUND",
+    "MSDIAL_TIMEOUT",
+    "MSDIAL_NONZERO_EXIT",
+    "NO_JOB_OUTPUT",
+    "JOB_NOT_FOUND",
+    "JOB_NOT_PLANNED",
+    "DATASET_ROOT_IN_REPO",
+    "METHOD_FILE_NOT_FOUND",
+})
+
+
+def console_error(code: str, message: str, details: dict | None = None) -> str:
+    """Console 実行層固有のエラーを機械可読エンベロープで返す。"""
+    if not code or not message:
+        raise ValueError("code と message は必須です。")
+    payload: dict = {"code": code, "message": message}
+    if details is not None:
+        payload["details"] = details
+    return json_payload({"error": payload})
+
+
 MZTAB_ERROR_CODES = frozenset({
     "MZTAB_NOT_FOUND",
     "MZTAB_STRUCTURE_INVALID",

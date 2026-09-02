@@ -41,6 +41,11 @@ EXPECTED_ANNOTATIONS = {
     "load_dataset": READ_ONLY,
     "dataset_load": LOCAL_WRITE,
     "dataset_status": READ_ONLY,
+    # --- Console 実行層（console_plan/run はジョブ状態・ファイルを生成する） ---
+    "console_plan": LOCAL_WRITE_APPEND,
+    "console_run": LOCAL_WRITE_APPEND,
+    "console_status": READ_ONLY,
+    "job_list": READ_ONLY,
     # --- DCL / PAI2 / EIC ---
     "dcl_parser": READ_ONLY,
     "dcl_find_msms": READ_ONLY,

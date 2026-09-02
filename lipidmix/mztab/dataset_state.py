@@ -33,6 +33,13 @@ class DatasetState:
         self.validation_result: dict = {}
         self.inchikey_coverage: dict = {}
 
+        # --- ジョブ由来フィールド（dataset_load(job_path=...) で設定） ---
+        # job_path: analysis-job.json の絶対パス。mzTab-M を直接指定した場合は None。
+        self.job_path: str | None = None
+        # artifact_paths: role -> [絶対パス, ...] のマップ。
+        # Console 出力の ARF / DCL / EIC へのルックアップに使う。
+        self.artifact_paths: dict[str, list[str]] = {}
+
 
 def _sha256(path: str | Path) -> str:
     h = hashlib.sha256()

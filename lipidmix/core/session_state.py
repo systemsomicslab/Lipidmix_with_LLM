@@ -281,6 +281,11 @@ class AnalysisSession:
         # --- mzTab-M / DatasetState スロット（session.arf とは独立） ---
         self.dataset = None  # DatasetState | None
 
+        # --- Console ジョブスロット ---
+        # ジョブ状態の正準はディスク上の analysis-job.json。ここはそのパスへのポインタ。
+        # MCP ツールが job_path 省略で呼ばれたときのフォールバックにのみ使う。
+        self.current_job_path: str | None = None
+
     def section_hint(self, topic: str) -> str | None:
         """未読トピックなら、該当セクションを引くよう促す1行を返す。既読なら None。
 
