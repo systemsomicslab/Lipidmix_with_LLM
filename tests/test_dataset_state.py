@@ -81,3 +81,16 @@ def test_session_dataset_does_not_affect_arf_slot():
     sess.dataset = "dummy"
     # ARF スロットはそのまま
     assert sess.arf.features is None
+
+
+def test_dataset_state_has_analysis_fields():
+    from lipidmix.mztab.dataset_state import DatasetState
+    ds = DatasetState()
+    assert ds.pp_matrix is None
+    assert ds.pp_sample_names == []
+    assert ds.pp_feature_names == []
+    assert ds.roles == {}
+    assert ds.sample_meta == {}
+    assert ds.preprocessing_recipe == {}
+    assert ds.last_pca is None
+    assert ds.last_differential is None

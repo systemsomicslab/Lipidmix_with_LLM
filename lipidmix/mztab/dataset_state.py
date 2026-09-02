@@ -40,6 +40,26 @@ class DatasetState:
         # Console 出力の ARF / DCL / EIC へのルックアップに使う。
         self.artifact_paths: dict[str, list[str]] = {}
 
+        # --- 解析状態フィールド（dataset_preprocess / dataset_pca / dataset_differential が設定） ---
+        # pp_matrix: 前処理済み行列。shape は (n_samples, n_features) — feature_matrix の転置。
+        # ARF 側の session.arf.feature_matrix / pp_sample_names / pp_feature_names と
+        # 同じ役割で、スロットだけが独立している。
+        self.pp_matrix = None
+        self.pp_sample_names: list[str] = []
+        self.pp_feature_names: list[str] = []
+        # roles: {sample_name: "sample"|"qc"|"blank"}。preprocess() と差次的解析の群構成で使う。
+        self.roles: dict[str, str] = {}
+        # sample_meta: {sample_name: {role, batch, batch_source}}。feature-qc.tsv の元。
+        self.sample_meta: dict = {}
+        self.preprocessing_recipe: dict = {}
+        # last_pca / last_differential: 直近結果の全量。戻り値には要約だけを載せ、
+        # 全量はここに置く（CLAUDE.md の戻り値肥大禁止）。
+        # 現時点で読むのは dataset_export_differential のみ。図の保存ツール
+        # （save_pca_figure / save_volcano_figure）は session.arf 側を見ており、
+        # DatasetState 経路には未対応（次フェーズ）。
+        self.last_pca = None
+        self.last_differential = None
+
 
 def _sha256(path: str | Path) -> str:
     h = hashlib.sha256()
