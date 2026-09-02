@@ -941,12 +941,16 @@ def arf_differential(
             caveats.append(
                 f"検定できた特徴は {n_tested}/{len(feature_names)} 件のみ（多くが p=NaN）。"
                 "群内 n 不足・分散0・欠損が多い可能性があります（前処理の見直しを検討）。")
+        # contract_version / log2fc_sign は export_contract を単一情報源として直接参照する
+        # （リテラルで複製すると CONTRACT_VERSION を上げたときここが追随せず、
+        # arf_export_differential の互換性チェックに永遠に落ち続ける再現ループになる。
+        # dataset_analysis.run_dataset_differential と同じ理由・同じ直し方）。
         session_state.session.arf.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
                                      "n_a": n_a, "n_b": n_b,
                                      "q_threshold": q_threshold,
                                      "log2fc_threshold": log2fc_threshold,
-                                     "contract_version": 1,
-                                     "log2fc_sign": "positive means group_b is higher",
+                                     "contract_version": export_contract.CONTRACT_VERSION,
+                                     "log2fc_sign": export_contract.LOG2FC_SIGN,
                                      "log_transform": log_transform,
                                      "results": results, "volcano": volcano}
         # 全量 volcano（~特徴数）は上の last_differential に保持し、arf_plot_volcano

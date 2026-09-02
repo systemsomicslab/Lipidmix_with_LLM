@@ -169,6 +169,39 @@ def test_run_dataset_differential_rejects_small_groups():
                                  group_b_samples=["treat_0"])
 
 
+def test_run_dataset_differential_deduplicates_requested_samples():
+    """group_a=["S1","S1"] は同じ行を2回数えるだけで、分散0の縮退比較を
+    len(idx_a)<2 の拒否をすり抜けて通してしまう。重複は1回に丸め、
+    その旨を caveat で名指しする。"""
+    from lipidmix.analysis.dataset_analysis import run_dataset_differential
+    ds = _make_ds(n_features=20, n_samples=8)
+    _preprocessed(ds)
+    result = run_dataset_differential(
+        ds,
+        group_a_samples=["ctrl_0", "ctrl_0", "ctrl_1"],
+        group_b_samples=[n for n in ds.pp_sample_names if n.startswith("treat")],
+    )
+    assert result["n_a"] == 2
+    assert result["samples_a"] == ["ctrl_0", "ctrl_1"]
+    assert any("ctrl_0" in c and "重複" in c for c in result["caveats"])
+
+
+def test_run_dataset_differential_rejects_group_that_is_all_duplicates():
+    """重複除去後に n<2 まで縮む場合、水増しされた見かけの n ではなく
+    実際のサイズ不足として拒否されなければならない。"""
+    from lipidmix.analysis.dataset_analysis import (
+        PreconditionError, run_dataset_differential,
+    )
+    ds = _make_ds(n_features=20, n_samples=8)
+    _preprocessed(ds)
+    with pytest.raises(PreconditionError):
+        run_dataset_differential(
+            ds,
+            group_a_samples=["ctrl_0", "ctrl_0"],
+            group_b_samples=["treat_0", "treat_1"],
+        )
+
+
 # ---------- run_dataset_differential: ARF parity caveats (fix round 1) ----------
 
 def _make_batch_ds(names, n_features=20):

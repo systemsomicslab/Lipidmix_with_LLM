@@ -5,6 +5,7 @@ from unittest import mock
 import numpy as np
 
 import server
+from lipidmix.analysis import export_contract
 from lipidmix.core import session_state
 from lipidmix.arf import tools as tools_arf
 
@@ -448,3 +449,33 @@ class TestDifferentialSignDisclosure(unittest.TestCase):
         # 倣い、直接 import した session_state を参照する。
         state = session_state.session.arf.last_differential
         self.assertEqual(state["contract_version"], 1)
+
+
+class TestDifferentialContractLinkage(unittest.TestCase):
+    """contract_version / log2fc_sign が export_contract を単一情報源として
+    参照していること（値の一致ではなく紐付け自体）を確認する。
+
+    `== 1` のような値一致テストは、別々にリテラルを2箇所へ複製していても
+    今日は両方とも 1 なので通ってしまい、意味がない。ここでは
+    export_contract.CONTRACT_VERSION を書き換えて、arf_differential が
+    その変更に追随することを見る。追随しなければ、CONTRACT_VERSION を
+    上げた瞬間に arf_export_differential の互換性チェックへ永遠に
+    引っかかる（再現ループ）。
+    """
+    def setUp(self):
+        session_state.session = server.AnalysisSession()
+
+    def test_stored_contract_version_follows_export_contract_constant(self):
+        _run_preprocess_and_differential()
+        with mock.patch.object(export_contract, "CONTRACT_VERSION", 2):
+            json.loads(server.arf_differential(group_a="A", group_b="B"))
+        state = session_state.session.arf.last_differential
+        self.assertEqual(state["contract_version"], 2)
+
+    def test_stored_log2fc_sign_follows_export_contract_constant(self):
+        _run_preprocess_and_differential()
+        patched_sign = "positive means group_a is higher (patched)"
+        with mock.patch.object(export_contract, "LOG2FC_SIGN", patched_sign):
+            json.loads(server.arf_differential(group_a="A", group_b="B"))
+        state = session_state.session.arf.last_differential
+        self.assertEqual(state["log2fc_sign"], patched_sign)

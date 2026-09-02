@@ -473,3 +473,123 @@ def test_console_run_registers_sidecar_artifact(tmp_path, monkeypatch):
     assert sidecar.is_file()
     roles = {a.role for a in load_job(job_path).artifacts}
     assert "sample_qc_sidecar" in roles
+
+
+# ---------- F1: 実行後処理（collect_artifacts 以降）のガード ----------
+
+def test_console_run_post_run_failure_marks_job_failed_not_running(tmp_path, monkeypatch):
+    """run_msdial 自体は成功しても、その後の生成物ハッシュ計算で例外が出たら
+    running に固着させず failed で機械可読エンベロープを返す。
+
+    Windows でウイルススキャナ等が生成直後のファイルをロックしていると
+    collect_artifacts 内の sha256_file が PermissionError を投げる実運用の
+    再現。ここが無防備だと analysis-job.json は running のまま残り、以降の
+    console_run は全部 JOB_NOT_PLANNED で拒否されて誰も直せなくなる
+    （Task 0 で潰したはずの症状の再発）。
+    """
+    import json as _json
+    from unittest.mock import MagicMock, patch
+    from lipidmix.console.job_manager import create_job, load_job
+    from lipidmix.tools.console_tools import console_run
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    method = tmp_path / "params.msdial"
+    method.touch()
+    job, job_path = create_job(dataset_root=tmp_path, method_file=method,
+                               polarity="positive", measure="peak_height")
+    run_dir = Path(job.run_dir)
+
+    def _fake_run(cmd, **kwargs):
+        out = run_dir / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "Height_AlignmentResult_ctrl_1.mzTab").write_text("MTD\t")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    with patch("subprocess.run", side_effect=_fake_run), \
+         patch("lipidmix.console.output_collector.sha256_file",
+               side_effect=PermissionError("locked by AV scanner")):
+        result = console_run(str(job_path))
+
+    parsed = _json.loads(result)
+    assert parsed["error"]["code"] == "JOB_POST_RUN_FAILED"
+    reloaded = load_job(job_path)
+    assert reloaded.status == "failed"
+    assert reloaded.status != "running"
+    assert reloaded.error
+
+
+# ---------- F5: サイドカー失敗・スキップ経路のテスト ----------
+
+def test_console_run_sidecar_exception_still_completes_with_warning(tmp_path, monkeypatch):
+    """サイドカー生成が例外を投げても、実行自体は completed のままにする。
+
+    「副産物が書けなくても本実行を失敗にしない」という不変条件は、これまで
+    コードを読んで確認するしかなかった。ここでは
+    generate_feature_qc_tsv を OSError で失敗させ、それでも completed に
+    なること・job.warnings に積まれることを確認する。
+    """
+    import json as _json
+    from unittest.mock import MagicMock, patch
+    from lipidmix.console.job_manager import create_job, load_job
+    from lipidmix.tools.console_tools import console_run
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    method = tmp_path / "params.msdial"
+    method.touch()
+    job, job_path = create_job(dataset_root=tmp_path, method_file=method,
+                               polarity="positive", measure="peak_height")
+    run_dir = Path(job.run_dir)
+
+    def _fake_run(cmd, **kwargs):
+        out = run_dir / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "Height_AlignmentResult_ctrl_1.pai2").write_bytes(b"\x00")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    with patch("subprocess.run", side_effect=_fake_run), \
+         patch("lipidmix.console.sidecar.generate_feature_qc_tsv",
+               side_effect=OSError("disk full")):
+        result = console_run(str(job_path))
+
+    parsed = _json.loads(result)
+    assert parsed["status"] == "completed"
+    reloaded = load_job(job_path)
+    assert reloaded.status == "completed"
+    assert any("feature-qc.tsv" in w for w in reloaded.warnings)
+
+
+def test_console_run_no_pai2_artifacts_skips_sidecar_with_warning(tmp_path, monkeypatch):
+    """サンプル別 .pai2 が1つも生成されなければサイドカーは作らず、
+    completed のまま warning を残す（例外にしない）。
+    """
+    import json as _json
+    from unittest.mock import MagicMock, patch
+    from lipidmix.console.job_manager import create_job, load_job
+    from lipidmix.tools.console_tools import console_run
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    method = tmp_path / "params.msdial"
+    method.touch()
+    job, job_path = create_job(dataset_root=tmp_path, method_file=method,
+                               polarity="positive", measure="peak_height")
+    run_dir = Path(job.run_dir)
+
+    def _fake_run(cmd, **kwargs):
+        out = run_dir / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "Height_AlignmentResult_001.mzTab").write_text("MTD\t")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    with patch("subprocess.run", side_effect=_fake_run):
+        result = console_run(str(job_path))
+
+    parsed = _json.loads(result)
+    assert parsed["status"] == "completed"
+    sidecar_path = run_dir / "sidecars" / "feature-qc.tsv"
+    assert not sidecar_path.exists()
+    reloaded = load_job(job_path)
+    assert reloaded.status == "completed"
+    assert any("feature-qc.tsv" in w for w in reloaded.warnings)

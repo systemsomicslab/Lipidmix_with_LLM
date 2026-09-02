@@ -31,19 +31,25 @@ def dataset_load(mztab_path: str | None = None, job_path: str | None = None) -> 
     """
     if mztab_path and job_path:
         return mztab_error(
-            "MZTAB_NOT_FOUND",
-            "mztab_path と job_path を同時に指定できません。どちらか一方を使ってください。",
+            "DATASET_BAD_REQUEST",
+            "mztab_path と job_path を同時に指定できません。どちらか一方だけを"
+            "使ってください（mztab_path: .mzTab への直接パス。job_path:"
+            " analysis-job.json のパス。console_run 完了後は job_path を推奨）。",
         )
 
     if job_path:
         return _load_from_job(job_path)
 
     if not mztab_path:
-        return missing_state(
-            "dataset",
-            ["dataset_load"],
-            "mztab_path または job_path を指定してください。"
-            "console_run 完了後は job_path（analysis-job.json のパス）を推奨します。",
+        # missing_state ではない: 「前提状態が無いので別ツールを実行すれば直る」
+        # 復旧可能な状態不足ではなく、引数を直して呼び直すしかない確定エラー。
+        # required_tools に dataset_load 自身を挙げると、契約どおりに動く
+        # クライアントが同じ呼び出しを再実行して無限ループする。
+        return mztab_error(
+            "DATASET_BAD_REQUEST",
+            "mztab_path または job_path のどちらか一方を指定してください"
+            "（mztab_path: .mzTab への直接パス。job_path: analysis-job.json の"
+            "パス。console_run 完了後は job_path を推奨）。",
         )
 
     # mztab_path 経路（既存動作）

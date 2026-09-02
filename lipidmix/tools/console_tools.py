@@ -181,46 +181,64 @@ def console_run(job_path: str | None = None) -> str:
             {"log": str(run_dir / "msdial.log")},
         )
 
-    from lipidmix.console.output_collector import collect_artifacts
-    mztab_entries, other_artifacts = collect_artifacts(run_dir, before)
-
-    if not mztab_entries and not other_artifacts:
-        update_status(resolved, "failed", error="実行後に新規生成物が見つかりません")
-        return console_error(
-            "NO_JOB_OUTPUT",
-            "MS-DIAL Console が終了しましたが、出力ファイルが生成されませんでした。"
-            f"ログを確認してください: {run_dir / 'msdial.log'}",
-        )
-
-    job = load_job(resolved)
-    job.primary_mztab_files = mztab_entries
-    job.artifacts = other_artifacts
-
-    # サイドカー（feature-qc.tsv）。生成物のファイル名からサンプル名を拾う。
-    # 失敗しても実行は成功扱い——副産物のためにジョブを failed にしない。
-    from lipidmix.console import sidecar
+    # ここから先（生成物収集・ハッシュ計算・再読込・保存）は run_msdial 自体は
+    # 成功済みなので、上の try/except（MsdialExeNotFoundError 等）は対象外。
+    # だが無防備だと running に固着する経路が残る: Windows でウイルススキャナ等が
+    # 生成直後のファイルをロックしていると collect_artifacts 内の sha256_file が
+    # PermissionError を投げ、analysis-job.json は running のまま更新されずに
+    # 例外がツール境界を突き抜ける。以降の console_run は JOB_NOT_PLANNED で
+    # 全て拒否し、誰も直せない（Task 0 で潰したはずの症状の再発）。
+    # サイドカー（feature-qc.tsv）自身の失敗は既存どおりこの外側ガードに
+    # 届かせない——副産物のためにジョブを failed にしない設計を維持する。
     try:
-        sample_names = _sample_names_from_artifacts(other_artifacts)
-        if sample_names:
-            sidecar_path = run_dir / sidecar.SIDECAR_SUBDIR / sidecar.FEATURE_QC_FILENAME
-            sidecar.generate_feature_qc_tsv(
-                sidecar.build_sample_meta_from_names(sample_names), sidecar_path,
-            )
-            from lipidmix.handoff.schema import Artifact, sha256_file
-            job.artifacts.append(Artifact(
-                path=str(sidecar_path.relative_to(run_dir)),
-                role=sidecar.ARTIFACT_ROLE,
-                format="tsv",
-                sha256=sha256_file(sidecar_path),
-            ))
-        else:
-            job.warnings.append(
-                "サンプル別ファイル（.pai2）が見つからず feature-qc.tsv を生成しませんでした。")
-    except OSError as exc:
-        job.warnings.append(f"feature-qc.tsv の生成に失敗しました: {exc}")
+        from lipidmix.console.output_collector import collect_artifacts
+        mztab_entries, other_artifacts = collect_artifacts(run_dir, before)
 
-    job.status = "completed"
-    save_job(job, resolved)
+        if not mztab_entries and not other_artifacts:
+            update_status(resolved, "failed", error="実行後に新規生成物が見つかりません")
+            return console_error(
+                "NO_JOB_OUTPUT",
+                "MS-DIAL Console が終了しましたが、出力ファイルが生成されませんでした。"
+                f"ログを確認してください: {run_dir / 'msdial.log'}",
+            )
+
+        job = load_job(resolved)
+        job.primary_mztab_files = mztab_entries
+        job.artifacts = other_artifacts
+
+        # サイドカー（feature-qc.tsv）。生成物のファイル名からサンプル名を拾う。
+        # 失敗しても実行は成功扱い——副産物のためにジョブを failed にしない。
+        from lipidmix.console import sidecar
+        try:
+            sample_names = _sample_names_from_artifacts(other_artifacts)
+            if sample_names:
+                sidecar_path = run_dir / sidecar.SIDECAR_SUBDIR / sidecar.FEATURE_QC_FILENAME
+                sidecar.generate_feature_qc_tsv(
+                    sidecar.build_sample_meta_from_names(sample_names), sidecar_path,
+                )
+                from lipidmix.handoff.schema import Artifact, sha256_file
+                job.artifacts.append(Artifact(
+                    path=str(sidecar_path.relative_to(run_dir)),
+                    role=sidecar.ARTIFACT_ROLE,
+                    format="tsv",
+                    sha256=sha256_file(sidecar_path),
+                ))
+            else:
+                job.warnings.append(
+                    "サンプル別ファイル（.pai2）が見つからず feature-qc.tsv を生成しませんでした。")
+        except OSError as exc:
+            job.warnings.append(f"feature-qc.tsv の生成に失敗しました: {exc}")
+
+        job.status = "completed"
+        save_job(job, resolved)
+    except Exception as exc:  # 想定外。running に固着させないことが最優先
+        update_status(resolved, "failed", error=repr(exc))
+        return console_error(
+            "JOB_POST_RUN_FAILED",
+            "MS-DIAL Console の実行後処理（生成物収集・保存）でエラーが"
+            f"発生しました: {exc!r}",
+            {"log": str(run_dir / "msdial.log")},
+        )
 
     return json_payload({
         "status": "completed",

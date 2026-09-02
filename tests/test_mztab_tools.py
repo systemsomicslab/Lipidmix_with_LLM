@@ -59,18 +59,32 @@ def test_dataset_load_invalid_structure(tmp_path):
     assert parsed["error"]["code"] == "MZTAB_STRUCTURE_INVALID"
 
 
-def test_dataset_load_no_args_returns_missing_state():
+def test_dataset_load_no_args_returns_bad_request():
+    """引数不足は復旧可能な missing_state ではなく確定エラー。
+
+    missing_state のまま required_tools=["dataset_load"] を返すと、契約どおりに
+    動くクライアントが同じツールを再実行して無限ループする（自分自身が自分の
+    復旧策になってしまう）。DATASET_BAD_REQUEST は「引数を直して呼び直す」
+    種類のエラーであることを明示し、required_tools を持たない。
+    """
     from lipidmix.tools.mztab_tools import dataset_load
     result = dataset_load()
     parsed = json.loads(result)
-    assert parsed["error"]["code"] == MISSING_STATE
+    assert parsed["error"]["code"] == "DATASET_BAD_REQUEST"
+    assert "required_tools" not in parsed["error"]
 
 
-def test_dataset_load_both_args_returns_error(mztab_file):
+def test_dataset_load_both_args_returns_bad_request(mztab_file):
+    """両方指定は「ファイルが無い」ではなく「引数の組み合わせが不正」。
+
+    MZTAB_NOT_FOUND のままだと、そのコードを見て別パスで再試行するクライアントを
+    誤誘導する（ファイルはちゃんと存在する）。
+    """
     from lipidmix.tools.mztab_tools import dataset_load
     result = dataset_load(str(mztab_file), job_path="/fake/job.json")
     parsed = json.loads(result)
-    assert parsed["error"]["code"] == "MZTAB_NOT_FOUND"
+    assert parsed["error"]["code"] == "DATASET_BAD_REQUEST"
+    assert "required_tools" not in parsed["error"]
 
 
 # ---------- dataset_status ----------

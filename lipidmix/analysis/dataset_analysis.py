@@ -338,13 +338,35 @@ def _require_pp_matrix(ds):
 
 
 def _resolve_group(requested, available, roles, label, caveats):
-    """指定サンプル名を pp_sample_names の位置に解決し、落ちた分を caveat に残す。"""
+    """指定サンプル名を pp_sample_names の位置に解決し、落ちた分を caveat に残す。
+
+    requested は先勝ちで重複除去する。ARF 側は class-ID/因子トークンから群を
+    解決するため重複の起きようがないが、この経路は呼び出し側が生のサンプル名
+    リストを渡す API なので、group_a=["S1", "S1"] のような取り違えが起こり得る。
+    重複したまま通すと同一行を2回数えた群内分散ゼロの検定になり、有意性が
+    水増しされたうえで誰にも気付かれない。
+    """
+    seen_requested: set[str] = set()
+    duplicates: list[str] = []
+    deduped_requested: list[str] = []
+    for name in requested:
+        if name in seen_requested:
+            duplicates.append(name)
+            continue
+        seen_requested.add(name)
+        deduped_requested.append(name)
+    if duplicates:
+        caveats.append(
+            f"{label} に同じサンプル名が重複して指定されたため 1 回に丸めました: "
+            f"{', '.join(duplicates)}。重複したまま検定すると同一行を二重に数え、"
+            "群内分散を過小評価して有意性を水増しします。")
+
     index_of = {name: i for i, name in enumerate(available)}
     idx: list[int] = []
     names: list[str] = []
     unknown: list[str] = []
     non_sample: list[str] = []
-    for name in requested:
+    for name in deduped_requested:
         if name not in index_of:
             unknown.append(name)
             continue
