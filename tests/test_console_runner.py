@@ -328,3 +328,89 @@ def test_console_run_nonplanned_job(tmp_path, monkeypatch):
     result = console_run(str(job_path))
     parsed = _json.loads(result)
     assert parsed["error"]["code"] == "JOB_NOT_PLANNED"
+
+
+# ---------- Task 0: ブロッカー回帰 ----------
+
+def test_create_job_allows_default_data_dir(tmp_path, monkeypatch):
+    """既定データディレクトリ（<repo>/data 配下）を dataset_root にできる。"""
+    from lipidmix.core import mcp_core
+    from lipidmix.console.job_manager import create_job
+    # リポジトリ直下の data/ を模す: BASE_DIR 配下だが DATA_DIR 配下でもある
+    fake_repo = tmp_path / "repo"
+    data_root = fake_repo / "data" / "study-001"
+    data_root.mkdir(parents=True)
+    method = tmp_path / "params.msdial"
+    method.touch()
+    monkeypatch.setattr(mcp_core, "BASE_DIR", fake_repo)
+    monkeypatch.setenv("LIPIDMIX_DATA_DIR", str(fake_repo / "data"))
+
+    job, job_path = create_job(dataset_root=data_root, method_file=method,
+                              polarity="positive", measure="peak_height")
+    assert job_path.is_file()
+
+
+def test_create_job_still_rejects_source_tree(tmp_path, monkeypatch):
+    """データディレクトリ外のリポジトリ内パスは従来どおり拒否する。"""
+    from lipidmix.core import mcp_core
+    from lipidmix.console.job_manager import create_job
+    fake_repo = tmp_path / "repo"
+    (fake_repo / "lipidmix").mkdir(parents=True)
+    (fake_repo / "data").mkdir(parents=True)
+    method = tmp_path / "params.msdial"
+    method.touch()
+    monkeypatch.setattr(mcp_core, "BASE_DIR", fake_repo)
+    monkeypatch.setenv("LIPIDMIX_DATA_DIR", str(fake_repo / "data"))
+
+    with pytest.raises(ValueError):
+        create_job(dataset_root=fake_repo / "lipidmix", method_file=method,
+                   polarity="positive", measure="peak_height")
+
+
+def test_collect_artifacts_excludes_operational_files(tmp_path):
+    """msdial.log / analysis-job.json は生成物として数えない。"""
+    from lipidmix.console.output_collector import collect_artifacts, snapshot
+    before = snapshot(tmp_path)
+    (tmp_path / "msdial.log").write_text("CMD: fake\n")
+    (tmp_path / "analysis-job.json").write_text("{}")
+    mztabs, others = collect_artifacts(tmp_path, before)
+    assert mztabs == []
+    assert others == []
+
+
+def test_console_run_reports_no_output(tmp_path, monkeypatch):
+    """MS-DIAL が終了コード 0 で何も出力しなければ NO_JOB_OUTPUT になる。"""
+    import json as _json
+    from unittest.mock import MagicMock, patch
+    from lipidmix.console.job_manager import create_job, load_job
+    from lipidmix.tools.console_tools import console_run
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    method = tmp_path / "params.msdial"
+    method.touch()
+    _, job_path = create_job(dataset_root=tmp_path, method_file=method,
+                            polarity="positive", measure="peak_height")
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("subprocess.run", return_value=mock_result):
+        result = console_run(str(job_path))
+    parsed = _json.loads(result)
+    assert parsed["error"]["code"] == "NO_JOB_OUTPUT"
+    assert load_job(job_path).status == "failed"
+
+
+def test_console_run_unexpected_exception_marks_failed(tmp_path, monkeypatch):
+    """exe が実在しない等の想定外例外でも封筒を返し、running に固着させない。"""
+    import json as _json
+    from unittest.mock import patch
+    from lipidmix.console.job_manager import create_job, load_job
+    from lipidmix.tools.console_tools import console_run
+    monkeypatch.setenv("MSDIAL_EXE", "definitely_not_here.exe")
+    method = tmp_path / "params.msdial"
+    method.touch()
+    _, job_path = create_job(dataset_root=tmp_path, method_file=method,
+                            polarity="positive", measure="peak_height")
+    with patch("subprocess.run", side_effect=FileNotFoundError("exe not found")):
+        result = console_run(str(job_path))
+    parsed = _json.loads(result)
+    assert parsed["error"]["code"] == "MSDIAL_EXE_NOT_FOUND"
+    assert load_job(job_path).status == "failed"

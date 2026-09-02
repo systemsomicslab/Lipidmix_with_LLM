@@ -10,6 +10,11 @@ from pathlib import Path
 
 from lipidmix.handoff.schema import Artifact, MztabEntry, sha256_file
 
+# ジョブ運用のためにランディレクトリへ書かれるファイル。MS-DIAL の生成物ではない。
+# msdial.log は run_msdial が必ず作るため、除外しないと「出力ゼロ」を検出できない。
+# analysis-job.json は実行中に status 遷移で書き換わるため、差分に混入する。
+_OPERATIONAL_FILES = frozenset({"msdial.log", "analysis-job.json"})
+
 # 拡張子パターン → role のマッピング（長い拡張子を先に評価する）
 _ROLE_MAP: list[tuple[str, str, str]] = [
     (".mzTab",    "primary_mztab",     "mztab"),
@@ -52,7 +57,8 @@ def collect_artifacts(
     new_or_changed = {
         rel: size
         for rel, size in after.items()
-        if rel not in before or before[rel] != size
+        if (rel not in before or before[rel] != size)
+        and Path(rel).name not in _OPERATIONAL_FILES
     }
 
     mztab_entries: list[MztabEntry] = []

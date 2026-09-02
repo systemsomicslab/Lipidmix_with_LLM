@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,7 +13,6 @@ from lipidmix.handoff.schema import (
     MeasureType,
     OmicsType,
     Polarity,
-    sha256_file,
 )
 
 JOB_FILENAME = "analysis-job.json"
@@ -119,18 +117,34 @@ def count_raw_inputs(dataset_root: Path) -> int:
 
 
 def _assert_not_in_repo(path: Path) -> None:
-    """path がこのリポジトリ配下でないことを確認する。"""
+    """path が「リポジトリ内かつデータディレクトリ外」でないことを確認する。
+
+    ランディレクトリを版管理下のソースツリーに掘らせないためのガード。
+    ただし既定のデータディレクトリは <repo>/data（data_config.DEFAULT_DATA_DIR）で
+    あり、これはリポジトリ配下だが .gitignore 済みの運用領域なので許可する。
+    「リポジトリ配下すべて禁止」にすると既定構成が丸ごと使えなくなる。
+    """
+    from lipidmix.core import mcp_core
+    from lipidmix.core.data_config import get_data_dir
+
+    target = path.resolve()
+    repo_root = mcp_core.BASE_DIR.resolve()
+    if not _is_relative_to(target, repo_root):
+        return  # リポジトリ外。何も言わない
+    data_dir = get_data_dir().resolve()
+    if _is_relative_to(target, data_dir):
+        return  # <repo>/data 配下は運用領域として許可
+    raise ValueError(
+        f"ランディレクトリをリポジトリのソースツリー内 ({repo_root}) に作成しようとしました。"
+        f"dataset_root はリポジトリ外か、データディレクトリ ({data_dir}) 配下を"
+        f"指定してください: {path}"
+    )
+
+
+def _is_relative_to(child: Path, parent: Path) -> bool:
+    """child が parent 配下かを bool で返す（例外を制御フローに使わない）。"""
     try:
-        from lipidmix.core import mcp_core
-        repo_root = mcp_core.BASE_DIR.resolve()
-    except Exception:
-        return
-    try:
-        path.resolve().relative_to(repo_root)
-        raise ValueError(
-            f"ランディレクトリをリポジトリ内 ({repo_root}) に作成しようとしました。"
-            f"dataset_root はリポジトリ外を指定してください: {path}"
-        )
-    except ValueError as exc:
-        if "リポジトリ内" in str(exc):
-            raise
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True

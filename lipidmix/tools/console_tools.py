@@ -4,6 +4,7 @@ spec §8 参照。
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from mcp.types import ToolAnnotations
@@ -161,6 +162,22 @@ def console_run(job_path: str | None = None) -> str:
         update_status(resolved, "failed", error=str(exc))
         return console_error(
             "MSDIAL_NONZERO_EXIT", str(exc),
+            {"log": str(run_dir / "msdial.log")},
+        )
+    except OSError as exc:
+        # MSDIAL_EXE が実在しないパスを指す等。console_plan は環境変数が
+        # 空でないことしか見ていないため、ここが実在確認の最後の砦になる。
+        update_status(resolved, "failed", error=str(exc))
+        return console_error(
+            "MSDIAL_EXE_NOT_FOUND",
+            f"MS-DIAL Console を起動できませんでした: {exc}",
+            {"exe": os.environ.get("MSDIAL_EXE", ""), "log": str(run_dir / "msdial.log")},
+        )
+    except Exception as exc:  # 想定外。running に固着させないことが最優先
+        update_status(resolved, "failed", error=repr(exc))
+        return console_error(
+            "MSDIAL_NONZERO_EXIT",
+            f"MS-DIAL Console の実行中に想定外のエラーが発生しました: {exc!r}",
             {"log": str(run_dir / "msdial.log")},
         )
 
