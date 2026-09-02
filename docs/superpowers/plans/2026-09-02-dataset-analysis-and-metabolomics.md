@@ -874,13 +874,22 @@ class PreconditionError(Exception):
       kind="bad_request"    → 引数エラー。リプレイしても直らない
     None を返して理由を捨てると、上位が一律 missing_state に変換して
     クライアントを無限リプレイに落とす。
+
+    kind="missing_state" のときは `state` に欠けている状態の識別子を入れる。
+    ツール層はこれをそのまま missing_state() の第1引数に使う。
+    **メッセージ文面から状態を推測させない**——文面を直した瞬間に振り分けが
+    静かに壊れる結合になる。
     """
 
-    def __init__(self, kind: str, message: str, details: dict | None = None):
+    def __init__(self, kind: str, message: str, details: dict | None = None,
+                 state: str | None = None):
         super().__init__(message)
         self.kind = kind
         self.message = message
         self.details = details or {}
+        if kind == "missing_state" and not state:
+            raise ValueError("kind='missing_state' には state が必須です。")
+        self.state = state
 
 
 def build_dataset_pp_inputs(ds):
@@ -897,6 +906,7 @@ def build_dataset_pp_inputs(ds):
         raise PreconditionError(
             "missing_state",
             "DatasetState に定量行列がありません。dataset_load を先に実行してください。",
+            state="dataset",
         )
 
     matrix = np.asarray(ds.feature_matrix, dtype=float).T.copy()
@@ -1115,6 +1125,7 @@ def _require_pp_matrix(ds):
         raise PreconditionError(
             "missing_state",
             "前処理済み行列がありません。dataset_preprocess を先に実行してください。",
+            state="dataset_preprocessed",
         )
     return np.asarray(ds.pp_matrix, dtype=float)
 
@@ -1378,12 +1389,12 @@ __all__ = [
     # dataset_export_differential は Task 5 で追加する
 ]
 
-# PreconditionError.kind="missing_state" のとき、どのツールが状態を作れるか。
-# 自分自身は入れない（クライアントが同じ呼び出しを繰り返すループになる）。
+# 欠けている状態 → それを作れるツール。missing_state の required_tools になる。
+# **自分自身は入れない**（クライアントが同じ呼び出しを繰り返すループになる）。
+# Task 5 で "dataset_differential_result" を足す。
 _RECOVERY_TOOLS = {
     "dataset": ["dataset_load"],
     "dataset_preprocessed": ["dataset_preprocess"],
-    "dataset_differential_result": ["dataset_differential"],
 }
 
 
@@ -1548,12 +1559,8 @@ def _from_precondition(exc: PreconditionError) -> str:
     missing_state にすると、契約に従うクライアントが同じ呼び出しを繰り返す。
     """
     if exc.kind == "missing_state":
-        return _missing(_state_for(exc.message), exc.message)
+        return _missing(exc.state, exc.message)
     return mztab_error("DATASET_BAD_REQUEST", exc.message, exc.details or None)
-
-
-def _state_for(message: str) -> str:
-    return "dataset_preprocessed" if "前処理済み行列" in message else "dataset"
 
 
 def _count_roles(roles: dict, sample_names: list[str]) -> dict:
@@ -2015,7 +2022,15 @@ Expected: 全 PASS（Step 5 で追加した順序固定テストを含む）。*
 
 - [ ] **Step 7: `dataset_export_differential` を実装する**
 
-`lipidmix/tools/dataset_analysis_tools.py` に追加し、`__all__` に載せる。
+`lipidmix/tools/dataset_analysis_tools.py` に追加し、`__all__` に載せる。あわせて `_RECOVERY_TOOLS` に差次的結果の復旧手段を足す（Task 4 では未使用だったため入れていない）。
+
+```python
+_RECOVERY_TOOLS = {
+    "dataset": ["dataset_load"],
+    "dataset_preprocessed": ["dataset_preprocess"],
+    "dataset_differential_result": ["dataset_differential"],
+}
+```
 
 ```python
 @mcp.tool(annotations=ToolAnnotations(
