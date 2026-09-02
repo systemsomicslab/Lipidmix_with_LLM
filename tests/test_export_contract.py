@@ -69,3 +69,45 @@ def test_build_meta_places_optional_slots_in_contract_order():
 
 def test_build_meta_omits_preprocess_when_absent():
     assert not any("preprocess" in l for l in _meta())
+
+
+def test_run_dataset_differential_tracks_contract_module(monkeypatch):
+    """dataset_analysis.py がバージョン/符号ラベルをローカル複製せず、
+    export_contract を都度参照していることを行動で確認する。
+
+    値の一致（==）だけを見るテストは、dataset_analysis.py 側に値の等しい
+    ローカル定数（旧 _CONTRACT_VERSION/_LOG2FC_SIGN）が残っていても偶然パスして
+    しまう。ここでは export_contract 側だけを書き換え、その変更が
+    run_dataset_differential の戻り値へ伝播することを見て、参照がコピーでなく
+    リンクであることを確認する（コントローラ裁定: これを直さないと、
+    CONTRACT_VERSION を上げた瞬間 dataset_export_differential が永久に
+    「契約非互換」で拒否し続ける無限ループになる）。
+    """
+    import numpy as np
+
+    from lipidmix.analysis import export_contract
+    from lipidmix.analysis.dataset_analysis import (
+        run_dataset_differential, run_dataset_preprocess,
+    )
+    from lipidmix.mztab.dataset_state import DatasetState
+
+    monkeypatch.setattr(export_contract, "CONTRACT_VERSION", 999)
+    monkeypatch.setattr(export_contract, "LOG2FC_SIGN", "patched sign for linkage test")
+
+    rng = np.random.default_rng(0)
+    ds = DatasetState()
+    ds.feature_matrix = rng.random((20, 8)) * 1000.0
+    ds.sample_names = ([f"ctrl_{i}" for i in range(4)]
+                       + [f"treat_{i}" for i in range(4)])
+    ds.feature_ids = [f"f{i}" for i in range(20)]
+    (ds.pp_matrix, ds.pp_sample_names, ds.pp_feature_names,
+     ds.roles, ds.sample_meta, _) = run_dataset_preprocess(ds, {})
+
+    result = run_dataset_differential(
+        ds,
+        group_a_samples=[n for n in ds.pp_sample_names if n.startswith("ctrl")],
+        group_b_samples=[n for n in ds.pp_sample_names if n.startswith("treat")],
+    )
+
+    assert result["contract_version"] == 999
+    assert result["log2fc_sign"] == "patched sign for linkage test"

@@ -18,7 +18,7 @@ import re
 
 import numpy as np
 
-from lipidmix.analysis import differential, preprocessing
+from lipidmix.analysis import differential, export_contract, preprocessing
 from lipidmix.analysis.pca import run_pca
 
 _DATE_RE = re.compile(r"(\d{8})")
@@ -26,8 +26,11 @@ _DATE_RE = re.compile(r"(\d{8})")
 # 差次的解析の群に混ぜてはいけないロール。
 _NON_SAMPLE_ROLES = ("qc", "blank")
 
-_CONTRACT_VERSION = 1
-_LOG2FC_SIGN = "positive means group_b is higher"
+# ここで結果 dict に刻む版とラベルは、dataset_export_differential が検証する値と
+# 同一でなければならない。ローカルに複製すると、export_contract.CONTRACT_VERSION を
+# 上げた瞬間ここだけ古い値のままになり、エクスポートが「契約非互換」で永久に拒否され
+# 続ける（dataset_differential を再実行しても同じ古い値を刻むだけなので、クライアント
+# のリプレイでは直らない）。単一情報源として export_contract を直接参照する。
 
 
 class PreconditionError(Exception):
@@ -310,8 +313,8 @@ def run_dataset_differential(
         "q_threshold": q_threshold,
         "log2fc_threshold": log2fc_threshold,
         "log_transform": log_transform,
-        "contract_version": _CONTRACT_VERSION,
-        "log2fc_sign": _LOG2FC_SIGN,
+        "contract_version": export_contract.CONTRACT_VERSION,
+        "log2fc_sign": export_contract.LOG2FC_SIGN,
         "summary": summary,
         "caveats": caveats,
         # 全量。呼び出し側はこれをセッションに保持し、戻り値には載せない。
