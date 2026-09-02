@@ -167,3 +167,92 @@ def test_run_dataset_differential_rejects_small_groups():
     with pytest.raises(PreconditionError):
         run_dataset_differential(ds, group_a_samples=["ctrl_0"],
                                  group_b_samples=["treat_0"])
+
+
+# ---------- run_dataset_differential: ARF parity caveats (fix round 1) ----------
+
+def _make_batch_ds(names, n_features=20):
+    """バッチ判定テスト用。サンプル名の8桁日付から sample_meta.batch が決まる。"""
+    rng = np.random.default_rng(11)
+    ds = DatasetState()
+    ds.feature_matrix = rng.random((n_features, len(names))) * 1000.0
+    ds.sample_names = names
+    ds.feature_ids = [f"f{i}" for i in range(n_features)]
+    return ds
+
+
+def test_run_dataset_differential_warns_when_not_normalized():
+    """arf_differential:846-848 と同じ「正規化未適用」警告。既定 recipe は normalize=none。"""
+    from lipidmix.analysis.dataset_analysis import run_dataset_differential
+    ds = _make_ds(n_features=20, n_samples=8)
+    _preprocessed(ds)  # ds.preprocessing_recipe は既定の {} のまま
+    result = run_dataset_differential(
+        ds,
+        group_a_samples=[n for n in ds.pp_sample_names if n.startswith("ctrl")],
+        group_b_samples=[n for n in ds.pp_sample_names if n.startswith("treat")],
+    )
+    assert any("正規化が未適用" in c for c in result["caveats"])
+
+
+def test_run_dataset_differential_no_normalize_caveat_when_normalized():
+    """normalize が none 以外なら「正規化未適用」警告は出ない。"""
+    from lipidmix.analysis.dataset_analysis import run_dataset_differential
+    ds = _make_ds(n_features=20, n_samples=8)
+    _preprocessed(ds)
+    ds.preprocessing_recipe = {"normalize": "median"}
+    result = run_dataset_differential(
+        ds,
+        group_a_samples=[n for n in ds.pp_sample_names if n.startswith("ctrl")],
+        group_b_samples=[n for n in ds.pp_sample_names if n.startswith("treat")],
+    )
+    assert not any("正規化が未適用" in c for c in result["caveats"])
+
+
+def test_run_dataset_differential_unassessable_confounding_without_dates():
+    """既定フィクスチャ（サンプル名に日付なし）は全 batch=None → 交絡評価不可。
+
+    check_confounding のドキュメント（lipidmix/analysis/differential.py:256）どおり、
+    「バッチが1つ（この場合は判明ゼロ）＝交絡なし」と誤読させないための assessable=False 経路。
+    """
+    from lipidmix.analysis.dataset_analysis import run_dataset_differential
+    ds = _make_ds(n_features=20, n_samples=8)
+    _preprocessed(ds)
+    result = run_dataset_differential(
+        ds,
+        group_a_samples=[n for n in ds.pp_sample_names if n.startswith("ctrl")],
+        group_b_samples=[n for n in ds.pp_sample_names if n.startswith("treat")],
+    )
+    assert any("交絡評価不可" in c for c in result["caveats"])
+    # バッチ情報自体が無い（filename_date 由来ではない）ので、出所注記は付かない。
+    assert not any("バッチはファイル名の日付から推定" in c for c in result["caveats"])
+
+
+def test_run_dataset_differential_confounded_caveat_when_groups_are_single_batch():
+    """group_a が丸ごとバッチA、group_b が丸ごとバッチBなら交絡と判定する。"""
+    from lipidmix.analysis.dataset_analysis import run_dataset_differential
+    names = ([f"20260901_ctrl_{i}" for i in range(3)]
+             + [f"20260902_treat_{i}" for i in range(3)])
+    ds = _make_batch_ds(names)
+    _preprocessed(ds)
+    result = run_dataset_differential(
+        ds,
+        group_a_samples=[n for n in ds.pp_sample_names if "ctrl" in n],
+        group_b_samples=[n for n in ds.pp_sample_names if "treat" in n],
+    )
+    assert any("交絡:" in c for c in result["caveats"])
+    assert any("バッチはファイル名の日付から推定" in c for c in result["caveats"])
+
+
+def test_run_dataset_differential_no_confounding_caveat_when_batches_mixed():
+    """両群にバッチA・バッチBが混在していれば、交絡系の caveat はどちらも出ない。"""
+    from lipidmix.analysis.dataset_analysis import run_dataset_differential
+    names = ["20260901_ctrl_0", "20260902_ctrl_1", "20260901_ctrl_2",
+             "20260901_treat_0", "20260902_treat_1", "20260902_treat_2"]
+    ds = _make_batch_ds(names)
+    _preprocessed(ds)
+    result = run_dataset_differential(
+        ds,
+        group_a_samples=[n for n in ds.pp_sample_names if "ctrl" in n],
+        group_b_samples=[n for n in ds.pp_sample_names if "treat" in n],
+    )
+    assert not any(c.startswith("交絡") for c in result["caveats"])

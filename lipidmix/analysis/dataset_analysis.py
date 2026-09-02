@@ -222,6 +222,15 @@ def run_dataset_differential(
     idx_b, names_b = _resolve_group(group_b_samples, available, ds.roles,
                                     group_b_label, caveats)
 
+    # 正規化未適用の警告（arf_differential:846-848 と同じ判定）。DatasetState 側は
+    # run_dataset_preprocess が recipe 自体を ds へ書き戻さないため、呼び出し側が
+    # 事前に ds.preprocessing_recipe へ設定しておく契約。未設定/空は "none" 扱い。
+    recipe = ds.preprocessing_recipe or {}
+    if recipe.get("normalize", "none") == "none":
+        caveats.append(
+            "正規化が未適用のため log2FC は測定量差を含み得ます"
+            "（dataset_preprocess の normalize を検討）。")
+
     overlap = sorted(set(names_a) & set(names_b))
     if overlap:
         raise PreconditionError(
@@ -244,6 +253,27 @@ def run_dataset_differential(
     keep_idx = idx_a + idx_b
     sub_matrix = matrix[keep_idx, :]
     group_labels = [group_a_label] * len(idx_a) + [group_b_label] * len(idx_b)
+
+    # 交絡（群⟂バッチ）判定は arf_differential:872-879 と同じく「実際に比較した2群」
+    # （プール後）に対して行う。プール前の細粒度ラベルで判定すると偽の交絡警告が出る
+    # （arf_differential:869-871 のコメントと同じ理由）。
+    # names_a/names_b は idx_a/idx_b と同じ順で構築されているため、
+    # keep_idx（idx_a + idx_b）と対応するバッチ列を同じ並びで組む。
+    names_ordered = names_a + names_b
+    batch_labels = [(ds.sample_meta.get(n) or {}).get("batch") for n in names_ordered]
+    conf = differential.check_confounding(group_labels, batch_labels)
+    # batch_source は比較対象に限らず全サンプルから拾う（arf_differential:858 と同じ）。
+    batch_source = next(
+        (m.get("batch_source") for m in (ds.sample_meta or {}).values()
+         if m.get("batch_source")),
+        None,
+    )
+    src_note = ("（バッチはファイル名の日付から推定。実バッチ設計と異なる場合あり）"
+                if batch_source == "filename_date" else "")
+    if conf["confounded"]:
+        caveats.append("交絡: " + conf["detail"] + src_note)
+    elif not conf.get("assessable", True):
+        caveats.append("交絡評価不可: " + conf["detail"] + src_note)
 
     results = differential.two_group_test(
         sub_matrix, ds.pp_feature_names, group_labels,
