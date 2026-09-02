@@ -53,6 +53,8 @@
 
 各 Task に「+N 件 / 累計 M 件」を書くが、これは**ガードであって目標ではない**。数字が合わないときに期待値を書き換えるのは禁止。まず「別のテストが壊れて収集数が変わった」を疑い、`-q` の内訳を見て原因を特定する。
 
+**2026-09-03 実測による改訂**: Task 0〜4 の実行中、レビュー由来の修正ラウンドでテストが 6 件増えた（Task 3 に +5、Task 4 は計画の「10 件」が実際は 9 件）。累計の絶対値は Task 4 完了時点の実測 **714 件**を基準に読み替える。Task 5 以降の期待値はこの実測に合わせて更新済み。
+
 ---
 
 ## 実 API 早見表（推測禁止・ここが正解）
@@ -2170,7 +2172,7 @@ Expected: 全 PASS
 C:/Python314/python.exe -m pytest tests -q
 ```
 
-Expected: 718 passed（708 + 10）
+Expected: 724 passed（714 + 10）
 
 - [ ] **Step 10: コミット**
 
@@ -2292,6 +2294,26 @@ ARF 経路（`docs/workflow/arf.md`）と同じ純関数を共有している。
 3. └─ lipidmix/analysis/export_contract.py  format_row()
 ```
 
+- [ ] **Step 4b: Task 4 の暫定フィクスチャを削除する**
+
+`tests/test_dataset_analysis_tools.py` には Task 4 で入れた autouse フィクスチャ
+`_unregister_tools_after_test` がある。`@mcp.tool` は import 時に共有シングルトン
+`mcp_core.mcp` へ即登録するため、`server.py` がまだこのモジュールを import していない
+Task 4〜5 の期間は、テストが登録を漏らして `test_server_registration.py` などの
+スナップショットを汚す。それを避ける暫定措置だった。
+
+**Step 1 で `server.py` に import を足した時点でこのフィクスチャは有害になる**——登録が
+「あるべき状態」になったのに、各テスト後にツールを外してしまうため、後続の
+`test_server_registration.py`（ファイル名順で後）が「登録されていない」と判定して落ちる。
+フィクスチャ本体を削除し、`mcp_core` / `mcp` の不要になった import も外す。
+
+削除後、**1 プロセスでの全件実行**で汚染が無いことを確認する（ファイル単体実行では
+再現しない種類の問題なので、必ず全件で見る）:
+
+```
+C:/Python314/python.exe -m pytest tests -q
+```
+
 - [ ] **Step 5b: `docs/workflow/index.md` の目次を更新**
 
 `test_all_expected_documents_exist` は**ファイル名の集合しか見ない**ので目次表は検証されておらず、現状すでにずれている。`mztab.md` の行が無く、末尾が「合計 28 ツール」「登録ツール総数は 40」のままになっている。今回の追加とあわせて実測に直す。
@@ -2328,7 +2350,7 @@ Expected: 全 PASS
 C:/Python314/python.exe -m pytest tests -q
 ```
 
-Expected: 718 passed（新規テストなし。既存テストの期待値更新のみ）
+Expected: 724 passed（新規テストなし。既存テストの期待値更新のみ）
 
 - [ ] **Step 8: コミット**
 
@@ -2575,7 +2597,7 @@ Expected: 40 PASS（37 + 3）
 C:/Python314/python.exe -m pytest tests -q
 ```
 
-Expected: 721 passed（718 + 3）
+Expected: 727 passed（724 + 3）
 
 - [ ] **Step 7: コミット**
 
