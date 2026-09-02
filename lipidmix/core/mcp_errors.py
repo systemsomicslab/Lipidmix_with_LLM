@@ -81,6 +81,9 @@ MZTAB_ERROR_CODES = frozenset({
     "COMPANION_ARTIFACT_MISSING",
     "ARTIFACT_HASH_MISMATCH",
     "POLARITY_MISMATCH",
+    # DatasetState 解析層の引数エラー。missing_state と違い、別のツールを先に
+    # 呼んでも直らない（引数を直して呼び直すしかない）。
+    "DATASET_BAD_REQUEST",
 })
 
 
