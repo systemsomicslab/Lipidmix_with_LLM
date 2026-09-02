@@ -25,10 +25,16 @@ def _unregister_tools_after_test():
     test_workflow_docs.py のスナップショット/腐敗防止テストを汚染する
     （関数を直接呼ぶ本ファイルのテストは mcp 経由で解決しないため、ここで
     tool_manager から外しても各テストの呼び出しには影響しない）。
+
+    ツール名を __all__ から導出することで、モジュールが成長して新しいツール
+    が追加されても対象が自動で追いつく（ハードコード名の追加漏れによる登録汚染
+    の再発防止）。本フィクスチャは Task 6 で server.py がこのモジュールを登録
+    するまでの暫定対策である。
     """
     yield
     from lipidmix.core.mcp_core import mcp
-    for name in ("dataset_preprocess", "dataset_pca", "dataset_differential"):
+    from lipidmix.tools import dataset_analysis_tools
+    for name in dataset_analysis_tools.__all__:
         try:
             mcp._tool_manager.remove_tool(name)
         except Exception:
