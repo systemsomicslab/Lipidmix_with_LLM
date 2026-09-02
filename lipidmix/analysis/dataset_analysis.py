@@ -134,6 +134,14 @@ def run_dataset_preprocess(ds, recipe: dict):
             "ため残しています。"
         )
 
+    # プールQC が複数バッチに分かれているかの簡易警告（arf_preprocess:327,364 と同じ材料）。
+    qc_batches = {sample_meta[n]["batch"] for n in sample_names
+                  if sample_meta[n]["role"] == "qc"}
+    if len(qc_batches) > 1:
+        report.setdefault("caveats", []).append(
+            "プールQC が複数バッチ/層に分かれています。全体一律のドリフト補正は近似です。"
+        )
+
     # 層別プール QC の警告（arf_preprocess と同じ材料）
     qc_strata = preprocessing.detect_qc_strata(sample_names, roles)
     if len(qc_strata) > 1:

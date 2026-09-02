@@ -87,6 +87,26 @@ def test_run_dataset_preprocess_rejects_unknown_normalize():
         _preprocessed(ds, {"normalize": "not_a_method"})
 
 
+def test_run_dataset_preprocess_warns_multi_batch_qc():
+    """QC が複数バッチ（ファイル名日付）に分かれる場合、arf_preprocess と同じ caveat を出す。"""
+    rng = np.random.default_rng(7)
+    ds = DatasetState()
+    names = [f"ctrl_{i}" for i in range(3)] + [f"treat_{i}" for i in range(3)]
+    names += ["20260901_QC_1", "20260902_QC_2"]
+    ds.feature_matrix = rng.random((20, len(names))) * 1000.0
+    ds.sample_names = names
+    ds.feature_ids = [f"f{i}" for i in range(20)]
+    report = _preprocessed(ds)
+    assert any("複数バッチ" in c for c in report["caveats"])
+
+
+def test_run_dataset_preprocess_no_multi_batch_caveat_without_dates():
+    """既定フィクスチャ（サンプル名に日付なし）では複数バッチ caveat は出ない。"""
+    ds = _make_ds()
+    report = _preprocessed(ds)
+    assert not any("複数バッチ" in c for c in report["caveats"])
+
+
 # ---------- run_dataset_pca ----------
 
 def test_run_dataset_pca_requires_preprocess():
