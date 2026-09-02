@@ -41,6 +41,14 @@ EXPECTED_ANNOTATIONS = {
     "load_dataset": READ_ONLY,
     "dataset_load": LOCAL_WRITE,
     "dataset_status": READ_ONLY,
+    # --- DatasetState 解析層 ---
+    # readOnlyHint はファイル/ネットワークへの副作用の有無。セッション状態の
+    # 更新は数えない（このファイル冒頭の規約）。ARF の同一操作も READ_ONLY。
+    "dataset_preprocess": READ_ONLY,
+    "dataset_pca": READ_ONLY,
+    "dataset_differential": READ_ONLY,
+    # ファイルを書き、同じ引数なら同じ内容で上書きする → 冪等
+    "dataset_export_differential": LOCAL_WRITE,
     # --- Console 実行層（console_plan/run はジョブ状態・ファイルを生成する） ---
     "console_plan": LOCAL_WRITE_APPEND,
     "console_run": LOCAL_WRITE_APPEND,

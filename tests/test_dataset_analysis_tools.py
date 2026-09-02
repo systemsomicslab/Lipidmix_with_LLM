@@ -15,32 +15,6 @@ def reset_session():
     session_state.session = session_state.AnalysisSession()
 
 
-@pytest.fixture(autouse=True)
-def _unregister_tools_after_test():
-    """FastMCP の @mcp.tool は import 時（デコレータ評価時）に共有シングルトン
-    `mcp_core.mcp` へ即登録する。本ファイルが dataset_analysis_tools を import
-    すると、server.py がまだこのモジュールを import していなくても（Task 6 以前）
-    プロセス寿命のあいだ登録済み扱いになり、pytest を1プロセスで全件実行したときに
-    tests/test_server_registration.py・test_tool_annotations.py・
-    test_workflow_docs.py のスナップショット/腐敗防止テストを汚染する
-    （関数を直接呼ぶ本ファイルのテストは mcp 経由で解決しないため、ここで
-    tool_manager から外しても各テストの呼び出しには影響しない）。
-
-    ツール名を __all__ から導出することで、モジュールが成長して新しいツール
-    が追加されても対象が自動で追いつく（ハードコード名の追加漏れによる登録汚染
-    の再発防止）。本フィクスチャは Task 6 で server.py がこのモジュールを登録
-    するまでの暫定対策である。
-    """
-    yield
-    from lipidmix.core.mcp_core import mcp
-    from lipidmix.tools import dataset_analysis_tools
-    for name in dataset_analysis_tools.__all__:
-        try:
-            mcp._tool_manager.remove_tool(name)
-        except Exception:
-            pass
-
-
 def _load_ds(n_features=20, n_samples=8):
     rng = np.random.default_rng(0)
     ds = DatasetState()

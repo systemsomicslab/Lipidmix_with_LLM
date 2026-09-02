@@ -42,7 +42,10 @@
 | [dcl.md](dcl.md) | `.dcl` — デコンボリューション済み MS/MS | 2 |
 | [eic.md](eic.md) | `.EIC.aef` — クロマトグラムの検索と描画 | 6 |
 | [plots.md](plots.md) | 図の PNG 保存と payload 契約の比較 | 3 |
+| [mztab.md](mztab.md) | mzTab-M — DatasetState への読み込み | 2 |
+| [dataset_analysis.md](dataset_analysis.md) | DatasetState — 前処理・PCA・差次的解析・エクスポート | 4 |
 
-合計 28 ツール。文献探索・レポート記録系の 12 ツール
-（`record_objective` `knowledge_coverage` `paper_search` `ingest_*` `write_report` など）は
-本文書群の対象外。登録ツール総数は 40。
+合計 35 ツール。対象外は 16 ツール——文献探索・レポート記録系 12
+（`record_objective` `knowledge_coverage` `paper_search` `ingest_*` `write_report` など）＋
+Console 実行層 4（`console_plan` `console_run` `console_status` `job_list`）。
+登録ツール総数は 51（35 + 16）。

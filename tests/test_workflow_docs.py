@@ -38,6 +38,10 @@ IN_SCOPE: dict[str, tuple[str, ...]] = {
     ),
     "plots.md": ("save_pca_figure", "save_volcano_figure", "save_eic_figure"),
     "mztab.md": ("dataset_load", "dataset_status"),
+    "dataset_analysis.md": (
+        "dataset_preprocess", "dataset_pca", "dataset_differential",
+        "dataset_export_differential",
+    ),
 }
 
 # 今回の範囲外。文書に混入したら落とす（線引きを固定するため）。
@@ -166,4 +170,4 @@ class TestScopeBoundary(unittest.TestCase):
             registered,
             "対象範囲の分類と登録済みツールが一致しない",
         )
-        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 31)
+        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 35)
