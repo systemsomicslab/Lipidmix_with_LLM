@@ -195,6 +195,30 @@ def console_run(job_path: str | None = None) -> str:
     job = load_job(resolved)
     job.primary_mztab_files = mztab_entries
     job.artifacts = other_artifacts
+
+    # サイドカー（feature-qc.tsv）。生成物のファイル名からサンプル名を拾う。
+    # 失敗しても実行は成功扱い——副産物のためにジョブを failed にしない。
+    from lipidmix.console import sidecar
+    try:
+        sample_names = _sample_names_from_artifacts(other_artifacts)
+        if sample_names:
+            sidecar_path = run_dir / sidecar.SIDECAR_SUBDIR / sidecar.FEATURE_QC_FILENAME
+            sidecar.generate_feature_qc_tsv(
+                sidecar.build_sample_meta_from_names(sample_names), sidecar_path,
+            )
+            from lipidmix.handoff.schema import Artifact, sha256_file
+            job.artifacts.append(Artifact(
+                path=str(sidecar_path.relative_to(run_dir)),
+                role=sidecar.ARTIFACT_ROLE,
+                format="tsv",
+                sha256=sha256_file(sidecar_path),
+            ))
+        else:
+            job.warnings.append(
+                "サンプル別ファイル（.pai2）が見つからず feature-qc.tsv を生成しませんでした。")
+    except OSError as exc:
+        job.warnings.append(f"feature-qc.tsv の生成に失敗しました: {exc}")
+
     job.status = "completed"
     save_job(job, resolved)
 
@@ -205,6 +229,7 @@ def console_run(job_path: str | None = None) -> str:
         "mztab_files": len(mztab_entries),
         "other_artifacts": len(other_artifacts),
         "run_dir": job.run_dir,
+        "warnings": job.warnings,
         "next": "dataset_load でmzTab-M を読み込み、解析を開始してください",
     })
 
@@ -277,6 +302,23 @@ def job_list(dataset_root: str) -> str:
 
 
 # ---------- 内部ヘルパ ----------
+
+def _sample_names_from_artifacts(artifacts) -> list[str]:
+    """サンプル別生成物（.pai2）のファイル名からサンプル名を重複なく拾う。
+
+    .pai2 は測定 1 本ごとに 1 ファイル出るので、サンプル一覧の最も素直な出どころ。
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    for art in artifacts:
+        if art.format != "pai2":
+            continue
+        stem = Path(art.path).stem
+        if stem not in seen:
+            seen.add(stem)
+            names.append(stem)
+    return names
+
 
 def _resolve_job_path(job_path: str | None) -> Path | str:
     """引数またはセッションから job_path を解決する。失敗はエラーエンベロープ文字列を返す。"""

@@ -414,3 +414,62 @@ def test_console_run_unexpected_exception_marks_failed(tmp_path, monkeypatch):
     parsed = _json.loads(result)
     assert parsed["error"]["code"] == "MSDIAL_EXE_NOT_FOUND"
     assert load_job(job_path).status == "failed"
+
+
+# ---------- sidecar ----------
+
+def test_build_sample_meta_from_names():
+    from lipidmix.console.sidecar import build_sample_meta_from_names
+    meta = build_sample_meta_from_names(
+        ["20260901_ctrl_1", "20260901_QC_1", "blank_1"])
+    assert meta["20260901_QC_1"]["role"] == "qc"
+    assert meta["blank_1"]["role"] == "blank"
+    assert meta["20260901_ctrl_1"]["role"] == "sample"
+    assert meta["20260901_ctrl_1"]["batch"] == "20260901"
+
+
+def test_generate_feature_qc_tsv(tmp_path):
+    from lipidmix.console.sidecar import generate_feature_qc_tsv
+    sample_meta = {
+        "ctrl_1": {"role": "sample", "batch": "20260901", "run_order": None},
+        "blank_1": {"role": "blank", "batch": None, "run_order": None},
+    }
+    out_path = tmp_path / "feature-qc.tsv"
+    generate_feature_qc_tsv(sample_meta, out_path)
+    lines = out_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0].split("\t") == ["sample_name", "role", "batch",
+                                    "batch_source", "run_order"]
+    assert len(lines) == 3
+
+
+def test_console_run_registers_sidecar_artifact(tmp_path, monkeypatch):
+    """console_run 成功後、feature-qc.tsv が生成され artifacts に登録される。"""
+    import json as _json
+    from unittest.mock import MagicMock, patch
+    from lipidmix.console.job_manager import create_job, load_job
+    from lipidmix.tools.console_tools import console_run
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    method = tmp_path / "params.msdial"
+    method.touch()
+    job, job_path = create_job(dataset_root=tmp_path, method_file=method,
+                               polarity="positive", measure="peak_height")
+    run_dir = Path(job.run_dir)
+
+    def _fake_run(cmd, **kwargs):
+        out = run_dir / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "Height_AlignmentResult_ctrl_1.pai2").write_bytes(b"\x00")
+        (out / "Height_AlignmentResult_QC_1.pai2").write_bytes(b"\x00")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    with patch("subprocess.run", side_effect=_fake_run):
+        result = console_run(str(job_path))
+    parsed = _json.loads(result)
+    assert parsed["status"] == "completed"
+
+    sidecar = run_dir / "sidecars" / "feature-qc.tsv"
+    assert sidecar.is_file()
+    roles = {a.role for a in load_job(job_path).artifacts}
+    assert "sample_qc_sidecar" in roles
