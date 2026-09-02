@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lipidmix.analysis import differential
+from lipidmix.analysis import export_contract
 from lipidmix.arf import exclusions
 from lipidmix.arf import identity_join
 from lipidmix.core import mcp_errors
@@ -975,23 +976,13 @@ def arf_differential(
     return json_payload(payload)
 
 
-_EXPORT_COLUMNS = [
-    "spot_id", "name", "name_source", "ontology", "inchikey",
-    "inchikey_source", "msi_level", "mz", "rt", "log2fc",
-    "p_value", "q_value", "mean_a", "mean_b", "significant",
-]
-_DIFFERENTIAL_CONTRACT_VERSION = 1
-_LOG2FC_SIGN = "positive means group_b is higher"
-
-
-def _format_export_number(value, format_spec: str) -> str:
-    """有限の数値だけを書き出し、欠測・NaN・inf は空欄にする。"""
-    if value is None:
-        return ""
-    number = float(value)
-    if not math.isfinite(number):
-        return ""
-    return format(number, format_spec)
+# 契約の実体は lipidmix.analysis.export_contract（leaf・別リポとの契約）。
+# ここでは後方互換の別名束縛のみ行う。tests/test_export_contract.py が `is` で
+# 同一性を見るため、値をコピーせず同じオブジェクトを束縛する。
+_EXPORT_COLUMNS = export_contract.EXPORT_COLUMNS
+_DIFFERENTIAL_CONTRACT_VERSION = export_contract.CONTRACT_VERSION
+_LOG2FC_SIGN = export_contract.LOG2FC_SIGN
+_format_export_number = export_contract.format_number
 
 
 @mcp.tool(annotations=ToolAnnotations(
