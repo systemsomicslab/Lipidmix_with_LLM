@@ -14,6 +14,13 @@ from lipidmix.mztab.identity import derive_inchikey
 from lipidmix.mztab.reader import extract_abundance_matrix
 from lipidmix.mztab.validator import detect_quantification_measure, validate_mztab
 
+# assay メタデータ MTD 行のキーパターン。`assay[N]-<suffix>`（ms_run_ref 等）と、
+# 表示名を運ぶ素の `assay[N]` を区別する。
+_ASSAY_BARE_RE = re.compile(r"^assay\[(\d+)\]$")
+_ASSAY_SUFFIX_RE = re.compile(r"^assay\[(\d+)\]-(.+)$")
+# abundance 列名から assay 番号を取り出す（reader.py の _ABUNDANCE_RE と同じ規則）。
+_ABUNDANCE_ASSAY_RE = re.compile(r"abundance_assay\[(\d+)\]", re.IGNORECASE)
+
 
 class DatasetState:
     """mzTab-M 読み込み後の正準モデル。多変量解析の共通入口。"""
@@ -24,7 +31,7 @@ class DatasetState:
         self.quantification_measure: str | None = None  # peak_height | peak_area_above_zero
         self.quantification_confidence: str | None = None
         self.feature_matrix: np.ndarray | None = None   # shape (n_features, n_samples)
-        self.sample_names: list[str] = []               # abundance 列名（= assay 識別子）
+        self.sample_names: list[str] = []                # assay 表示名（無ければ abundance 列名にフォールバック）
         self.feature_ids: list[str] = []                # SMF_ID 列
         self.assay_metadata: dict = {}                  # assay_id -> MTD 情報
         self.feature_metadata: dict = {}                # smf_id -> {name, mz, rt, inchikey, ...}
@@ -129,14 +136,64 @@ def build_dataset_state(
     ds.sme_rows = parse_result["sections"].get("SME", {}).get("rows")
 
     # assay メタデータ
+    # `assay[N]-<suffix>` 形式（ms_run_ref 等）に加え、素の `assay[N]` 行も拾う。
+    # 素の行が MS-DIAL の表示名（例: 20220901_RAW_control_0h_1_NEG）を持つ唯一の場所で、
+    # これを取りこぼすと sample_names が abundance_assay[N] という不透明な列識別子の
+    # ままになり、群選択（dataset_differential）と QC/blank ロール検出
+    # （detect_sample_roles はサンプル名のトークンを見る）が機能しなくなる。
     meta = parse_result.get("metadata", {})
     for k, v in meta.items():
-        m = re.match(r"^assay\[(\d+)\]-(.+)$", k)
+        m = _ASSAY_SUFFIX_RE.match(k)
         if m:
             aid = f"assay[{m.group(1)}]"
             ds.assay_metadata.setdefault(aid, {})[m.group(2)] = v
+            continue
+        m = _ASSAY_BARE_RE.match(k)
+        if m:
+            aid = f"assay[{m.group(1)}]"
+            # "name" キーで保持する。dataset_status など将来の呼び出し元は
+            # assay_metadata[aid]["name"] を見れば表示名に到達できる。
+            ds.assay_metadata.setdefault(aid, {})["name"] = v
+
+    # abundance 列 → assay 表示名の解決。feature_matrix の列順（assay 番号昇順）は
+    # extract_abundance_matrix が既に確定させているので、ここでは並べ替えず
+    # 1:1 で置き換えるだけにする（列順を変えると全サンプルが黙って誤ラベルされる）。
+    ds.sample_names, name_warnings = _resolve_sample_names(ds.sample_names, ds.assay_metadata)
+    if name_warnings:
+        ds.validation_result.setdefault("warnings", []).extend(name_warnings)
 
     return ds
+
+
+def _resolve_sample_names(abundance_cols: list[str], assay_metadata: dict) -> tuple[list[str], list[str]]:
+    """abundance_assay[N] 列名を assay[N] の表示名へ解決する。
+
+    表示名が無い assay（既存フィクスチャは全てこれに該当。現実のファイルでも
+    起こり得る）は列識別子のままフォールバックする——意味のある名前が無いより、
+    一意で追跡可能な旧識別子を残すほうが安全。
+
+    表示名が複数 assay で重複する不正ファイルは、置き換え自体は行いつつ
+    warning を返す（例外にはしない。読み込み自体を止めるほどではなく、
+    群選択が曖昧になり得ることだけ呼び出し元に伝えれば足りる）。
+    """
+    resolved: list[str] = []
+    cols_by_name: dict[str, list[str]] = {}
+    for col in abundance_cols:
+        m = _ABUNDANCE_ASSAY_RE.search(col)
+        name = None
+        if m:
+            aid = f"assay[{m.group(1)}]"
+            name = (assay_metadata.get(aid) or {}).get("name")
+        resolved_name = name if name else col
+        resolved.append(resolved_name)
+        cols_by_name.setdefault(resolved_name, []).append(col)
+
+    warnings = [
+        f"assay 表示名が重複しています（{name!r}）: {', '.join(cols)}。"
+        "sample_names での群選択が意図しないアッセイを指す恐れがあります。"
+        for name, cols in cols_by_name.items() if len(cols) > 1
+    ]
+    return resolved, warnings
 
 
 def _to_float(v: str | None) -> float | None:

@@ -155,7 +155,9 @@ def run_dataset_preprocess(ds, recipe: dict):
             "全 QC を1系列として扱うドリフト補正/RSD フィルタは近似です。"
         )
     report.setdefault("caveats", []).append(
-        "mzTab-M は注入順（run order）を持たないため、QC ドリフト補正は実施できません。"
+        "現在の実装は mzTab-M から注入順（run order）を読み取っていないため、QC ドリフト"
+        "補正は実施できません（mzTab-M の assay[N]-custom[...] は injection sequence label /"
+        "batch label を運べますが、この経路はまだそれを読みません）。"
         "注入順に依存する品質評価が必要なら ARF 経路（arf_preprocess）を使ってください。"
     )
 

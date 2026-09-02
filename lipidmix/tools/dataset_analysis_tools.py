@@ -55,8 +55,10 @@ def dataset_preprocess(
     normalize: "none"（既定）/ "tic"（行総和）/ "median"（行中央値）/ "pqn"。
     blank_min_fold: 生体試料平均がブランク平均のこの倍数未満の特徴量を背景として
         除去する（例 3.0）。None（既定）でブランク除去なし。
-    drift_correct: QC 注入順ドリフト補正。**mzTab-M は注入順を持たないため常に
-        未実施になる**（caveat で報告する）。注入順が必要なら ARF 経路を使う。
+    drift_correct: QC 注入順ドリフト補正。**現在の実装は mzTab-M から注入順を読み取らないため
+        常に未実施になる**（caveat で報告する。形式自体は assay[N]-custom[...] に injection
+        sequence label / batch label を持ち得るが、この経路はまだ未対応）。
+        注入順が必要なら ARF 経路を使う。
     max_qc_rsd: QC 群の RSD がこの値を超える特徴量を除去する（例 0.30）。
     impute: "half_min"（既定）/ "knn" / "column_mean" / "none"。
 
