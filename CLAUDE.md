@@ -137,6 +137,33 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 - `main` へのマージは `--no-ff`、`Merge <branch>: <日本語の要約>` 形式のマージコミット。
 - マージ済みブランチは**ローカルのみ削除**し `origin` 側は残す。`push` は指示があっても都度確認する。
 
+## 並列でエージェントを走らせるとき
+
+作業ツリーを共有すると、片方の未コミット変更がもう片方のテスト結果に混ざり、HEAD も
+断りなく動く。**エージェント 1 体につき worktree 1 本**に分ける。
+
+```bash
+sh scripts/new-worktree.sh <branch>    # .worktrees/ 配下に作る（/ は - に潰す）
+git worktree remove .worktrees/<slug>  # 片付け
+```
+
+- **追跡外のものは worktree に来ない**: `data/` `analyses/` `.mcp.json`
+  `docs/HISTRY.md` `docs/task.md`。テストはこれらに依存しない規約なので、
+  新品の worktree でもテストは全数緑になる（実測で確認済み）。
+- スクリプトが worktree 専用の `.mcp.json` を生成する。`server.py` は**その worktree の
+  もの**を指す（main を指すと、worktree のコードを編集しながら main の実装を試すことに
+  なり、最も気づきにくい形で嘘をつく）。蓄積状態（`LIPIDMIX_DATA_DIR`
+  `LIPIDMIX_ANALYSES_DIR` `LIPIDMIX_KNOWLEDGE_DIR` `LIPIDMIX_REPORTS_DIR`）は
+  **main ツリー**を向けて分裂させない。版管理対象の `playbook/` だけは worktree ローカル
+  （変更対象そのものなので）。
+- **記録は main ツリー側の `docs/HISTRY.md` / `docs/task.md` へ追記する**。
+  worktree には存在しない。
+- `core.hooksPath` は worktree 間で共有され `.githooks/` は追跡対象なので、
+  pre-commit は worktree でもそのまま効く。
+- **`git stash` を使わない**。stash スタックは main チェックアウトと全 worktree で
+  共有されており、別のエージェントの退避を pop しうる。退避が要るなら WIP コミットにする。
+- 統合は main ツリーで直列に行う。
+
 ## 踏みやすい罠
 
 - `.gitignore` に `*.txt` があるため、**新規の .txt は無言で追跡漏れする**（`git add -f` が要る）。
