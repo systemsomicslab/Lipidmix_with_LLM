@@ -19,7 +19,7 @@ MS-DIAL（リピドミクス LC-MS 解析ソフト）のバイナリ出力を読
 C:/Python314/python.exe -m pytest tests -q
 ```
 
-- 全 **764 件**（`-m unittest discover -s tests -t .` はこれより少ない〔実測 580〕。差は
+- 全 **762 件**（`-m unittest discover -s tests -t .` はこれより少ない〔実測 580〕。差は
   pytest 関数形式で書かれた複数のテストファイル（`test_dataset_state.py` `test_console_runner.py`
   `test_mztab_tools.py` 等、mzTab/Console/DatasetState 層で追加）で、`unittest.TestCase` を継承しない
   ため unittest discover では拾えない）。**リポジトリルートから `pytest` で実行する**。
@@ -47,7 +47,7 @@ lipidmix/analysis/  入力形式に依存しない数値処理（前処理/QC・
 lipidmix/plots/     描画 payload の組み立てと matplotlib 描画（volcano / eic / render）
 lipidmix/{arf,arf2,pai2,dcl,eic}/   形式ごとの reader.py（パーサ）と tools.py（MCP ツール）
 lipidmix/mztab/     mzTab-M リーダ・DatasetState 構築
-lipidmix/console/   MS-DIAL Console 実行層（job_manager / runner / output_collector / sidecar）
+lipidmix/console/   MS-DIAL Console 実行層（job_manager / runner / output_collector）
 lipidmix/handoff/   Console 成果物の受け渡しスキーマ（analysis-job.json）
 lipidmix/corpus/    蓄積ノートの純ロジック（knowledge_store / paper_ingest）
 lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプル検索・目的・レポート・リソース）

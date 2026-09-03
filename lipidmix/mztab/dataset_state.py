@@ -56,7 +56,8 @@ class DatasetState:
         self.pp_feature_names: list[str] = []
         # roles: {sample_name: "sample"|"qc"|"blank"}。preprocess() と差次的解析の群構成で使う。
         self.roles: dict[str, str] = {}
-        # sample_meta: {sample_name: {role, batch, batch_source}}。feature-qc.tsv の元。
+        # sample_meta: {sample_name: {role, batch, batch_source, run_order}}。
+        # 交絡判定（群⟂バッチ）とドリフト補正の材料。
         self.sample_meta: dict = {}
         self.preprocessing_recipe: dict = {}
         # last_pca / last_differential: 直近結果の全量。戻り値には要約だけを載せ、

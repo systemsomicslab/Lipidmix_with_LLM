@@ -188,8 +188,6 @@ def console_run(job_path: str | None = None) -> str:
     # PermissionError を投げ、analysis-job.json は running のまま更新されずに
     # 例外がツール境界を突き抜ける。以降の console_run は JOB_NOT_PLANNED で
     # 全て拒否し、誰も直せない（Task 0 で潰したはずの症状の再発）。
-    # サイドカー（feature-qc.tsv）自身の失敗は既存どおりこの外側ガードに
-    # 届かせない——副産物のためにジョブを failed にしない設計を維持する。
     try:
         from lipidmix.console.output_collector import collect_artifacts
         # ジョブが宣言した polarity / measure を渡す。MS-DIAL のアライメント出力名は
@@ -214,28 +212,7 @@ def console_run(job_path: str | None = None) -> str:
         job.warnings.extend(_meta_conflict_warnings(mztab_entries))
         job.warnings.extend(_unsupported_mztab_warnings(other_artifacts))
 
-        # サイドカー（feature-qc.tsv）。生成物のファイル名からサンプル名を拾う。
-        # 失敗しても実行は成功扱い——副産物のためにジョブを failed にしない。
-        from lipidmix.console import sidecar
-        try:
-            sample_names = _sample_names_from_artifacts(other_artifacts)
-            if sample_names:
-                sidecar_path = run_dir / sidecar.SIDECAR_SUBDIR / sidecar.FEATURE_QC_FILENAME
-                sidecar.generate_feature_qc_tsv(
-                    sidecar.build_sample_meta_from_names(sample_names), sidecar_path,
-                )
-                from lipidmix.handoff.schema import Artifact, sha256_file
-                job.artifacts.append(Artifact(
-                    path=str(sidecar_path.relative_to(run_dir)),
-                    role=sidecar.ARTIFACT_ROLE,
-                    format="tsv",
-                    sha256=sha256_file(sidecar_path),
-                ))
-            else:
-                job.warnings.append(
-                    "サンプル別ファイル（.pai2）が見つからず feature-qc.tsv を生成しませんでした。")
-        except OSError as exc:
-            job.warnings.append(f"feature-qc.tsv の生成に失敗しました: {exc}")
+        job.warnings.extend(_missing_per_sample_output_warnings(other_artifacts))
 
         job.status = "completed"
         save_job(job, resolved)
@@ -365,21 +342,20 @@ def _unsupported_mztab_warnings(artifacts) -> list[str]:
     ]
 
 
-def _sample_names_from_artifacts(artifacts) -> list[str]:
-    """サンプル別生成物（.pai2）のファイル名からサンプル名を重複なく拾う。
+def _missing_per_sample_output_warnings(artifacts) -> list[str]:
+    """サンプル別ファイル（.pai2）が 1 つも出ていないことを伝える。
 
-    .pai2 は測定 1 本ごとに 1 ファイル出るので、サンプル一覧の最も素直な出どころ。
+    .pai2 は測定 1 本ごとに 1 ファイル出る。無いということは pai2_parser /
+    dcl_find_msms が読むものが無く、MS/MS 根拠の経路が丸ごと空になる。
+    アライメント結果だけは出ているので実行は成功扱いのままにし、
+    「後で MS/MS を辿れない」ことだけ先に知らせる。
     """
-    names: list[str] = []
-    seen: set[str] = set()
-    for art in artifacts:
-        if art.format != "pai2":
-            continue
-        stem = Path(art.path).stem
-        if stem not in seen:
-            seen.add(stem)
-            names.append(stem)
-    return names
+    if any(a.format == "pai2" for a in artifacts):
+        return []
+    return [
+        "サンプル別ファイル（.pai2）が 1 つも生成されていません。"
+        "MS/MS 根拠（pai2_parser / dcl_find_msms）を辿る経路が使えません。"
+    ]
 
 
 def _resolve_job_path(job_path: str | None) -> Path | str:

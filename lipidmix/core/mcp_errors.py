@@ -61,8 +61,6 @@ CONSOLE_ERROR_CODES = frozenset({
     # MS-DIAL 実行自体は成功したが、その後の生成物収集・ハッシュ計算・
     # analysis-job.json への保存で失敗した場合。NO_JOB_OUTPUT（生成物が
     # そもそも無い）とは別のエラー: こちらは生成物はあるが確定処理に失敗した状態。
-    # サイドカー（feature-qc.tsv）自身の失敗はこれに含まない——副産物なので
-    # job.warnings に積むだけで completed のまま扱う。
     "JOB_POST_RUN_FAILED",
 })
 

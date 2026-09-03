@@ -67,7 +67,8 @@ def build_dataset_pp_inputs(ds):
         sample_names  : list[str]
         feature_names : list[str]（SMF_ID）
         roles         : {sample_name: "sample"|"qc"|"blank"} — preprocess の第3引数
-        sample_meta   : {sample_name: {role, batch, batch_source}} — feature-qc.tsv 用
+        sample_meta   : {sample_name: {role, batch, batch_source, run_order}}
+                        — 交絡判定（群⟂バッチ）とドリフト補正の材料
     """
     if ds.feature_matrix is None or not ds.sample_names or not ds.feature_ids:
         raise PreconditionError(
