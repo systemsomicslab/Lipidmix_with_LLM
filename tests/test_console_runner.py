@@ -41,6 +41,27 @@ def test_get_exe_path_set(monkeypatch):
     assert get_exe_path() == "C:/MsDial/MsdialConsoleApp.exe"
 
 
+def test_is_console_exe_accepts_output_with_lcms():
+    from lipidmix.console.runner import is_console_exe
+    completed = MagicMock()
+    completed.stdout = "MSDIAL Console Application 5.5\n  lcms   Run LC-MS data processing\n"
+    with patch("subprocess.run", return_value=completed):
+        assert is_console_exe("fake.exe") is True
+
+
+def test_is_console_exe_rejects_gui():
+    """GUI はコンソール出力を持たず、--help でウィンドウを開いて返らない。"""
+    from lipidmix.console.runner import is_console_exe
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 15)):
+        assert is_console_exe("gui.exe") is False
+
+
+def test_is_console_exe_rejects_missing_file():
+    from lipidmix.console.runner import is_console_exe
+    with patch("subprocess.run", side_effect=OSError("not found")):
+        assert is_console_exe("nope.exe") is False
+
+
 def test_run_msdial_success(tmp_path):
     method = tmp_path / "params.msdial"
     method.touch()
@@ -346,11 +367,25 @@ def test_console_plan_missing_method_file(tmp_path, monkeypatch):
     assert parsed["error"]["code"] == "METHOD_FILE_NOT_FOUND"
 
 
+def test_console_plan_rejects_non_console_exe(tmp_path, monkeypatch):
+    import json as _json
+    monkeypatch.setenv("MSDIAL_EXE", "gui.exe")
+    method = tmp_path / "params.txt"
+    method.write_text("Ion mode: Negative\n", encoding="ascii")
+    (tmp_path / "a.wiff").touch()
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: False)
+    from lipidmix.tools.console_tools import console_plan
+    result = console_plan(dataset_root=str(tmp_path), method_file=str(method),
+                          polarity="negative", measure="peak_height")
+    assert _json.loads(result)["error"]["code"] == "MSDIAL_EXE_NOT_CONSOLE"
+
+
 def test_console_plan_success(tmp_path, monkeypatch):
     import json as _json
     from lipidmix.core import session_state
     session_state.session = session_state.AnalysisSession()
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
     from lipidmix.tools.console_tools import console_plan

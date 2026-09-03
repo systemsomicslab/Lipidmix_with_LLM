@@ -69,10 +69,20 @@ def console_plan(
         return console_error("METHOD_FILE_NOT_FOUND", f"メソッドファイルが見つかりません: {method_file}")
 
     try:
-        from lipidmix.console.runner import get_exe_path
-        get_exe_path()
+        from lipidmix.console import runner as console_runner
+        exe = console_runner.get_exe_path()
     except EnvironmentError as exc:
         return console_error("MSDIAL_EXE_NOT_FOUND", str(exc))
+    if not console_runner.is_console_exe(exe):
+        return console_error(
+            "MSDIAL_EXE_NOT_CONSOLE",
+            f"MSDIAL_EXE が MS-DIAL Console ではありません: {exe}  "
+            "--help にサブコマンド `lcms` が現れませんでした。GUI の MSDIAL.exe を"
+            "指している可能性があります（GUI はコマンドラインを解釈せずウィンドウを"
+            "開いたままになります）。MsdialWorkbench の Console 実行体"
+            "（MSDIALCUI.exe）のパスを設定してください。",
+            {"exe": exe},
+        )
 
     from lipidmix.console.job_manager import create_job, count_raw_inputs
     try:

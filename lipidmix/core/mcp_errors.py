@@ -58,6 +58,8 @@ CONSOLE_ERROR_CODES = frozenset({
     "JOB_NOT_PLANNED",
     "DATASET_ROOT_IN_REPO",
     "METHOD_FILE_NOT_FOUND",
+    # MSDIAL_EXE が Console ではなく GUI を指している場合。
+    "MSDIAL_EXE_NOT_CONSOLE",
     # MS-DIAL 実行自体は成功したが、その後の生成物収集・ハッシュ計算・
     # analysis-job.json への保存で失敗した場合。NO_JOB_OUTPUT（生成物が
     # そもそも無い）とは別のエラー: こちらは生成物はあるが確定処理に失敗した状態。

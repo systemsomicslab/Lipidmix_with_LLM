@@ -36,6 +36,28 @@ def get_exe_path() -> str:
     return exe
 
 
+def is_console_exe(exe_path: str, timeout_s: int = 15) -> bool:
+    """MSDIAL_EXE が Console 実行体かを --help の出力で判定する。
+
+    Console は旧ビルドも master ビルドも --help（旧は引数エラー時の usage）に
+    サブコマンド名 `lcms` を含む。GUI の MSDIAL.exe はコンソール出力を持たず、
+    ウィンドウを開いたまま返らないため、ここで実行前に弾く。
+    """
+    try:
+        completed = subprocess.run(
+            [exe_path, "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout_s,
+            text=True,
+            errors="replace",
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return "lcms" in (completed.stdout or "")
+
+
 def run_msdial(
     method_file: Path,
     dataset_root: Path,
