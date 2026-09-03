@@ -6,15 +6,19 @@ from lipidmix.mztab.reader import parse_mztab
 from lipidmix.mztab.dataset_state import DatasetState, build_dataset_state
 from lipidmix.core import session_state
 
-_MZTAB_CONTENT = textwrap.dedent("""\
-    MTD\tmzTab-version\t2.0.0-M
-    MTD\tmzTab-mode\tComplete
-    MTD\tmzTab-type\tQuantification
-    MTD\tms_run[1]-location\tfile:///s1.raw
-    MTD\tassay[1]-ms_run_ref\tms_run[1]
-    SMF\tSMF_ID\tSML_ID_REFS\tdatabase_identifier\tchemical_name\tsmiles\tinchi\tabundance_assay[1]
-    SMF\t1\tSML:1\tIPCSVZSSVZVIGE-UHFFFAOYSA-N\tPC 36:2\tCCC\tInChI=1S/test\t12345.6
-    SMF\t2\tSML:2\tnull\tTG 54:3\tnull\tnull\t0.0
+# SMF は同定を持たず SME_ID_REFS で SME を指す（mzTab-M 2.0.0-M の実形状）。
+# 構造・名称を SMF 行へ直接書いたフィクスチャは形式として存在せず、
+# それに合わせた実装は実データで同定を 1 件も拾えなくなる。
+_MZTAB_CONTENT = textwrap.dedent("""\n    MTD	mzTab-version	2.0.0-M
+    MTD	mzTab-mode	Complete
+    MTD	mzTab-type	Quantification
+    MTD	ms_run[1]-location	file:///s1.raw
+    MTD	assay[1]-ms_run_ref	ms_run[1]
+    SFH	SMF_ID	SME_ID_REFS	exp_mass_to_charge	retention_time_in_seconds	abundance_assay[1]
+    SMF	1	1	786.6	300.0	12345.6
+    SMF	2	null	880.8	360.0	0.0
+    SEH	SME_ID	database_identifier	smiles	inchi	chemical_name	rank
+    SME	1	IPCSVZSSVZVIGE-UHFFFAOYSA-N	null	null	PC 36:2	1
 """)
 
 
@@ -245,3 +249,85 @@ def test_dataset_preprocess_detects_qc_role_via_resolved_display_name(mztab_qc_n
     assert roles["QC_1"] == "qc"
     assert roles["control_1"] == "sample"
     assert roles["treat_1"] == "sample"
+
+
+# --- 実 mzTab-M 形状（SMF は構造情報を持たず、SME を SME_ID_REFS で参照する） ---
+# 旧フィクスチャ (_MZTAB_CONTENT) は database_identifier / chemical_name / smiles を
+# SMF 行に直接置いていたが、mzTab-M 2.0.0-M ではこれらは **SME セクション専用**で、
+# SMF が持つのは SMF_ID / SME_ID_REFS / exp_mass_to_charge /
+# retention_time_in_seconds / abundance_assay[N] である。実データ
+# (MS-DIAL Console 出力) もこの形。実装がフィクスチャに合わせて誤った列名を
+# 読んでいたため、実ファイルでは全特徴の name/mz/rt/inchikey が None になっていた。
+_MZTAB_REAL_SHAPE = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tmzTab-mode\tComplete
+    MTD\tmzTab-type\tQuantification
+    MTD\tms_run[1]-location\tfile:///s1.raw
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    SFH\tSMF_ID\tSME_ID_REFS\tadduct_ion\texp_mass_to_charge\tcharge\tretention_time_in_seconds\tabundance_assay[1]
+    SMF\t1\t1\t[M-H]1-\t101.06208\t-1\t472.701\t12345.6
+    SMF\t2\tnull\t[M-H]1-\t157.12462\t-1\t480.0\t2000.0
+    SMF\t3\t3|4\t[M-H]1-\t200.00000\t-1\t600.0\t500.0
+    SEH\tSME_ID\tdatabase_identifier\tsmiles\tinchi\tchemical_name\trank
+    SME\t1\tIPCSVZSSVZVIGE-UHFFFAOYSA-N\tnull\tnull\tPC 36:2\t1
+    SME\t3\tsomedb:FA 9:0\tnull\tnull\tFA 9:0\t2
+    SME\t4\tFBUKVWPVBMHYJY-UHFFFAOYSA-N\tnull\tnull\tFA 5:0\t1
+""")
+
+
+@pytest.fixture
+def mztab_real_shape(tmp_path):
+    p = tmp_path / "Height_real_shape.mzTab"
+    p.write_text(_MZTAB_REAL_SHAPE, encoding="utf-8")
+    return p
+
+
+def _build(path):
+    return build_dataset_state(parse_mztab(path), path.name, str(path))
+
+
+def test_mz_read_from_smf_exp_mass_to_charge(mztab_real_shape):
+    ds = _build(mztab_real_shape)
+    assert ds.feature_metadata["1"]["mz"] == pytest.approx(101.06208)
+
+
+def test_rt_converted_from_seconds_to_minutes(mztab_real_shape):
+    """rt は分で持つ。ARF 経路が分で書き、同じエクスポート契約の rt 列を共有するため。"""
+    ds = _build(mztab_real_shape)
+    assert ds.feature_metadata["1"]["rt"] == pytest.approx(472.701 / 60.0)
+
+
+def test_inchikey_resolved_through_sme_id_refs(mztab_real_shape):
+    ds = _build(mztab_real_shape)
+    f1 = ds.feature_metadata["1"]
+    assert f1["inchikey"] == "IPCSVZSSVZVIGE-UHFFFAOYSA-N"
+    assert f1["inchikey_source"] == "database_identifier"
+
+
+def test_name_resolved_through_sme_id_refs(mztab_real_shape):
+    ds = _build(mztab_real_shape)
+    assert ds.feature_metadata["1"]["name"] == "PC 36:2"
+
+
+def test_best_ranked_sme_wins_when_multiple_refs(mztab_real_shape):
+    """SME_ID_REFS が複数あるときは rank が小さい（＝上位）証拠を採る。"""
+    ds = _build(mztab_real_shape)
+    f3 = ds.feature_metadata["3"]
+    assert f3["name"] == "FA 5:0"
+    assert f3["inchikey"] == "FBUKVWPVBMHYJY-UHFFFAOYSA-N"
+
+
+def test_feature_without_sme_ref_has_no_identity(mztab_real_shape):
+    ds = _build(mztab_real_shape)
+    f2 = ds.feature_metadata["2"]
+    assert f2["inchikey"] is None
+    assert f2["inchikey_source"] == "none"
+    assert f2["mz"] == pytest.approx(157.12462)
+
+
+def test_inchikey_coverage_counts_sme_resolved_features(mztab_real_shape):
+    ds = _build(mztab_real_shape)
+    cov = ds.inchikey_coverage
+    assert cov["total_features"] == 3
+    assert cov["with_inchikey"] == 2
+    assert cov["by_source"]["none"] == 1

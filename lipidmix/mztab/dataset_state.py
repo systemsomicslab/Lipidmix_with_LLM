@@ -104,23 +104,33 @@ def build_dataset_state(
     ds.feature_ids = feature_ids
 
     # SMF メタデータ + InChIKey 導出
+    #
+    # mzTab-M 2.0.0-M では **構造・名称は SME セクションにしか無い**。SMF が持つのは
+    # SMF_ID / SME_ID_REFS / exp_mass_to_charge / retention_time_in_seconds /
+    # abundance_assay[N] で、database_identifier・smiles・inchi・chemical_name は
+    # SME 専用の列である。SMF 行からこれらを読もうとすると常に None になり、
+    # 「この測定には同定が無い」と誤読される（実データで InChIKey 0/714 になっていた）。
     smf_rows = parse_result["sections"].get("SMF", {}).get("rows", [])
+    sme_by_id = _index_sme_rows(parse_result["sections"].get("SME", {}).get("rows", []))
     by_source: dict[str, int] = {"database_identifier": 0, "inchi_derived": 0, "smiles_derived": 0, "none": 0}
     for row in smf_rows:
         fid = row.get("SMF_ID", "")
+        evidence = _best_evidence(row.get("SME_ID_REFS"), sme_by_id)
         ik, src = derive_inchikey(
-            row.get("database_identifier"),
-            row.get("inchi"),
-            row.get("smiles"),
+            evidence.get("database_identifier"),
+            evidence.get("inchi"),
+            evidence.get("smiles"),
         )
         ds.feature_metadata[fid] = {
-            "name": row.get("chemical_name"),
-            "mz": _to_float(row.get("mz_exp")),
-            "rt": _to_float(row.get("rt_mean")),
+            "name": evidence.get("chemical_name"),
+            "mz": _to_float(row.get("exp_mass_to_charge")),
+            # mzTab-M は RT を**秒**で持つ。ARF 経路は分で持ち、両者は同じ
+            # エクスポート契約の rt 列を共有するので、ここで分へ揃える。
+            "rt": _seconds_to_minutes(_to_float(row.get("retention_time_in_seconds"))),
             "inchikey": ik,
             "inchikey_source": src,
-            "smiles": row.get("smiles"),
-            "inchi": row.get("inchi"),
+            "smiles": evidence.get("smiles"),
+            "inchi": evidence.get("inchi"),
         }
         by_source[src] = by_source.get(src, 0) + 1
 
@@ -194,6 +204,46 @@ def _resolve_sample_names(abundance_cols: list[str], assay_metadata: dict) -> tu
         for name, cols in cols_by_name.items() if len(cols) > 1
     ]
     return resolved, warnings
+
+def _seconds_to_minutes(value: float | None) -> float | None:
+    """mzTab-M の秒表記 RT を分へ揃える。"""
+    return None if value is None else value / 60.0
+
+
+def _index_sme_rows(sme_rows) -> dict:
+    """SME 行を SME_ID で引けるようにする。"""
+    return {str(r.get("SME_ID")): r for r in (sme_rows or []) if r.get("SME_ID") is not None}
+
+
+def _sme_rank(row: dict) -> tuple[int, int]:
+    """rank の昇順キー。rank が無い/数値でない証拠は最後に回す。
+
+    mzTab-M の rank は 1 が最上位。同一特徴に複数の候補が付くのは常態なので、
+    どれを採るかを暗黙にしない。
+    """
+    raw = row.get("rank")
+    try:
+        return (0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return (1, 0)
+
+
+def _best_evidence(refs, sme_by_id: dict) -> dict:
+    """SME_ID_REFS が指す SME 行のうち、rank が最上位のものを返す。
+
+    参照が無い（SMF_ID だけあって同定が付かなかった）特徴では空 dict を返す。
+    呼び出し側はこれを「同定を取得していない」として扱う。
+    """
+    if not refs:
+        return {}
+    candidates = []
+    for ref in str(refs).split("|"):
+        row = sme_by_id.get(ref.strip())
+        if row is not None:
+            candidates.append(row)
+    if not candidates:
+        return {}
+    return min(candidates, key=_sme_rank)
 
 
 def _to_float(v: str | None) -> float | None:

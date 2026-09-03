@@ -19,7 +19,7 @@ MS-DIAL（リピドミクス LC-MS 解析ソフト）のバイナリ出力を読
 C:/Python314/python.exe -m pytest tests -q
 ```
 
-- 全 **734 件**（`-m unittest discover -s tests -t .` はこれより少ない〔実測 578〕。差は
+- 全 **748 件**（`-m unittest discover -s tests -t .` はこれより少ない〔実測 580〕。差は
   pytest 関数形式で書かれた複数のテストファイル（`test_dataset_state.py` `test_console_runner.py`
   `test_mztab_tools.py` 等、mzTab/Console/DatasetState 層で追加）で、`unittest.TestCase` を継承しない
   ため unittest discover では拾えない）。**リポジトリルートから `pytest` で実行する**。

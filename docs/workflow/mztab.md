@@ -9,7 +9,9 @@ mztab_path 経路（直接指定）:
 4. └─ lipidmix/mztab/validator.py detect_quantification_measure()
 5. └─ lipidmix/mztab/dataset_state.py build_dataset_state()
 6.    └─ lipidmix/mztab/reader.py extract_abundance_matrix()
-7.    └─ lipidmix/mztab/identity.py derive_inchikey()
+7.    └─ lipidmix/mztab/dataset_state.py _index_sme_rows()
+8.    └─ lipidmix/mztab/dataset_state.py _best_evidence()
+9.    └─ lipidmix/mztab/identity.py derive_inchikey()
 
 job_path 経路（analysis-job.json から自動選択）:
 1. lipidmix/tools/mztab_tools.py dataset_load()
@@ -20,7 +22,9 @@ job_path 経路（analysis-job.json から自動選択）:
 6.    └─ lipidmix/mztab/validator.py detect_quantification_measure()
 7.    └─ lipidmix/mztab/dataset_state.py build_dataset_state()
 8.       └─ lipidmix/mztab/reader.py extract_abundance_matrix()
-9.       └─ lipidmix/mztab/identity.py derive_inchikey()
+9.       └─ lipidmix/mztab/dataset_state.py _index_sme_rows()
+10.      └─ lipidmix/mztab/dataset_state.py _best_evidence()
+11.      └─ lipidmix/mztab/identity.py derive_inchikey()
 
 ## dataset_status
 
