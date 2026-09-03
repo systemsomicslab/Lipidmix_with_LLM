@@ -14,7 +14,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-SCHEMA_VERSION = "analysis-job.v1"
+# v2: 生成物のルートと実行オプションを明示する。読み込みは v1 も受けるが、
+# 書き出しは常に v2 とする。
+SCHEMA_VERSION = "analysis-job.v2"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"analysis-job.v1", SCHEMA_VERSION})
+
+ArtifactRoot = Literal["run_dir", "dataset_root"]
 
 JobStatus = Literal["planned", "running", "needs_input", "completed", "failed"]
 Polarity = Literal["positive", "negative"]
@@ -29,6 +34,7 @@ class MztabEntry:
     measure: MeasureType
     sha256: str
     validation: dict = field(default_factory=dict)
+    root: ArtifactRoot = "run_dir"
 
 
 @dataclass
@@ -37,6 +43,7 @@ class Artifact:
     role: str
     format: str
     sha256: str
+    root: ArtifactRoot = "run_dir"
 
 
 @dataclass
@@ -68,6 +75,8 @@ class AnalysisJob:
     sample_manifest: SampleManifest | None = None
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    save_project: bool = False
+    timeout_s: int = 3600
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,9 +88,10 @@ class AnalysisJob:
     @staticmethod
     def load(path: Path) -> "AnalysisJob":
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("schema") != SCHEMA_VERSION:
+        if data.get("schema") not in SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(
-                f"analysis-job schema mismatch: expected {SCHEMA_VERSION!r}, got {data.get('schema')!r}"
+                f"analysis-job schema mismatch: expected one of "
+                f"{sorted(SUPPORTED_SCHEMA_VERSIONS)}, got {data.get('schema')!r}"
             )
         return _from_dict(data)
 
@@ -98,7 +108,7 @@ def sha256_file(path: Path) -> str:
 
 def _to_dict(job: AnalysisJob) -> dict:
     return {
-        "schema": job.schema,
+        "schema": SCHEMA_VERSION,
         "job_id": job.job_id,
         "status": job.status,
         "created_at": job.created_at,
@@ -126,11 +136,13 @@ def _to_dict(job: AnalysisJob) -> dict:
                 "measure": e.measure,
                 "sha256": e.sha256,
                 "validation": e.validation,
+                "root": e.root,
             }
             for e in job.primary_mztab_files
         ],
         "artifacts": [
-            {"path": a.path, "role": a.role, "format": a.format, "sha256": a.sha256}
+            {"path": a.path, "role": a.role, "format": a.format,
+             "sha256": a.sha256, "root": a.root}
             for a in job.artifacts
         ],
         "sample_manifest": (
@@ -144,6 +156,10 @@ def _to_dict(job: AnalysisJob) -> dict:
         ),
         "warnings": job.warnings,
         "error": job.error,
+        "execution": {
+            "save_project": job.save_project,
+            "timeout_s": job.timeout_s,
+        },
     }
 
 
@@ -159,11 +175,13 @@ def _from_dict(d: dict) -> AnalysisJob:
             measure=e["measure"],
             sha256=e.get("sha256", ""),
             validation=e.get("validation", {}),
+            root=e.get("root", "run_dir"),
         )
         for e in d.get("primary_mztab_files", [])
     ]
     artifacts = [
-        Artifact(path=a["path"], role=a["role"], format=a["format"], sha256=a.get("sha256", ""))
+        Artifact(path=a["path"], role=a["role"], format=a["format"],
+                 sha256=a.get("sha256", ""), root=a.get("root", "run_dir"))
         for a in d.get("artifacts", [])
     ]
     sm_raw = d.get("sample_manifest")
@@ -176,6 +194,7 @@ def _from_dict(d: dict) -> AnalysisJob:
         if sm_raw
         else None
     )
+    execution = d.get("execution", {})
     return AnalysisJob(
         schema=d["schema"],
         job_id=d["job_id"],
@@ -197,4 +216,6 @@ def _from_dict(d: dict) -> AnalysisJob:
         sample_manifest=sample_manifest,
         warnings=d.get("warnings", []),
         error=d.get("error"),
+        save_project=execution.get("save_project", False),
+        timeout_s=execution.get("timeout_s", 3600),
     )
