@@ -1,6 +1,6 @@
-# USAGE — ms-data-parser MCP ツール一覧(全40ツール)
+# USAGE — ms-data-parser MCP ツール一覧(全51ツール)
 
-MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.EIC.aef`)を解析し、PCA・差次的解析・
+MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.dcl` / `.EIC.aef`)と mzTab-M を解析し、PCA・差次的解析・
 アノテーション検証・文献探索・レポート記録までを行う MCP サーバーのツール群です。
 おおまかな標準フロー:
 
@@ -8,6 +8,10 @@ MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.EIC.aef`)を解析し、PCA・差�
 list_data_files → load_dataset → arf_list_classes / arf_preprocess
    → arf_pca_preprocessed / arf_differential → save_*_figure
    → record_objective → knowledge_coverage → paper_search → ingest_* → write_report
+
+生データから始める場合(別経路):
+console_plan → console_run → dataset_load → dataset_preprocess
+   → dataset_pca / dataset_differential → dataset_export_differential
 ```
 
 この文書は各ツールの**外形**（引数と用途）を扱います。内部でどのファイルのどの関数を
@@ -43,6 +47,7 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 | `arf_preprocess` | ロード済み ARF 行列に前処理レシピ(正規化・補完・ブランク/QC RSD 足切り・ドリフト補正)を適用し session を更新。 |
 | `arf_pca_preprocessed` | `arf_preprocess` 後の前処理済み行列で PCA を実行(生行列経路とは独立)。 |
 | `arf_differential` | 前処理後行列で差次的解析(2群 Welch t 検定＋log2FC、BH 補正)。因子トークンによるプール群指定に対応。多群 ANOVA は MCP から非公開(関心の2群を因子指定で切り出す)。 |
+| `arf_export_differential` | 直近の差次的結果を InChIKey 付きの 1 ファイルへ書き出す(`output_path`)。同一アラインメントの兄弟 `.arf2` から同定情報を `MasterAlignmentID` で結合する。濃縮解析の背景を保つため、有意行だけでなく **InChIKey が付いた全行**を出す。列定義は `lipidmix/analysis/export_contract.py` が正準(下流リポジトリとの契約)。 |
 
 ## 4. EIC 解析(`.EIC.aef`)
 
@@ -114,7 +119,35 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 | `read_report` | 過去レポートを読み戻す(最新更新のものを返す。セッション継続用)。 |
 | `list_reports` | 既存レポートの1行索引(analysis_id / date / status)を返す。 |
 
-## 10. Class ID に無い因子で絞る・比べる
+## 10. MS-DIAL Console 実行(生データ → mzTab-M)
+
+MS-DIAL 本体を CLI 実行して解析結果そのものを生成する経路。GUI であらかじめ
+メソッドファイルを作っておき、以降をこのサーバから回す。成果物は
+`analysis-job.json`(受け渡しスキーマ)と mzTab-M で、`dataset_load` が続きを引き取る。
+
+| ツール | 機能 |
+|--------|------|
+| `console_plan` | 実行計画を作り `analysis-job.json` を生成(`dataset_root`, `method_file`, `polarity`, `measure`, `omics`)。`dataset_root` は生データフォルダ(リポジトリ外)、`method_file` は `.msdial`/`.mdproject`。`measure` は `peak_height`(既定)のみ正確で、`peak_area_above_zero` は `UNSUPPORTED_AREA_CONSOLE` で停止する。成功すると `session.current_job_path` が設定される。 |
+| `console_run` | MS-DIAL Console を実行(`job_path` 省略時は `session.current_job_path`)。要 `console_plan` 先行。結果は `console_status` か `dataset_load` で確認する。 |
+| `console_status` | ジョブの現在のステータスを返す(`job_path` 省略時は `session.current_job_path`)。 |
+| `job_list` | `dataset_root/runs/` 以下のジョブ一覧を新しい順に返す。 |
+
+## 11. DatasetState 解析(mzTab-M 経路)
+
+mzTab-M 2.0 を正準状態(`DatasetState`)として読み、ARF 経路と同じ前処理・PCA・
+差次的解析を回す。**`session.arf` / `.arf2` / `.pai2` / `.eic` とは独立したスロット**なので、
+ARF 経路の状態を壊さない。
+
+| ツール | 機能 |
+|--------|------|
+| `dataset_load` | mzTab-M 2.0 を読み `session.dataset` を作る。`mztab_path`(絶対パス直指定)か `job_path`(ジョブの `primary_mztab_files[0]` を自動選択)の**どちらか一方**を渡す(両方省略・両方指定はエラー)。`console_run` 後は `job_path` 推奨(polarity・measure が確定済み)。 |
+| `dataset_status` | 現在の `DatasetState` の概要を返す。`samples` に name/role の TSV が入り、`dataset_differential` の `group_a`/`group_b` はここに出る名前をそのまま使う。 |
+| `dataset_preprocess` | 定量行列に前処理レシピを適用(引数は `arf_preprocess` と同一: `normalize` / `blank_min_fold` / `drift_correct` / `max_qc_rsd` / `impute`)。**`drift_correct` は現状 mzTab-M から注入順を読めないため常に未実施**になり caveat で報告される。注入順が要るなら ARF 経路を使う。 |
+| `dataset_pca` | 前処理済み `DatasetState` で PCA(`n_components` 既定 5、`log_transform` 既定 False)。ローディング全量は戻り値に載せず `session.dataset.last_pca` に保持する。 |
+| `dataset_differential` | 前処理済み行列で 2 群比較(Welch t 検定＋BH-FDR)。`group_a`/`group_b` は**サンプル名のリスト**(`dataset_status` の `samples` で確認)。**log2FC は正なら `group_b` が高い**(`group_a` が基準)。全特徴量の結果と volcano 点列は `session.dataset.last_differential` に保持する。 |
+| `dataset_export_differential` | 直近の差次的結果を InChIKey 付きの 1 ファイルへ書き出す。**`arf_export_differential` と同一の契約**(15 列 + `contract_version` メタ行)なので下流のパスウェイ解析にそのまま渡せる。InChIKey は mzTab-M 由来(`.arf2` との結合は不要)。`ontology` と `msi_level` は mzTab-M に対応物が無く空欄で、その旨をメタ行に書く。 |
+
+## 12. Class ID に無い因子で絞る・比べる
 
 MS-DIAL の Class ID は入力された1文字列にすぎず、時点や複製がサンプル名にしか
 無いことがある(例: Class ID = `ILG`/`control` だけで、時点 `6h` はサンプル名のみ)。

@@ -19,7 +19,7 @@ MS-DIAL（リピドミクス LC-MS 解析ソフト）のバイナリ出力を読
 C:/Python314/python.exe -m pytest tests -q
 ```
 
-- 全 **762 件**（`-m unittest discover -s tests -t .` はこれより少ない〔実測 580〕。差は
+- 全 **766 件**（`-m unittest discover -s tests -t .` はこれより少ない〔実測 580〕。差は
   pytest 関数形式で書かれた複数のテストファイル（`test_dataset_state.py` `test_console_runner.py`
   `test_mztab_tools.py` 等、mzTab/Console/DatasetState 層で追加）で、`unittest.TestCase` を継承しない
   ため unittest discover では拾えない）。**リポジトリルートから `pytest` で実行する**。
@@ -96,20 +96,24 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 
 | 知りたいこと | 見る場所 |
 |---|---|
-| ツールの引数・用途（`USAGE.md` 自体は Console/DatasetState 系ツールが未反映で実測 51 件から陳腐化） | `USAGE.md` |
+| ツールの引数・用途（全 51 ツール。`tests/test_readme_links.py` が実登録と突き合わせている） | `USAGE.md` |
 | 出力フィールドの**意味**（行の粒度・脂質名文法・必須注意） | `docs/output_format/core.md` ＋ トピック別（`arf` `arf2` `pai2` `dcl` `eic` `identity`）。MCP リソース `lipidmix://docs/output-format[/{topic}]` としても配信 |
 | ツールが**どのファイルのどの関数をどの順に呼ぶか** | `docs/workflow/`（9 文書・35 ツール分。範囲外 16 ツールは対象外）。行番号は書かない規約 |
 | MessagePack の Key 番号 | `docs/schema/*.md` |
+| パーサ単体の CLI（フラグ一覧と実行例） | `docs/cli.md` |
 | 設計判断の経緯・調査で判明した事実 | `docs/HISTRY.md`（綴りはこのまま。**追跡外＝ローカル専用ログ**） |
 | 進行中/完了タスク | `docs/task.md`（**追跡外**。ステータス = TODO/DOING/DONE/HOLD） |
 | 過去の設計書・計画書 | `docs/superpowers/{specs,plans,notes}/` |
 
 ## テストの規約
 
-- 腐敗防止テストが 2 つ効いている。壊すと落ちる:
+- 腐敗防止テストが 3 つ効いている。壊すと落ちる:
   - `tests/test_workflow_docs.py` — `docs/workflow/` が挙げるパス・関数名を AST で実在検証し、
     対象ツール数を実登録数と突き合わせる。
   - `tests/test_package_layout.py` — 移動で静かに壊れる `BASE_DIR` 起点の解決を縛る。
+  - `tests/test_readme_links.py` — 入口文書（`README.md` `USAGE.md` `DEPLOY.md` `CLAUDE.md`）の
+    相対リンクが実在するか、および `USAGE.md` のツール集合・宣言件数が実登録と一致するかを検証する。
+    README は詳細を他文書へ委譲した要約なので、ポインタが切れると案内そのものが壊れる。
 - `tests/test_server_registration.py` がツール/リソースの登録数と `ToolAnnotations` を検証する。
 - **fixture はテスト自身が作る**。`analyses/` `knowledge/` の実ファイルに依存させない
   （追跡外なのでユーザ環境依存の不安定テストになる。tmp に作って `ANALYSES_DIR` を差し替える流儀）。
