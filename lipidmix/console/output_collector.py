@@ -28,14 +28,25 @@ from lipidmix.handoff.schema import Artifact, MztabEntry, sha256_file
 # analysis-job.json は実行中に status 遷移で書き換わるため、差分に混入する。
 _OPERATIONAL_FILES = frozenset({"msdial.log", "analysis-job.json"})
 
-# 拡張子パターン → role のマッピング（長い拡張子を先に評価する）
+# 拡張子パターン → (role, format) のマッピング（長い拡張子を先に評価する）。
+# Console の実出力とエクスポートを拡張子だけで判定する。どのルートかは
+# Artifact.root が持つため、ここでは拡張子だけを見る。
 _ROLE_MAP: list[tuple[str, str, str]] = [
-    (".mzTab",    "primary_mztab",     "mztab"),
-    (".EIC.aef",  "chromatogram",      "eicaef"),
-    (".arf2",     "spot_catalog",      "arf2"),
-    (".arf",      "peak_matrix_source","arf"),
-    (".pai2",     "sample_peaks",      "pai2"),
-    (".dcl",      "msms_evidence",     "dcl"),
+    ("_tags.xml",  "peak_tags",          "tagsxml"),
+    (".qa.tsv",    "quality_matrix",     "qatsv"),
+    (".msp2.dbs",  "library_cache",      "msp2dbs"),
+    (".EIC.aef",   "chromatogram",       "eicaef"),
+    (".mzTab",     "primary_mztab",      "mztab"),
+    (".mdproject", "gui_project",        "mdproject"),
+    (".mdalign",   "alignment_table",    "mdalign"),
+    (".mdpeak",    "sample_peak_table",  "mdpeak"),
+    (".mdmsp",     "msms_spectra",       "mdmsp"),
+    (".mddata",    "project_data",       "mddata"),
+    (".msp2",      "library_snapshot",   "msp2"),
+    (".arf2",      "spot_catalog",       "arf2"),
+    (".arf",       "peak_matrix_source", "arf"),
+    (".pai2",      "sample_peaks",       "pai2"),
+    (".dcl",       "msms_evidence",      "dcl"),
 ]
 
 # ファイル名の極性トークン。`Neg_` / `_NEG` / `.pos.` のような**語**として現れた
@@ -107,7 +118,9 @@ def collect_artifacts(
         if not fp.is_file():
             continue
         role, fmt = _assign_role(rel_str)
-        checksum = sha256_file(fp)
+        # role の付かない raw/unknown ファイルはハッシュしない。生データには
+        # 大容量の副産物もあるため、役割が確定した成果物だけを検証対象にする。
+        checksum = sha256_file(fp) if role != "unknown" else ""
 
         if fmt == "mztab":
             if _NORMALIZED_PREFIX_RE.match(fp.name):

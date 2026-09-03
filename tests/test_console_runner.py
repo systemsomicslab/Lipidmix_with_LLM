@@ -205,6 +205,32 @@ def test_snapshot_captures_files(tmp_path):
     assert str(Path("sub") / "b.txt") in s
 
 
+@pytest.mark.parametrize("filename,expected_role,expected_fmt", [
+    ("msdial/S1.mdpeak", "sample_peak_table", "mdpeak"),
+    ("msdial/AlignResult-2026931617.mdalign", "alignment_table", "mdalign"),
+    ("msdial/S1.mdmsp", "msms_spectra", "mdmsp"),
+    ("msdial/AlignResult-2026931617.qa.tsv", "quality_matrix", "qatsv"),
+    ("msdial/Project-2609030417.mdproject", "gui_project", "mdproject"),
+    ("Project-2609030417.mddata", "project_data", "mddata"),
+    ("S1_2026931617_tags.xml", "peak_tags", "tagsxml"),
+    ("S1_2026931617.pai2", "sample_peaks", "pai2"),
+])
+def test_assign_role_console_outputs(filename, expected_role, expected_fmt):
+    role, fmt = _assign_role(filename)
+    assert (role, fmt) == (expected_role, expected_fmt)
+
+
+def test_collect_artifacts_skips_hash_for_unknown_role(tmp_path):
+    """role の付かないファイルはハッシュしない。"""
+    (tmp_path / "mystery.bin").write_bytes(b"x" * 1024)
+    (tmp_path / "S1.pai2").write_bytes(b"y" * 16)
+    _, artifacts = collect_artifacts(tmp_path, {})
+    by_path = {a.path: a for a in artifacts}
+    assert by_path["mystery.bin"].role == "unknown"
+    assert by_path["mystery.bin"].sha256 == ""
+    assert by_path["S1.pai2"].sha256 != ""
+
+
 def test_collect_artifacts_detects_new_files(tmp_path):
     before = snapshot(tmp_path)
     mzdial_out = tmp_path / "msdial"
