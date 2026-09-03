@@ -22,6 +22,7 @@ from lipidmix.console.output_collector import (
 )
 from lipidmix.console.job_manager import (
     create_job,
+    count_raw_inputs,
     list_jobs,
     load_job,
     update_status,
@@ -322,6 +323,22 @@ def test_list_jobs_finds_jobs(tmp_path):
     assert p1 in found or p2 in found
 
 
+def test_raw_input_summary_counts_by_extension(tmp_path):
+    from lipidmix.console.job_manager import raw_input_summary
+    (tmp_path / "a.wiff").touch()
+    (tmp_path / "b.wiff").touch()
+    (tmp_path / "a.wiff2").touch()
+    (tmp_path / "note.txt").touch()
+    (tmp_path / "c.d").mkdir()
+    assert raw_input_summary(tmp_path) == {"wiff": 2, "wiff2": 1, "d": 1}
+
+
+def test_count_raw_inputs_totals_summary(tmp_path):
+    (tmp_path / "a.wiff").touch()
+    (tmp_path / "a.abf").touch()
+    assert count_raw_inputs(tmp_path) == 2
+
+
 # ---------- console_tools ----------
 
 def test_console_plan_unsupported_area(tmp_path):
@@ -388,6 +405,7 @@ def test_console_plan_success(tmp_path, monkeypatch):
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
+    (tmp_path / "a.wiff").touch()
     from lipidmix.tools.console_tools import console_plan
     result = console_plan(
         dataset_root=str(tmp_path),
@@ -399,6 +417,52 @@ def test_console_plan_success(tmp_path, monkeypatch):
     assert parsed["status"] == "planned"
     assert parsed["polarity"] == "negative"
     assert session_state.session.current_job_path is not None
+
+
+def test_console_plan_rejects_mixed_raw_formats(tmp_path, monkeypatch):
+    """.wiff と .wiff2 の併存は MS-DIAL が対話プロンプトを出す条件。"""
+    import json as _json
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    method = tmp_path / "params.txt"
+    method.write_text("Ion mode: Negative\n", encoding="ascii")
+    (tmp_path / "a.wiff").touch()
+    (tmp_path / "a.wiff2").touch()
+    from lipidmix.tools.console_tools import console_plan
+    parsed = _json.loads(console_plan(dataset_root=str(tmp_path), method_file=str(method),
+                                      polarity="negative", measure="peak_height"))
+    assert parsed["error"]["code"] == "MIXED_RAW_FORMATS"
+    assert parsed["error"]["details"]["formats"] == {"wiff": 1, "wiff2": 1}
+
+
+def test_console_plan_rejects_empty_dataset_root(tmp_path, monkeypatch):
+    import json as _json
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    method = tmp_path / "params.txt"
+    method.write_text("Ion mode: Negative\n", encoding="ascii")
+    from lipidmix.tools.console_tools import console_plan
+    parsed = _json.loads(console_plan(dataset_root=str(tmp_path), method_file=str(method),
+                                      polarity="negative", measure="peak_height"))
+    assert parsed["error"]["code"] == "MIXED_RAW_FORMATS"
+
+
+def test_console_plan_warns_existing_alignment_results(tmp_path, monkeypatch):
+    """実行のたびに dataset_root へ別タイムスタンプのアライメント一式が積まれる。"""
+    import json as _json
+    from lipidmix.core import session_state
+    session_state.session = session_state.AnalysisSession()
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    method = tmp_path / "params.txt"
+    method.write_text("Ion mode: Negative\n", encoding="ascii")
+    (tmp_path / "a.wiff").touch()
+    (tmp_path / "AlignResult-2026931617_PeakProperties.arf").touch()
+    from lipidmix.tools.console_tools import console_plan
+    parsed = _json.loads(console_plan(dataset_root=str(tmp_path), method_file=str(method),
+                                      polarity="negative", measure="peak_height"))
+    assert parsed["status"] == "planned"
+    assert any("既存のアライメント結果" in w for w in parsed["warnings"])
 
 
 def test_console_status_no_job():

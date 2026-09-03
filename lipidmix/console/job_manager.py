@@ -18,6 +18,11 @@ from lipidmix.handoff.schema import (
 JOB_FILENAME = "analysis-job.json"
 RUNS_SUBDIR = "runs"
 
+# MS-DIAL の SupportMsRawDataExtension と同じ集合。
+_RAW_EXTENSIONS = frozenset({
+    "abf", "ibf", "cdf", "mzml", "wiff", "raw", "d", "wiff2", "qgd", "lcd", "lrp", "imzml",
+})
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -106,14 +111,19 @@ def list_jobs(dataset_root: Path) -> list[Path]:
     return found
 
 
+def raw_input_summary(dataset_root: Path) -> dict[str, int]:
+    """データフォルダ直下の計測ファイルを拡張子ごとに数える。"""
+    counts: dict[str, int] = {}
+    for entry in dataset_root.iterdir():
+        ext = entry.suffix.lower().lstrip(".")
+        if ext in _RAW_EXTENSIONS:
+            counts[ext] = counts.get(ext, 0) + 1
+    return counts
+
+
 def count_raw_inputs(dataset_root: Path) -> int:
-    """データフォルダ内の計測ファイル数を推定する（.wiff / .raw / .d / .mzML）。"""
-    exts = {".wiff", ".raw", ".mzml", ".mzxml"}
-    count = 0
-    for f in dataset_root.iterdir():
-        if f.suffix.lower() in exts or (f.is_dir() and f.suffix.lower() == ".d"):
-            count += 1
-    return count
+    """データフォルダ内の計測ファイル数を返す（raw_input_summary の合計）。"""
+    return sum(raw_input_summary(dataset_root).values())
 
 
 def _assert_not_in_repo(path: Path) -> None:

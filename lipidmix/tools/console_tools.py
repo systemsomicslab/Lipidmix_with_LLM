@@ -84,9 +84,31 @@ def console_plan(
             {"exe": exe},
         )
 
-    from lipidmix.console.job_manager import create_job, count_raw_inputs
+    from lipidmix.console.job_manager import create_job, raw_input_summary
+    formats = raw_input_summary(root)
+    if not formats:
+        return console_error(
+            "MIXED_RAW_FORMATS",
+            f"データフォルダに MS-DIAL が読める計測ファイルがありません: {dataset_root}  "
+            "対象拡張子: abf / ibf / cdf / mzml / wiff / raw / d / wiff2 / qgd / lcd / lrp / imzml",
+            {"formats": formats},
+        )
+    if len(formats) > 1:
+        return console_error(
+            "MIXED_RAW_FORMATS",
+            "データフォルダに MS-DIAL が対象とする拡張子が 2 種類以上あります: "
+            + ", ".join(f"{ext}×{n}" for ext, n in sorted(formats.items()))
+            + "。MS-DIAL Console はこの状態で対話プロンプトを出すため、"
+            "stdin を塞いだ実行では異常終了します。続行できたとしても、"
+            "同じ測定が複数の解析ファイルとして扱われます。"
+            "SCIEX の出力は 1 測定につき .wiff と .wiff2 が両方できるのが普通なので、"
+            "解析に使うほうだけを残したフォルダを作って指定してください"
+            "（.wiff.scan は拡張子が .scan なので残して構いません）。",
+            {"formats": formats},
+        )
+    input_count = sum(formats.values())
+
     try:
-        input_count = count_raw_inputs(root)
         job, job_path = create_job(
             dataset_root=root,
             method_file=mf,
@@ -100,6 +122,15 @@ def console_plan(
 
     session_state.session.current_job_path = str(job_path)
 
+    warnings: list[str] = []
+    if any(p.is_file() and (p.name.startswith("AlignResult-") or "AlignmentResult" in p.name)
+           for p in root.iterdir()):
+        warnings.append(
+            "既存のアライメント結果がデータフォルダにあります。MS-DIAL Console は"
+            "実行のたびに別タイムスタンプの一式を同じフォルダへ追加するため、"
+            "複数バッチが混在します。どれが今回の生成物かは console_status の"
+            "artifacts で確認してください。")
+
     return json_payload({
         "status": "planned",
         "job_id": job.job_id,
@@ -110,6 +141,7 @@ def console_plan(
         "omics": omics,
         "input_count": input_count,
         "method_file": str(mf),
+        "warnings": warnings,
         "next": "console_run を呼び出して実行を開始してください",
     })
 
