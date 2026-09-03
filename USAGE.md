@@ -127,9 +127,9 @@ MS-DIAL 本体を CLI 実行して解析結果そのものを生成する経路�
 
 | ツール | 機能 |
 |--------|------|
-| `console_plan` | 実行計画を作り `analysis-job.json` を生成(`dataset_root`, `method_file`, `polarity`, `measure`, `omics`)。`dataset_root` は生データフォルダ(リポジトリ外)、`method_file` は `.msdial`/`.mdproject`。`measure` は `peak_height`(既定)のみ正確で、`peak_area_above_zero` は `UNSUPPORTED_AREA_CONSOLE` で停止する。成功すると `session.current_job_path` が設定される。 |
-| `console_run` | MS-DIAL Console を実行(`job_path` 省略時は `session.current_job_path`)。要 `console_plan` 先行。結果は `console_status` か `dataset_load` で確認する。 |
-| `console_status` | ジョブの現在のステータスを返す(`job_path` 省略時は `session.current_job_path`)。 |
+| `console_plan` | 実行計画を作り `analysis-job.json` を生成(`dataset_root`, `method_file`, `polarity`, `measure`, `omics`, `save_project`, `timeout_s`)。`dataset_root` は生データフォルダ(リポジトリ外)。`method_file` は **GUI の Export > Parameter で出した ASCII テキスト**(`key: value` 形式)で、`.mdproject`/`.mddata` は ZIP のため `METHOD_FILE_NOT_TEXT` で停止する(渡しても全パラメータが既定値のまま走ってしまうため)。`measure` は `peak_height`(既定)のみ正確で、`peak_area_above_zero` は `UNSUPPORTED_AREA_CONSOLE` で停止する。`save_project`(既定 True)は `-p` を付け GUI で開ける `.mdproject` を出させる。`timeout_s` 既定 21600(6 時間)。実行前に `MSDIAL_EXE` が Console 実行体かを `--help` で確かめ、GUI を指していれば `MSDIAL_EXE_NOT_CONSOLE`。生データフォルダに MS-DIAL 対象の拡張子が 0 種類または 2 種類以上あると `MIXED_RAW_FORMATS`(MS-DIAL が対話プロンプトを出す条件。SCIEX の `.wiff` と `.wiff2` の併存が典型)。既存のアライメント結果があれば `warnings` で知らせる。成功すると `session.current_job_path` が設定される。 |
+| `console_run` | MS-DIAL Console を実行(`job_path` 省略時は `session.current_job_path`)。要 `console_plan` 先行。生成物は **`-o`(エクスポート)と生データフォルダ(`.pai2`/`.dcl`/`.arf`/`.arf2`/`.EIC.aef`)の 2 か所**に分かれて出るので両方を収集し、どちらから来たかを `root` に記録する。タイムアウトしても生成物があれば捨てずに `status="partial"` で保存する(無ければ `failed`)。結果は `console_status` か `dataset_load` で確認する。 |
+| `console_status` | ジョブの現在のステータスを返す(`job_path` 省略時は `session.current_job_path`)。`artifacts` は `path`/`role`/`format`/`root` の TSV(列名 1 回)、`execution` に `save_project`/`timeout_s` が入る。 |
 | `job_list` | `dataset_root/runs/` 以下のジョブ一覧を新しい順に返す。 |
 
 ## 11. DatasetState 解析(mzTab-M 経路)
@@ -140,9 +140,9 @@ ARF 経路の状態を壊さない。
 
 | ツール | 機能 |
 |--------|------|
-| `dataset_load` | mzTab-M 2.0 を読み `session.dataset` を作る。`mztab_path`(絶対パス直指定)か `job_path`(ジョブの `primary_mztab_files[0]` を自動選択)の**どちらか一方**を渡す(両方省略・両方指定はエラー)。`console_run` 後は `job_path` 推奨(polarity・measure が確定済み)。 |
+| `dataset_load` | mzTab-M 2.0 を読み `session.dataset` を作る。`mztab_path`(絶対パス直指定)か `job_path`(ジョブの宣言 polarity・measure で正準エントリを一意選択。曖昧なら停止)の**どちらか一方**を渡す(両方省略・両方指定はエラー)。`console_run` 後は `job_path` 推奨(polarity・measure が確定済み)。生成物の絶対パスは記録された `root` から復元する。ジョブが `completed` 以外(`partial` 等)なら**中断された実行の生成物である旨を警告の先頭に差す**。 |
 | `dataset_status` | 現在の `DatasetState` の概要を返す。`samples` に name/role の TSV が入り、`dataset_differential` の `group_a`/`group_b` はここに出る名前をそのまま使う。 |
-| `dataset_preprocess` | 定量行列に前処理レシピを適用(引数は `arf_preprocess` と同一: `normalize` / `blank_min_fold` / `drift_correct` / `max_qc_rsd` / `impute`)。**`drift_correct` は現状 mzTab-M から注入順を読めないため常に未実施**になり caveat で報告される。注入順が要るなら ARF 経路を使う。 |
+| `dataset_preprocess` | 定量行列に前処理レシピを適用(引数は `arf_preprocess` と同一: `normalize` / `blank_min_fold` / `drift_correct` / `max_qc_rsd` / `impute`)。注入順とバッチは mzTab-M の `MTD assay[N]-custom[...]`(`MS:4000089` injection sequence label / `MS:4000088` batch label)から読むので **`drift_correct` は実際に適用される**。注入順が無いファイルでは従来どおり未実施の caveat が出る。バッチラベルは 2 値以上あるときだけ採用し(MS-DIAL の既定は全件 `1` で情報を持たないため)、無ければファイル名の日付推定に戻す。採用元は `sample_meta` の `batch_source` / `run_order_source` に入る。 |
 | `dataset_pca` | 前処理済み `DatasetState` で PCA(`n_components` 既定 5、`log_transform` 既定 False)。ローディング全量は戻り値に載せず `session.dataset.last_pca` に保持する。 |
 | `dataset_differential` | 前処理済み行列で 2 群比較(Welch t 検定＋BH-FDR)。`group_a`/`group_b` は**サンプル名のリスト**(`dataset_status` の `samples` で確認)。**log2FC は正なら `group_b` が高い**(`group_a` が基準)。全特徴量の結果と volcano 点列は `session.dataset.last_differential` に保持する。 |
 | `dataset_export_differential` | 直近の差次的結果を InChIKey 付きの 1 ファイルへ書き出す。**`arf_export_differential` と同一の契約**(15 列 + `contract_version` メタ行)なので下流のパスウェイ解析にそのまま渡せる。InChIKey は mzTab-M 由来(`.arf2` との結合は不要)。`ontology` と `msi_level` は mzTab-M に対応物が無く空欄で、その旨をメタ行に書く。 |
