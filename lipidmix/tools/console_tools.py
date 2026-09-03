@@ -194,7 +194,12 @@ def console_run(job_path: str | None = None) -> str:
     except EnvironmentError as exc:
         update_status(resolved, "failed", error=str(exc))
         return console_error("MSDIAL_EXE_NOT_FOUND", str(exc))
-    if not console_runner.is_console_exe(exe):
+    try:
+        is_console = console_runner.is_console_exe(exe, raise_on_os_error=True)
+    except OSError as exc:
+        update_status(resolved, "failed", error=str(exc))
+        return console_error("MSDIAL_EXE_NOT_FOUND", str(exc))
+    if not is_console:
         return console_error(
             "MSDIAL_EXE_NOT_CONSOLE",
             f"MSDIAL_EXE が MS-DIAL Console ではありません: {exe}  "

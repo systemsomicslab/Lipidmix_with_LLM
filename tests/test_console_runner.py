@@ -537,11 +537,13 @@ def test_console_run_rejects_changed_non_console_exe_before_launch(tmp_path, mon
     """計画後に MSDIAL_EXE が GUI へ変わっても、ジョブを planned のまま止める。"""
     import json as _json
     from lipidmix.core import session_state
+    from lipidmix.console import runner
     from lipidmix.tools.console_tools import console_plan, console_run
 
     session_state.session = session_state.AnalysisSession()
     monkeypatch.setenv("MSDIAL_EXE", "console.exe")
-    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    real_is_console_exe = runner.is_console_exe
+    monkeypatch.setattr(runner, "is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.txt"
     method.write_text("Ion mode: Negative\n", encoding="ascii")
     (tmp_path / "a.wiff").touch()
@@ -551,13 +553,45 @@ def test_console_run_rejects_changed_non_console_exe_before_launch(tmp_path, mon
     job_path = planned["job_path"]
 
     monkeypatch.setenv("MSDIAL_EXE", "MSDIAL.exe")
-    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: False)
-    with patch("subprocess.run") as mock_run:
+    monkeypatch.setattr(runner, "is_console_exe", real_is_console_exe)
+    completed = MagicMock()
+    completed.stdout = "MS-DIAL GUI output without console commands\n"
+    with patch("subprocess.run", return_value=completed) as mock_run:
         result = _json.loads(console_run(job_path))
 
     assert result["error"]["code"] == "MSDIAL_EXE_NOT_CONSOLE"
     assert load_job(Path(job_path)).status == "planned"
-    mock_run.assert_not_called()
+    mock_run.assert_called_once_with(
+        ["MSDIAL.exe", "--help"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        timeout=15,
+        text=True,
+        errors="replace",
+    )
+
+
+def test_console_run_marks_missing_changed_exe_failed(tmp_path, monkeypatch):
+    """計画後に MSDIAL_EXE が消えた場合は従来どおり NOT_FOUND/failed にする。"""
+    import json as _json
+    from lipidmix.console.job_manager import create_job
+    from lipidmix.tools.console_tools import console_run
+
+    method = tmp_path / "params.txt"
+    method.write_text("Ion mode: Negative\n", encoding="ascii")
+    job, job_path = create_job(
+        dataset_root=tmp_path, method_file=method,
+        polarity="negative", measure="peak_height",
+    )
+    monkeypatch.setenv("MSDIAL_EXE", "removed-console.exe")
+    with patch("subprocess.run", side_effect=OSError("exe not found")) as mock_run:
+        result = _json.loads(console_run(str(job_path)))
+
+    assert result["error"]["code"] == "MSDIAL_EXE_NOT_FOUND"
+    assert load_job(job_path).status == "failed"
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[0][1] == "--help"
 
 
 # ---------- Task 0: ブロッカー回帰 ----------
