@@ -28,6 +28,10 @@ from lipidmix.handoff.schema import Artifact, MztabEntry, sha256_file
 # analysis-job.json は実行中に status 遷移で書き換わるため、差分に混入する。
 _OPERATIONAL_FILES = frozenset({"msdial.log", "analysis-job.json"})
 
+# dataset_root を撮るときに降りないディレクトリ名。job_manager の RUNS_SUBDIR と
+# 同じ値だが、収集層はジョブ管理を知らないままにしておくため定数を複製する。
+RUNS_SUBDIR = "runs"
+
 # 拡張子パターン → (role, format) のマッピング（長い拡張子を先に評価する）。
 # Console の実出力とエクスポートを拡張子だけで判定する。どのルートかは
 # Artifact.root が持つため、ここでは拡張子だけを見る。
@@ -66,12 +70,19 @@ _DEFAULT_POLARITY = "positive"
 _DEFAULT_MEASURE = "peak_height"
 
 
-def snapshot(directory: Path) -> dict[str, int]:
-    """ディレクトリ以下の全ファイルを {相対パス文字列: サイズ} で返す。"""
+def snapshot(
+    directory: Path,
+    exclude_dir_names: frozenset[str] | set[str] = frozenset(),
+) -> dict[str, int]:
+    """ディレクトリ以下の全ファイルを {相対パス文字列: サイズ} で返す。
+
+    exclude_dir_names に指定した名前のディレクトリは走査しない。
+    """
     result: dict[str, int] = {}
     if not directory.exists():
         return result
-    for root, _, files in os.walk(directory):
+    for root, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if d not in exclude_dir_names]
         for name in files:
             fp = Path(root) / name
             try:
@@ -82,13 +93,13 @@ def snapshot(directory: Path) -> dict[str, int]:
 
 
 def collect_artifacts(
-    run_dir: Path,
-    before: dict[str, int],
+    roots: dict[str, Path],
+    befores: dict[str, dict[str, int]],
     *,
     declared_polarity: str | None = None,
     declared_measure: str | None = None,
 ) -> tuple[list[MztabEntry], list[Artifact]]:
-    """実行後の run_dir を before スナップショットと比較し、新規・変化ファイルを収集する。
+    """複数ルートを before スナップショットと比較し、新規・変化ファイルを収集する。
 
     declared_polarity / declared_measure は analysis-job.json の project 値
     （console_plan でユーザーが宣言したもの）。ファイル名が黙っている軸を埋め、
@@ -102,51 +113,44 @@ def collect_artifacts(
             role=unsupported_mztab としてここに入る——記録は残すが、
             dataset_load が正準として選べないようにするため。
     """
-    after = snapshot(run_dir)
-    new_or_changed = {
-        rel: size
-        for rel, size in after.items()
-        if (rel not in before or before[rel] != size)
-        and Path(rel).name not in _OPERATIONAL_FILES
-    }
-
     mztab_entries: list[MztabEntry] = []
     other_artifacts: list[Artifact] = []
 
-    for rel_str in sorted(new_or_changed):
-        fp = run_dir / rel_str
-        if not fp.is_file():
-            continue
-        role, fmt = _assign_role(rel_str)
-        # role の付かない raw/unknown ファイルはハッシュしない。生データには
-        # 大容量の副産物もあるため、役割が確定した成果物だけを検証対象にする。
-        checksum = sha256_file(fp) if role != "unknown" else ""
-
-        if fmt == "mztab":
-            if _NORMALIZED_PREFIX_RE.match(fp.name):
-                other_artifacts.append(Artifact(
-                    path=rel_str,
-                    role=UNSUPPORTED_MZTAB_ROLE,
-                    format=fmt,
-                    sha256=checksum,
-                ))
+    for root_name, root_path in roots.items():
+        before = befores.get(root_name, {})
+        exclude = {RUNS_SUBDIR} if root_name == "dataset_root" else frozenset()
+        after = snapshot(root_path, exclude_dir_names=exclude)
+        new_or_changed = {
+            rel: size for rel, size in after.items()
+            if (rel not in before or before[rel] != size)
+            and Path(rel).name not in _OPERATIONAL_FILES
+        }
+        for rel_str in sorted(new_or_changed):
+            fp = root_path / rel_str
+            if not fp.is_file():
                 continue
-            polarity, measure, validation = _resolve_mztab_meta(
-                fp.name, declared_polarity, declared_measure)
-            mztab_entries.append(MztabEntry(
-                path=rel_str,
-                polarity=polarity,
-                measure=measure,
-                sha256=checksum,
-                validation=validation,
-            ))
-        else:
-            other_artifacts.append(Artifact(
-                path=rel_str,
-                role=role,
-                format=fmt,
-                sha256=checksum,
-            ))
+            role, fmt = _assign_role(rel_str)
+            # role の付かないファイルはハッシュしない。大きな副産物もある。
+            checksum = sha256_file(fp) if role != "unknown" else ""
+
+            if fmt == "mztab":
+                if _NORMALIZED_PREFIX_RE.match(fp.name):
+                    other_artifacts.append(Artifact(
+                        path=rel_str, role=UNSUPPORTED_MZTAB_ROLE, format=fmt,
+                        sha256=checksum, root=root_name,
+                    ))
+                    continue
+                polarity, measure, validation = _resolve_mztab_meta(
+                    fp.name, declared_polarity, declared_measure)
+                mztab_entries.append(MztabEntry(
+                    path=rel_str, polarity=polarity, measure=measure,
+                    sha256=checksum, validation=validation, root=root_name,
+                ))
+            else:
+                other_artifacts.append(Artifact(
+                    path=rel_str, role=role, format=fmt,
+                    sha256=checksum, root=root_name,
+                ))
 
     return mztab_entries, other_artifacts
 

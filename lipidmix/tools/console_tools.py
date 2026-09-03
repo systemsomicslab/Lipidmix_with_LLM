@@ -270,7 +270,7 @@ def console_run(job_path: str | None = None) -> str:
         # ジョブが宣言した polarity / measure を渡す。MS-DIAL のアライメント出力名は
         # 極性トークンを持たないので、渡さないと全エントリが既定の positive になる。
         mztab_entries, other_artifacts = collect_artifacts(
-            run_dir, before,
+            {"run_dir": run_dir}, {"run_dir": before},
             declared_polarity=job.polarity,
             declared_measure=job.measure,
         )

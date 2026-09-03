@@ -19,10 +19,10 @@ MS-DIAL（リピドミクス LC-MS 解析ソフト）のバイナリ出力を読
 C:/Python314/python.exe -m pytest tests -q
 ```
 
-- 全 **766 件**（`-m unittest discover -s tests -t .` はこれより少ない〔実測 580〕。差は
-  pytest 関数形式で書かれた複数のテストファイル（`test_dataset_state.py` `test_console_runner.py`
-  `test_mztab_tools.py` 等、mzTab/Console/DatasetState 層で追加）で、`unittest.TestCase` を継承しない
-  ため unittest discover では拾えない）。**リポジトリルートから `pytest` で実行する**。
+- **リポジトリルートから `pytest` で実行する**。`-m unittest discover -s tests -t .` は
+  これより少なく拾う（`test_dataset_state.py` `test_console_runner.py` `test_mztab_tools.py` 等、
+  pytest 関数形式で書かれたファイルは `unittest.TestCase` を継承しないため拾えない）。
+  **テストの数はここに書かない**。pytest の出力が正準（写しだけが腐るため）。
 - MCP サーバ起動: `C:/Python314/python.exe server.py`（既定 stdio）。
 - パーサ単体の CLI: `python -m lipidmix.arf.reader --file <path> --pca` など（README「Command-line examples」）。
 
@@ -96,9 +96,9 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 
 | 知りたいこと | 見る場所 |
 |---|---|
-| ツールの引数・用途（全 51 ツール。`tests/test_readme_links.py` が実登録と突き合わせている） | `USAGE.md` |
+| ツールの引数・用途（`tests/test_readme_links.py` が一覧と件数を実登録と突き合わせている） | `USAGE.md` |
 | 出力フィールドの**意味**（行の粒度・脂質名文法・必須注意） | `docs/output_format/core.md` ＋ トピック別（`arf` `arf2` `pai2` `dcl` `eic` `identity`）。MCP リソース `lipidmix://docs/output-format[/{topic}]` としても配信 |
-| ツールが**どのファイルのどの関数をどの順に呼ぶか** | `docs/workflow/`（9 文書・35 ツール分。範囲外 16 ツールは対象外）。行番号は書かない規約 |
+| ツールが**どのファイルのどの関数をどの順に呼ぶか** | `docs/workflow/`（対象範囲の線引きと内訳は `index.md` が正準。`tests/test_workflow_docs.py` が実登録と突き合わせている）。行番号は書かない規約 |
 | **生データ → Console → mzTab-M → 差次的解析 → パスウェイ**の一気通貫の順序と、内部関数の引数・戻り値 | [docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md](docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md)（**目標状態**の記述。実装状況は同文書 §9。完成後 `docs/workflow/Lipidmix/` へ昇格） |
 | MessagePack の Key 番号 | `docs/schema/*.md` |
 | パーサ単体の CLI（フラグ一覧と実行例） | `docs/cli.md` |
@@ -108,13 +108,17 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 
 ## テストの規約
 
-- 腐敗防止テストが 3 つ効いている。壊すと落ちる:
+- 腐敗防止テストが効いている。壊すと落ちる:
   - `tests/test_workflow_docs.py` — `docs/workflow/` が挙げるパス・関数名を AST で実在検証し、
     対象ツール数を実登録数と突き合わせる。
-  - `tests/test_package_layout.py` — 移動で静かに壊れる `BASE_DIR` 起点の解決を縛る。
+  - `tests/test_package_layout.py` — 移動で静かに壊れる `BASE_DIR` 起点の解決と、
+    ルート直下の `.py` が `server.py` `check.py` だけであることを縛る。
   - `tests/test_readme_links.py` — 入口文書（`README.md` `USAGE.md` `DEPLOY.md` `CLAUDE.md`）の
-    相対リンクが実在するか、および `USAGE.md` のツール集合・宣言件数が実登録と一致するかを検証する。
-    README は詳細を他文書へ委譲した要約なので、ポインタが切れると案内そのものが壊れる。
+    相対リンクが実在するか、`USAGE.md` のツール集合・宣言件数が実登録と一致するか、
+    CLAUDE.md 冒頭の規模表記が実登録と一致するかを検証する。
+    加えて **README.md / CLAUDE.md に数量表現を書かせない**（正準は別文書にあり、
+    写しだけが腐るため）。README は詳細を他文書へ委譲した要約なので、
+    ポインタが切れると案内そのものが壊れる。
 - `tests/test_server_registration.py` がツール/リソースの登録数と `ToolAnnotations` を検証する。
 - **fixture はテスト自身が作る**。`analyses/` `knowledge/` の実ファイルに依存させない
   （追跡外なのでユーザ環境依存の不安定テストになる。tmp に作って `ANALYSES_DIR` を差し替える流儀）。
@@ -122,8 +126,14 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 ## 作業の記録と Git
 
 - 調査・実装をしたら `docs/HISTRY.md` に追記し、`docs/task.md` のステータスを更新する。
+- **この 2 つは追記専用**。日付見出しで区切って末尾に足し、既存の節は書き換えない。
+  どちらも追跡外で git が競合を検出しないため、複数のエージェントが同時に走ると
+  書き換えは後勝ちで静かに消える。
 - `check.py` はスクラッチ（疑似ワークスペース）。一時検証コードをここに書き、通ったら適切な
   モジュールへ移して中身を消す。何もここに依存させない。
+- **コミット時に全テストが自動で走る**（`.githooks/pre-commit`・約 5 秒）。
+  クローン直後は `git config core.hooksPath .githooks` を 1 度実行して有効化する。
+  迂回は `git commit --no-verify`（緊急時のみ）。
 - `main` へのマージは `--no-ff`、`Merge <branch>: <日本語の要約>` 形式のマージコミット。
 - マージ済みブランチは**ローカルのみ削除**し `origin` 側は残す。`push` は指示があっても都度確認する。
 

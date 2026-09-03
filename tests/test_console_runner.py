@@ -205,6 +205,48 @@ def test_snapshot_captures_files(tmp_path):
     assert str(Path("sub") / "b.txt") in s
 
 
+def test_snapshot_excludes_named_dirs(tmp_path):
+    (tmp_path / "runs" / "job1").mkdir(parents=True)
+    (tmp_path / "runs" / "job1" / "analysis-job.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "S1.pai2").write_bytes(b"x")
+    snap = snapshot(tmp_path, exclude_dir_names={"runs"})
+    assert "S1.pai2" in snap
+    assert not any("runs" in k for k in snap)
+
+
+def test_collect_artifacts_tags_root_per_source(tmp_path):
+    """-o のエクスポートと生データフォルダの生成物を 1 回で集め、出所を刻む。"""
+    run_dir = tmp_path / "runs" / "job1"
+    (run_dir / "msdial").mkdir(parents=True)
+    (run_dir / "msdial" / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
+    (run_dir / "msdial" / "S1.mdpeak").write_bytes(b"a")
+    (tmp_path / "S1_1.pai2").write_bytes(b"b")
+    (tmp_path / "S1_1.dcl").write_bytes(b"c")
+
+    roots = {"run_dir": run_dir, "dataset_root": tmp_path}
+    befores = {"run_dir": {}, "dataset_root": {}}
+    entries, artifacts = collect_artifacts(
+        roots, befores, declared_polarity="negative", declared_measure="peak_height")
+
+    assert [(e.path, e.root) for e in entries] == [
+        (str(Path("msdial") / "AlignResult-1.mzTab"), "run_dir")]
+    by_role = {a.role: a for a in artifacts}
+    assert by_role["sample_peak_table"].root == "run_dir"
+    assert by_role["sample_peaks"].root == "dataset_root"
+    assert by_role["msms_evidence"].root == "dataset_root"
+
+
+def test_collect_artifacts_does_not_double_count_run_dir(tmp_path):
+    """run_dir は dataset_root の配下にある。同じファイルを 2 回集めない。"""
+    run_dir = tmp_path / "runs" / "job1"
+    (run_dir / "msdial").mkdir(parents=True)
+    (run_dir / "msdial" / "S1.mdpeak").write_bytes(b"a")
+    roots = {"run_dir": run_dir, "dataset_root": tmp_path}
+    befores = {"run_dir": {}, "dataset_root": snapshot(tmp_path, exclude_dir_names={"runs"})}
+    _, artifacts = collect_artifacts(roots, befores)
+    assert [a.path for a in artifacts] == [str(Path("msdial") / "S1.mdpeak")]
+
+
 @pytest.mark.parametrize("filename,expected_role,expected_fmt", [
     ("msdial/S1.mdpeak", "sample_peak_table", "mdpeak"),
     ("msdial/AlignResult-2026931617.mdalign", "alignment_table", "mdalign"),
@@ -224,7 +266,7 @@ def test_collect_artifacts_skips_hash_for_unknown_role(tmp_path):
     """role の付かないファイルはハッシュしない。"""
     (tmp_path / "mystery.bin").write_bytes(b"x" * 1024)
     (tmp_path / "S1.pai2").write_bytes(b"y" * 16)
-    _, artifacts = collect_artifacts(tmp_path, {})
+    _, artifacts = collect_artifacts({"run_dir": tmp_path}, {"run_dir": {}})
     by_path = {a.path: a for a in artifacts}
     assert by_path["mystery.bin"].role == "unknown"
     assert by_path["mystery.bin"].sha256 == ""
@@ -238,7 +280,7 @@ def test_collect_artifacts_detects_new_files(tmp_path):
     (mzdial_out / "Height_AlignmentResult_001.mzTab").write_text("MTD\t")
     (mzdial_out / "AlignmentResult_001.arf").write_bytes(b"\x00" * 10)
 
-    mztabs, others = collect_artifacts(tmp_path, before)
+    mztabs, others = collect_artifacts({"run_dir": tmp_path}, {"run_dir": before})
     assert len(mztabs) == 1
     assert len(others) == 1
     assert others[0].role == "peak_matrix_source"
@@ -248,7 +290,7 @@ def test_collect_artifacts_detects_new_files(tmp_path):
 def test_collect_artifacts_ignores_unchanged(tmp_path):
     (tmp_path / "existing.txt").write_text("old")
     before = snapshot(tmp_path)
-    mztabs, others = collect_artifacts(tmp_path, before)
+    mztabs, others = collect_artifacts({"run_dir": tmp_path}, {"run_dir": before})
     assert mztabs == []
     assert others == []
 
@@ -663,7 +705,7 @@ def test_collect_artifacts_excludes_operational_files(tmp_path):
     before = snapshot(tmp_path)
     (tmp_path / "msdial.log").write_text("CMD: fake\n")
     (tmp_path / "analysis-job.json").write_text("{}")
-    mztabs, others = collect_artifacts(tmp_path, before)
+    mztabs, others = collect_artifacts({"run_dir": tmp_path}, {"run_dir": before})
     assert mztabs == []
     assert others == []
 
@@ -778,7 +820,8 @@ def test_infer_mztab_meta_returns_none_measure_for_normalized_prefix():
 def test_collect_artifacts_fills_polarity_from_job_declaration(tmp_path):
     (tmp_path / "Height_AlignmentResult_2026.mzTab").write_text("x", encoding="utf-8")
     mztabs, _ = collect_artifacts(
-        tmp_path, {}, declared_polarity="negative", declared_measure="peak_height")
+        {"run_dir": tmp_path}, {"run_dir": {}},
+        declared_polarity="negative", declared_measure="peak_height")
     assert len(mztabs) == 1
     assert mztabs[0].polarity == "negative"
     assert mztabs[0].validation["polarity_source"] == "job_declared"
@@ -787,7 +830,8 @@ def test_collect_artifacts_fills_polarity_from_job_declaration(tmp_path):
 def test_collect_artifacts_prefers_filename_polarity_over_declaration_and_records_conflict(tmp_path):
     (tmp_path / "Height_AlignmentResult_Neg.mzTab").write_text("x", encoding="utf-8")
     mztabs, _ = collect_artifacts(
-        tmp_path, {}, declared_polarity="positive", declared_measure="peak_height")
+        {"run_dir": tmp_path}, {"run_dir": {}},
+        declared_polarity="positive", declared_measure="peak_height")
     # ファイルは実物の性質を語る。宣言は意図でしかないので、食い違いは
     # ファイル側を採ったうえで記録する（黙って上書きしない）。
     assert mztabs[0].polarity == "negative"
@@ -798,7 +842,8 @@ def test_collect_artifacts_prefers_filename_polarity_over_declaration_and_record
 def test_collect_artifacts_excludes_normalized_mztab_from_primary_candidates(tmp_path):
     (tmp_path / "NormalizedHeight_AlignmentResult.mzTab").write_text("x", encoding="utf-8")
     mztabs, others = collect_artifacts(
-        tmp_path, {}, declared_polarity="negative", declared_measure="peak_height")
+        {"run_dir": tmp_path}, {"run_dir": {}},
+        declared_polarity="negative", declared_measure="peak_height")
     assert mztabs == []
     assert [a.role for a in others] == ["unsupported_mztab"]
 
