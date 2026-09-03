@@ -25,6 +25,8 @@ def console_plan(
     polarity: str = "positive",
     measure: str = "peak_height",
     omics: str = "lipidomics",
+    save_project: bool = True,
+    timeout_s: int = 21600,
 ) -> str:
     """MS-DIAL Console の実行計画を作成し、analysis-job.json を生成します。
 
@@ -46,10 +48,20 @@ def console_plan(
         "peak_area_above_zero" を指定すると UNSUPPORTED_AREA_CONSOLE で停止します。
     omics:
         "lipidomics"（既定）または "metabolomics"。
+    save_project:
+        True（既定）なら MS-DIAL Console に -p を渡し、GUI で開ける
+        .mdproject を出力フォルダに生成させます。
+    timeout_s:
+        MS-DIAL Console のタイムアウト秒数（既定 21600 ＝ 6 時間）。
+        実測では 4 サンプルで約 3 分。60 サンプル規模では 1 時間を超え得ます。
 
     成功すると session.current_job_path にジョブパスが設定され、
     console_run でそのまま実行できます。
     """
+    execution_error = _execution_options_error(save_project, timeout_s)
+    if execution_error:
+        return execution_error
+
     if measure == "peak_area_above_zero":
         return mztab_error(
             "UNSUPPORTED_AREA_CONSOLE",
@@ -132,6 +144,10 @@ def console_plan(
     except ValueError as exc:
         return console_error("DATASET_ROOT_IN_REPO", str(exc))
 
+    from lipidmix.console.job_manager import save_job
+    job.save_project = save_project
+    job.timeout_s = timeout_s
+    save_job(job, job_path)
     session_state.session.current_job_path = str(job_path)
 
     warnings: list[str] = []
@@ -152,6 +168,8 @@ def console_plan(
         "measure": measure,
         "omics": omics,
         "input_count": input_count,
+        "save_project": save_project,
+        "timeout_s": timeout_s,
         "method_file": str(mf),
         "warnings": warnings,
         "next": "console_run を呼び出して実行を開始してください",
@@ -188,6 +206,10 @@ def console_run(job_path: str | None = None) -> str:
             {"job_id": job.job_id, "status": job.status},
         )
 
+    execution_error = _execution_options_error(job.save_project, job.timeout_s)
+    if execution_error:
+        return execution_error
+
     from lipidmix.console import runner as console_runner
     try:
         exe = console_runner.get_exe_path()
@@ -211,8 +233,17 @@ def console_run(job_path: str | None = None) -> str:
         )
 
     run_dir = Path(job.run_dir)
-    from lipidmix.console.output_collector import snapshot
-    before = snapshot(run_dir)
+    dataset_root = Path(job.dataset_root)
+    from lipidmix.console.output_collector import RUNS_SUBDIR, snapshot
+    # MS-DIAL Console は -o にエクスポートだけを出し、.pai2 / .dcl / .arf /
+    # .arf2 / .EIC.aef は生データフォルダへ出す。両方を撮らないと MS/MS 根拠の
+    # 経路が丸ごと空になる（docs/HISTRY.md 2026-09-03(6)）。run_dir は
+    # dataset_root 配下なので、dataset_root 側では runs/ を除く。
+    roots = {"run_dir": run_dir, "dataset_root": dataset_root}
+    befores = {
+        "run_dir": snapshot(run_dir),
+        "dataset_root": snapshot(dataset_root, exclude_dir_names={RUNS_SUBDIR}),
+    }
 
     update_status(resolved, "running")
 
@@ -222,19 +253,21 @@ def console_run(job_path: str | None = None) -> str:
         MsdialTimeoutError,
         MsdialNonZeroExitError,
     )
+    timeout_error: MsdialTimeoutError | None = None
     try:
         run_msdial(
             method_file=Path(job.method_file),
-            dataset_root=Path(job.dataset_root),
+            dataset_root=dataset_root,
             run_dir=run_dir,
+            timeout_s=job.timeout_s,
             exe_path=exe,
+            save_project=job.save_project,
         )
     except MsdialExeNotFoundError as exc:
         update_status(resolved, "failed", error=str(exc))
         return console_error("MSDIAL_EXE_NOT_FOUND", str(exc))
     except MsdialTimeoutError as exc:
-        update_status(resolved, "failed", error=str(exc))
-        return console_error("MSDIAL_TIMEOUT", str(exc))
+        timeout_error = exc
     except MsdialNonZeroExitError as exc:
         update_status(resolved, "failed", error=str(exc))
         return console_error(
@@ -258,49 +291,53 @@ def console_run(job_path: str | None = None) -> str:
             {"log": str(run_dir / "msdial.log")},
         )
 
-    # ここから先（生成物収集・ハッシュ計算・再読込・保存）は run_msdial 自体は
-    # 成功済みなので、上の try/except（MsdialExeNotFoundError 等）は対象外。
-    # だが無防備だと running に固着する経路が残る: Windows でウイルススキャナ等が
-    # 生成直後のファイルをロックしていると collect_artifacts 内の sha256_file が
-    # PermissionError を投げ、analysis-job.json は running のまま更新されずに
-    # 例外がツール境界を突き抜ける。以降の console_run は JOB_NOT_PLANNED で
-    # 全て拒否し、誰も直せない（Task 0 で潰したはずの症状の再発）。
+    # 成功時もタイムアウト時も同じ二重ルートを一度だけ収集する。タイムアウトは
+    # Console の停止理由であって、停止前の生成物を捨てる理由ではない。
     try:
         from lipidmix.console.output_collector import collect_artifacts
         # ジョブが宣言した polarity / measure を渡す。MS-DIAL のアライメント出力名は
         # 極性トークンを持たないので、渡さないと全エントリが既定の positive になる。
         mztab_entries, other_artifacts = collect_artifacts(
-            {"run_dir": run_dir}, {"run_dir": before},
+            roots, befores,
             declared_polarity=job.polarity,
             declared_measure=job.measure,
         )
-
-        if not mztab_entries and not other_artifacts:
-            update_status(resolved, "failed", error="実行後に新規生成物が見つかりません")
-            return console_error(
-                "NO_JOB_OUTPUT",
-                "MS-DIAL Console が終了しましたが、出力ファイルが生成されませんでした。"
-                f"ログを確認してください: {run_dir / 'msdial.log'}",
-            )
-
-        job = load_job(resolved)
-        job.primary_mztab_files = mztab_entries
-        job.artifacts = other_artifacts
-        job.warnings.extend(_meta_conflict_warnings(mztab_entries))
-        job.warnings.extend(_unsupported_mztab_warnings(other_artifacts))
-
-        job.warnings.extend(_missing_per_sample_output_warnings(other_artifacts))
-
-        job.status = "completed"
-        save_job(job, resolved)
     except Exception as exc:  # 想定外。running に固着させないことが最優先
-        update_status(resolved, "failed", error=repr(exc))
+        error = repr(exc)
+        if timeout_error:
+            error = f"{timeout_error}; 生成物収集に失敗しました: {error}"
+        update_status(resolved, "failed", error=error)
+        if timeout_error:
+            return console_error(
+                "MSDIAL_TIMEOUT", str(timeout_error),
+                _timeout_details(resolved, "failed", 0, 0),
+            )
         return console_error(
             "JOB_POST_RUN_FAILED",
             "MS-DIAL Console の実行後処理（生成物収集・保存）でエラーが"
             f"発生しました: {exc!r}",
             {"log": str(run_dir / "msdial.log")},
         )
+
+    if timeout_error:
+        status = "partial" if mztab_entries or other_artifacts else "failed"
+        job = _persist_collected_outputs(
+            resolved, mztab_entries, other_artifacts, status=status, error=str(timeout_error))
+        return console_error(
+            "MSDIAL_TIMEOUT", str(timeout_error),
+            _timeout_details(resolved, status, len(mztab_entries), len(other_artifacts)),
+        )
+
+    if not mztab_entries and not other_artifacts:
+        update_status(resolved, "failed", error="実行後に新規生成物が見つかりません")
+        return console_error(
+            "NO_JOB_OUTPUT",
+            "MS-DIAL Console が終了しましたが、出力ファイルが生成されませんでした。"
+            f"ログを確認してください: {run_dir / 'msdial.log'}",
+        )
+
+    job = _persist_collected_outputs(
+        resolved, mztab_entries, other_artifacts, status="completed", error=None)
 
     return json_payload({
         "status": "completed",
@@ -336,12 +373,18 @@ def console_status(job_path: str | None = None) -> str:
         "polarity": job.polarity,
         "measure": job.measure,
         "omics": job.omics,
+        "dataset_root": job.dataset_root,
         "run_dir": job.run_dir,
         "mztab_files": [
-            {"path": e.path, "polarity": e.polarity, "measure": e.measure}
+            {"path": e.path, "polarity": e.polarity, "measure": e.measure, "root": e.root}
             for e in job.primary_mztab_files
         ],
         "artifact_count": len(job.artifacts),
+        "artifacts": [
+            {"path": a.path, "role": a.role, "format": a.format, "root": a.root}
+            for a in job.artifacts
+        ],
+        "execution": {"save_project": job.save_project, "timeout_s": job.timeout_s},
         "warnings": job.warnings,
         "error": job.error,
         "updated_at": job.updated_at,
@@ -446,10 +489,12 @@ def _unsupported_mztab_warnings(artifacts) -> list[str]:
 def _missing_per_sample_output_warnings(artifacts) -> list[str]:
     """サンプル別ファイル（.pai2）が 1 つも出ていないことを伝える。
 
-    .pai2 は測定 1 本ごとに 1 ファイル出る。無いということは pai2_parser /
-    dcl_find_msms が読むものが無く、MS/MS 根拠の経路が丸ごと空になる。
-    アライメント結果だけは出ているので実行は成功扱いのままにし、
-    「後で MS/MS を辿れない」ことだけ先に知らせる。
+    MS-DIAL Console は .pai2 を**生データフォルダ側**に書く（-o ではない。
+    docs/HISTRY.md 2026-09-03(6) の実走で確認）。collect_artifacts が両ルートを
+    見るようになったので、この検査は「本当に出ていない」ときだけ発火する。
+    .pai2 が無いと pai2_parser / dcl_find_msms が読むものが無く、MS/MS 根拠の
+    経路が丸ごと空になる。アライメント結果だけは出ているので実行は成功扱いの
+    まま、「後で MS/MS を辿れない」ことだけ先に知らせる。
     """
     if any(a.format == "pai2" for a in artifacts):
         return []
@@ -457,6 +502,59 @@ def _missing_per_sample_output_warnings(artifacts) -> list[str]:
         "サンプル別ファイル（.pai2）が 1 つも生成されていません。"
         "MS/MS 根拠（pai2_parser / dcl_find_msms）を辿る経路が使えません。"
     ]
+
+
+def _execution_options_error(save_project: object, timeout_s: object) -> str | None:
+    """新しい実行オプションを、ジョブ作成・実行の両入口で同じ規則で検査する。"""
+    if type(save_project) is not bool:
+        return console_error(
+            "JOB_NOT_PLANNED",
+            f"save_project は bool です: {save_project!r}",
+        )
+    if type(timeout_s) is not int or timeout_s <= 0:
+        return console_error(
+            "JOB_NOT_PLANNED",
+            f"timeout_s は 0 より大きい int です: {timeout_s!r}",
+        )
+    return None
+
+
+def _persist_collected_outputs(
+    job_path: Path,
+    mztab_entries,
+    other_artifacts,
+    *,
+    status: str,
+    error: str | None,
+):
+    """収集済みの生成物と終端状態を一度だけ永続化する。"""
+    from lipidmix.console.job_manager import load_job, save_job
+
+    job = load_job(job_path)
+    job.primary_mztab_files = mztab_entries
+    job.artifacts = other_artifacts
+    job.warnings.extend(_meta_conflict_warnings(mztab_entries))
+    job.warnings.extend(_unsupported_mztab_warnings(other_artifacts))
+    job.warnings.extend(_missing_per_sample_output_warnings(other_artifacts))
+    job.status = status  # type: ignore[assignment]
+    job.error = error
+    save_job(job, job_path)
+    return job
+
+
+def _timeout_details(
+    job_path: Path,
+    status: str,
+    mztab_count: int,
+    artifact_count: int,
+) -> dict:
+    """タイムアウト封筒へ、後からジョブを追える最小限の状況を入れる。"""
+    return {
+        "job_path": str(job_path),
+        "status": status,
+        "mztab_files": mztab_count,
+        "other_artifacts": artifact_count,
+    }
 
 
 def _resolve_job_path(job_path: str | None) -> Path | str:

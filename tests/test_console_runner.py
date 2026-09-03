@@ -971,3 +971,243 @@ def test_console_run_no_pai2_warning_when_pai2_present(tmp_path, monkeypatch):
         console_run(str(job_path))
 
     assert not any(".pai2" in w for w in load_job(job_path).warnings)
+
+
+# ---------- Task 8: Console 実行時の二重ルート収集と実行オプション ----------
+
+def _planned_task8_job(tmp_path, monkeypatch, **kwargs):
+    """console_plan を通して Task 8 のジョブを 1 件作り、パスを返す。"""
+    import json as _json
+    from lipidmix.core import session_state
+    from lipidmix.tools.console_tools import console_plan
+
+    session_state.session = session_state.AnalysisSession()
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    (tmp_path / "S1.wiff").touch()
+    method = tmp_path / "params.txt"
+    method.write_text("Ion mode: Negative\n", encoding="ascii")
+    parsed = _json.loads(console_plan(
+        dataset_root=str(tmp_path), method_file=str(method), polarity="negative",
+        measure="peak_height", **kwargs))
+    assert parsed["status"] == "planned"
+    return Path(parsed["job_path"])
+
+
+def test_console_run_collects_dataset_root_outputs(tmp_path, monkeypatch):
+    """生データフォルダの .pai2/.dcl も収集し、誤った不在警告を出さない。"""
+    import json as _json
+    from lipidmix.console.job_manager import load_job
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch)
+
+    def fake_run_msdial(method_file, dataset_root, run_dir, timeout_s=3600,
+                        exe_path=None, save_project=False):
+        out = Path(run_dir) / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
+        (out / "S1.mdpeak").write_bytes(b"a")
+        Path(dataset_root, "S1_1.pai2").write_bytes(b"b")
+        Path(dataset_root, "S1_1.dcl").write_bytes(b"c")
+        return 0
+
+    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    parsed = _json.loads(console_run(str(job_path)))
+
+    assert parsed["status"] == "completed"
+    assert not any(".pai2" in warning for warning in parsed["warnings"])
+    saved = load_job(job_path)
+    assert (saved.save_project, saved.timeout_s) == (True, 21600)
+    roots = {artifact.role: artifact.root for artifact in saved.artifacts}
+    assert roots["sample_peaks"] == "dataset_root"
+    assert roots["msms_evidence"] == "dataset_root"
+    assert roots["sample_peak_table"] == "run_dir"
+
+
+def test_console_run_warns_when_no_dataset_root_sample_files(tmp_path, monkeypatch):
+    """両ルートに .pai2 がなければ初めて MS/MS 根拠不足を警告する。"""
+    import json as _json
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch)
+
+    def fake_run_msdial(method_file, dataset_root, run_dir, timeout_s=3600,
+                        exe_path=None, save_project=False):
+        out = Path(run_dir) / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    parsed = _json.loads(console_run(str(job_path)))
+    assert any(".pai2" in warning for warning in parsed["warnings"])
+
+
+def test_console_plan_persists_and_console_run_passes_execution_options(tmp_path, monkeypatch):
+    """計画時の timeout/save_project が永続化され、実行へそのまま渡る。"""
+    import json as _json
+    from lipidmix.console.job_manager import load_job
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch, save_project=True, timeout_s=1234)
+    seen = {}
+
+    def fake_run_msdial(method_file, dataset_root, run_dir, timeout_s=3600,
+                        exe_path=None, save_project=False):
+        seen.update(timeout_s=timeout_s, save_project=save_project, exe_path=exe_path)
+        out = Path(run_dir) / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    console_run(str(job_path))
+
+    saved = load_job(job_path)
+    assert (saved.save_project, saved.timeout_s) == (True, 1234)
+    assert seen == {"timeout_s": 1234, "save_project": True, "exe_path": "fake.exe"}
+
+
+@pytest.mark.parametrize("save_project, timeout_s", [
+    ("true", 1), (1, 1), (True, 0), (True, -1), (True, 1.5), (True, True),
+])
+def test_console_plan_rejects_invalid_execution_options_before_job_side_effects(
+        tmp_path, monkeypatch, save_project, timeout_s):
+    """不正な実行オプションは runs 作成も current_job_path 更新も起こさせない。"""
+    import json as _json
+    from lipidmix.core import session_state
+    from lipidmix.tools.console_tools import console_plan
+
+    session_state.session = session_state.AnalysisSession()
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    (tmp_path / "S1.wiff").touch()
+    method = tmp_path / "params.txt"
+    method.write_text("Ion mode: Negative\n", encoding="ascii")
+
+    parsed = _json.loads(console_plan(
+        dataset_root=str(tmp_path), method_file=str(method), polarity="negative",
+        measure="peak_height", save_project=save_project, timeout_s=timeout_s))
+
+    assert parsed["error"]["code"] == "JOB_NOT_PLANNED"
+    assert session_state.session.current_job_path is None
+    assert not (tmp_path / "runs").exists()
+
+
+def test_console_run_rejects_invalid_loaded_execution_options_before_running(tmp_path, monkeypatch):
+    """手編集された不正ジョブは runner を起動せず planned のまま拒否する。"""
+    import json as _json
+    from lipidmix.console.job_manager import load_job, save_job
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch)
+    job = load_job(job_path)
+    job.timeout_s = 0
+    save_job(job, job_path)
+    monkeypatch.setattr(
+        "lipidmix.console.runner.run_msdial",
+        lambda *args, **kwargs: pytest.fail("不正な実行オプションで runner を起動した"),
+    )
+
+    parsed = _json.loads(console_run(str(job_path)))
+    assert parsed["error"]["code"] == "JOB_NOT_PLANNED"
+    assert load_job(job_path).status == "planned"
+
+
+def test_console_run_timeout_persists_partial_outputs_from_both_roots(tmp_path, monkeypatch):
+    """タイムアウト後も既出力は partial ジョブに保存し、根を失わない。"""
+    import json as _json
+    from lipidmix.console.job_manager import load_job
+    from lipidmix.console.runner import MsdialTimeoutError
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch)
+
+    def fake_run_msdial(method_file, dataset_root, run_dir, **kwargs):
+        out = Path(run_dir) / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
+        Path(dataset_root, "S1_1.pai2").write_bytes(b"partial")
+        raise MsdialTimeoutError("timed out after fake work")
+
+    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    parsed = _json.loads(console_run(str(job_path)))
+    saved = load_job(job_path)
+
+    assert parsed["error"]["code"] == "MSDIAL_TIMEOUT"
+    assert parsed["error"]["details"]["status"] == "partial"
+    assert saved.status == "partial"
+    assert saved.error == "timed out after fake work"
+    assert {entry.root for entry in saved.primary_mztab_files} == {"run_dir"}
+    assert {artifact.root for artifact in saved.artifacts} == {"dataset_root"}
+
+
+def test_console_run_timeout_without_outputs_fails(tmp_path, monkeypatch):
+    """タイムアウト時に出力ゼロなら partial と偽らず failed にする。"""
+    import json as _json
+    from lipidmix.console.job_manager import load_job
+    from lipidmix.console.runner import MsdialTimeoutError
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "lipidmix.console.runner.run_msdial",
+        lambda *args, **kwargs: (_ for _ in ()).throw(MsdialTimeoutError("timed out empty")),
+    )
+
+    parsed = _json.loads(console_run(str(job_path)))
+    assert parsed["error"]["code"] == "MSDIAL_TIMEOUT"
+    assert parsed["error"]["details"]["status"] == "failed"
+    assert load_job(job_path).status == "failed"
+
+
+def test_console_run_timeout_collection_failure_marks_failed_with_timeout_context(tmp_path, monkeypatch):
+    """タイムアウト後の収集例外でも running を残さず原因を保存する。"""
+    import json as _json
+    from lipidmix.console.job_manager import load_job
+    from lipidmix.console.runner import MsdialTimeoutError
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "lipidmix.console.runner.run_msdial",
+        lambda *args, **kwargs: (_ for _ in ()).throw(MsdialTimeoutError("timed out before collect")),
+    )
+    monkeypatch.setattr(
+        "lipidmix.console.output_collector.collect_artifacts",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("locked")),
+    )
+
+    parsed = _json.loads(console_run(str(job_path)))
+    saved = load_job(job_path)
+    assert parsed["error"]["code"] == "MSDIAL_TIMEOUT"
+    assert parsed["error"]["details"]["status"] == "failed"
+    assert saved.status == "failed"
+    assert "timed out before collect" in (saved.error or "")
+    assert "locked" in (saved.error or "")
+
+
+def test_console_status_exposes_roots_artifacts_and_execution_options(tmp_path, monkeypatch):
+    """状態照会だけで生成物の由来と実行設定を追跡できる。"""
+    import json as _json
+    from lipidmix.tools.console_tools import console_run, console_status
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch, save_project=True, timeout_s=456)
+
+    def fake_run_msdial(method_file, dataset_root, run_dir, **kwargs):
+        out = Path(run_dir) / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
+        Path(dataset_root, "S1_1.pai2").write_bytes(b"x")
+        return 0
+
+    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    console_run(str(job_path))
+    parsed = _json.loads(console_status(str(job_path)))
+
+    assert parsed["dataset_root"] == str(tmp_path)
+    assert parsed["execution"] == {"save_project": True, "timeout_s": 456}
+    assert parsed["mztab_files"][0]["root"] == "run_dir"
+    assert parsed["artifacts"] == [{
+        "path": "S1_1.pai2", "role": "sample_peaks", "format": "pai2", "root": "dataset_root",
+    }]
