@@ -67,7 +67,8 @@ def build_dataset_pp_inputs(ds):
         sample_names  : list[str]
         feature_names : list[str]（SMF_ID）
         roles         : {sample_name: "sample"|"qc"|"blank"} — preprocess の第3引数
-        sample_meta   : {sample_name: {role, batch, batch_source, run_order}}
+        sample_meta   : {sample_name: {role, batch, batch_source, run_order,
+                         run_order_source}}
                         — 交絡判定（群⟂バッチ）とドリフト補正の材料
     """
     if ds.feature_matrix is None or not ds.sample_names or not ds.feature_ids:
@@ -84,16 +85,39 @@ def build_dataset_pp_inputs(ds):
     # class_ids は mzTab-M に対応物が無いので渡さない（既定 None）。
     roles = preprocessing.detect_sample_roles(sample_names)
 
+    # 注入順とバッチは mzTab の MTD assay[N]-custom[...] が運ぶ
+    # （MS:4000089 injection sequence label / MS:4000088 batch label）。
+    # 実データの Console 出力・GUI 出力の両方に存在することを確認済み。
+    assay_ids = list(getattr(ds, "sample_assay_ids", []) or [])
+    assay_meta = getattr(ds, "assay_metadata", {}) or {}
+
+    def _assay_field(index: int, key: str):
+        aid = assay_ids[index] if index < len(assay_ids) else None
+        return (assay_meta.get(aid) or {}).get(key) if aid else None
+
+    mztab_batches = [_assay_field(i, "batch") for i in range(len(sample_names))]
+    # MS-DIAL のバッチラベルは CSV インポートで指定しない限り全件 "1" になる。
+    # 定数のラベルは情報を持たないので、その場合はファイル名日付の推定に戻す。
+    # 定数を採ると、日付で分かれていた交絡が検出できなくなる。
+    use_mztab_batch = len({b for b in mztab_batches if b is not None}) > 1
+
     sample_meta: dict = {}
-    for name in sample_names:
+    for i, name in enumerate(sample_names):
         m = _DATE_RE.search(name)
+        if use_mztab_batch and mztab_batches[i] is not None:
+            batch, batch_source = mztab_batches[i], "mztab_batch_label"
+        elif m:
+            batch, batch_source = m.group(1), "filename_date"
+        else:
+            batch, batch_source = None, None
+
+        run_order = _assay_field(i, "run_order")
         sample_meta[name] = {
             "role": roles.get(name, "sample"),
-            "batch": m.group(1) if m else None,
-            "batch_source": "filename_date" if m else None,
-            # mzTab-M は注入順を持たない。ARF の sample_meta と同じキーを立てて
-            # おき、値が None であることを下流（drift_correct）に伝える。
-            "run_order": None,
+            "batch": batch,
+            "batch_source": batch_source,
+            "run_order": run_order,
+            "run_order_source": "mztab_injection_sequence" if run_order is not None else None,
         }
     return matrix, sample_names, feature_names, roles, sample_meta
 
@@ -108,9 +132,7 @@ def run_dataset_preprocess(ds, recipe: dict):
     """
     matrix, sample_names, feature_names, roles, sample_meta = build_dataset_pp_inputs(ds)
 
-    # preprocess の run_order は {name: int | None} の dict。mzTab-M には注入順が
-    # 無いので全件 None になり、drift_correct は status="skipped" + caveat を返す。
-    run_order = {n: None for n in sample_names}
+    run_order = {n: sample_meta[n]["run_order"] for n in sample_names}
 
     try:
         matrix, kept_idx, report = preprocessing.preprocess(
@@ -155,12 +177,19 @@ def run_dataset_preprocess(ds, recipe: dict):
             f"{f': {labels}' if labels else ''}）と検出されました。"
             "全 QC を1系列として扱うドリフト補正/RSD フィルタは近似です。"
         )
-    report.setdefault("caveats", []).append(
-        "現在の実装は mzTab-M から注入順（run order）を読み取っていないため、QC ドリフト"
-        "補正は実施できません（mzTab-M の assay[N]-custom[...] は injection sequence label /"
-        "batch label を運べますが、この経路はまだそれを読みません）。"
-        "注入順に依存する品質評価が必要なら ARF 経路（arf_preprocess）を使ってください。"
-    )
+    has_run_order = any(sample_meta[n]["run_order"] is not None for n in sample_names)
+    if not has_run_order:
+        report.setdefault("caveats", []).append(
+            "この mzTab-M は注入順（MTD assay[N]-custom[...] の "
+            "MS:4000089 injection sequence label）を持たないため、QC ドリフト補正は"
+            "実施できません。注入順に依存する品質評価が必要なら ARF 経路"
+            "（arf_preprocess）を使ってください。")
+    elif recipe.get("drift_correct"):
+        report.setdefault("caveats", []).append(
+            "注入順は mzTab-M の injection sequence label から取得しました。"
+            "MS-DIAL は CSV インポートで実注入順を与えない場合、**ファイル読み込み順**を"
+            "そのまま注入順として書き出します。QC の挿入位置（drift_correct の "
+            "qc_interspersion）で妥当性を確認してください。")
 
     return matrix, pp_sample_names, pp_feature_names, roles, sample_meta, report
 

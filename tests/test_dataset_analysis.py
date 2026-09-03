@@ -18,6 +18,17 @@ def _make_ds(n_features=20, n_samples=8, with_blank=False):
     return ds
 
 
+def _ds_with_assay_meta(names, assay_meta):
+    """sample_names と assay_metadata を持つ最小の DatasetState を作る。"""
+    ds = DatasetState()
+    ds.feature_matrix = np.arange(3 * len(names), dtype=float).reshape(3, len(names)) + 1.0
+    ds.sample_names = list(names)
+    ds.feature_ids = ["1", "2", "3"]
+    ds.sample_assay_ids = [f"assay[{i + 1}]" for i in range(len(names))]
+    ds.assay_metadata = assay_meta
+    return ds
+
+
 def _preprocessed(ds, recipe=None):
     from lipidmix.analysis.dataset_analysis import run_dataset_preprocess
     (ds.pp_matrix, ds.pp_sample_names, ds.pp_feature_names,
@@ -43,6 +54,44 @@ def test_build_dataset_pp_inputs_detects_blank_role():
     ds = _make_ds(with_blank=True)
     _, _, _, roles, _ = build_dataset_pp_inputs(ds)
     assert roles["blank_1"] == "blank"
+
+
+def test_build_dataset_pp_inputs_uses_mztab_injection_order():
+    """assay 順序を全件 None にすると QC ドリフト補正が常に skipped になる。"""
+    from lipidmix.analysis.dataset_analysis import build_dataset_pp_inputs
+    ds = _ds_with_assay_meta(["s1", "s2"], {
+        "assay[1]": {"run_order": 7, "batch": "1"},
+        "assay[2]": {"run_order": 3, "batch": "1"},
+    })
+    _, _, _, _, sample_meta = build_dataset_pp_inputs(ds)
+    assert sample_meta["s1"]["run_order"] == 7
+    assert sample_meta["s2"]["run_order"] == 3
+    assert sample_meta["s1"]["run_order_source"] == "mztab_injection_sequence"
+
+
+def test_build_dataset_pp_inputs_prefers_filename_date_when_batch_is_constant():
+    """既定の定数バッチを採ると日付由来の交絡を見落とす。"""
+    from lipidmix.analysis.dataset_analysis import build_dataset_pp_inputs
+    ds = _ds_with_assay_meta(["20220901_a", "20220902_b"], {
+        "assay[1]": {"run_order": 1, "batch": "1"},
+        "assay[2]": {"run_order": 2, "batch": "1"},
+    })
+    _, _, _, _, sample_meta = build_dataset_pp_inputs(ds)
+    assert sample_meta["20220901_a"]["batch"] == "20220901"
+    assert sample_meta["20220901_a"]["batch_source"] == "filename_date"
+
+
+def test_build_dataset_pp_inputs_uses_mztab_batch_when_it_varies():
+    """変化する assay バッチを捨てると真の実験バッチを使えない。"""
+    from lipidmix.analysis.dataset_analysis import build_dataset_pp_inputs
+    ds = _ds_with_assay_meta(["20220901_a", "20220901_b"], {
+        "assay[1]": {"run_order": 1, "batch": "B1"},
+        "assay[2]": {"run_order": 2, "batch": "B2"},
+    })
+    _, _, _, _, sample_meta = build_dataset_pp_inputs(ds)
+    assert sample_meta["20220901_a"]["batch"] == "B1"
+    assert sample_meta["20220901_b"]["batch"] == "B2"
+    assert sample_meta["20220901_a"]["batch_source"] == "mztab_batch_label"
 
 
 def test_build_dataset_pp_inputs_rejects_empty_matrix():
@@ -73,11 +122,108 @@ def test_run_dataset_preprocess_drops_blank_samples():
 
 
 def test_run_dataset_preprocess_warns_no_run_order():
-    """mzTab-M に注入順が無いため drift_correct は必ず skipped になる。"""
-    ds = _make_ds()
+    """注入順を持たない mzTab では drift_correct は必ず skipped になる。"""
+    ds = _ds_with_assay_meta(["s1", "s2"], {"assay[1]": {}, "assay[2]": {}})
     report = _preprocessed(ds, {"drift_correct": True})
     assert report["steps"]["drift_correct"]["status"] == "skipped"
     assert any("注入順" in c for c in report["caveats"])
+
+
+def test_run_dataset_preprocess_caveats_injection_order_provenance():
+    """注入順を読めたときに「未読」と誤報すると補正の妥当性確認を誤らせる。"""
+    ds = _ds_with_assay_meta(["s1", "s2"], {
+        "assay[1]": {"run_order": 1, "batch": "1"},
+        "assay[2]": {"run_order": 2, "batch": "1"},
+    })
+    report = _preprocessed(ds, {
+        "normalize": "none", "drift_correct": True, "impute": "half_min",
+    })
+    caveats = " ".join(report["caveats"])
+    assert "読み取っていない" not in caveats
+    assert "ファイル読み込み順" in caveats
+
+
+def _drift_fixture_dataset():
+    """移動中央値を手計算できる、QC 4件と試料2件の単一特徴量。"""
+    names = ["QC_1", "QC_2", "QC_3", "QC_4", "sample_A", "sample_B"]
+    values = [1.0, 3.0, 5.0, 7.0, 2.0, 4.0]
+    orders = [1, 3, 5, 7, 2, 4]
+    ds = _ds_with_assay_meta(names, {
+        f"assay[{i + 1}]": {"run_order": order, "batch": "1"}
+        for i, order in enumerate(orders)
+    })
+    ds.feature_matrix = np.asarray([values], dtype=float)
+    ds.feature_ids = ["f1"]
+    return ds, names, values, orders
+
+
+def test_run_dataset_preprocess_applies_mztab_qc_drift_correction():
+    """run_order 配線を外すと applied にならず、手計算済み補正値にも到達しない。"""
+    ds, names, _, _ = _drift_fixture_dataset()
+    matrix, pp_names, _, _, _, report = _run_dataset_preprocess_for_test(ds)
+
+    # QC [1, 3, 5, 7] の window=3 移動中央値は [2, 3, 5, 6]、中央値は 4。
+    # 実装は window=5 を QC数4へ縮小後に奇数化するため、実際の trend は [2, 3, 5, 6]。
+    # したがって各注入順の補正値はこのリテラルになる。
+    assert pp_names == names
+    np.testing.assert_allclose(matrix[:, 0], [2.0, 4.0, 4.0, 14.0 / 3.0, 3.2, 4.0])
+    assert report["steps"]["drift_correct"]["status"] == "applied"
+    assert not np.allclose(matrix[:, 0], [1.0, 3.0, 5.0, 7.0, 2.0, 4.0])
+
+
+def _run_dataset_preprocess_for_test(ds):
+    """テスト中に DatasetState へ副作用を書かず、純アダプタの戻り値を得る。"""
+    from lipidmix.analysis.dataset_analysis import run_dataset_preprocess
+    return run_dataset_preprocess(ds, {
+        "normalize": "none", "drift_correct": True, "impute": "half_min",
+    })
+
+
+def test_run_dataset_preprocess_matches_arf_preprocess_for_qc_drift(monkeypatch):
+    """DatasetState 側だけで補正式を複製すると、ARF 経路との数値乖離を見逃す。"""
+    import json
+
+    from lipidmix.arf.tools import arf_preprocess
+    from lipidmix.core import session_state
+    from lipidmix.core.session_state import AnalysisSession
+
+    ds, names, values, orders = _drift_fixture_dataset()
+    dataset_matrix, dataset_names, _, _, _, dataset_report = _run_dataset_preprocess_for_test(ds)
+
+    monkeypatch.setattr(session_state, "session", AnalysisSession())
+    rows = []
+    for i, (name, value) in enumerate(zip(names, values)):
+        row = [0] * 40
+        row[1] = name
+        row[2] = 101
+        row[18] = value
+        rows.append(row)
+    session_state.session.arf.filtered_features = [{
+        "MasterAlignmentID": 0,
+        "Name": "Lipid_0",
+        "MassCenter": 700.0,
+        "RT": 5.0,
+        "AlignedPeakProperties": rows,
+    }]
+    session_state.session.arf.class_index = {"records": [
+        {"file_name": name, "class_id": "QC" if name.startswith("QC_") else "sample",
+         "analytical_order": order}
+        for name, order in zip(names, orders)
+    ]}
+
+    arf_report = json.loads(arf_preprocess(
+        normalize="none", drift_correct=True, impute="half_min",
+    ))
+    arf_by_name = dict(zip(session_state.session.arf.pp_sample_names,
+                           session_state.session.arf.feature_matrix[:, 0]))
+    dataset_by_name = dict(zip(dataset_names, dataset_matrix[:, 0]))
+
+    assert dataset_report["steps"]["drift_correct"]["status"] == "applied"
+    assert arf_report["steps"]["drift_correct"]["status"] == "applied"
+    np.testing.assert_allclose(
+        [dataset_by_name[name] for name in names],
+        [arf_by_name[name] for name in names],
+    )
 
 
 def test_run_dataset_preprocess_rejects_unknown_normalize():
