@@ -1187,6 +1187,66 @@ def test_console_run_timeout_collection_failure_marks_failed_with_timeout_contex
     assert "locked" in (saved.error or "")
 
 
+def test_console_run_persistence_failure_marks_successful_run_failed(tmp_path, monkeypatch):
+    """収集済み成果物の保存に失敗しても running を残さず封筒を返す。"""
+    import json as _json
+    from lipidmix.console import job_manager
+    from lipidmix.console.job_manager import load_job
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch)
+
+    def fake_run_msdial(method_file, dataset_root, run_dir, **kwargs):
+        out = Path(run_dir) / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    monkeypatch.setattr(
+        job_manager, "save_job",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("save locked")),
+    )
+
+    parsed = _json.loads(console_run(str(job_path)))
+    saved = load_job(job_path)
+    assert parsed["error"]["code"] == "JOB_POST_RUN_FAILED"
+    assert saved.status == "failed"
+    assert saved.status != "running"
+    assert "save locked" in (saved.error or "")
+
+
+def test_console_run_timeout_persistence_failure_preserves_timeout_context(tmp_path, monkeypatch):
+    """timeout 後の保存失敗も timeout 封筒と failed 状態に収束させる。"""
+    import json as _json
+    from lipidmix.console import job_manager
+    from lipidmix.console.job_manager import load_job
+    from lipidmix.console.runner import MsdialTimeoutError
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch)
+
+    def fake_run_msdial(method_file, dataset_root, run_dir, **kwargs):
+        out = Path(run_dir) / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
+        raise MsdialTimeoutError("timed out before save")
+
+    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    monkeypatch.setattr(
+        job_manager, "save_job",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("save locked")),
+    )
+
+    parsed = _json.loads(console_run(str(job_path)))
+    saved = load_job(job_path)
+    assert parsed["error"]["code"] == "MSDIAL_TIMEOUT"
+    assert parsed["error"]["details"]["status"] == "failed"
+    assert saved.status == "failed"
+    assert "timed out before save" in (saved.error or "")
+    assert "save locked" in (saved.error or "")
+
+
 def test_console_status_exposes_roots_artifacts_and_execution_options(tmp_path, monkeypatch):
     """状態照会だけで生成物の由来と実行設定を追跡できる。"""
     import json as _json

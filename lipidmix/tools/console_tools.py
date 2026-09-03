@@ -291,8 +291,9 @@ def console_run(job_path: str | None = None) -> str:
             {"log": str(run_dir / "msdial.log")},
         )
 
-    # 成功時もタイムアウト時も同じ二重ルートを一度だけ収集する。タイムアウトは
-    # Console の停止理由であって、停止前の生成物を捨てる理由ではない。
+    # 成功時もタイムアウト時も同じ二重ルートを一度だけ収集し、収集後の
+    # 出力判定・永続化までを同じ最終化用の保護経路に置く。タイムアウトは Console
+    # の停止理由であって、停止前の生成物を捨てる理由ではない。
     try:
         from lipidmix.console.output_collector import collect_artifacts
         # ジョブが宣言した polarity / measure を渡す。MS-DIAL のアライメント出力名は
@@ -302,11 +303,31 @@ def console_run(job_path: str | None = None) -> str:
             declared_polarity=job.polarity,
             declared_measure=job.measure,
         )
+
+        if timeout_error:
+            status = "partial" if mztab_entries or other_artifacts else "failed"
+            _persist_collected_outputs(
+                resolved, mztab_entries, other_artifacts, status=status, error=str(timeout_error))
+            return console_error(
+                "MSDIAL_TIMEOUT", str(timeout_error),
+                _timeout_details(resolved, status, len(mztab_entries), len(other_artifacts)),
+            )
+
+        if not mztab_entries and not other_artifacts:
+            update_status(resolved, "failed", error="実行後に新規生成物が見つかりません")
+            return console_error(
+                "NO_JOB_OUTPUT",
+                "MS-DIAL Console が終了しましたが、出力ファイルが生成されませんでした。"
+                f"ログを確認してください: {run_dir / 'msdial.log'}",
+            )
+
+        job = _persist_collected_outputs(
+            resolved, mztab_entries, other_artifacts, status="completed", error=None)
     except Exception as exc:  # 想定外。running に固着させないことが最優先
         error = repr(exc)
         if timeout_error:
-            error = f"{timeout_error}; 生成物収集に失敗しました: {error}"
-        update_status(resolved, "failed", error=error)
+            error = f"{timeout_error}; 実行後処理に失敗しました: {error}"
+        _record_finalization_failure(resolved, error)
         if timeout_error:
             return console_error(
                 "MSDIAL_TIMEOUT", str(timeout_error),
@@ -318,26 +339,6 @@ def console_run(job_path: str | None = None) -> str:
             f"発生しました: {exc!r}",
             {"log": str(run_dir / "msdial.log")},
         )
-
-    if timeout_error:
-        status = "partial" if mztab_entries or other_artifacts else "failed"
-        job = _persist_collected_outputs(
-            resolved, mztab_entries, other_artifacts, status=status, error=str(timeout_error))
-        return console_error(
-            "MSDIAL_TIMEOUT", str(timeout_error),
-            _timeout_details(resolved, status, len(mztab_entries), len(other_artifacts)),
-        )
-
-    if not mztab_entries and not other_artifacts:
-        update_status(resolved, "failed", error="実行後に新規生成物が見つかりません")
-        return console_error(
-            "NO_JOB_OUTPUT",
-            "MS-DIAL Console が終了しましたが、出力ファイルが生成されませんでした。"
-            f"ログを確認してください: {run_dir / 'msdial.log'}",
-        )
-
-    job = _persist_collected_outputs(
-        resolved, mztab_entries, other_artifacts, status="completed", error=None)
 
     return json_payload({
         "status": "completed",
@@ -540,6 +541,17 @@ def _persist_collected_outputs(
     job.error = error
     save_job(job, job_path)
     return job
+
+
+def _record_finalization_failure(job_path: Path, error: str) -> None:
+    """最終化に失敗したジョブを、書き込める場合は failed として残す。"""
+    from lipidmix.console.job_manager import update_status
+
+    try:
+        update_status(job_path, "failed", error=error)
+    except Exception:
+        # ロック等で failed を書けない場合も、MCP 境界から例外を漏らさない。
+        pass
 
 
 def _timeout_details(
