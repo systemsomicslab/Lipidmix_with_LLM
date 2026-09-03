@@ -105,7 +105,7 @@ def _load_from_job(job_path_str: str) -> str:
     if isinstance(selected, str):
         return selected  # error envelope
     entry = selected
-    mztab_abs = (Path(job.run_dir) / entry.path).resolve()
+    mztab_abs = _artifact_abs_path(job, getattr(entry, "root", "run_dir"), entry.path)
 
     if not mztab_abs.is_file():
         return mztab_error(
@@ -124,7 +124,7 @@ def _load_from_job(job_path_str: str) -> str:
     # ジョブ由来フィールドを設定
     ds.job_path = str(job_p)
     for art in job.artifacts:
-        abs_p = str((Path(job.run_dir) / art.path).resolve())
+        abs_p = str(_artifact_abs_path(job, getattr(art, "root", "run_dir"), art.path))
         ds.artifact_paths.setdefault(art.role, []).append(abs_p)
 
     session_state.session.dataset = ds
@@ -187,6 +187,15 @@ def dataset_status() -> str:
 
 
 # ---------- 内部ヘルパ ----------
+
+def _artifact_abs_path(job, root: str, rel: str) -> Path:
+    """生成物の相対パスを、記録された出所ルートから絶対パスへ戻す。
+
+    MS-DIAL Console は run_dir と生データフォルダの両方へ生成物を出すため、
+    analysis-job.v2 の root に応じて解決する。
+    """
+    base = Path(job.dataset_root) if root == "dataset_root" else Path(job.run_dir)
+    return (base / rel).resolve()
 
 def _samples_tsv(ds) -> str:
     """サンプル名と役割を TSV で返す（列名 1 回 + 1 行 1 サンプル）。

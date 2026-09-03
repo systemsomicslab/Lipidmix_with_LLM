@@ -15,6 +15,14 @@ _CONTENT = textwrap.dedent("""\
     SMF\t1\tSML:1\tIPCSVZSSVZVIGE-UHFFFAOYSA-N\tPC 36:2\tnull\tnull\t12345.6
 """)
 
+_MINIMAL_MZTAB = (
+    "MTD\tmzTab-version\t2.0.0-M\n"
+    "MTD\tassay[1]-ms_run_ref\tms_run[1]\n"
+    "MTD\tassay[1]\tS1\n"
+    "SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]\n"
+    "SMF\t1\tnull\t786.6\t300.0\t100.0\n"
+)
+
 
 @pytest.fixture(autouse=True)
 def reset_session():
@@ -189,6 +197,50 @@ def test_dataset_load_via_job_path_stores_artifacts(tmp_path):
     ds = session_state.session.dataset
     assert "peak_matrix_source" in ds.artifact_paths
     assert len(ds.artifact_paths["peak_matrix_source"]) == 1
+
+
+@pytest.mark.parametrize("primary_root", ["run_dir", "dataset_root"])
+def test_dataset_load_resolves_recorded_artifact_roots(tmp_path, primary_root):
+    """dataset_root 側の一次 mzTab と sidecar を記録された root から解決する。"""
+    from lipidmix.handoff.schema import SCHEMA_VERSION
+    from lipidmix.tools.mztab_tools import dataset_load
+
+    run_dir = tmp_path / "runs" / "job1"
+    (run_dir / "msdial").mkdir(parents=True)
+    run_mztab = run_dir / "msdial" / "AlignResult-1.mzTab"
+    dataset_mztab = tmp_path / "AlignResult-1.mzTab"
+    (run_mztab if primary_root == "run_dir" else dataset_mztab).write_text(
+        _MINIMAL_MZTAB, encoding="utf-8"
+    )
+    pai2 = tmp_path / "S1_1.pai2"
+    pai2.write_bytes(b"x")
+
+    job_path = run_dir / "analysis-job.json"
+    job_path.write_text(json.dumps({
+        "schema": SCHEMA_VERSION, "job_id": "j1", "status": "completed",
+        "created_at": "t", "updated_at": "t",
+        "source": {"dataset_root": str(tmp_path), "input_count": 1},
+        "software": {"name": "MS-DIAL", "version": "", "execution_mode": "console",
+                     "method_file": "m.txt"},
+        "project": {"omics": "lipidomics", "polarity": "negative", "measure": "peak_height"},
+        "run_dir": str(run_dir),
+        "primary_mztab_files": [{
+            "path": ("msdial/AlignResult-1.mzTab" if primary_root == "run_dir"
+                     else "AlignResult-1.mzTab"),
+            "polarity": "negative", "measure": "peak_height", "sha256": "",
+            "validation": {}, "root": primary_root,
+        }],
+        "artifacts": [{"path": "S1_1.pai2", "role": "sample_peaks", "format": "pai2",
+                       "sha256": "", "root": "dataset_root"}],
+        "execution": {"save_project": True, "timeout_s": 60},
+        "warnings": [], "error": None,
+    }, ensure_ascii=False), encoding="utf-8")
+
+    out = dataset_load(job_path=str(job_path))
+    assert "dataset_load 完了" in out
+    ds = session_state.session.dataset
+    assert str((run_mztab if primary_root == "run_dir" else dataset_mztab).resolve()) in ds.source_files
+    assert ds.artifact_paths["sample_peaks"] == [str(pai2.resolve())]
 
 
 def test_dataset_load_via_job_path_no_mztab_files(tmp_path):
