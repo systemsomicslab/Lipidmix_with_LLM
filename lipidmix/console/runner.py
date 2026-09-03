@@ -42,6 +42,7 @@ def run_msdial(
     run_dir: Path,
     timeout_s: int = 3600,
     exe_path: str | None = None,
+    save_project: bool = False,
 ) -> int:
     """MS-DIAL Console を実行し、終了コードを返す。
 
@@ -57,6 +58,8 @@ def run_msdial(
         タイムアウト秒数（既定 1 時間）。
     exe_path:
         省略時は MSDIAL_EXE 環境変数から取得。テストでは fake パスを注入する。
+    save_project:
+        True なら -p を付け、GUI で開ける .mdproject を出力させる。
 
     Raises
     ------
@@ -72,14 +75,21 @@ def run_msdial(
     msdial_out_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [exe, "lcms", "-i", str(dataset_root), "-o", str(msdial_out_dir), "-m", str(method_file)]
+    if save_project:
+        cmd.append("-p")
 
     try:
         with log_path.open("w", encoding="utf-8") as log:
             log.write(f"CMD: {' '.join(cmd)}\n\n")
+            # 子へ fd を渡す前に必ず flush する。親のバッファと子は同じ
+            # ファイル記述のオフセットを共有するため、flush しないと
+            # 子の出力が先頭に、CMD 行がその後ろに書かれる。
+            log.flush()
             result = subprocess.run(
                 cmd,
                 stdout=log,
                 stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
                 timeout=timeout_s,
             )
     except subprocess.TimeoutExpired as exc:

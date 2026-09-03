@@ -65,6 +65,66 @@ def test_run_msdial_success(tmp_path):
     assert (run_dir / "msdial.log").exists()
 
 
+def test_run_msdial_closes_stdin(tmp_path):
+    """MCP stdio サーバの JSON-RPC 入力を子プロセスに継承させない。
+
+    MS-DIAL Console は入力フォルダに複数フォーマットが混在すると
+    Console.ReadLine() で対話する。stdin を継承したままだと子が
+    プロトコルのバイト列を食うか、応答が来ずタイムアウトまでブロックする。
+    """
+    method = tmp_path / "params.txt"
+    method.touch()
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("subprocess.run", return_value=mock_result) as mock_run:
+        run_msdial(method_file=method, dataset_root=tmp_path,
+                   run_dir=tmp_path / "run1", exe_path="fake.exe")
+    assert mock_run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+
+
+def test_run_msdial_flushes_cmd_header_before_child_writes(tmp_path):
+    """CMD 行を flush してから子に fd を渡す。"""
+    method = tmp_path / "params.txt"
+    method.touch()
+    run_dir = tmp_path / "run1"
+
+    def fake_run(cmd, stdout=None, stderr=None, timeout=None, stdin=None):
+        os.write(stdout.fileno(), b"CHILD OUTPUT\n")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        run_msdial(method_file=method, dataset_root=tmp_path,
+                   run_dir=run_dir, exe_path="fake.exe")
+    lines = (run_dir / "msdial.log").read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("CMD: ")
+
+
+def test_run_msdial_passes_project_flag(tmp_path):
+    """save_project=True のとき -p を渡す。"""
+    method = tmp_path / "params.txt"
+    method.touch()
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("subprocess.run", return_value=mock_result) as mock_run:
+        run_msdial(method_file=method, dataset_root=tmp_path,
+                   run_dir=tmp_path / "run1", exe_path="fake.exe",
+                   save_project=True)
+    assert mock_run.call_args.args[0][-1] == "-p"
+
+
+def test_run_msdial_omits_project_flag_by_default(tmp_path):
+    method = tmp_path / "params.txt"
+    method.touch()
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("subprocess.run", return_value=mock_result) as mock_run:
+        run_msdial(method_file=method, dataset_root=tmp_path,
+                   run_dir=tmp_path / "run1", exe_path="fake.exe")
+    assert "-p" not in mock_run.call_args.args[0]
+
+
 def test_run_msdial_nonzero_exit(tmp_path):
     method = tmp_path / "params.msdial"
     method.touch()
