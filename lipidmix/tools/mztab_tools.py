@@ -121,6 +121,17 @@ def _load_from_job(job_path_str: str) -> str:
 
     ds = build_dataset_state(parse_result, mztab_abs.name, mztab_abs)
 
+    # 終端状態が completed でないジョブ（タイムアウト後の partial など）は、
+    # MS-DIAL が途中で止まった実行の生成物を指している。mzTab 単体は構文検証を
+    # 通ってしまうため、ここで言わないと下流（前処理・PCA・差次的解析・
+    # エクスポート）が中断された実行の結果を完了品として扱う。**先頭に差す**。
+    if job.status != "completed":
+        ds.validation_result.setdefault("warnings", []).insert(0, (
+            f"このジョブは status={job.status} です（completed ではありません）。"
+            "MS-DIAL Console の実行は最後まで到達しておらず、読み込んだ mzTab-M は"
+            "中断時点の生成物です。特徴量・サンプルが欠けている可能性があるため、"
+            "console_status の error と msdial.log を確認してください。"))
+
     # ジョブ由来フィールドを設定
     ds.job_path = str(job_p)
     for art in job.artifacts:

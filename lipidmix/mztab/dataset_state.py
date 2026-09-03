@@ -131,6 +131,7 @@ def build_dataset_state(
     smf_rows = parse_result["sections"].get("SMF", {}).get("rows", [])
     sme_by_id = _index_sme_rows(parse_result["sections"].get("SME", {}).get("rows", []))
     by_source: dict[str, int] = {"database_identifier": 0, "inchi_derived": 0, "smiles_derived": 0, "none": 0}
+    derivable_but_missing = 0
     for row in smf_rows:
         fid = row.get("SMF_ID", "")
         evidence = _best_evidence(row.get("SME_ID_REFS"), sme_by_id)
@@ -151,6 +152,10 @@ def build_dataset_state(
             "inchi": evidence.get("inchi"),
         }
         by_source[src] = by_source.get(src, 0) + 1
+        # RDKit があれば拾えたはずの取りこぼし。構造が無い行は RDKit の有無に
+        # 関係なく InChIKey を持てないので、ここには数えない。
+        if ik is None and (evidence.get("smiles") or evidence.get("inchi")):
+            derivable_but_missing += 1
 
     with_ik = sum(v for k, v in by_source.items() if k != "none")
     has_rdkit = mztab_identity.rdkit_available()
@@ -200,12 +205,17 @@ def build_dataset_state(
     # 1:1 で置き換えるだけにする（列順を変えると全サンプルが黙って誤ラベルされる）。
     ds.sample_names, ds.sample_assay_ids, name_warnings = _resolve_sample_names(
         ds.sample_names, ds.assay_metadata)
-    if not has_rdkit:
+    # **RDKit が実際に取り逃がした件数がある場合だけ**警告する。無条件に出すと、
+    # database_identifier が InChIKey を持つ実データ（実測 162/271）でも
+    # 「InChIKey は 0 件になる」と断言してしまい、同じ payload の
+    # inchikey_coverage と矛盾する。警告の先頭スロットは実問題のために空けておく。
+    if not has_rdkit and derivable_but_missing:
         name_warnings.insert(0, (
-            "RDKit が利用できないため、SMILES / InChI からの InChIKey 導出が"
-            "行われていません。mzTab-M の database_identifier が InChIKey 形式で"
-            "無い場合、InChIKey は 0 件になり dataset_export_differential は"
-            "書き出しを拒否します（『同定が無い』のではなく『導出できていない』）。"))
+            f"RDKit が利用できないため、SMILES / InChI を持つ {derivable_but_missing} 件の"
+            f"特徴量で InChIKey を導出できていません（InChIKey 付きは {with_ik}/"
+            f"{len(smf_rows)} 件）。この {derivable_but_missing} 件は『同定が無い』のではなく"
+            "『導出できていない』状態で、dataset_export_differential の書き出し対象から"
+            "外れます（InChIKey が 0 件なら書き出し自体を拒否します）。"))
     if name_warnings:
         # **先頭に差す**。パーサ層の良性 warning（末尾空列の除去など）は実データで
         # 数百件になり得るので、後ろに append すると件数を絞って表示する

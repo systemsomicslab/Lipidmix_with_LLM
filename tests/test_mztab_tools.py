@@ -123,11 +123,12 @@ def test_dataset_load_does_not_touch_arf_slot(mztab_file):
 # ---------- job_path 経路 ----------
 
 def _make_job_json(tmp_path, mztab_rel_path: str, extra_artifacts=None,
-                   entries=None) -> tuple:
+                   entries=None, status: str = "completed") -> tuple:
     """analysis-job.json を tmp_path 内に作り、(job_path, run_dir) を返す。
 
     entries を渡すと primary_mztab_files をそのまま差し替える
     （複数候補・宣言と食い違う候補のケースを組むため）。
+    status で終端状態を差し替える（partial = タイムアウト後の部分回収）。
     """
     import json as _json
     from lipidmix.handoff.schema import SCHEMA_VERSION
@@ -137,7 +138,7 @@ def _make_job_json(tmp_path, mztab_rel_path: str, extra_artifacts=None,
     job_data = {
         "schema": SCHEMA_VERSION,
         "job_id": "job_test",
-        "status": "completed",
+        "status": status,
         "created_at": "2026-09-02T10:00:00+09:00",
         "updated_at": "2026-09-02T10:45:00+09:00",
         "source": {"dataset_root": str(tmp_path), "input_count": 1},
@@ -393,3 +394,35 @@ def test_dataset_status_sample_roles_reflect_qc_detection(tmp_path):
     dataset_load(str(p))
     status = json.loads(dataset_status())
     assert status["samples"].splitlines()[1:] == ["20260901_QC_1\tqc"]
+
+
+# ---------- 終端状態が completed でないジョブ（タイムアウト後の部分回収） ----------
+
+def _job_with_mztab(tmp_path, status: str):
+    mztab_dir = tmp_path / "runs" / "job_test" / "mztab"
+    mztab_dir.mkdir(parents=True, exist_ok=True)
+    (mztab_dir / "neg-height.mzTab").write_text(_CONTENT, encoding="utf-8")
+    job_path, _ = _make_job_json(tmp_path, "mztab/neg-height.mzTab", status=status)
+    return job_path
+
+
+def test_dataset_load_warns_when_job_did_not_complete(tmp_path):
+    """partial は「MS-DIAL が途中で止まった」の意味。黙って完了扱いにしない。"""
+    from lipidmix.tools.mztab_tools import dataset_load
+    job_path = _job_with_mztab(tmp_path, "partial")
+
+    result = dataset_load(job_path=str(job_path))
+
+    assert "partial" in result
+    ds = session_state.session.dataset
+    assert "partial" in ds.validation_result["warnings"][0]
+
+
+def test_dataset_load_does_not_warn_for_completed_job(tmp_path):
+    from lipidmix.tools.mztab_tools import dataset_load
+    job_path = _job_with_mztab(tmp_path, "completed")
+
+    dataset_load(job_path=str(job_path))
+
+    ds = session_state.session.dataset
+    assert not any("partial" in w for w in ds.validation_result.get("warnings", []))

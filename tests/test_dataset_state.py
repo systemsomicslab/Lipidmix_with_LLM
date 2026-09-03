@@ -29,6 +29,20 @@ def mztab_file(tmp_path):
     return p
 
 
+# SME が構造だけを持ち InChIKey を持たない形。RDKit が無いとここが 0 件になる。
+_MZTAB_SMILES_ONLY = _MZTAB_CONTENT.replace(
+    "SME	1	IPCSVZSSVZVIGE-UHFFFAOYSA-N	null	null	PC 36:2	1",
+    "SME	1	null	CCCCCCCC	null	PC 36:2	1",
+)
+
+
+@pytest.fixture
+def mztab_smiles_file(tmp_path):
+    p = tmp_path / "Height_smiles.mzTab"
+    p.write_text(_MZTAB_SMILES_ONLY, encoding="utf-8")
+    return p
+
+
 def test_build_dataset_state_creates_instance(mztab_file):
     pr = parse_mztab(mztab_file)
     ds = build_dataset_state(pr, mztab_file.name, str(mztab_file))
@@ -432,8 +446,35 @@ def test_inchikey_coverage_reports_rdkit_availability(mztab_file):
     assert "rdkit_available" in ds.inchikey_coverage
 
 
-def test_dataset_state_warns_when_rdkit_missing(mztab_file, monkeypatch):
+# RDKit 非搭載環境の derive_inchikey と同じ挙動（database_identifier だけ拾う）。
+# rdkit_available だけを False にしても実 RDKit が導出してしまうため、
+# 導出側も同時に落として実環境を再現する。
+def _no_rdkit_derive(database_identifier, inchi, smiles):
+    from lipidmix.mztab.identity import _INCHIKEY_RE
+    if database_identifier and _INCHIKEY_RE.match(database_identifier.strip()):
+        return database_identifier.strip(), "database_identifier"
+    return None, "none"
+
+
+def _without_rdkit(monkeypatch):
     monkeypatch.setattr("lipidmix.mztab.identity.rdkit_available", lambda: False)
+    monkeypatch.setattr("lipidmix.mztab.dataset_state.derive_inchikey", _no_rdkit_derive)
+
+
+def test_dataset_state_warns_when_rdkit_missing(mztab_smiles_file, monkeypatch):
+    """SMILES があるのに導出できていない件数を名指しする。"""
+    _without_rdkit(monkeypatch)
+    ds = _build(mztab_smiles_file)
+    assert ds.inchikey_coverage["rdkit_available"] is False
+    rdkit_warnings = [w for w in ds.validation_result["warnings"] if "RDKit" in w]
+    assert len(rdkit_warnings) == 1
+    assert "1 件" in rdkit_warnings[0]
+
+
+def test_dataset_state_no_rdkit_warning_when_nothing_derivable(mztab_file, monkeypatch):
+    """SMILES / InChI が無いなら RDKit があっても結果は変わらない。警告しない。"""
+    _without_rdkit(monkeypatch)
     ds = _build(mztab_file)
     assert ds.inchikey_coverage["rdkit_available"] is False
-    assert any("RDKit" in warning for warning in ds.validation_result["warnings"])
+    assert ds.inchikey_coverage["with_inchikey"] == 1
+    assert not any("RDKit" in w for w in ds.validation_result.get("warnings", []))

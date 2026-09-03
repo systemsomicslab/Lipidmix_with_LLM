@@ -381,10 +381,11 @@ def console_status(job_path: str | None = None) -> str:
             for e in job.primary_mztab_files
         ],
         "artifact_count": len(job.artifacts),
-        "artifacts": [
-            {"path": a.path, "role": a.role, "format": a.format, "root": a.root}
-            for a in job.artifacts
-        ],
+        # 生成物は 1 サンプルにつき複数出る（.pai2 / .dcl / _tags.xml / .mdpeak /
+        # .mdmsp）。60 サンプルで数百行になるので、列名を 1 回だけ書く TSV で返す。
+        # 1 件 1 JSON オブジェクトにするとキー名の反復だけで戻り値が数万字になり、
+        # 後ろの warnings / error が埋没する。
+        "artifacts": _artifacts_tsv(job.artifacts),
         "execution": {"save_project": job.save_project, "timeout_s": job.timeout_s},
         "warnings": job.warnings,
         "error": job.error,
@@ -433,9 +434,13 @@ def _looks_like_method_text(path: Path) -> bool:
     ConfigParser は ASCII のテキストを 1 行ずつ読み、`#` 始まりを飛ばして
     最初の `:` または `=` で key/value に割る。ここでは先頭 8192 バイトだけを
     調べ、テキストであることと key/value 行が 1 つ以上あることを確認する。
+
+    **先頭だけを読む**。この判定が弾く相手（.mdproject / .mddata）は 60 サンプル
+    規模で GB 級になり、全体を読むとエラー封筒を返す前にメモリを潰す。
     """
     try:
-        head = path.read_bytes()[:8192]
+        with path.open("rb") as fh:
+            head = fh.read(8192)
     except OSError:
         return False
     if b"\x00" in head:
@@ -449,6 +454,19 @@ def _looks_like_method_text(path: Path) -> bool:
         if positions:
             return True
     return False
+
+
+def _artifacts_tsv(artifacts) -> str:
+    """生成物一覧を TSV（列名 1 回）で返す。生成物ゼロなら空文字。
+
+    列名だけの行を返すと「1 件ある」と読めるため、空のときは何も返さない
+    （件数は artifact_count が持つ）。
+    """
+    if not artifacts:
+        return ""
+    lines = ["path\trole\tformat\troot"]
+    lines.extend(f"{a.path}\t{a.role}\t{a.format}\t{a.root}" for a in artifacts)
+    return "\n".join(lines)
 
 
 def _meta_conflict_warnings(mztab_entries) -> list[str]:

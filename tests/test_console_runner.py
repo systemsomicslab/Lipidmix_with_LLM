@@ -1268,6 +1268,59 @@ def test_console_status_exposes_roots_artifacts_and_execution_options(tmp_path, 
     assert parsed["dataset_root"] == str(tmp_path)
     assert parsed["execution"] == {"save_project": True, "timeout_s": 456}
     assert parsed["mztab_files"][0]["root"] == "run_dir"
-    assert parsed["artifacts"] == [{
-        "path": "S1_1.pai2", "role": "sample_peaks", "format": "pai2", "root": "dataset_root",
-    }]
+    assert parsed["artifacts"] == (
+        "path\trole\tformat\troot\n"
+        "S1_1.pai2\tsample_peaks\tpai2\tdataset_root"
+    )
+
+
+def test_method_text_check_reads_only_the_head(tmp_path, monkeypatch):
+    """判定は先頭だけを読む。弾く対象の .mddata は GB 級になり得る。"""
+    from lipidmix.tools import console_tools
+    method = tmp_path / "params.txt"
+    method.write_text("Ion mode: Negative\n" + "x" * 50000, encoding="ascii")
+
+    def _forbidden(self):
+        raise AssertionError("ファイル全体を read_bytes してはいけない")
+
+    monkeypatch.setattr(Path, "read_bytes", _forbidden)
+    assert console_tools._looks_like_method_text(method) is True
+
+
+def test_console_status_returns_artifacts_as_tsv(tmp_path, monkeypatch):
+    """生成物は行が並ぶ一覧なので TSV（列名 1 回）で返す。"""
+    import json as _json
+    from lipidmix.tools.console_tools import console_run, console_status
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch)
+
+    def fake_run_msdial(method_file, dataset_root, run_dir, **kwargs):
+        out = Path(run_dir) / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
+        (out / "S1.mdpeak").write_bytes(b"a")
+        Path(dataset_root, "S1_1.pai2").write_bytes(b"x")
+        return 0
+
+    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    console_run(str(job_path))
+    parsed = _json.loads(console_status(str(job_path)))
+
+    tsv = parsed["artifacts"]
+    assert isinstance(tsv, str)
+    lines = tsv.splitlines()
+    assert lines[0] == "path\trole\tformat\troot"
+    assert len(lines) == 3  # 列名 1 行 + 生成物 2 件
+    assert "S1_1.pai2\tsample_peaks\tpai2\tdataset_root" in lines
+    # run_dir 側の相対パスは -o の msdial/ を含む。root 列と合わせて出所が読める。
+    assert any(l.endswith("S1.mdpeak\tsample_peak_table\tmdpeak\trun_dir") for l in lines)
+
+
+def test_console_status_artifacts_tsv_is_empty_string_when_none(tmp_path, monkeypatch):
+    """生成物ゼロなら空文字。列名だけの行を返して件数を誤読させない。"""
+    import json as _json
+    from lipidmix.tools.console_tools import console_status
+
+    job_path = _planned_task8_job(tmp_path, monkeypatch)
+    parsed = _json.loads(console_status(str(job_path)))
+    assert parsed["artifacts"] == ""
