@@ -114,8 +114,13 @@ def test_dataset_load_does_not_touch_arf_slot(mztab_file):
 
 # ---------- job_path 経路 ----------
 
-def _make_job_json(tmp_path, mztab_rel_path: str, extra_artifacts=None) -> tuple:
-    """analysis-job.json を tmp_path 内に作り、(job_path, run_dir) を返す。"""
+def _make_job_json(tmp_path, mztab_rel_path: str, extra_artifacts=None,
+                   entries=None) -> tuple:
+    """analysis-job.json を tmp_path 内に作り、(job_path, run_dir) を返す。
+
+    entries を渡すと primary_mztab_files をそのまま差し替える
+    （複数候補・宣言と食い違う候補のケースを組むため）。
+    """
     import json as _json
     from lipidmix.handoff.schema import SCHEMA_VERSION
     run_dir = tmp_path / "runs" / "job_test"
@@ -131,7 +136,7 @@ def _make_job_json(tmp_path, mztab_rel_path: str, extra_artifacts=None) -> tuple
         "software": {"name": "MS-DIAL", "version": "5.5", "execution_mode": "console", "method_file": "m.msdial"},
         "project": {"omics": "lipidomics", "polarity": "negative", "measure": "peak_height"},
         "run_dir": str(run_dir),
-        "primary_mztab_files": [
+        "primary_mztab_files": entries if entries is not None else [
             {"path": mztab_rel_path, "polarity": "negative", "measure": "peak_height",
              "sha256": "abc", "validation": {}}
         ],
@@ -236,3 +241,103 @@ def test_dataset_status_shows_job_path(tmp_path):
 
     status = json.loads(dataset_status())
     assert "job_path" in status
+
+
+# ---------- 正準 mzTab の選択（job の宣言値で選ぶ） ----------
+# 背景: 旧実装は primary_mztab_files[0] を無条件で採用していた。エントリは
+# 相対パスの辞書順で並ぶため、実データ（Area_ / Height_ / NormalizedX_ が同居）
+# では Area_ が [0] に来る。console_plan が peak_area_above_zero を
+# UNSUPPORTED_AREA_CONSOLE で拒否しているのに、dataset_load はまさにその
+# Area ファイルを黙って読んでいた。spec §7 は「暗黙の単数選択の廃止」を要求する。
+
+def _entry(path, polarity="negative", measure="peak_height"):
+    return {"path": path, "polarity": polarity, "measure": measure,
+            "sha256": "x", "validation": {}}
+
+
+def test_dataset_load_via_job_path_selects_entry_matching_declared_measure(tmp_path):
+    from lipidmix.tools.mztab_tools import dataset_load
+    mztab_dir = tmp_path / "runs" / "job_test" / "mztab"
+    mztab_dir.mkdir(parents=True)
+    (mztab_dir / "Area_Alignment.mzTab").write_text(_CONTENT, encoding="utf-8")
+    (mztab_dir / "Height_Alignment.mzTab").write_text(_CONTENT, encoding="utf-8")
+
+    job_path, _ = _make_job_json(tmp_path, "", entries=[
+        _entry("mztab/Area_Alignment.mzTab", measure="peak_area_above_zero"),
+        _entry("mztab/Height_Alignment.mzTab", measure="peak_height"),
+    ])
+    result = dataset_load(job_path=str(job_path))
+    assert "Height_Alignment.mzTab" in result
+    ds = session_state.session.dataset
+    assert "Height_Alignment.mzTab" in next(iter(ds.source_files))
+
+
+def test_dataset_load_via_job_path_ambiguous_candidates_stop(tmp_path):
+    from lipidmix.tools.mztab_tools import dataset_load
+    mztab_dir = tmp_path / "runs" / "job_test" / "mztab"
+    mztab_dir.mkdir(parents=True)
+    (mztab_dir / "Height_a.mzTab").write_text(_CONTENT, encoding="utf-8")
+    (mztab_dir / "Height_b.mzTab").write_text(_CONTENT, encoding="utf-8")
+
+    job_path, _ = _make_job_json(tmp_path, "", entries=[
+        _entry("mztab/Height_a.mzTab"),
+        _entry("mztab/Height_b.mzTab"),
+    ])
+    parsed = json.loads(dataset_load(job_path=str(job_path)))
+    assert parsed["error"]["code"] == "AMBIGUOUS_PRIMARY_MZTAB"
+    assert len(parsed["error"]["details"]["candidates"]) == 2
+
+
+def test_dataset_load_via_job_path_no_entry_with_declared_measure(tmp_path):
+    from lipidmix.tools.mztab_tools import dataset_load
+    mztab_dir = tmp_path / "runs" / "job_test" / "mztab"
+    mztab_dir.mkdir(parents=True)
+    (mztab_dir / "Area_Alignment.mzTab").write_text(_CONTENT, encoding="utf-8")
+
+    job_path, _ = _make_job_json(tmp_path, "", entries=[
+        _entry("mztab/Area_Alignment.mzTab", measure="peak_area_above_zero"),
+    ])
+    parsed = json.loads(dataset_load(job_path=str(job_path)))
+    assert parsed["error"]["code"] == "QUANTIFICATION_CONFLICT"
+
+
+def test_dataset_load_via_job_path_no_entry_with_declared_polarity(tmp_path):
+    from lipidmix.tools.mztab_tools import dataset_load
+    mztab_dir = tmp_path / "runs" / "job_test" / "mztab"
+    mztab_dir.mkdir(parents=True)
+    (mztab_dir / "Height_Pos.mzTab").write_text(_CONTENT, encoding="utf-8")
+
+    job_path, _ = _make_job_json(tmp_path, "", entries=[
+        _entry("mztab/Height_Pos.mzTab", polarity="positive"),
+    ])
+    parsed = json.loads(dataset_load(job_path=str(job_path)))
+    assert parsed["error"]["code"] == "POLARITY_MISMATCH"
+
+
+def test_dataset_status_lists_sample_names_with_roles(mztab_file):
+    """群指定に必要なサンプル名を dataset_status が返す。
+
+    dataset_differential は正確なサンプル名のリストを要求するが、旧実装の
+    dataset_status は n_samples（件数）しか返しておらず、名前を知る手段が
+    「わざと群サイズ不足のエラーを起こして details を読む」しか無かった。
+    """
+    from lipidmix.tools.mztab_tools import dataset_load, dataset_status
+    dataset_load(str(mztab_file))
+    status = json.loads(dataset_status())
+    lines = status["samples"].splitlines()
+    assert lines[0] == "name\trole"
+    assert lines[1:] == ["abundance_assay[1]\tsample"]
+
+
+def test_dataset_status_sample_roles_reflect_qc_detection(tmp_path):
+    """QC/ブランクは role 列で見分けられる（群に混ぜてはいけない試料）。"""
+    from lipidmix.tools.mztab_tools import dataset_load, dataset_status
+    content = _CONTENT.replace(
+        "MTD\tassay[1]-ms_run_ref\tms_run[1]",
+        "MTD\tassay[1]-ms_run_ref\tms_run[1]\nMTD\tassay[1]\t20260901_QC_1",
+    )
+    p = tmp_path / "Height_qc.mzTab"
+    p.write_text(content, encoding="utf-8")
+    dataset_load(str(p))
+    status = json.loads(dataset_status())
+    assert status["samples"].splitlines()[1:] == ["20260901_QC_1\tqc"]

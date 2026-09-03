@@ -147,8 +147,8 @@ def dataset_differential(
 ) -> str:
     """前処理済み DatasetState で 2 群の差次的解析（Welch t 検定 + BH-FDR）を実行する。
 
-    group_a / group_b: サンプル名のリスト。dataset_preprocess の戻り値
-        （role_counts）と dataset_status で名前を確認できる。前処理済み行列に無い
+    group_a / group_b: サンプル名のリスト。使える名前と役割は dataset_status の
+        `samples`（name/role の TSV）で確認する。前処理済み行列に無い
         名前、QC/ブランクは除外し、caveat で名指しする。
     q_threshold: BH-FDR 補正後の有意水準（既定 0.05）。
     log2fc_threshold: この絶対値以上の log2FC を有意として数える（既定 1.0）。

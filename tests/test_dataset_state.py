@@ -331,3 +331,34 @@ def test_inchikey_coverage_counts_sme_resolved_features(mztab_real_shape):
     assert cov["total_features"] == 3
     assert cov["with_inchikey"] == 2
     assert cov["by_source"]["none"] == 1
+
+
+def test_dataset_warnings_precede_parser_level_warnings(tmp_path):
+    """データセット層の warning（表示名の重複など）を先頭に置く。
+
+    パーサ層の良性 warning は実データで数百件になり得る。後ろに append すると、
+    件数を絞って表示する dataset_load の要約に載る余地がなくなる。
+    「見えない warning」は無いのと同じなので、順序で優先度を表す。
+    """
+    content = textwrap.dedent("""\
+        MTD\tmzTab-version\t2.0.0-M
+        MTD\tmzTab-mode\tComplete
+        MTD\tmzTab-type\tQuantification
+        MTD\tms_run[1]-location\tfile:///s1.raw
+        MTD\tassay[1]\tdup_sample
+        MTD\tassay[1]-ms_run_ref\tms_run[1]
+        MTD\tassay[2]\tdup_sample
+        MTD\tassay[2]-ms_run_ref\tms_run[2]
+        SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]\tabundance_assay[2]
+        SMF\t1\t1\t786.6\t300.0\t100.0\t200.0
+        SEH\tSME_ID\tdatabase_identifier\tsmiles\tinchi\tchemical_name\trank
+        SME\t1\tnull\tnull\tnull\tPC 36:2\t1\t
+    """)
+    p = tmp_path / "Height_dup_and_trailing.mzTab"
+    p.write_text(content, encoding="utf-8")
+
+    pr = parse_mztab(p)
+    ds = build_dataset_state(pr, p.name, str(p))
+    warnings = ds.validation_result["warnings"]
+    assert "dup_sample" in warnings[0]
+    assert any("trailing" in w.lower() for w in warnings)

@@ -96,9 +96,15 @@ def _load_from_job(job_path_str: str) -> str:
             "console_run を先に実行してください。",
         )
 
-    # 最初のエントリを使う（polarity・measure が異なる複数ファイルがある場合は
-    # mztab_path で明示的に指定することを促す）
-    entry = job.primary_mztab_files[0]
+    # ジョブが宣言した polarity + measure で正準エントリを選ぶ。
+    # **[0] を暗黙に採ってはいけない**——エントリは相対パスの辞書順に並ぶので、
+    # 実データ（Area_ / Height_ / Normalized* が同居する MS-DIAL 出力）では
+    # Area_ が先頭に来る。console_plan が peak_area_above_zero を
+    # UNSUPPORTED_AREA_CONSOLE で拒否しているのに、ここで黙って読んでしまう。
+    selected = _select_primary_entry(job)
+    if isinstance(selected, str):
+        return selected  # error envelope
+    entry = selected
     mztab_abs = (Path(job.run_dir) / entry.path).resolve()
 
     if not mztab_abs.is_file():
@@ -125,7 +131,7 @@ def _load_from_job(job_path_str: str) -> str:
 
     lines = [_summary_text(ds, mztab_abs.name)]
     if len(job.primary_mztab_files) > 1:
-        others = [e.path for e in job.primary_mztab_files[1:]]
+        others = [e.path for e in job.primary_mztab_files if e is not entry]
         lines.append(
             f"- ※ ジョブには他に {len(others)} 件の mzTab-M があります: "
             + ", ".join(others)
@@ -140,6 +146,9 @@ def _load_from_job(job_path_str: str) -> str:
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def dataset_status() -> str:
     """現在の DatasetState の概要を返す。
+
+    `samples` に name/role の TSV が入る。dataset_differential の
+    group_a / group_b はここに出る名前をそのまま使う。
 
     dataset_load を先に実行しておくこと。
     未実行の場合は missing_state エンベロープを返す。
@@ -165,6 +174,10 @@ def dataset_status() -> str:
             "n_warnings": len(ds.validation_result.get("warnings", [])),
         },
         "inchikey_coverage": ds.inchikey_coverage,
+        # 群指定（dataset_differential）に必要なサンプル名。件数だけ返していた頃は、
+        # 名前を知る手段が「わざと群サイズ不足のエラーを起こして details を読む」
+        # しか無かった。行が並ぶ一覧なので TSV（列名 1 回）で返す。
+        "samples": _samples_tsv(ds),
     }
     if ds.job_path:
         payload["job_path"] = ds.job_path
@@ -174,6 +187,69 @@ def dataset_status() -> str:
 
 
 # ---------- 内部ヘルパ ----------
+
+def _samples_tsv(ds) -> str:
+    """サンプル名と役割を TSV で返す（列名 1 回 + 1 行 1 サンプル）。
+
+    前処理済みなら ds.roles を、まだなら同じ判定関数（detect_sample_roles）を
+    その場で適用する。ARF 経路（arf_list_sample_roles）と同じ判定を使うので、
+    どちらの経路でも同じ試料が同じ役割になる。
+    """
+    from lipidmix.analysis import preprocessing
+    names = list(ds.sample_names)
+    roles = ds.roles or preprocessing.detect_sample_roles(names)
+    lines = ["name\trole"]
+    lines += [f"{n}\t{roles.get(n, 'sample')}" for n in names]
+    return "\n".join(lines)
+
+
+def _select_primary_entry(job):
+    """ジョブの宣言（polarity + measure）で正準 mzTab エントリを一意に選ぶ。
+
+    一意に決まらないときは選ばずに停止する（spec §7「暗黙の単数選択と
+    newest_modified_time は廃止する」）。どれを読むかは解析結果そのものを
+    変えるので、LLM にもファイル名の辞書順にも決めさせない。
+    成功なら MztabEntry、失敗ならエラーエンベロープ文字列を返す。
+    """
+    candidates = job.primary_mztab_files
+    by_measure = [e for e in candidates if e.measure == job.measure]
+    if not by_measure:
+        return mztab_error(
+            "QUANTIFICATION_CONFLICT",
+            f"ジョブは measure={job.measure} を宣言していますが、"
+            "その定量種別の mzTab-M が生成物にありません。"
+            "別種別のファイルを代わりに読むと、宣言と違う数値で解析することになります。"
+            "意図的に別種別を読むなら mztab_path で明示してください。",
+            {"declared_measure": job.measure, "candidates": _describe(candidates)},
+        )
+
+    matched = [e for e in by_measure if e.polarity == job.polarity]
+    if not matched:
+        return mztab_error(
+            "POLARITY_MISMATCH",
+            f"ジョブは polarity={job.polarity} を宣言していますが、"
+            f"measure={job.measure} の候補にその極性がありません。"
+            "極性が違えば検出される脂質クラスが変わるため、代替で読みません。"
+            "意図的に別極性を読むなら mztab_path で明示してください。",
+            {"declared_polarity": job.polarity, "declared_measure": job.measure,
+             "candidates": _describe(candidates)},
+        )
+
+    if len(matched) > 1:
+        return mztab_error(
+            "AMBIGUOUS_PRIMARY_MZTAB",
+            f"polarity={job.polarity} / measure={job.measure} の候補が "
+            f"{len(matched)} 件あり、一意に決まりません。"
+            "mztab_path でどれを読むか明示してください。",
+            {"candidates": _describe(matched)},
+        )
+    return matched[0]
+
+
+def _describe(entries) -> list[dict]:
+    return [{"path": e.path, "polarity": e.polarity, "measure": e.measure}
+            for e in entries]
+
 
 def _validate_or_error(parse_result: dict, filename: str) -> dict | str:
     """バリデーションを実行し、失敗ならエラーエンベロープ文字列を返す。成功なら validation dict。"""

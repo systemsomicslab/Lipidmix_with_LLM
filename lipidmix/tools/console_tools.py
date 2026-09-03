@@ -192,7 +192,13 @@ def console_run(job_path: str | None = None) -> str:
     # 届かせない——副産物のためにジョブを failed にしない設計を維持する。
     try:
         from lipidmix.console.output_collector import collect_artifacts
-        mztab_entries, other_artifacts = collect_artifacts(run_dir, before)
+        # ジョブが宣言した polarity / measure を渡す。MS-DIAL のアライメント出力名は
+        # 極性トークンを持たないので、渡さないと全エントリが既定の positive になる。
+        mztab_entries, other_artifacts = collect_artifacts(
+            run_dir, before,
+            declared_polarity=job.polarity,
+            declared_measure=job.measure,
+        )
 
         if not mztab_entries and not other_artifacts:
             update_status(resolved, "failed", error="実行後に新規生成物が見つかりません")
@@ -205,6 +211,8 @@ def console_run(job_path: str | None = None) -> str:
         job = load_job(resolved)
         job.primary_mztab_files = mztab_entries
         job.artifacts = other_artifacts
+        job.warnings.extend(_meta_conflict_warnings(mztab_entries))
+        job.warnings.extend(_unsupported_mztab_warnings(other_artifacts))
 
         # サイドカー（feature-qc.tsv）。生成物のファイル名からサンプル名を拾う。
         # 失敗しても実行は成功扱い——副産物のためにジョブを failed にしない。
@@ -320,6 +328,42 @@ def job_list(dataset_root: str) -> str:
 
 
 # ---------- 内部ヘルパ ----------
+
+def _meta_conflict_warnings(mztab_entries) -> list[str]:
+    """ファイル名と宣言値が食い違ったエントリを warning にする。
+
+    collect_artifacts はファイル名側を採用する（実物の性質を語るのはファイル）。
+    採用の事実だけを validation に残して黙っていると、ユーザーは自分が
+    console_plan で宣言した値と違うものを解析していることに気付けない。
+    """
+    warnings: list[str] = []
+    for entry in mztab_entries:
+        for axis, detail in (entry.validation.get("conflicts") or {}).items():
+            warnings.append(
+                f"{entry.path}: {axis} がジョブの宣言と食い違います"
+                f"（ファイル名={detail['filename']} / 宣言={detail['job_declared']}）。"
+                "ファイル名側を採用しました。"
+            )
+    return warnings
+
+
+def _unsupported_mztab_warnings(artifacts) -> list[str]:
+    """未対応 measure の .mzTab（Normalized*）を拾ったことを伝える。
+
+    記録は残すが正準候補にはしない（spec §8.1）。黙って捨てると
+    「出力があるのに dataset_load が読めない」という説明不能な状態になる。
+    """
+    from lipidmix.console.output_collector import UNSUPPORTED_MZTAB_ROLE
+    paths = [a.path for a in artifacts if a.role == UNSUPPORTED_MZTAB_ROLE]
+    if not paths:
+        return []
+    return [
+        "未対応の定量種別（normalized）の mzTab を検出しました: "
+        + ", ".join(paths)
+        + "。peak_height / peak_area_above_zero のみ対応するため、"
+        "正準候補（primary_mztab_files）には含めていません。"
+    ]
+
 
 def _sample_names_from_artifacts(artifacts) -> list[str]:
     """サンプル別生成物（.pai2）のファイル名からサンプル名を重複なく拾う。

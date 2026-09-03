@@ -108,3 +108,33 @@ def test_extract_abundance_matrix(minimal_file):
     assert math.isnan(matrix[1, 1])
     assert math.isnan(matrix[2, 0])
     assert features == ["1", "2", "3"]
+
+
+def test_sme_trailing_warnings_are_aggregated_into_one(tmp_path):
+    """末尾空列の警告は 1 セクション 1 件に集約する。
+
+    旧実装は「除去した列 1 つにつき 1 件」を積んでいた。実データ（NEG, 714 特徴）
+    では良性のこの警告だけで 484 件になり、dataset_load の要約が先頭 3 件しか
+    出さないため、後から足される重要な警告（assay 表示名の重複など）が
+    構造上ぜったいに見えなくなっていた。
+    """
+    content = textwrap.dedent("""\
+        MTD\tmzTab-version\t2.0.0-M
+        MTD\tmzTab-mode\tComplete
+        MTD\tmzTab-type\tQuantification
+        MTD\tms_run[1]-location\tfile:///data/s1.raw
+        MTD\tassay[1]-ms_run_ref\tms_run[1]
+        SMF\tSMF_ID\tSML_ID_REFS\tdatabase_identifier\tabundance_assay[1]
+        SMF\t1\tSML:1\tnull\t9999.0
+        SEH\tSME_ID\tSMF_ID_REFS\tdatabase_identifier
+        SME\t1\tSMF:1\tnull\t\t
+        SME\t2\tSMF:1\tnull\t
+        SME\t3\tSMF:1\tnull\t
+    """)
+    p = tmp_path / "many_trailing.mzTab"
+    p.write_text(content, encoding="utf-8")
+
+    warnings = parse_mztab(p)["sections"]["SME"]["warnings"]
+    assert len(warnings) == 1
+    assert "3" in warnings[0]          # 3 行分をまとめた件数が読める
+    assert "trailing" in warnings[0].lower()

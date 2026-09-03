@@ -163,7 +163,9 @@ def test_assign_role(filename, expected_role, expected_fmt):
 @pytest.mark.parametrize("filename,expected_polarity,expected_measure", [
     ("Height_AlignmentResult_Neg.mzTab", "negative", "peak_height"),
     ("Area_AlignmentResult_Pos.mzTab",   "positive", "peak_area_above_zero"),
-    ("AlignmentResult.mzTab",            "positive", "peak_height"),
+    # 信号ゼロのファイル名。既定値へ落とすのは呼び出し側（collect_artifacts）の
+    # 判断で、推定関数は「何も語っていない」を None で返す。
+    ("AlignmentResult.mzTab",            None,       None),
 ])
 def test_infer_mztab_meta(filename, expected_polarity, expected_measure):
     polarity, measure = _infer_mztab_meta(filename)
@@ -593,3 +595,106 @@ def test_console_run_no_pai2_artifacts_skips_sidecar_with_warning(tmp_path, monk
     reloaded = load_job(job_path)
     assert reloaded.status == "completed"
     assert any("feature-qc.tsv" in w for w in reloaded.warnings)
+
+
+# ---------- 成果物メタの正準化（job の宣言値 vs ファイル名の推定） ----------
+# 背景: MS-DIAL のアライメント出力名（Height_AlignmentResult_<timestamp>.mzTab）は
+# 極性トークンを持たない。旧実装は「信号なし」を positive と区別せず既定に落として
+# いたため、negative で計画したジョブの mzTab エントリが全て positive と記録された。
+
+def test_infer_mztab_meta_returns_none_when_filename_has_no_polarity_token():
+    polarity, measure = _infer_mztab_meta("Height_AlignmentResult_2026_05_15.mzTab")
+    assert polarity is None       # 「信号なし」。positive と断定してはいけない
+    assert measure == "peak_height"
+
+
+def test_infer_mztab_meta_ignores_polarity_substring_inside_a_word():
+    polarity, _ = _infer_mztab_meta("Height_Negev_cohort_AlignmentResult.mzTab")
+    assert polarity is None       # "Negev" の neg は極性トークンではない
+
+
+def test_infer_mztab_meta_returns_none_measure_for_normalized_prefix():
+    # spec §8.1: normalized value は未対応。peak_height と偽ってはいけない。
+    _, measure = _infer_mztab_meta("NormalizedHeight_AlignmentResult_2026.mzTab")
+    assert measure is None
+
+
+def test_collect_artifacts_fills_polarity_from_job_declaration(tmp_path):
+    (tmp_path / "Height_AlignmentResult_2026.mzTab").write_text("x", encoding="utf-8")
+    mztabs, _ = collect_artifacts(
+        tmp_path, {}, declared_polarity="negative", declared_measure="peak_height")
+    assert len(mztabs) == 1
+    assert mztabs[0].polarity == "negative"
+    assert mztabs[0].validation["polarity_source"] == "job_declared"
+
+
+def test_collect_artifacts_prefers_filename_polarity_over_declaration_and_records_conflict(tmp_path):
+    (tmp_path / "Height_AlignmentResult_Neg.mzTab").write_text("x", encoding="utf-8")
+    mztabs, _ = collect_artifacts(
+        tmp_path, {}, declared_polarity="positive", declared_measure="peak_height")
+    # ファイルは実物の性質を語る。宣言は意図でしかないので、食い違いは
+    # ファイル側を採ったうえで記録する（黙って上書きしない）。
+    assert mztabs[0].polarity == "negative"
+    assert mztabs[0].validation["polarity_source"] == "filename"
+    assert "polarity" in mztabs[0].validation["conflicts"]
+
+
+def test_collect_artifacts_excludes_normalized_mztab_from_primary_candidates(tmp_path):
+    (tmp_path / "NormalizedHeight_AlignmentResult.mzTab").write_text("x", encoding="utf-8")
+    mztabs, others = collect_artifacts(
+        tmp_path, {}, declared_polarity="negative", declared_measure="peak_height")
+    assert mztabs == []
+    assert [a.role for a in others] == ["unsupported_mztab"]
+
+
+def _fake_msdial_producing(run_dir: Path, filename: str):
+    """subprocess.run の代わりに、指定名のファイルを msdial/ に置いて成功を返す。"""
+    def fake_run(cmd, **kwargs):
+        out = run_dir / "msdial"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / filename).write_text("x", encoding="utf-8")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+    return fake_run
+
+
+def test_console_run_records_declared_polarity_on_mztab_entries(tmp_path, monkeypatch):
+    """極性トークンを持たない出力名でも、宣言した negative が記録される。"""
+    from lipidmix.console.job_manager import create_job, load_job
+    from lipidmix.tools.console_tools import console_run
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    method = tmp_path / "params.msdial"
+    method.touch()
+    _, job_path = create_job(dataset_root=tmp_path, method_file=method,
+                             polarity="negative", measure="peak_height")
+    run_dir = Path(load_job(job_path).run_dir)
+
+    with patch("subprocess.run",
+               side_effect=_fake_msdial_producing(run_dir, "Height_AlignmentResult_2026.mzTab")):
+        console_run(str(job_path))
+
+    saved = load_job(job_path)
+    assert saved.status == "completed"
+    assert [e.polarity for e in saved.primary_mztab_files] == ["negative"]
+
+
+def test_console_run_warns_when_filename_contradicts_declared_polarity(tmp_path, monkeypatch):
+    """ファイル名の極性が宣言と食い違うなら、黙らずに warning へ残す。"""
+    from lipidmix.console.job_manager import create_job, load_job
+    from lipidmix.tools.console_tools import console_run
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    method = tmp_path / "params.msdial"
+    method.touch()
+    _, job_path = create_job(dataset_root=tmp_path, method_file=method,
+                             polarity="negative", measure="peak_height")
+    run_dir = Path(load_job(job_path).run_dir)
+
+    with patch("subprocess.run",
+               side_effect=_fake_msdial_producing(run_dir, "Height_AlignmentResult_Pos.mzTab")):
+        console_run(str(job_path))
+
+    saved = load_job(job_path)
+    assert [e.polarity for e in saved.primary_mztab_files] == ["positive"]
+    assert any("polarity" in w for w in saved.warnings)
+

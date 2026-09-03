@@ -52,6 +52,9 @@ def parse_mztab(path: str | Path) -> dict:
     sections: dict[str, dict] = {}
     global_warnings: list[str] = []
 
+    # セクション別の末尾空列除去タリー: {prefix: {rows, columns, first, last}}
+    trailing_tally: dict[str, dict[str, int]] = {}
+
     with open(path, encoding="utf-8") as f:
         for lineno, raw_line in enumerate(f, 1):
             line = raw_line.rstrip("\n")
@@ -86,15 +89,31 @@ def parse_mztab(path: str | Path) -> dict:
                     continue
                 header = sec["header"]
                 values = [c.strip() for c in parts[1:]]
-                # 末尾空欄の正規化（既知の MS-DIAL SME 問題）
+                # 末尾空欄の正規化（既知の MS-DIAL SME 問題）。
+                # 警告は 1 件ずつ積まずに集約する（下のループ後に 1 件だけ出す）。
+                # 良性のこの警告を行×列ぶん積むと実データで数百件になり、
+                # 表示上の件数制限に当たって重要な警告が見えなくなる。
+                removed = 0
                 while values and values[-1] == "":
                     values.pop()
-                    sec["warnings"].append(f"L{lineno}: trailing empty column removed")
+                    removed += 1
+                if removed:
+                    tally = trailing_tally.setdefault(
+                        prefix, {"rows": 0, "columns": 0, "first": lineno, "last": lineno})
+                    tally["rows"] += 1
+                    tally["columns"] += removed
+                    tally["last"] = lineno
                 row = {}
                 for i, col in enumerate(header):
                     raw = values[i] if i < len(values) else None
                     row[col] = _normalize_value(raw)
                 sec["rows"].append(row)
+
+    for prefix, tally in trailing_tally.items():
+        sections[prefix]["warnings"].append(
+            f"trailing empty column removed: {tally['columns']} columns in "
+            f"{tally['rows']} rows (L{tally['first']}..L{tally['last']})"
+        )
 
     return {"metadata": metadata, "sections": sections, "warnings": global_warnings}
 

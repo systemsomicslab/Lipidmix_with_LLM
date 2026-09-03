@@ -170,7 +170,12 @@ def build_dataset_state(
     # 1:1 で置き換えるだけにする（列順を変えると全サンプルが黙って誤ラベルされる）。
     ds.sample_names, name_warnings = _resolve_sample_names(ds.sample_names, ds.assay_metadata)
     if name_warnings:
-        ds.validation_result.setdefault("warnings", []).extend(name_warnings)
+        # **先頭に差す**。パーサ層の良性 warning（末尾空列の除去など）は実データで
+        # 数百件になり得るので、後ろに append すると件数を絞って表示する
+        # dataset_load の要約に載る余地がなくなる。表示されない warning は
+        # 無いのと同じで、群選択が黙って誤るのを止められない。
+        existing = ds.validation_result.setdefault("warnings", [])
+        ds.validation_result["warnings"] = [*name_warnings, *existing]
 
     return ds
 
