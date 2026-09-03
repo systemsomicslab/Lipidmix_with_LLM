@@ -99,6 +99,7 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 | ツールの引数・用途（全 51 ツール。`tests/test_readme_links.py` が実登録と突き合わせている） | `USAGE.md` |
 | 出力フィールドの**意味**（行の粒度・脂質名文法・必須注意） | `docs/output_format/core.md` ＋ トピック別（`arf` `arf2` `pai2` `dcl` `eic` `identity`）。MCP リソース `lipidmix://docs/output-format[/{topic}]` としても配信 |
 | ツールが**どのファイルのどの関数をどの順に呼ぶか** | `docs/workflow/`（9 文書・35 ツール分。範囲外 16 ツールは対象外）。行番号は書かない規約 |
+| **生データ → Console → mzTab-M → 差次的解析 → パスウェイ**の一気通貫の順序と、内部関数の引数・戻り値 | [docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md](docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md)（**目標状態**の記述。実装状況は同文書 §9。完成後 `docs/workflow/Lipidmix/` へ昇格） |
 | MessagePack の Key 番号 | `docs/schema/*.md` |
 | パーサ単体の CLI（フラグ一覧と実行例） | `docs/cli.md` |
 | 設計判断の経緯・調査で判明した事実 | `docs/HISTRY.md`（綴りはこのまま。**追跡外＝ローカル専用ログ**） |

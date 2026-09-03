@@ -49,3 +49,11 @@
 （`record_objective` `knowledge_coverage` `paper_search` `ingest_*` `write_report` など）＋
 Console 実行層 4（`console_plan` `console_run` `console_status` `job_list`）。
 登録ツール総数は 51（35 + 16）。
+
+## 一気通貫の順序はここには無い
+
+本文書群は**ツール 1 つずつの内部呼び出し順**を記録する。生データから Console を経て
+mzTab-M・差次的解析・別リポジトリのパスウェイ濃縮まで、**どの順に何を行うか**と
+各関数の引数・戻り値は
+[../superpowers/specs/2026-09-03-end-to-end-pipeline-design.md](../superpowers/specs/2026-09-03-end-to-end-pipeline-design.md)
+にある（Console 実行層 4 ツールを含む。実装完了後に `Lipidmix/` へ昇格する予定）。
