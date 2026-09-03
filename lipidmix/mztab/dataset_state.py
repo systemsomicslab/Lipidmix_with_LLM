@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from lipidmix.mztab import identity as mztab_identity
 from lipidmix.mztab.identity import derive_inchikey
 from lipidmix.mztab.reader import extract_abundance_matrix
 from lipidmix.mztab.validator import detect_quantification_measure, validate_mztab
@@ -152,10 +153,12 @@ def build_dataset_state(
         by_source[src] = by_source.get(src, 0) + 1
 
     with_ik = sum(v for k, v in by_source.items() if k != "none")
+    has_rdkit = mztab_identity.rdkit_available()
     ds.inchikey_coverage = {
         "total_features": len(smf_rows),
         "with_inchikey": with_ik,
         "by_source": by_source,
+        "rdkit_available": has_rdkit,
     }
 
     # SML / SME 行
@@ -197,6 +200,12 @@ def build_dataset_state(
     # 1:1 で置き換えるだけにする（列順を変えると全サンプルが黙って誤ラベルされる）。
     ds.sample_names, ds.sample_assay_ids, name_warnings = _resolve_sample_names(
         ds.sample_names, ds.assay_metadata)
+    if not has_rdkit:
+        name_warnings.insert(0, (
+            "RDKit が利用できないため、SMILES / InChI からの InChIKey 導出が"
+            "行われていません。mzTab-M の database_identifier が InChIKey 形式で"
+            "無い場合、InChIKey は 0 件になり dataset_export_differential は"
+            "書き出しを拒否します（『同定が無い』のではなく『導出できていない』）。"))
     if name_warnings:
         # **先頭に差す**。パーサ層の良性 warning（末尾空列の除去など）は実データで
         # 数百件になり得るので、後ろに append すると件数を絞って表示する

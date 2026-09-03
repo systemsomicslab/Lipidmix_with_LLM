@@ -44,3 +44,13 @@ def derive_inchikey(
         pass
 
     return None, "none"
+
+
+def rdkit_available() -> bool:
+    """RDKit で SMILES / InChI から InChIKey を導出できるか返す。"""
+    try:
+        from rdkit import Chem  # noqa: F401
+        from rdkit.Chem.inchi import InchiToInchiKey  # noqa: F401
+    except ImportError:
+        return False
+    return True

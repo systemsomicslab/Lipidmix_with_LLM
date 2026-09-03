@@ -420,3 +420,20 @@ def test_build_dataset_state_without_custom_terms_has_none(mztab_file):
     ds = _build(mztab_file)
     assert ds.assay_metadata["assay[1]"].get("run_order") is None
     assert ds.assay_metadata["assay[1]"].get("batch") is None
+
+
+def test_rdkit_available_reports_bool():
+    from lipidmix.mztab.identity import rdkit_available
+    assert isinstance(rdkit_available(), bool)
+
+
+def test_inchikey_coverage_reports_rdkit_availability(mztab_file):
+    ds = _build(mztab_file)
+    assert "rdkit_available" in ds.inchikey_coverage
+
+
+def test_dataset_state_warns_when_rdkit_missing(mztab_file, monkeypatch):
+    monkeypatch.setattr("lipidmix.mztab.identity.rdkit_available", lambda: False)
+    ds = _build(mztab_file)
+    assert ds.inchikey_coverage["rdkit_available"] is False
+    assert any("RDKit" in warning for warning in ds.validation_result["warnings"])
