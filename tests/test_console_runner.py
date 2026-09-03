@@ -358,7 +358,7 @@ def test_console_plan_missing_exe(tmp_path, monkeypatch):
     import json as _json
     monkeypatch.delenv("MSDIAL_EXE", raising=False)
     method = tmp_path / "params.msdial"
-    method.touch()
+    method.write_text("Ion mode: Positive\n", encoding="ascii")
     from lipidmix.tools.console_tools import console_plan
     result = console_plan(
         dataset_root=str(tmp_path),
@@ -404,7 +404,7 @@ def test_console_plan_success(tmp_path, monkeypatch):
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
-    method.touch()
+    method.write_text("Ion mode: Negative\n", encoding="ascii")
     (tmp_path / "a.wiff").touch()
     from lipidmix.tools.console_tools import console_plan
     result = console_plan(
@@ -463,6 +463,48 @@ def test_console_plan_warns_existing_alignment_results(tmp_path, monkeypatch):
                                       polarity="negative", measure="peak_height"))
     assert parsed["status"] == "planned"
     assert any("既存のアライメント結果" in w for w in parsed["warnings"])
+
+
+def test_console_plan_rejects_binary_method_file(tmp_path, monkeypatch):
+    """.mdproject は ZIP。渡すと MS-DIAL は全パラメータ既定値で走ってしまう。"""
+    import json as _json
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    (tmp_path / "a.wiff").touch()
+    method = tmp_path / "project.mdproject"
+    method.write_bytes(b"PK\x03\x04\x00\x00binary")
+    from lipidmix.tools.console_tools import console_plan
+    parsed = _json.loads(console_plan(dataset_root=str(tmp_path), method_file=str(method),
+                                      polarity="negative", measure="peak_height"))
+    assert parsed["error"]["code"] == "METHOD_FILE_NOT_TEXT"
+
+
+def test_console_plan_rejects_text_without_key_value(tmp_path, monkeypatch):
+    import json as _json
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    (tmp_path / "a.wiff").touch()
+    method = tmp_path / "empty.txt"
+    method.write_text("# comment only\n\n", encoding="ascii")
+    from lipidmix.tools.console_tools import console_plan
+    parsed = _json.loads(console_plan(dataset_root=str(tmp_path), method_file=str(method),
+                                      polarity="negative", measure="peak_height"))
+    assert parsed["error"]["code"] == "METHOD_FILE_NOT_TEXT"
+
+
+def test_console_plan_accepts_key_value_method_file(tmp_path, monkeypatch):
+    import json as _json
+    from lipidmix.core import session_state
+    session_state.session = session_state.AnalysisSession()
+    monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    (tmp_path / "a.wiff").touch()
+    method = tmp_path / "params.txt"
+    method.write_text("# MS-DIAL param\nIon mode: Negative\n", encoding="ascii")
+    from lipidmix.tools.console_tools import console_plan
+    parsed = _json.loads(console_plan(dataset_root=str(tmp_path), method_file=str(method),
+                                      polarity="negative", measure="peak_height"))
+    assert parsed["status"] == "planned"
 
 
 def test_console_status_no_job():

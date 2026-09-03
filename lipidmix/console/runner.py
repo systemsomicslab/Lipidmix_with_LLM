@@ -71,7 +71,7 @@ def run_msdial(
     Parameters
     ----------
     method_file:
-        MS-DIAL のメソッドファイル（.msdial / .mdproject）。
+        MS-DIAL Console のパラメータファイル（ASCII テキスト。`key: value` 形式）。
     dataset_root:
         生データフォルダ（-i 引数）。
     run_dir:

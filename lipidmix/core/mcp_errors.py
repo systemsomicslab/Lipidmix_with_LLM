@@ -58,6 +58,8 @@ CONSOLE_ERROR_CODES = frozenset({
     "JOB_NOT_PLANNED",
     "DATASET_ROOT_IN_REPO",
     "METHOD_FILE_NOT_FOUND",
+    # MS-DIAL Console が読む ASCII の key/value テキストではない場合。
+    "METHOD_FILE_NOT_TEXT",
     # MSDIAL_EXE が Console ではなく GUI を指している場合。
     "MSDIAL_EXE_NOT_CONSOLE",
     # MS-DIAL が対象とする計測拡張子が混在する、または 0 種類の場合。

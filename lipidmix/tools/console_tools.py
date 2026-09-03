@@ -34,8 +34,10 @@ def console_plan(
         生データフォルダのパス（.wiff / .raw 等が入っているフォルダ）。
         リポジトリ外のパスを指定してください。
     method_file:
-        MS-DIAL のメソッドファイル（.msdial / .mdproject）へのパス。
-        MS-DIAL GUI であらかじめ設定を作成しておいてください。
+        MS-DIAL Console のパラメータファイル（ASCII テキスト。`key: value` 形式）。
+        MS-DIAL GUI の Export > Parameter で出力できます。
+        **`.mdproject` / `.mddata` は使えません**（ZIP なので Console は中身を
+        読めず、全パラメータが既定値のまま実行されます）。
     polarity:
         "positive" または "negative"。
     measure:
@@ -67,6 +69,16 @@ def console_plan(
     mf = Path(method_file).expanduser()
     if not mf.is_file():
         return console_error("METHOD_FILE_NOT_FOUND", f"メソッドファイルが見つかりません: {method_file}")
+    if not _looks_like_method_text(mf):
+        return console_error(
+            "METHOD_FILE_NOT_TEXT",
+            f"メソッドファイルが MS-DIAL Console の読める形式ではありません: {method_file}  "
+            "Console は ASCII のテキストを `key: value`（例 `Ion mode: Negative`）として"
+            "1 行ずつ読みます。.mdproject / .mddata は ZIP なので、渡しても"
+            "エラーにならず全パラメータが既定値のまま実行されます。"
+            "MS-DIAL GUI の Export > Parameter で出したパラメータファイルを指定してください。",
+            {"method_file": str(mf)},
+        )
 
     try:
         from lipidmix.console import runner as console_runner
@@ -347,6 +359,30 @@ def job_list(dataset_root: str) -> str:
 
 
 # ---------- 内部ヘルパ ----------
+
+def _looks_like_method_text(path: Path) -> bool:
+    """MS-DIAL Console の ConfigParser が読める形かを判定する。
+
+    ConfigParser は ASCII のテキストを 1 行ずつ読み、`#` 始まりを飛ばして
+    最初の `:` または `=` で key/value に割る。ここでは先頭 8192 バイトだけを
+    調べ、テキストであることと key/value 行が 1 つ以上あることを確認する。
+    """
+    try:
+        head = path.read_bytes()[:8192]
+    except OSError:
+        return False
+    if b"\x00" in head:
+        return False
+    text = head.decode("ascii", errors="replace")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        positions = [i for i in (stripped.find(":"), stripped.find("=")) if i > 0]
+        if positions:
+            return True
+    return False
+
 
 def _meta_conflict_warnings(mztab_entries) -> list[str]:
     """ファイル名と宣言値が食い違ったエントリを warning にする。
