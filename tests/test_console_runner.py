@@ -533,6 +533,33 @@ def test_console_run_nonplanned_job(tmp_path, monkeypatch):
     assert parsed["error"]["code"] == "JOB_NOT_PLANNED"
 
 
+def test_console_run_rejects_changed_non_console_exe_before_launch(tmp_path, monkeypatch):
+    """計画後に MSDIAL_EXE が GUI へ変わっても、ジョブを planned のまま止める。"""
+    import json as _json
+    from lipidmix.core import session_state
+    from lipidmix.tools.console_tools import console_plan, console_run
+
+    session_state.session = session_state.AnalysisSession()
+    monkeypatch.setenv("MSDIAL_EXE", "console.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    method = tmp_path / "params.txt"
+    method.write_text("Ion mode: Negative\n", encoding="ascii")
+    (tmp_path / "a.wiff").touch()
+    planned = _json.loads(console_plan(
+        dataset_root=str(tmp_path), method_file=str(method),
+        polarity="negative", measure="peak_height"))
+    job_path = planned["job_path"]
+
+    monkeypatch.setenv("MSDIAL_EXE", "MSDIAL.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: False)
+    with patch("subprocess.run") as mock_run:
+        result = _json.loads(console_run(job_path))
+
+    assert result["error"]["code"] == "MSDIAL_EXE_NOT_CONSOLE"
+    assert load_job(Path(job_path)).status == "planned"
+    mock_run.assert_not_called()
+
+
 # ---------- Task 0: ブロッカー回帰 ----------
 
 def test_create_job_allows_default_data_dir(tmp_path, monkeypatch):
@@ -588,6 +615,7 @@ def test_console_run_reports_no_output(tmp_path, monkeypatch):
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
     _, job_path = create_job(dataset_root=tmp_path, method_file=method,
@@ -608,6 +636,7 @@ def test_console_run_unexpected_exception_marks_failed(tmp_path, monkeypatch):
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "definitely_not_here.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
     _, job_path = create_job(dataset_root=tmp_path, method_file=method,
@@ -636,6 +665,7 @@ def test_console_run_post_run_failure_marks_job_failed_not_running(tmp_path, mon
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
     job, job_path = create_job(dataset_root=tmp_path, method_file=method,
@@ -730,6 +760,7 @@ def test_console_run_records_declared_polarity_on_mztab_entries(tmp_path, monkey
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
     _, job_path = create_job(dataset_root=tmp_path, method_file=method,
@@ -750,6 +781,7 @@ def test_console_run_warns_when_filename_contradicts_declared_polarity(tmp_path,
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
     _, job_path = create_job(dataset_root=tmp_path, method_file=method,
@@ -777,6 +809,7 @@ def test_console_run_writes_no_sidecar_files(tmp_path, monkeypatch):
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
     job, job_path = create_job(dataset_root=tmp_path, method_file=method,
@@ -801,6 +834,7 @@ def test_console_run_warns_when_no_per_sample_pai2(tmp_path, monkeypatch):
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
     job, job_path = create_job(dataset_root=tmp_path, method_file=method,

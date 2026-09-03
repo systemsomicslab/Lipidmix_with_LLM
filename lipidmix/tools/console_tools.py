@@ -188,6 +188,23 @@ def console_run(job_path: str | None = None) -> str:
             {"job_id": job.job_id, "status": job.status},
         )
 
+    from lipidmix.console import runner as console_runner
+    try:
+        exe = console_runner.get_exe_path()
+    except EnvironmentError as exc:
+        update_status(resolved, "failed", error=str(exc))
+        return console_error("MSDIAL_EXE_NOT_FOUND", str(exc))
+    if not console_runner.is_console_exe(exe):
+        return console_error(
+            "MSDIAL_EXE_NOT_CONSOLE",
+            f"MSDIAL_EXE が MS-DIAL Console ではありません: {exe}  "
+            "--help にサブコマンド `lcms` が現れませんでした。GUI の MSDIAL.exe を"
+            "指している可能性があります（GUI はコマンドラインを解釈せずウィンドウを"
+            "開いたままになります）。MsdialWorkbench の Console 実行体"
+            "（MSDIALCUI.exe）のパスを設定してください。",
+            {"exe": exe},
+        )
+
     run_dir = Path(job.run_dir)
     from lipidmix.console.output_collector import snapshot
     before = snapshot(run_dir)
@@ -205,6 +222,7 @@ def console_run(job_path: str | None = None) -> str:
             method_file=Path(job.method_file),
             dataset_root=Path(job.dataset_root),
             run_dir=run_dir,
+            exe_path=exe,
         )
     except MsdialExeNotFoundError as exc:
         update_status(resolved, "failed", error=str(exc))
