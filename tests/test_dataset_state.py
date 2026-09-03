@@ -362,3 +362,61 @@ def test_dataset_warnings_precede_parser_level_warnings(tmp_path):
     warnings = ds.validation_result["warnings"]
     assert "dup_sample" in warnings[0]
     assert any("trailing" in w.lower() for w in warnings)
+
+
+_MZTAB_WITH_CUSTOM = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tassay[1]\tS_first
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    MTD\tassay[1]-custom[1]\t[MS,MS:4000088,batch label,B1]
+    MTD\tassay[1]-custom[2]\t[MS,MS:4000089,injection sequence label,7]
+    MTD\tassay[2]\tS_second
+    MTD\tassay[2]-ms_run_ref\tms_run[2]
+    MTD\tassay[2]-custom[1]\t[MS,MS:4000088,batch label,B2]
+    MTD\tassay[2]-custom[2]\t[MS,MS:4000089,injection sequence label,3]
+    SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]\tabundance_assay[2]
+    SMF\t1\tnull\t786.6\t300.0\t10.0\t20.0
+""")
+
+
+@pytest.fixture
+def mztab_with_custom(tmp_path):
+    p = tmp_path / "AlignResult-1.mzTab"
+    p.write_text(_MZTAB_WITH_CUSTOM, encoding="utf-8")
+    return p
+
+
+def test_parse_cv_term_extracts_accession_and_value():
+    from lipidmix.mztab.dataset_state import _parse_cv_term
+    assert _parse_cv_term("[MS,MS:4000089,injection sequence label,7]") == ("MS:4000089", "7")
+
+
+def test_parse_cv_term_returns_none_for_garbage():
+    from lipidmix.mztab.dataset_state import _parse_cv_term
+    assert _parse_cv_term("not a cv term") == (None, None)
+    assert _parse_cv_term("[MS,MS:4000089]") == (None, None)
+    assert _parse_cv_term(None) == (None, None)
+
+
+def test_build_dataset_state_reads_injection_order(mztab_with_custom):
+    ds = _build(mztab_with_custom)
+    assert ds.assay_metadata["assay[1]"]["run_order"] == 7
+    assert ds.assay_metadata["assay[2]"]["run_order"] == 3
+
+
+def test_build_dataset_state_reads_batch_label(mztab_with_custom):
+    ds = _build(mztab_with_custom)
+    assert ds.assay_metadata["assay[1]"]["batch"] == "B1"
+    assert ds.assay_metadata["assay[2]"]["batch"] == "B2"
+
+
+def test_build_dataset_state_records_sample_assay_ids(mztab_with_custom):
+    ds = _build(mztab_with_custom)
+    assert ds.sample_names == ["S_first", "S_second"]
+    assert ds.sample_assay_ids == ["assay[1]", "assay[2]"]
+
+
+def test_build_dataset_state_without_custom_terms_has_none(mztab_file):
+    ds = _build(mztab_file)
+    assert ds.assay_metadata["assay[1]"].get("run_order") is None
+    assert ds.assay_metadata["assay[1]"].get("batch") is None

@@ -20,6 +20,21 @@ _ASSAY_BARE_RE = re.compile(r"^assay\[(\d+)\]$")
 _ASSAY_SUFFIX_RE = re.compile(r"^assay\[(\d+)\]-(.+)$")
 # abundance 列名から assay 番号を取り出す（reader.py の _ABUNDANCE_RE と同じ規則）。
 _ABUNDANCE_ASSAY_RE = re.compile(r"abundance_assay\[(\d+)\]", re.IGNORECASE)
+# assay[N]-custom[M] が運ぶ CV term（MS-DIAL の実出力形式）。
+_CV_TERM_RE = re.compile(r"^\[([^\]]*)\]$")
+_ACCESSION_INJECTION_ORDER = "MS:4000089"
+_ACCESSION_BATCH = "MS:4000088"
+
+
+def _parse_cv_term(value: str | None) -> tuple[str | None, str | None]:
+    """`[CV,ACCESSION,name,value]` から accession と値を取り出す。"""
+    m = _CV_TERM_RE.match((value or "").strip())
+    if not m:
+        return None, None
+    parts = [part.strip() for part in m.group(1).split(",")]
+    if len(parts) < 4:
+        return None, None
+    return parts[1], parts[3]
 
 
 class DatasetState:
@@ -32,6 +47,7 @@ class DatasetState:
         self.quantification_confidence: str | None = None
         self.feature_matrix: np.ndarray | None = None   # shape (n_features, n_samples)
         self.sample_names: list[str] = []                # assay 表示名（無ければ abundance 列名にフォールバック）
+        self.sample_assay_ids: list[str] = []            # sample_names と同じ列順の assay ID
         self.feature_ids: list[str] = []                # SMF_ID 列
         self.assay_metadata: dict = {}                  # assay_id -> MTD 情報
         self.feature_metadata: dict = {}                # smf_id -> {name, mz, rt, inchikey, ...}
@@ -157,7 +173,17 @@ def build_dataset_state(
         m = _ASSAY_SUFFIX_RE.match(k)
         if m:
             aid = f"assay[{m.group(1)}]"
-            ds.assay_metadata.setdefault(aid, {})[m.group(2)] = v
+            suffix = m.group(2)
+            ds.assay_metadata.setdefault(aid, {})[suffix] = v
+            if suffix.startswith("custom["):
+                accession, term_value = _parse_cv_term(v)
+                if accession == _ACCESSION_INJECTION_ORDER:
+                    try:
+                        ds.assay_metadata[aid]["run_order"] = int(str(term_value).strip())
+                    except (TypeError, ValueError):
+                        ds.assay_metadata[aid]["run_order"] = None
+                elif accession == _ACCESSION_BATCH:
+                    ds.assay_metadata[aid]["batch"] = term_value
             continue
         m = _ASSAY_BARE_RE.match(k)
         if m:
@@ -169,7 +195,8 @@ def build_dataset_state(
     # abundance 列 → assay 表示名の解決。feature_matrix の列順（assay 番号昇順）は
     # extract_abundance_matrix が既に確定させているので、ここでは並べ替えず
     # 1:1 で置き換えるだけにする（列順を変えると全サンプルが黙って誤ラベルされる）。
-    ds.sample_names, name_warnings = _resolve_sample_names(ds.sample_names, ds.assay_metadata)
+    ds.sample_names, ds.sample_assay_ids, name_warnings = _resolve_sample_names(
+        ds.sample_names, ds.assay_metadata)
     if name_warnings:
         # **先頭に差す**。パーサ層の良性 warning（末尾空列の除去など）は実データで
         # 数百件になり得るので、後ろに append すると件数を絞って表示する
@@ -181,7 +208,7 @@ def build_dataset_state(
     return ds
 
 
-def _resolve_sample_names(abundance_cols: list[str], assay_metadata: dict) -> tuple[list[str], list[str]]:
+def _resolve_sample_names(abundance_cols: list[str], assay_metadata: dict) -> tuple[list[str], list[str], list[str]]:
     """abundance_assay[N] 列名を assay[N] の表示名へ解決する。
 
     表示名が無い assay（既存フィクスチャは全てこれに該当。現実のファイルでも
@@ -193,15 +220,18 @@ def _resolve_sample_names(abundance_cols: list[str], assay_metadata: dict) -> tu
     群選択が曖昧になり得ることだけ呼び出し元に伝えれば足りる）。
     """
     resolved: list[str] = []
+    assay_ids: list[str] = []
     cols_by_name: dict[str, list[str]] = {}
     for col in abundance_cols:
         m = _ABUNDANCE_ASSAY_RE.search(col)
         name = None
+        aid = ""
         if m:
             aid = f"assay[{m.group(1)}]"
             name = (assay_metadata.get(aid) or {}).get("name")
         resolved_name = name if name else col
         resolved.append(resolved_name)
+        assay_ids.append(aid)
         cols_by_name.setdefault(resolved_name, []).append(col)
 
     warnings = [
@@ -209,7 +239,7 @@ def _resolve_sample_names(abundance_cols: list[str], assay_metadata: dict) -> tu
         "sample_names での群選択が意図しないアッセイを指す恐れがあります。"
         for name, cols in cols_by_name.items() if len(cols) > 1
     ]
-    return resolved, warnings
+    return resolved, assay_ids, warnings
 
 def _seconds_to_minutes(value: float | None) -> float | None:
     """mzTab-M の秒表記 RT を分へ揃える。"""
