@@ -46,6 +46,7 @@ def dataset_preprocess(
     drift_correct: bool = False,
     max_qc_rsd: float | None = None,
     impute: str = "half_min",
+    min_detection_rate: float = 0.0,
 ) -> str:
     """DatasetState の定量行列に前処理レシピを適用する。
 
@@ -55,12 +56,16 @@ def dataset_preprocess(
     normalize: "none"（既定）/ "tic"（行総和）/ "median"（行中央値）/ "pqn"。
     blank_min_fold: 生体試料平均がブランク平均のこの倍数未満の特徴量を背景として
         除去する（例 3.0）。None（既定）でブランク除去なし。
-    drift_correct: QC 注入順ドリフト補正。**現在の実装は mzTab-M から注入順を読み取らないため
-        常に未実施になる**（caveat で報告する。形式自体は assay[N]-custom[...] に injection
-        sequence label / batch label を持ち得るが、この経路はまだ未対応）。
-        注入順が必要なら ARF 経路を使う。
+    drift_correct: QC 注入順ドリフト補正。注入順は mzTab-M の
+        `assay[N]-custom[...]` の injection sequence label（MS:4000089）から読む。
+        それを持たない mzTab-M では実施できず、caveat で報告する。
     max_qc_rsd: QC 群の RSD がこの値を超える特徴量を除去する（例 0.30）。
     impute: "half_min"（既定）/ "knn" / "column_mean" / "none"。
+    min_detection_rate: 実検出率（gap-fill を除く）による特徴量の足切り 0.0-1.0
+        （既定 0.0=無効）。**検出状態は mzTab-M 単体には無い**ので、隣接する `.arf`
+        から取り込めた場合にだけ使える。取り込めていない状態で 0 より大きい値を
+        渡すと引数エラーを返す（黙って未検出 0 件として通さない）。
+        取り込み状況は dataset_status の `detection` を見る。
 
     成功すると session.dataset.pp_matrix に前処理済み行列が設定される。
     """
@@ -76,6 +81,7 @@ def dataset_preprocess(
         "drift_correct": drift_correct,
         "max_qc_rsd": max_qc_rsd,
         "impute": impute,
+        "min_detection_rate": min_detection_rate,
     }
     try:
         (pp_matrix, pp_sample_names, pp_feature_names,
@@ -102,6 +108,9 @@ def dataset_preprocess(
         "steps": report.get("steps", {}),
         "caveats": report.get("caveats", []),
         "next": "dataset_pca または dataset_differential を実行してください",
+        **({"detection": report["detection"]} if "detection" in report else {}),
+        **({"detection_filter": report["detection_filter"]}
+           if "detection_filter" in report else {}),
     })
 
 
@@ -247,7 +256,9 @@ def dataset_export_differential(output_path: str) -> str:
             "q_value": result.get("q"),
             "mean_a": result.get("mean_a"),
             "mean_b": result.get("mean_b"),
-            "significant": _is_significant(result, q_threshold, log2fc_threshold),
+            "significant": export_contract.is_significant(
+                q=result.get("q"), log2fc=result.get("log2fc"),
+                q_threshold=q_threshold, log2fc_threshold=log2fc_threshold),
         })
 
     n_total = len(last["results"])
@@ -298,16 +309,6 @@ def dataset_export_differential(output_path: str) -> str:
         "note": ("n_unannotated は InChIKey が付かず書き出さなかった行数です。"
                  "「変化が無かった」ではなく「調べていない」行です。"),
     })
-
-
-def _is_significant(result: dict, q_threshold: float, log2fc_threshold: float) -> bool:
-    q = result.get("q")
-    fc = result.get("log2fc")
-    if q is None or fc is None:
-        return False
-    if not (math.isfinite(q) and math.isfinite(fc)):
-        return False
-    return q <= q_threshold and abs(fc) >= log2fc_threshold
 
 
 # ---------- 内部ヘルパ ----------

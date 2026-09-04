@@ -672,16 +672,18 @@ caveat は最低限、次を出す: 正規化未適用（log2FC が測定量差�
 
 `ontology` と `msi_level` は mzTab-M に対応物が無いため空欄で、その旨をメタ行に明記する（空欄を「該当なし」と読み違えさせない）。下流はこの 2 列を読まないことをコード実読で確認済み（§5）。
 
+`significant`（15 列目）の判定は **`export_contract.is_significant()` だけ**が持つ。dict ではなく値をキーワードで受けるのは、ARF 経路が `q_value`、DatasetState 経路が `q` というキーで同じ量を持っており、キー名を契約側に持ち込むと経路ごとの分岐が再発するため（実際に 2 実装に分裂していた。2026-09-04 に一本化）。
+
 | 関数 | 引数 | 戻り値 | 副作用 |
 |---|---|---|---|
 | `lipidmix/tools/dataset_analysis_tools.py dataset_export_differential()` | `output_path: str` | `str` — JSON。成功時 `status` / `output_path` / `contract_version` / `group_a` / `group_b` / `n_features_total` / `n_with_inchikey` / `n_unannotated` / `log2fc_sign` / `note`。InChIKey が 0 件なら `status="error"` で**書き出さない** | 出力ファイルと親ディレクトリを作成 |
-| `lipidmix/tools/dataset_analysis_tools.py _is_significant()` | `result: dict`, `q_threshold: float`, `log2fc_threshold: float` | `bool` — `q` / `log2fc` が有限で、`q <= 閾値` かつ `abs(log2fc) >= 閾値` | なし |
+| `lipidmix/analysis/export_contract.py is_significant()` | キーワード専用で `q`, `log2fc`, `q_threshold`, `log2fc_threshold` | `bool` — `q` / `log2fc` が有限で、`q <= 閾値` かつ `abs(log2fc) >= 閾値`。欠測・NaN・inf は `False` | なし |
 | `lipidmix/analysis/export_contract.py build_meta()` | キーワード専用で `group_a`, `n_a`, `group_b`, `n_b`, `q_threshold`, `log2fc_threshold`, `log_transform`, `n_features_total`, `n_with_inchikey`, `n_unannotated`, `msi_note`, `source_lines=()`, `preprocess_line=None` | `list[str]` — 契約の順序に並んだメタ行 | なし |
 | `lipidmix/analysis/export_contract.py format_row()` | `row: dict` — 15 列すべてのキーを持つこと | `str` — `EXPORT_COLUMNS` の順に組んだ 1 行 | なし |
 | `lipidmix/analysis/export_contract.py format_number()` | `value`, `format_spec: str` | `str` — 有限の数値だけを書き、欠測・NaN・inf は**空欄** | なし |
 
 1. lipidmix/tools/dataset_analysis_tools.py  dataset_export_differential()
-2. ├─ lipidmix/tools/dataset_analysis_tools.py  _is_significant()
+2. ├─ lipidmix/analysis/export_contract.py  is_significant()
 3. ├─ lipidmix/analysis/export_contract.py  build_meta()
 4. └─ lipidmix/analysis/export_contract.py  format_row()
 5.    └─ lipidmix/analysis/export_contract.py  format_number()
@@ -857,9 +859,9 @@ Console を経由せず、MS-DIAL GUI が既に出したフォルダを渡す経
 
 ## §9 実装状況のスナップショットと、この文書が露出させた穴
 
-### 状況（2026-09-03 時点・`feat/dataset-analysis-layer` ブランチ）
+### 状況（2026-09-04 更新・`feat/dataset-analysis-layer` ブランチ）
 
-本文は目標状態で書いてある。**実装はこの文書と並行して進んでいる**ので、この表は撮った瞬間の写しにすぎない。最新は `git log` と `docs/task.md` で確認する。
+本文は目標状態で書いてある。この表は撮った瞬間の写しにすぎない。最新は `git log` と `docs/task.md` で確認する。
 
 | 項目 | 状況 | 根拠 |
 |---|---|---|
@@ -867,20 +869,29 @@ Console を経由せず、MS-DIAL GUI が既に出したフォルダを渡す経
 | A-6 | 実装済み | commit `91846e4` |
 | A-4 | 実装済み | `job_manager.raw_input_summary()` ＋ `_RAW_EXTENSIONS`（MS-DIAL の `SupportMsRawDataExtension` と同集合）、`console_plan` の `MIXED_RAW_FORMATS` ガード |
 | A-5 | 実装済み | `console_tools._looks_like_method_text()`、`METHOD_FILE_NOT_TEXT` |
-| A-1 / A-2 / A-7（`console_plan` 側）/ A-8 / A-9 | 未実装 | `SCHEMA_VERSION` はまだ `analysis-job.v1`、`_ROLE_MAP` は 6 種、`collect_artifacts` は単一ルート |
-| B-11 / B-13 | 未実装 | — |
-| B-12 | 収集は A-2 と同時、解釈は保留 | ラボの MS-DIAL が master ではない |
+| A-1 / A-2 / A-7（`console_plan` 側）/ A-8 / A-9 | 実装済み | `SCHEMA_VERSION = "analysis-job.v2"`、`_ROLE_MAP` 15 種、`collect_artifacts` の複数ルート対応（commit `3295e73` `e0bad47` `63391b3`） |
+| B-11 | 実装済み | `_parse_cv_term()` / `DatasetState.sample_assay_ids` / `sample_meta[...]["run_order_source"]`（commit `67b6afb` `dfda863`） |
+| B-13 | 実装済み | `mztab/identity.py rdkit_available()`、`ds.inchikey_coverage["rdkit_available"]`（commit `6e28586`） |
+| B-12 | 収集のみ（`.qa.tsv → quality_matrix`）。解釈は保留 | ラボの MS-DIAL が master ではなく `.qa.tsv` を出さない（実走で確認） |
+
+13 項目は全て実装済み。以下「露出した穴」のうち 1・3・4 も 2026-09-04 に解消し、2 は `.arf` 由来の初期実装として入れた（下記）。
 
 ### この文書を書いて露出した穴（13 項目に含まれないもの）
 
-1. **タイムアウト時の部分回収が設計されていない**（A-8 の残り）。`timeout_s` を通す実装計画はあるが、`MsdialTimeoutError` を捕らえた後に `collect_artifacts()` を回して `status="partial"` で記録する経路は計画に含まれていない。60 サンプルで数時間走らせてタイムアウトすると、生成済みの成果物ごと `failed` になる。`JobStatus` の `Literal` に `"partial"` を足す必要がある。
+1. **【解消 2026-09-04】タイムアウト時の部分回収**（A-8 の残り）。`JobStatus` に `"partial"` を追加し、`console_tools` がタイムアウト後も `collect_artifacts()` を回して生成物があれば `status="partial"` で保存する（生成物ゼロなら `failed`）。以下は当時の記述。`timeout_s` を通す実装計画はあるが、`MsdialTimeoutError` を捕らえた後に `collect_artifacts()` を回して `status="partial"` で記録する経路は計画に含まれていない。60 サンプルで数時間走らせてタイムアウトすると、生成済みの成果物ごと `failed` になる。`JobStatus` の `Literal` に `"partial"` を足す必要がある。
 
-2. **spec §10.1 の evidence sidecar が未実装**（B-12 と同根だが別物）。求められているのは `SMF_ID × assay_id` の 1 行に `is_gap_filled` / `detected_peak` を必須で持つ、「mzTab-M だけでは失われる検出・補完状態を運ぶ」サイドカー。2026-09-03 に廃止した同名 `feature-qc.tsv` は**サンプル単位の役割・バッチを書いていた別物**なので、この要求は未着手のまま残っている。spec は初期実装を `.arf` から生成してよいと言っている（`session.arf` 側の gap_filled 情報とつなぐ設計が要る）。**未実装のまま `dataset_*` 経路の検出率・欠測を語ると、gap-fill を実測と混ぜて数える。**
+2. **【初期実装 2026-09-04】spec §10.1 の evidence sidecar**（B-12 と同根だが別物）。求められているのは `SMF_ID × assay_id` の 1 行に `is_gap_filled` / `detected_peak` を必須で持つ、「mzTab-M だけでは失われる検出・補完状態を運ぶ」サイドカー。2026-09-03 に廃止した同名 `feature-qc.tsv` は**サンプル単位の役割・バッチを書いていた別物**なので、この要求は未着手のまま残っている。spec は初期実装を `.arf` から生成してよいと言っている。
 
-3. **`significant` 判定ロジックが 2 経路で別実装**。`dataset_analysis_tools._is_significant`（キー `q` / `log2fc`）と `arf/tools.py` 内の同名ローカル関数（キー `q_value` / `log2fc`）が別物。**エクスポート契約 15 列目を作るロジック**なので `export_contract.py` に一本化すべき。片方だけ直すと 2 経路の判定が食い違い、下流は同一契約として扱ってしまう。
+**入れたもの**（`lipidmix/mztab/evidence.py`）: 隣接する `.arf` のスポット順が mzTab の `SMF_ID` と一致することを**数値で検証**して取り込む（スポット数の一致＋全特徴の m/z 差 ≤ 0.01 Da）。実データで位置一致は最大 6.7 mDa、1 つずらすと 87 Da に爆発するので偶然は起きない。サンプル軸は `.arf` のファイル名と mzTab の assay 表示名の一致で、列順は mzTab の assay 順にそろえる。
 
-4. **`DatasetState` 経路の図保存が未対応**。`save_pca_figure` / `save_volcano_figure` は `session.arf` 側だけを見る。`ds.last_pca` / `ds.last_differential` に全量はあるのに、mzTab-M 経路からは図を保存できない。
+**spec の字面との差**: `feature-qc.tsv` という**ファイルは作らない**。`DatasetState.detected_mask`（(特徴 × サンプル) の bool 行列）と `feature_qc`（要約）として状態で持つ。同名のファイルを 2026-09-03 に「消費者がいない」として廃止した経緯があり、読み手のいない TSV を再び置くと同じ結末になる。spec §10.1 が求める `is_gap_filled` / `detected_peak` の区別は、この 2 つで満たしている。
 
-5. **昇格時の検証範囲**。`tests/test_workflow_docs.py` の `WORKFLOW_DIR.glob("*.md")` は非再帰なので、`docs/workflow/Lipidmix/` 配下は現状どの腐敗防止テストにも掛からない。昇格時に `rglob` へ変えて検証対象に含めること（§0）。含めなければ、行番号を書かない前提そのものが崩れる。
+**実データ**: 60 サンプル × 714 特徴の 42,840 セルのうち **70.0% が gap-fill**（実測 12,845）。`dataset_preprocess(min_detection_rate=0.5)` で 714 → 193 特徴。取り込めなかった場合は `detected_mask` を None のまま残し、`dataset_status` の `detection.available=false` と warning で「検出率を語れない」ことを明示する（0 件と混同させない）。
 
-6. **Console 4 ツールの範囲外扱い**。`docs/workflow/` の `IN_SCOPE` は 35 ツールで、Console 4 ツールは `OUT_OF_SCOPE` に明記されている（合計 39 が全登録ツール 51 の一部）。本文書を昇格させるときは `IN_SCOPE` への移動、リテラル `35` の更新、`index.md` の目次と件数、`CLAUDE.md` の文書地図を同時に直す。`tests/test_workflow_docs.py` の `test_scope_totals_match_registered_tool_count` が実登録数と突き合わせているので、片方だけでは落ちる。
+3. **【解消 2026-09-04】`significant` 判定ロジックが 2 経路で別実装**だった。`export_contract.is_significant()` に一本化し、キー名を契約側に持ち込まないようキーワード引数で値を受ける形にした（§4.6）。以下は当時の記述。`dataset_analysis_tools._is_significant`（キー `q` / `log2fc`）と `arf/tools.py` 内の同名ローカル関数（キー `q_value` / `log2fc`）が別物。**エクスポート契約 15 列目を作るロジック**なので `export_contract.py` に一本化すべき。片方だけ直すと 2 経路の判定が食い違い、下流は同一契約として扱ってしまう。
+
+4. **【解消 2026-09-04】`DatasetState` 経路の図保存**。`reports.py` の `_select_pca_plot()` / `_select_differential()` が入力元を選び、ARF が空なら `session.dataset` を見る（両方あるときは ARF 優先。どちらを使ったかは戻り値の `source=` に書く）。volcano は両経路が `differential.volcano_data()` の点列を共有しているので描画関数は 1 つで足りた。PCA は `ds.last_pca["scores"]` を `tool_helpers.dataset_pca_plot()` で散布図の形へ射影する。
+
+5. **【解消 2026-09-04】昇格時の検証範囲**。`tests/test_workflow_docs.py` を `rglob("*.md")` に変えたので、`docs/workflow/Lipidmix/` 配下も腐敗防止テストに掛かる。検証は実際に効くことを確認済み（サブディレクトリに存在しないパスを書いた文書を置くと、パス解決と文書集合の両方が落ちる）。昇格時は文書を置けばそのまま検証対象になる。
+
+6. **Console 4 ツールの範囲外扱い（未着手・昇格時の作業）**。`docs/workflow/` の `IN_SCOPE` は 35 ツールで、Console 4 ツールは `OUT_OF_SCOPE` に明記されている（合計 39 が全登録ツール 51 の一部）。本文書を昇格させるときは `IN_SCOPE` への移動、リテラル `35` の更新、`index.md` の目次と件数、`CLAUDE.md` の文書地図を同時に直す。`tests/test_workflow_docs.py` の `test_scope_totals_match_registered_tool_count` が実登録数と突き合わせているので、片方だけでは落ちる。

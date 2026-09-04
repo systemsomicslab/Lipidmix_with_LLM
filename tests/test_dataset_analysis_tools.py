@@ -195,3 +195,42 @@ def test_dataset_export_refuses_without_inchikey(tmp_path):
     parsed = json.loads(dataset_export_differential(str(out)))
     assert parsed["status"] == "error"
     assert not out.exists()
+
+
+# --- min_detection_rate（evidence sidecar 由来）---
+
+def test_dataset_preprocess_accepts_min_detection_rate():
+    from lipidmix.tools.dataset_analysis_tools import dataset_preprocess
+    ds = _load_ds(n_features=4, n_samples=4)
+    ds.detected_mask = np.array([
+        [True, True, True, True],
+        [True, True, False, False],
+        [True, False, False, False],
+        [False, False, False, False],
+    ])
+    ds.feature_qc = {"source": "arf"}
+
+    payload = json.loads(dataset_preprocess(impute="none", min_detection_rate=0.5))
+    assert payload["status"] == "success"
+    assert payload["n_features"] == 2
+    assert payload["detection_filter"]["features_removed"] == 2
+    assert ds.preprocessing_recipe["min_detection_rate"] == 0.5
+
+
+def test_dataset_preprocess_min_detection_rate_without_state_is_bad_request():
+    from lipidmix.tools.dataset_analysis_tools import dataset_preprocess
+    _load_ds(n_features=4, n_samples=4)
+    payload = json.loads(dataset_preprocess(min_detection_rate=0.5))
+    # missing_state ではない——別ツールを呼んでも直らない引数由来のエラー
+    assert payload["error"]["code"] != MISSING_STATE
+    assert "min_detection_rate" in json.dumps(payload, ensure_ascii=False)
+
+
+def test_dataset_preprocess_reports_detection_when_available():
+    from lipidmix.tools.dataset_analysis_tools import dataset_preprocess
+    ds = _load_ds(n_features=2, n_samples=4)
+    ds.detected_mask = np.array([[True, True, True, True],
+                                 [True, False, False, False]])
+    ds.feature_qc = {"source": "arf"}
+    payload = json.loads(dataset_preprocess(impute="none"))
+    assert payload["detection"]["gap_filled_rate"] == 0.375

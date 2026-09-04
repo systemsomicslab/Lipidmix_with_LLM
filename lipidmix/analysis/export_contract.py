@@ -35,6 +35,25 @@ def format_number(value, format_spec: str) -> str:
     return format(number, format_spec)
 
 
+def is_significant(*, q, log2fc, q_threshold, log2fc_threshold) -> bool:
+    """契約 15 列目 `significant` の唯一の判定。
+
+    dict ではなく**値**をキーワードで受ける。ARF 経路は結果行に `q_value`、
+    DatasetState 経路は `q` というキーで同じ量を持っており、キー名を契約側に
+    持ち込むと経路ごとの分岐が再発する。呼び出し側が自分のキーから値を取り出す。
+
+    欠測・NaN・inf は有意にしない。下流（massbank-context）はこの真偽値を
+    そのまま濃縮対象の選別に使うため、判定不能を偽として畳む。
+    """
+    if q is None or log2fc is None:
+        return False
+    q = float(q)
+    log2fc = float(log2fc)
+    if not (math.isfinite(q) and math.isfinite(log2fc)):
+        return False
+    return q <= q_threshold and abs(log2fc) >= log2fc_threshold
+
+
 def build_meta(*, group_a, n_a, group_b, n_b,
                q_threshold, log2fc_threshold, log_transform,
                n_features_total, n_with_inchikey, n_unannotated,

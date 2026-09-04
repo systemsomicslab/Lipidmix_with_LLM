@@ -8,6 +8,7 @@ from lipidmix.core.mcp_core import mcp
 from lipidmix.core.mcp_errors import missing_state, mztab_error
 from lipidmix.core.serialization import json_payload
 from lipidmix.mztab.reader import parse_mztab
+from lipidmix.mztab import evidence as mztab_evidence
 from lipidmix.mztab.dataset_state import build_dataset_state
 
 __all__ = ["dataset_load", "dataset_status"]
@@ -66,6 +67,9 @@ def dataset_load(mztab_path: str | None = None, job_path: str | None = None) -> 
         return validation
 
     ds = build_dataset_state(parse_result, p.name, p)
+    # 検出状態（gap-fill）は mzTab-M に無い。隣接 `.arf` から補えるかを試す。
+    # 取り込めなくても解析は続けられるので、封筒ではなく warning で伝える。
+    mztab_evidence.attach_to_dataset(ds, p)
     session_state.session.dataset = ds
 
     return _summary_text(ds, p.name)
@@ -138,6 +142,10 @@ def _load_from_job(job_path_str: str) -> str:
         abs_p = str(_artifact_abs_path(job, getattr(art, "root", "run_dir"), art.path))
         ds.artifact_paths.setdefault(art.role, []).append(abs_p)
 
+    # artifact_paths を入れ終えてから呼ぶ。handoff が記録した peak_matrix_source を
+    # 候補の先頭に使えるのは、この時点以降だけ。
+    mztab_evidence.attach_to_dataset(ds, mztab_abs)
+
     session_state.session.dataset = ds
 
     lines = [_summary_text(ds, mztab_abs.name)]
@@ -189,6 +197,9 @@ def dataset_status() -> str:
         # 名前を知る手段が「わざと群サイズ不足のエラーを起こして details を読む」
         # しか無かった。行が並ぶ一覧なので TSV（列名 1 回）で返す。
         "samples": _samples_tsv(ds),
+        # 検出状態の有無。「無い」と「全部未検出」は解釈が正反対なので、
+        # 率だけを返して available を省くことはしない。
+        "detection": _detection_summary(ds),
     }
     if ds.job_path:
         payload["job_path"] = ds.job_path
@@ -198,6 +209,21 @@ def dataset_status() -> str:
 
 
 # ---------- 内部ヘルパ ----------
+
+
+def _detection_summary(ds) -> dict:
+    """検出状態（gap-fill）の要約。行列そのものは返さない（42,840 セル規模）。"""
+    qc = ds.feature_qc or {}
+    if ds.detected_mask is None:
+        return {"available": False,
+                "reason": qc.get("reason", "no_candidate"),
+                "note": ("mzTab-M の非ゼロ値には gap-fill による補間値が含まれ得ます。"
+                         "検出状態が取り込めていないため、検出率・欠測率は語れません。")}
+    return {"available": True,
+            "source": qc.get("source"),
+            "n_cells": qc.get("n_cells"),
+            "n_detected": qc.get("n_detected"),
+            "gap_filled_rate": qc.get("gap_filled_rate")}
 
 def _artifact_abs_path(job, root: str, rel: str) -> Path:
     """生成物の相対パスを、記録された出所ルートから絶対パスへ戻す。
@@ -284,6 +310,18 @@ def _validate_or_error(parse_result: dict, filename: str) -> dict | str:
     return result
 
 
+def _detection_line(ds) -> str:
+    qc = ds.feature_qc or {}
+    if ds.detected_mask is None:
+        return ("- 検出状態: 取り込めていません"
+                f"（{qc.get('reason', 'no_candidate')}）。非ゼロ値に gap-fill 補間が"
+                "混在し得るため検出率・欠測率は語れません")
+    rate = qc.get("gap_filled_rate")
+    percent = f"{rate * 100:.1f}%" if rate is not None else "不明"
+    return (f"- 検出状態: {qc.get('source')} 由来 — 実測 {qc.get('n_detected')}/"
+            f"{qc.get('n_cells')} セル（gap-fill {percent}）")
+
+
 def _summary_text(ds, filename: str) -> str:
     lines = [
         f"## dataset_load 完了: {filename}",
@@ -293,6 +331,9 @@ def _summary_text(ds, filename: str) -> str:
         f"- 定量種別: {ds.quantification_measure or '不明'} ({ds.quantification_confidence})",
         f"- 検証: {'OK' if ds.validation_result['ok'] else 'NG — ' + '; '.join(ds.validation_result['errors'])}",
         f"- InChIKey 付き: {ds.inchikey_coverage.get('with_inchikey', 0)}/{ds.inchikey_coverage.get('total_features', 0)} 件",
+        # 検出状態は入口で言う。実データでは 70% のセルが gap-fill だったので、
+        # これを知らずに非ゼロを検出と数えると検出率を 3 倍以上に過大評価する。
+        _detection_line(ds),
     ]
     if ds.validation_result.get("warnings"):
         lines.append(f"- 警告 {len(ds.validation_result['warnings'])} 件: " +

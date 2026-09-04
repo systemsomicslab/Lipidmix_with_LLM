@@ -156,6 +156,30 @@ def _pca_axis_labels(pca_result: dict) -> tuple[str, str]:
     return f"PC1 ({evr[0] * 100:.2f}%)", f"PC2 ({evr[1] * 100:.2f}%)"
 
 
+def dataset_pca_plot(last_pca: dict, title: str = "PCA (mzTab-M)") -> dict | None:
+    """DatasetState の PCA 結果を `_pca_scatter_arrays` が食う散布図 dict に射影する。
+
+    ARF 経路は `session.arf.last_pca_plot` に点列を持つが、DatasetState 経路は
+    `ds.last_pca["scores"]`（name / role / PC1 / PC2…）という別の形で持っている。
+    図の描画側に経路別の分岐を作らないため、ここで 1 つの形へ寄せる。
+
+    PC2 が無い（主成分 1 つ）場合は散布図にできないので None を返す。
+    """
+    scores = (last_pca or {}).get("scores") or []
+    points = []
+    for row in scores:
+        x, y = row.get("PC1"), row.get("PC2")
+        if x is None or y is None:
+            continue
+        points.append({"x": float(x), "y": float(y), "label": row.get("name")})
+    if not points:
+        return None
+    evr = (last_pca or {}).get("explained_variance_ratio") or []
+    x_label = f"PC1 ({evr[0] * 100:.2f}%)" if len(evr) > 0 else "PC1"
+    y_label = f"PC2 ({evr[1] * 100:.2f}%)" if len(evr) > 1 else "PC2"
+    return {"title": title, "x_label": x_label, "y_label": y_label, "points": points}
+
+
 def _remember_arf_pca_plot(
     pca_result: dict,
     sample_names: list[str],

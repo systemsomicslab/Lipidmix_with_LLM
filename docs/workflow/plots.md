@@ -8,7 +8,7 @@
 
 | payload | 生成元 | 保存 | 特徴 |
 |---|---|---|---|
-| PCA スコア（`session.arf.last_pca`） | `arf_parser` / `arf_pca_preprocessed` | `save_pca_figure` | 散布図。`_pca_scatter_arrays` で座標配列に展開 |
+| PCA スコア（`session.arf.last_pca_plot` / `session.dataset.last_pca`） | `arf_parser` / `arf_pca_preprocessed` / `dataset_pca` | `save_pca_figure` | 散布図。`_pca_scatter_arrays` で座標配列に展開 |
 | `lipidmix.volcano.v1` | `arf_plot_volcano(output="payload")` | `save_volcano_figure` | `up`/`down` は全点保持、`ns` のみ間引く |
 | `lipidmix.eic.v1` / `.multi.v1` | `eic_plot_chromatograms` / `eic_plot_compounds(output="payload")` | `save_eic_figure` | 線グラフ。描画は `plots/eic.py` に委譲 |
 
@@ -28,36 +28,45 @@
 
 ## save_pca_figure
 
-前提: `arf_parser` / `arf_pca_preprocessed` / `load_dataset` のいずれか実行済み
-（未実行なら手順 2 で `MissingState`）
+前提: `arf_parser` / `arf_pca_preprocessed` / `load_dataset` / `dataset_pca` の
+いずれか実行済み（未実行なら手順 3 で `MissingState`）
 状態変更: PNG ファイルを書き出す。
 
-生行列 PCA と前処理後 PCA は同じスロット（`session.arf.last_pca`）を使うので、
-保存されるのは**直近に実行したほう**の図になる。
+入力元は 2 つある。ARF 経路は `session.arf.last_pca_plot`、mzTab-M 経路は
+`session.dataset.last_pca`。手順 2 が選び、**両方あるときは ARF を優先**して
+どちらを使ったかを戻り値の `source=` に書く。生行列 PCA と前処理後 PCA は
+ARF 側の同じスロットを使うので、保存されるのは**直近に実行したほう**の図になる。
 
 1. lipidmix/tools/reports.py  save_pca_figure()
-2. └─ lipidmix/core/mcp_errors.py  missing_state()
-3. └─ lipidmix/corpus/knowledge_store.py  make_slug()
-4. └─ lipidmix/core/mcp_core.py  _resolve_report_dir()
-5. │  └─ lipidmix/core/mcp_core.py  _report_dir_candidates()
-6. │  └─ lipidmix/core/mcp_core.py  _first_writable_dir()
-7. └─ lipidmix/core/tool_helpers.py  _pca_scatter_arrays()
+2. └─ lipidmix/tools/reports.py  _select_pca_plot()
+3. │  └─ lipidmix/core/tool_helpers.py  dataset_pca_plot()
+4. └─ lipidmix/core/mcp_errors.py  missing_state()
+5. └─ lipidmix/corpus/knowledge_store.py  make_slug()
+6. └─ lipidmix/core/mcp_core.py  _resolve_report_dir()
+7. │  └─ lipidmix/core/mcp_core.py  _report_dir_candidates()
+8. │  └─ lipidmix/core/mcp_core.py  _first_writable_dir()
+9. └─ lipidmix/core/tool_helpers.py  _pca_scatter_arrays()
 
 ## save_volcano_figure
 
-前提: `arf_differential` 実行済み（未実行なら手順 2 で `MissingState`）
+前提: `arf_differential` または `dataset_differential` 実行済み
+（未実行なら手順 3 で `MissingState`）
 状態変更: PNG ファイルを書き出す。
 
-`arf_plot_volcano` を経由する必要はない。`session.arf.last_differential` に保持された
-全量 volcano を直接描く（`arf_plot_volcano` の画像モードと同じ描画関数）。
+`arf_plot_volcano` を経由する必要はない。`session.arf.last_differential` または
+`session.dataset.last_differential` に保持された全量 volcano を直接描く
+（`arf_plot_volcano` の画像モードと同じ描画関数）。両経路が
+`differential.volcano_data()` の点列を共有しているので、描画関数は 1 つで足りる。
+手順 2 が入力元を選び、戻り値の `source=` にどちらを使ったかを書く。
 
 1. lipidmix/tools/reports.py  save_volcano_figure()
-2. └─ lipidmix/core/mcp_errors.py  missing_state()
-3. └─ lipidmix/corpus/knowledge_store.py  make_slug()
-4. └─ lipidmix/core/mcp_core.py  _resolve_report_dir()
-5. │  └─ lipidmix/core/mcp_core.py  _report_dir_candidates()
-6. │  └─ lipidmix/core/mcp_core.py  _first_writable_dir()
-7. └─ lipidmix/plots/volcano.py  render_volcano_plot()
+2. └─ lipidmix/tools/reports.py  _select_differential()
+3. └─ lipidmix/core/mcp_errors.py  missing_state()
+4. └─ lipidmix/corpus/knowledge_store.py  make_slug()
+5. └─ lipidmix/core/mcp_core.py  _resolve_report_dir()
+6. │  └─ lipidmix/core/mcp_core.py  _report_dir_candidates()
+7. │  └─ lipidmix/core/mcp_core.py  _first_writable_dir()
+8. └─ lipidmix/plots/volcano.py  render_volcano_plot()
 
 ## save_eic_figure
 

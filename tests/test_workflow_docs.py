@@ -80,7 +80,7 @@ def _defined_names(py_path: Path) -> set[str]:
 
 def _iter_chain_refs():
     """全文書の呼び出し連鎖行を (文書名, 行番号, パス, 関数名) で返す。"""
-    for md in sorted(WORKFLOW_DIR.glob("*.md")):
+    for md in sorted(WORKFLOW_DIR.rglob("*.md")):
         for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
             m = CHAIN_RE.match(line)
             if m:
@@ -91,7 +91,7 @@ class TestWorkflowDocsExist(unittest.TestCase):
     def test_all_expected_documents_exist(self):
         self.assertTrue(WORKFLOW_DIR.is_dir(), f"{WORKFLOW_DIR} がない")
         expected = {"index.md", *IN_SCOPE}
-        actual = {p.name for p in WORKFLOW_DIR.glob("*.md")}
+        actual = {p.name for p in WORKFLOW_DIR.rglob("*.md")}
         self.assertEqual(expected, actual)
 
 
@@ -143,7 +143,7 @@ class TestScopeBoundary(unittest.TestCase):
                     self.assertIn(tool, headings, f"{doc} に `## {tool}` 節がない")
 
     def test_out_of_scope_tools_have_no_section(self):
-        for md in sorted(WORKFLOW_DIR.glob("*.md")):
+        for md in sorted(WORKFLOW_DIR.rglob("*.md")):
             headings = set(HEADING_RE.findall(md.read_text(encoding="utf-8")))
             for tool in OUT_OF_SCOPE:
                 with self.subTest(doc=md.name, tool=tool):

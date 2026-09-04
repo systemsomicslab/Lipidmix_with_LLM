@@ -1034,15 +1034,6 @@ def arf_export_differential(output_path: str) -> str:
     q_threshold = last.get("q_threshold")
     log2fc_threshold = last.get("log2fc_threshold")
 
-    def _is_significant(row: dict) -> bool:
-        q_value = row.get("q_value")
-        log2fc = row.get("log2fc")
-        if q_value is None or log2fc is None:
-            return False
-        if not (math.isfinite(q_value) and math.isfinite(log2fc)):
-            return False
-        return q_value <= q_threshold and abs(log2fc) >= log2fc_threshold
-
     meta = export_contract.build_meta(
         group_a=last["a"], n_a=last["n_a"],
         group_b=last["b"], n_b=last["n_b"],
@@ -1083,7 +1074,9 @@ def arf_export_differential(output_path: str) -> str:
             "log2fc": row["log2fc"],
             "p_value": row["p_value"], "q_value": row["q_value"],
             "mean_a": row["mean_a"], "mean_b": row["mean_b"],
-            "significant": _is_significant(row),
+            "significant": export_contract.is_significant(
+                q=row["q_value"], log2fc=row["log2fc"],
+                q_threshold=q_threshold, log2fc_threshold=log2fc_threshold),
         }))
 
     out = Path(output_path)

@@ -56,6 +56,13 @@ class DatasetState:
         self.sme_rows: list[dict] | None = None
         self.validation_result: dict = {}
         self.inchikey_coverage: dict = {}
+        # evidence sidecar（spec §10.1）。mzTab-M は非ゼロ値が実測か gap-fill かを
+        # 区別しないので、隣接 `.arf` から (特徴 × サンプル) の検出状態を補う。
+        # 42,840 セル規模になるため dict ではなく bool 行列で持ち、戻り値には出さない。
+        # feature_matrix と同じ (n_features, n_samples) の並び。取り込めなかった場合は
+        # None のまま残し、feature_qc に理由を書く（0 件と混同させない）。
+        self.detected_mask = None
+        self.feature_qc: dict = {}
 
         # --- ジョブ由来フィールド（dataset_load(job_path=...) で設定） ---
         # job_path: analysis-job.json の絶対パス。mzTab-M を直接指定した場合は None。

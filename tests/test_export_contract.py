@@ -111,3 +111,37 @@ def test_run_dataset_differential_tracks_contract_module(monkeypatch):
 
     assert result["contract_version"] == 999
     assert result["log2fc_sign"] == "patched sign for linkage test"
+
+
+# --- significant 判定（契約 15 列目）---
+
+def test_is_significant_at_thresholds_is_inclusive():
+    """境界ちょうどは有意。q <= 閾値、|log2fc| >= 閾値。"""
+    from lipidmix.analysis.export_contract import is_significant
+    assert is_significant(q=0.05, log2fc=1.0, q_threshold=0.05, log2fc_threshold=1.0)
+    assert is_significant(q=0.05, log2fc=-1.0, q_threshold=0.05, log2fc_threshold=1.0)
+    assert not is_significant(q=0.051, log2fc=1.0, q_threshold=0.05, log2fc_threshold=1.0)
+    assert not is_significant(q=0.05, log2fc=0.999, q_threshold=0.05, log2fc_threshold=1.0)
+
+
+def test_is_significant_rejects_missing_and_non_finite():
+    """欠測・NaN・inf は有意にしない（下流が真偽を鵜呑みにするため）。"""
+    from lipidmix.analysis.export_contract import is_significant
+    nan, inf = float("nan"), float("inf")
+    assert not is_significant(q=None, log2fc=1.0, q_threshold=0.05, log2fc_threshold=1.0)
+    assert not is_significant(q=0.01, log2fc=None, q_threshold=0.05, log2fc_threshold=1.0)
+    assert not is_significant(q=nan, log2fc=1.0, q_threshold=0.05, log2fc_threshold=1.0)
+    assert not is_significant(q=0.01, log2fc=nan, q_threshold=0.05, log2fc_threshold=1.0)
+    assert not is_significant(q=0.01, log2fc=inf, q_threshold=0.05, log2fc_threshold=1.0)
+
+
+def test_both_export_paths_use_the_contract_significance():
+    """ARF 経路と DatasetState 経路が別実装を持たないこと。
+
+    キー名が `q_value` / `q` で違うだけの同一ロジックが 2 箇所にあると、
+    片方だけ直した状態で下流は同一契約として読む。
+    """
+    from lipidmix.arf import tools as arf_tools
+    from lipidmix.tools import dataset_analysis_tools
+    assert not hasattr(arf_tools, "_is_significant")
+    assert not hasattr(dataset_analysis_tools, "_is_significant")
