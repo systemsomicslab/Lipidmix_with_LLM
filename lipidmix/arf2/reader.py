@@ -79,7 +79,7 @@ def _nested_at(val, idx: int, default=None):
 def extract_arf2_data(data: list) -> Optional[dict]:
     """1つのスポットデータ(.arf2形式 = AlignmentSpotProperty)からカタログ情報を抽出する。
 
-    Key番号は docs/AlignmentSpotProperty.md ([Key(N)]) に対応。
+    Key番号は docs/schema/AlignmentSpotProperty.md の Key 番号表に対応。
     既存6項目に加え、同定情報・品質メトリクスを抽出する（後方互換のため既存キーは維持）。
     """
     if not isinstance(data, list) or len(data) < 10:

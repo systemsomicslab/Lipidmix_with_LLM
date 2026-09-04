@@ -1,526 +1,123 @@
-using Accord.Diagnostics;
-using CompMs.Common.Algorithm.PeakPick;
-using CompMs.Common.Components;
-using CompMs.Common.DataObj.Property;
-using CompMs.Common.DataObj.Result;
-using CompMs.Common.Enum;
-using CompMs.Common.Extension;
-using CompMs.Common.Interfaces;
-using CompMs.MsdialCore.Algorithm.Annotation;
-using CompMs.MsdialCore.Utility;
-using MessagePack;
-using System;
-using System.Collections.Generic;
-using System.Linq;
+# ChromatogramPeakFeature — MessagePack Key 番号表
 
-namespace CompMs.MsdialCore.DataObj
-{
-    [MessagePackObject]
-    public sealed class ChromatogramPeakFeature : IChromatogramPeakFeature, IChromatogramPeak, IMoleculeMsProperty, IMSIonProperty, IAnnotatedObject
-    {
-        public ChromatogramPeakFeature() {
-            PeakFeature = new BaseChromatogramPeakFeature();
-        }
+`.pai2`（個別測定で検出されたピーク）1 行ぶんの MessagePack 配列に対する Key 番号の正準表。
 
-        public ChromatogramPeakFeature(IChromatogramPeakFeature peakFeature) {
-            PeakFeature = peakFeature;
-        }
+**リーダのインデックスを変える前にこの表を見る。推測で直さない。**
+このクラスには 2 つの罠がある。
 
-        [IgnoreMember]
-        public IChromatogramPeakFeature PeakFeature { get; set; }
-        // basic property of IChromatogramPeakFeature
-        // The following IChromatogramPeakFeature property is written only for serialize and deserialize by MessagePack. Do not use them.
-        // Use the PeakFeature property instead of them.
-        [Key(0)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public int ChromScanIdLeft { get => PeakFeature.ChromScanIdLeft; set => PeakFeature.ChromScanIdLeft = value; }
-        [Key(1)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public int ChromScanIdTop { get => PeakFeature.ChromScanIdTop; set => PeakFeature.ChromScanIdTop = value; }
-        [Key(2)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public int ChromScanIdRight { get => PeakFeature.ChromScanIdRight; set => PeakFeature.ChromScanIdRight = value; }
-        [Key(3)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public ChromXs ChromXsLeft { get => PeakFeature.ChromXsLeft; set => PeakFeature.ChromXsLeft = value; }
-        [Key(4)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public ChromXs ChromXsTop { get => PeakFeature.ChromXsTop; set => PeakFeature.ChromXsTop = value; }
-        [Key(5)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public ChromXs ChromXsRight { get => PeakFeature.ChromXsRight; set => PeakFeature.ChromXsRight = value; }
-        [Key(6)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public double PeakHeightLeft { get => PeakFeature.PeakHeightLeft; set => PeakFeature.PeakHeightLeft = value; }
-        [Key(7)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public double PeakHeightTop { get => PeakFeature.PeakHeightTop; set => PeakFeature.PeakHeightTop = value; }
-        [Key(8)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public double PeakHeightRight { get => PeakFeature.PeakHeightRight; set => PeakFeature.PeakHeightRight = value; }
-        [Key(9)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public double PeakAreaAboveZero { get => PeakFeature.PeakAreaAboveZero; set => PeakFeature.PeakAreaAboveZero = value; }
-        [Key(10)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public double PeakAreaAboveBaseline { get => PeakFeature.PeakAreaAboveBaseline; set => PeakFeature.PeakAreaAboveBaseline = value; }
-        [Key(43)]
-        [Obsolete("Use PeakFeature property instead.")]
-        public double Mass { get => PeakFeature.Mass; set => PeakFeature.Mass = value; }
-        public double PeakWidth(ChromXType type) {
-            switch (type) {
-                case ChromXType.RT: return ChromXsRight.RT.Value - ChromXsLeft.RT.Value;
-                case ChromXType.RI: return ChromXsRight.RI.Value - ChromXsLeft.RI.Value;
-                case ChromXType.Drift: return ChromXsRight.Drift.Value - ChromXsLeft.Drift.Value;
-                default: return ChromXsRight.Value - ChromXsLeft.Value;
-            }
-        }
-        public double PeakWidth() {
-            return ChromXsRight.Value - ChromXsLeft.Value;
-        }
+1. **Key0〜10 と Key43 は C# 上 Obsolete だが、シリアライズ対象からは外れていない。**
+   ピークの位置・高さ・面積・質量はこの番号群にしか無く、`.pai2` リーダは実際にここを読む。
+   「非推奨だから使わない」と判断して番号を空けてはいけない。
+2. **Key49 は過去に別メンバへ振られていた番号の再利用**で、Key50 は Key49 の private
+   バックフィールドに付いた Key（同じ内容が二重に載る）。
 
-        // basic ID metadata
-        [Key(11)]
-        public int MasterPeakID { get; set; } // sequential IDs parsing all peak features extracted from an MS data
-        [Key(12)]
-        public int PeakID { get; set; } // sequential IDs from the same dimmension e.g. RT vs MZ or IM vs MZ
-        [Key(13)]
-        public int ParentPeakID { get; set; } // for LC-IM-MS/MS. The parent peak ID generating the daughter peak IDs
-        [Key(15)]
-        public long SeekPointToDCLFile { get; set; } // deconvoluted spectrum is stored in dcl file, and this is the seek pointer
+関連: [../output_format/pai2.md](../output_format/pai2.md)（フィールドの意味）、
+MS/MS 本体は同名の `.dcl`（[../output_format/dcl.md](../output_format/dcl.md)）
 
-        public int GetMSDecResultID() {
-            if (MSDecResultIdUsed == -1) {
-                if (IsMultiLayeredData())
-                    return MasterPeakID;
-                else
-                    return PeakID;
-            }
-            else {
-                return MSDecResultIdUsed;
-            }
-        }
+## 出典
 
-        // link to raw data
-        [Key(16)]
-        public int MS1RawSpectrumIdTop { get; set; }
-        [Key(44)]
-        public int MS1RawSpectrumIdLeft { get; set; }
-        [Key(45)]
-        public int MS1RawSpectrumIdRight { get; set; }
-        [Key(17)]
-        public int MS1AccumulatedMs1RawSpectrumIdTop { get; set; } // used for LC-IM-MS/MS
-        [Key(46)]
-        public int MS1AccumulatedMs1RawSpectrumIdLeft { get; set; } // used for LC-IM-MS/MS
-        [Key(47)]
-        public int MS1AccumulatedMs1RawSpectrumIdRight { get; set; } // used for LC-IM-MS/MS
-        [Key(18)]
-        public int MS2RawSpectrumID { get; set; } = -1; // representative ID
-        [Key(19)]
-        public Dictionary<int, double> MS2RawSpectrumID2CE { get; set; } = new Dictionary<int, double>();
+MS-DIAL（MsdialWorkbench）の C# クラス `CompMs.MsdialCore.DataObj.ChromatogramPeakFeature`
+（上流の `src/MSDIAL5/MsdialCore/DataObj/ChromatogramPeakFeature.cs`）に付いた `[Key(N)]` 属性から抽出した。
 
-        // set for IMMScanProperty
-        [Key(20)]
-        public int ScanID { get; set; } // same as MS1RawSpectrumID
-        [IgnoreMember]
-        public double PrecursorMz { get => PeakFeature.Mass; set => PeakFeature.Mass = value; } // in LC-MS/MS same as Mass
-        [Key(22)]
-        public IonMode IonMode { get; set; }
-        [IgnoreMember]
-        public ChromXs ChromXs { get => PeakFeature.ChromXsTop; set => PeakFeature.ChromXsTop = value; } // same as ChromXsTop
-        [Key(24)]
-        public List<SpectrumPeak> Spectrum { get; set; } = new List<SpectrumPeak>();
-        public void AddPeak(double mass, double intensity, string comment = null) {
-            Spectrum.Add(new SpectrumPeak(mass, intensity, comment));
-        }
+- 上流: <https://github.com/systemsomicslab/MsdialWorkbench>（LGPL-3.0）
+- 照合したコミット: `45a531c`（2026-09-02）
+- **この表は Key 番号とメンバ名・型の対応だけを写したもので、上流のソースコードは含まない。**
+- MS-DIAL 側でクラスが変わったら、上流の同ファイルを開いて `[Key(N)]` を読み直し、
+  この表を更新する。実装（`lipidmix/*/reader.py`）から逆算して直してはいけない。
 
-        // set for IMoleculeProperty (for representative)
-        [Key(25)]
-        public string Name { get; set; } = string.Empty;
-        [Key(26)]
-        public Formula Formula { get; set; } = new Formula();
-        [Key(27)]
-        public string Ontology { get; set; } = string.Empty;
-        [Key(28)]
-        public string SMILES { get; set; } = string.Empty;
-        [Key(29)]
-        public string InChIKey { get; set; } = string.Empty;
-        [Key(52)]
-        public string Protein { get; set; } = string.Empty;
-        [Key(53)]
-        public int ProteinGroupID { get; set; } = -1;
+表は **Key 番号の昇順**で並べている（上流のソース上の宣言順とは一致しない）。
 
-        public bool IsValidInChIKey() {
-            return !string.IsNullOrWhiteSpace(InChIKey) && InChIKey.Length == 27;
-        }
+## Key 番号表
 
-        // ion physiochemical information
-        [Key(30)]
-        public AdductIon AdductType { get; set; } // representative
-        public void SetAdductType(AdductIon adductIon) {
-            AdductType = adductIon;
-            if (PeakCharacter is null) PeakCharacter = new IonFeatureCharacter();
-            PeakCharacter.AdductType = adductIon;
-            PeakCharacter.Charge = adductIon.ChargeNumber;
-        }
-        [IgnoreMember]
-        public bool IsAdductTypeFormatted
-            => AdductType != null && AdductType.FormatCheck && AdductType.HasAdduct;
+| Key | 型 | メンバ | 備考 |
+|---:|---|---|---|
+| 0 | `int` | `ChromScanIdLeft` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 1 | `int` | `ChromScanIdTop` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 2 | `int` | `ChromScanIdRight` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 3 | `ChromXs` | `ChromXsLeft` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 4 | `ChromXs` | `ChromXsTop` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 5 | `ChromXs` | `ChromXsRight` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 6 | `double` | `PeakHeightLeft` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 7 | `double` | `PeakHeightTop` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 8 | `double` | `PeakHeightRight` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 9 | `double` | `PeakAreaAboveZero` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 10 | `double` | `PeakAreaAboveBaseline` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 11 | `int` | `MasterPeakID` | 全ピーク通しの連番。pai2 リーダはこれを `id` として返す。 |
+| 12 | `int` | `PeakID` | 同一次元内の連番。 |
+| 13 | `int` | `ParentPeakID` | LC-IM-MS/MS で親ピークを指す。 |
+| 15 | `long` | `SeekPointToDCLFile` | `.dcl` 内のシーク位置。デコンボリューション済み MS/MS の所在。 |
+| 16 | `int` | `MS1RawSpectrumIdTop` |  |
+| 17 | `int` | `MS1AccumulatedMs1RawSpectrumIdTop` | LC-IM-MS/MS 用。 |
+| 18 | `int` | `MS2RawSpectrumID` | 既定 -1。代表 ID。 |
+| 19 | `Dictionary<int, double>` | `MS2RawSpectrumID2CE` | 衝突エネルギーの写像。取得有無の判定に使える。 |
+| 20 | `int` | `ScanID` | Key16 MS1RawSpectrumIdTop と同義。 |
+| 22 | `IonMode` | `IonMode` | 0=Positive / 1=Negative / 2=Both / -1=Unknown。 |
+| 24 | `List<SpectrumPeak>` | `Spectrum` | `List<SpectrumPeak>`。**実データではほぼ空**（MS/MS 本体は同名の `.dcl` にある）。 |
+| 25 | `string` | `Name` |  |
+| 26 | `Formula` | `Formula` | 入れ子。index0 が組成式文字列。 |
+| 27 | `string` | `Ontology` |  |
+| 28 | `string` | `SMILES` |  |
+| 29 | `string` | `InChIKey` |  |
+| 30 | `AdductIon` | `AdductType` | 入れ子。index2 が付加体文字列（`[M-H]-` など）。 |
+| 31 | `double` | `CollisionCrossSection` |  |
+| 33 | `Dictionary<int, List<int>>` | `MSRawID2MspIDs` | 閾値を超えた候補の ID 群。 |
+| 35 | `List<int>` | `TextDbIDs` | テキスト DB 由来の候補 ID（任意）。 |
+| 36 | `Dictionary<int, MsScanMatchResult>` | `MSRawID2MspBasedMatchResult` |  |
+| 37 | `MsScanMatchResult` | `TextDbBasedMatchResult` |  |
+| 38 | `string` | `Comment` |  |
+| 39 | `IonFeatureCharacter` | `PeakCharacter` | 入れ子。付加体・電荷はここに入る。 |
+| 40 | `ChromatogramPeakShape` | `PeakShape` | 入れ子（ChromatogramPeakShape）。index0=EstimatedNoise, index1=SignalToNoise。S/N はここから取る。 |
+| 41 | `FeatureFilterStatus` | `FeatureFilterStatus` |  |
+| 42 | `List<ChromatogramPeakFeature>` | `DriftChromFeatures` | LC-IM 用。既定 null。 |
+| 43 | `double` | `Mass` | ⚠ C# 上は Obsolete（`PeakFeature` へ委譲）。**シリアライズ対象からは外れていない**。 |
+| 44 | `int` | `MS1RawSpectrumIdLeft` |  |
+| 45 | `int` | `MS1RawSpectrumIdRight` |  |
+| 46 | `int` | `MS1AccumulatedMs1RawSpectrumIdLeft` | LC-IM-MS/MS 用。 |
+| 47 | `int` | `MS1AccumulatedMs1RawSpectrumIdRight` | LC-IM-MS/MS 用。 |
+| 49 | `MsScanMatchResultContainer` | `MatchResults` | 多行プロパティ。**かつて `TextDbIDWhenOrdered` に振られていた番号の再利用**（下の欠番表を参照）。 |
+| 50 | `MsScanMatchResultContainer` | `matchResults` | `private` フィールド。 private バックフィールドにも Key が振られており、Key49 と同じ内容が二重に載る。 |
+| 51 | `int` | `MSDecResultIdUsed` | 既定 -1。-1 のときは MasterPeakID を使う運用。 |
+| 52 | `string` | `Protein` | プロテオミクス用。 |
+| 53 | `int` | `ProteinGroupID` | プロテオミクス用。既定 -1。 |
 
-        [Key(31)]
-        public double CollisionCrossSection { get; set; }
+## 欠番（勝手に埋めない）
 
-        // molecule annotation results
-        // IDs to link properties
-        //[Key(32)]
-        //public int MspID { get; set; } = -1; // representative msp id
-        //[Key(48)]
-        //public int MspIDWhenOrdered { get; set; } = -1; // representative msp id
-        [Key(33)]
-        public Dictionary<int, List<int>> MSRawID2MspIDs { get; set; } = new Dictionary<int, List<int>>(); // MS raw id corresponds to ms2 raw ID (in MS/MS) and ms1 raw id (in EI-MS). ID list having the metabolite candidates exceeding the threshold
-        [Key(36)]
-        public Dictionary<int, MsScanMatchResult> MSRawID2MspBasedMatchResult { get; set; } = new Dictionary<int, MsScanMatchResult>(); // MS raw id corresponds to ms2 raw ID (in MS/MS) and ms1 raw id (in EI-MS).
+| Key | 状態 |
+|---:|---|
+| 14 | この版のクラス定義には存在しない。 |
+| 21 | この版のクラス定義には存在しない。 |
+| 23 | この版のクラス定義には存在しない。 |
+| 32 | `MspID`（`int`）に振られていたが上流でコメントアウト済み。 |
+| 34 | `TextDbID`（`int`）に振られていたが上流でコメントアウト済み。 |
+| 48 | `MspIDWhenOrdered`（`int`）に振られていたが上流でコメントアウト済み。 |
+| 49 | かつて `TextDbIDWhenOrdered` に振られていたが、**現在は別メンバで再利用されている**（上の表を参照）。 |
 
-        //[Key(34)]
-        //public int TextDbID { get; set; }// representative text id
-        //[Key(49)]
-        //public int TextDbIDWhenOrdered { get; set; }// representative text id
-        [Key(35)]
-        public List<int> TextDbIDs { get; set; } = new List<int>(); // ID list having the metabolite candidates exceeding the threshold (optional)
-        [Key(37)]
-        public MsScanMatchResult TextDbBasedMatchResult { get; set; } = null;
+## 同ファイル内の別クラス: LinkedPeakFeature
 
-        [IgnoreMember]
-        public MsScanMatchResult MspBasedMatchResult { // get result having max score
-            get {
-                if (MSRawID2MspBasedMatchResult.IsEmptyOrNull()) {
-                    return null;
-                }
-                else {
-                    return MSRawID2MspBasedMatchResult.Argmax(n => n.Value.TotalScore).Value;
-                }
-            }
-        }
+Key 番号は **0 から振り直される**。`ChromatogramPeakFeature` の番号と混ぜてはいけない。
 
-        [IgnoreMember]
-        public int TextDbID {
-            get {
-                if (TextDbBasedMatchResult != null) {
-                    return TextDbBasedMatchResult.LibraryID;
-                }
-                else {
-                    return -1;
-                }
-            }
-        }
+| Key | 型 | メンバ | 備考 |
+|---:|---|---|---|
+| 0 | `int` | `LinkedPeakID` |  |
+| 1 | `PeakLinkFeatureEnum` | `Character` |  |
 
-        [IgnoreMember]
-        public int TextDbIDWhenOrdered {
-            get {
-                if (TextDbBasedMatchResult != null) {
-                    return TextDbBasedMatchResult.LibraryIDWhenOrdered;
-                }
-                else {
-                    return -1;
-                }
-            }
-        }
+## 入れ子型のデコード
 
-        [IgnoreMember]
-        public int MspID {
-            get {
-                if (MSRawID2MspBasedMatchResult.IsEmptyOrNull()) {
-                    return -1;
-                }
-                else {
-                    return MSRawID2MspBasedMatchResult.Values.Argmax(n => n.TotalScore).LibraryID;
-                }
-            }
-        }
+MessagePack 上では、下の型は配列として入れ子で載る。**この内訳は上流のクラス定義には
+書かれておらず**、本リポジトリのリーダが実データに対して確認したもの。
 
-        [IgnoreMember]
-        public int MspIDWhenOrdered {
-            get {
-                if (MSRawID2MspBasedMatchResult.IsEmptyOrNull()) {
-                    return -1;
-                }
-                else {
-                    return MSRawID2MspBasedMatchResult.Values.Argmax(n => n.TotalScore).LibraryIDWhenOrdered;
-                }
-            }
-        }
+| 型 | MessagePack 上の形 | 取り出し方 |
+|---|---|---|
+| `ChromXs` | `[[種別, [値, ...]], ...]` | 種別 1=RT / 2=RI / 3=m/z / 4=ドリフト時間。値は `[1][0]`（`_convert_to_times()` / `_extract_times()`） |
+| `Formula` | `[組成式文字列, 質量, ...]` | index0 |
+| `AdductIon` | `[質量差, 電荷, 付加体文字列, ...]` | index2 |
+| `ChromatogramPeakShape` | `[EstimatedNoise, SignalToNoise, ...]` | index0 / index1 |
+| `IonMode` | int | 0=Positive / 1=Negative / 2=Both / -1=Unknown |
 
-        public bool IsReferenceMatched(IMatchResultEvaluator<MsScanMatchResult> evaluator) {
-            if (MatchResults.IsManuallyModifiedRepresentative) {
-                return !MatchResults.IsUnknown;
-            }
-            if (TextDbBasedMatchResult != null) {
-                return true;
-            }
-            if (MspBasedMatchResult != null && MspBasedMatchResult.IsSpectrumMatch) {
-                return true;
-            }
-            return MatchResults.IsReferenceMatched(evaluator);
-        }
+## 本リポジトリのリーダが読む Key
 
-        public bool IsAnnotationSuggested(IMatchResultEvaluator<MsScanMatchResult> evaluator) {
-            if (MatchResults.IsManuallyModifiedRepresentative) {
-                return false;
-            }
-            else if (TextDbBasedMatchResult != null) {
-                return false;
-            }
-            else if (MspBasedMatchResult != null && MspBasedMatchResult.IsSpectrumMatch) {
-                return false;
-            }
-            else if (MspBasedMatchResult != null && MspBasedMatchResult.IsPrecursorMzMatch) {
-                return true;
-            }
-            return MatchResults.IsAnnotationSuggested(evaluator);
-        }
+`lipidmix/pai2/reader.py` の `_convert_to_peakfeature()`:
+Key 3, 4, 5（ChromXs 左/トップ/右）, 6, 7, 8（高さ）, 9, 10（面積）, 11（id）, 18, 19, 22, 24,
+25, 26（index0）, 27, 28, 29, 30（index2）, 31, 38, 40（index1=S/N）, 43（m/z）。
 
-        [IgnoreMember]
-        public bool IsUnknown {
-            get {
-                if (MatchResults.IsManuallyModifiedRepresentative && MatchResults.IsUnknown) {
-                    return true;
-                }
-                if (MatchResults.IsUnknown && (TextDbBasedMatchResult == null || MspBasedMatchResult == null)) {
-                    return true;
-                }
-                return false;
-            }
-        }
-
-        [Key(49)]
-        public MsScanMatchResultContainer MatchResults {
-            get => matchResults ?? (matchResults = new MsScanMatchResultContainer());
-            set => matchResults = value;
-        }
-
-        [Key(50)]
-        private MsScanMatchResultContainer matchResults;
-
-        [IgnoreMember]
-        public bool IsManuallyModifiedForAnnotation {
-            get {
-                if (MatchResults?.Representative is MsScanMatchResult result) {
-                    return (result.Source & SourceType.Manual) != SourceType.None;
-                }
-                return false;
-            }
-        }
-
-        [IgnoreMember]
-        public bool IsMsmsContained => MSDecResultIdUsed >= 0 || MS2RawSpectrumID >= 0;
-
-        [Key(38)]
-        public string Comment { get; set; } = string.Empty;
-
-        // peak characters
-        [Key(39)]
-        public IonFeatureCharacter PeakCharacter { get; set; } = new IonFeatureCharacter();
-        [Key(40)]
-        public ChromatogramPeakShape PeakShape { get; set; } = new ChromatogramPeakShape();
-
-        // others
-        [Key(41)]
-        public FeatureFilterStatus FeatureFilterStatus { get; set; } = new FeatureFilterStatus();
-        [Key(42)]
-        public List<ChromatogramPeakFeature> DriftChromFeatures { get; set; } = null;
-
-        public bool IsMultiLayeredData() {
-            return !DriftChromFeatures.IsEmptyOrNull();
-        }
-
-        public bool AllDriftFeaturesAreAnnotated(IMatchResultEvaluator<MsScanMatchResult> evaluator) {
-            return IsMultiLayeredData() && DriftChromFeatures.All(n => n.IsReferenceMatched(evaluator));
-        }
-
-        [Key(51)]
-        public int MSDecResultIdUsed { get; set; } = -1;
-
-        [IgnoreMember]
-        public PeakSpotTagCollection TagCollection { get; } = new PeakSpotTagCollection();
-
-        public static ChromatogramPeakFeature FromPeakDetectionResult(PeakDetectionResult peakDetectionResult, Chromatogram chromatogram, double mz) {
-            if (peakDetectionResult == null) {
-                return null;
-            }
-
-            var basePeak = new BaseChromatogramPeakFeature
-            {
-                ChromScanIdLeft = peakDetectionResult.ScanNumAtLeftPeakEdge,
-                ChromScanIdTop = peakDetectionResult.ScanNumAtPeakTop,
-                ChromScanIdRight = peakDetectionResult.ScanNumAtRightPeakEdge,
-                ChromXsLeft = chromatogram.PeakChromXs(peakDetectionResult.ChromXAxisAtLeftPeakEdge, mz),
-                ChromXsTop = chromatogram.PeakChromXs(peakDetectionResult.ChromXAxisAtPeakTop, mz),
-                ChromXsRight = chromatogram.PeakChromXs(peakDetectionResult.ChromXAxisAtRightPeakEdge, mz),
-                PeakHeightLeft = peakDetectionResult.IntensityAtLeftPeakEdge,
-                PeakHeightTop = peakDetectionResult.IntensityAtPeakTop,
-                PeakHeightRight = peakDetectionResult.IntensityAtRightPeakEdge,
-                PeakAreaAboveZero = peakDetectionResult.AreaAboveZero,
-                PeakAreaAboveBaseline = peakDetectionResult.AreaAboveBaseline,
-                Mass = mz,
-            };
-
-            var peaks = chromatogram.AsPeakArray();
-            return new ChromatogramPeakFeature(basePeak)
-            {
-                MasterPeakID = peakDetectionResult.PeakID,
-                PeakID = peakDetectionResult.PeakID,
-
-                //assign the scan number of MS1 and MS/MS for precursor ion's peaks
-                MS1RawSpectrumIdTop = peaks[peakDetectionResult.ScanNumAtPeakTop].ID,
-                MS1RawSpectrumIdLeft = peaks[peakDetectionResult.ScanNumAtLeftPeakEdge].ID,
-                MS1RawSpectrumIdRight = peaks[peakDetectionResult.ScanNumAtRightPeakEdge].ID,
-
-                PeakShape = new ChromatogramPeakShape()
-                {
-                    SignalToNoise = peakDetectionResult.SignalToNoise,
-                    EstimatedNoise = peakDetectionResult.EstimatedNoise,
-                    BasePeakValue = peakDetectionResult.BasePeakValue,
-                    GaussianSimilarityValue = peakDetectionResult.GaussianSimilarityValue,
-                    IdealSlopeValue = peakDetectionResult.IdealSlopeValue,
-                    PeakPureValue = peakDetectionResult.PeakPureValue,
-                    ShapenessValue = peakDetectionResult.ShapnessValue,
-                    SymmetryValue = peakDetectionResult.SymmetryValue,
-                    AmplitudeOrderValue = peakDetectionResult.AmplitudeOrderValue,
-                    AmplitudeScoreValue = peakDetectionResult.AmplitudeScoreValue
-                }
-            };
-        }
-
-        public static ChromatogramPeakFeature FromPeakDetectionResult(PeakDetectionResult peakDetectionResult, ExtractedIonChromatogram chromatogram, double mz, IonMode ionMode) {
-            if (peakDetectionResult == null) {
-                return null;
-            }
-
-            var basePeak = new BaseChromatogramPeakFeature
-            {
-                ChromScanIdLeft = peakDetectionResult.ScanNumAtLeftPeakEdge,
-                ChromScanIdTop = peakDetectionResult.ScanNumAtPeakTop,
-                ChromScanIdRight = peakDetectionResult.ScanNumAtRightPeakEdge,
-                ChromXsLeft = chromatogram.PeakChromXs(peakDetectionResult.ChromXAxisAtLeftPeakEdge, mz),
-                ChromXsTop = chromatogram.PeakChromXs(peakDetectionResult.ChromXAxisAtPeakTop, mz),
-                ChromXsRight = chromatogram.PeakChromXs(peakDetectionResult.ChromXAxisAtRightPeakEdge, mz),
-                PeakHeightLeft = peakDetectionResult.IntensityAtLeftPeakEdge,
-                PeakHeightTop = peakDetectionResult.IntensityAtPeakTop,
-                PeakHeightRight = peakDetectionResult.IntensityAtRightPeakEdge,
-                PeakAreaAboveZero = peakDetectionResult.AreaAboveZero,
-                PeakAreaAboveBaseline = peakDetectionResult.AreaAboveBaseline,
-                Mass = mz,
-            };
-
-            return new ChromatogramPeakFeature(basePeak)
-            {
-                MasterPeakID = peakDetectionResult.PeakID,
-                PeakID = peakDetectionResult.PeakID,
-                IonMode = ionMode,
-
-                //assign the scan number of MS1 and MS/MS for precursor ion's peaks
-                MS1RawSpectrumIdTop = chromatogram.Id(peakDetectionResult.ScanNumAtPeakTop),
-                MS1RawSpectrumIdLeft = chromatogram.Id(peakDetectionResult.ScanNumAtLeftPeakEdge),
-                MS1RawSpectrumIdRight = chromatogram.Id(peakDetectionResult.ScanNumAtRightPeakEdge),
-
-                PeakShape = new ChromatogramPeakShape()
-                {
-                    SignalToNoise = peakDetectionResult.SignalToNoise,
-                    EstimatedNoise = peakDetectionResult.EstimatedNoise,
-                    BasePeakValue = peakDetectionResult.BasePeakValue,
-                    GaussianSimilarityValue = peakDetectionResult.GaussianSimilarityValue,
-                    IdealSlopeValue = peakDetectionResult.IdealSlopeValue,
-                    PeakPureValue = peakDetectionResult.PeakPureValue,
-                    ShapenessValue = peakDetectionResult.ShapnessValue,
-                    SymmetryValue = peakDetectionResult.SymmetryValue,
-                    AmplitudeOrderValue = peakDetectionResult.AmplitudeOrderValue,
-                    AmplitudeScoreValue = peakDetectionResult.AmplitudeScoreValue
-                }
-            };
-        }
-
-        public void SetPeakProperties(PeakOfChromatogram peakOfChromatogram) {
-            var peakTop = peakOfChromatogram.GetTop();
-            var peakLeft = peakOfChromatogram.GetLeft();
-            var peakRight = peakOfChromatogram.GetRight();
-            PeakFeature.ChromXsLeft = peakLeft.ChromXs;
-            PeakFeature.ChromXsTop = peakTop.ChromXs;
-            PeakFeature.ChromXsRight = peakRight.ChromXs;
-            PeakFeature.PeakHeightLeft = peakLeft.Intensity;
-            PeakFeature.PeakHeightTop = peakTop.Intensity;
-            PeakFeature.PeakHeightRight = peakRight.Intensity;
-            PeakFeature.ChromScanIdLeft = peakLeft.ID;
-            PeakFeature.ChromScanIdTop = peakTop.ID;
-            PeakFeature.ChromScanIdRight = peakRight.ID;
-            MS1RawSpectrumIdTop = PeakFeature.ChromScanIdTop;
-            MS1RawSpectrumIdLeft = PeakFeature.ChromScanIdLeft;
-            MS1RawSpectrumIdRight = PeakFeature.ChromScanIdRight;
-
-            PeakFeature.PeakAreaAboveZero = peakOfChromatogram.CalculateArea();
-            PeakFeature.PeakAreaAboveBaseline = PeakFeature.PeakAreaAboveZero - peakOfChromatogram.CalculateBaseLineArea();
-            PeakShape.SignalToNoise = (float)(peakOfChromatogram.CalculatePeakAmplitude() / PeakShape.EstimatedNoise);
-        }
-
-        public void SetMatchResultProperty(MoleculeMsReference reference, MsScanMatchResult result, IMatchResultEvaluator<MsScanMatchResult> evaluator) {
-            if (result.IsUnknown) {
-                return;
-            }
-            if (evaluator.IsReferenceMatched(result)) {
-                DataAccess.SetMoleculeMsProperty(this, reference, result);
-            }
-            else if (evaluator.IsAnnotationSuggested(result)) {
-                DataAccess.SetMoleculeMsPropertyAsSuggested(this, reference, result);
-            }
-        }
-
-        public void SetMatchResultProperty(IMatchResultRefer<MoleculeMsReference, MsScanMatchResult> refer, IMatchResultEvaluator<MsScanMatchResult> evaluator) {
-            var representative = MatchResults.Representative;
-            SetMatchResultProperty(refer.Refer(representative), representative, evaluator);
-        }
-
-        public void ClearMatchResultProperty() {
-            DataAccess.ClearMoleculePropertyInfomation(this);
-            MatchResults.ClearResults();
-        }
-
-        public void SetMs2SpectrumId(PeakMs2Spectra spectra) {
-            if (spectra.IsEmpty) {
-                return;
-            }
-            var indexToEnergy = spectra.FindOriginalIndexToCollisionEnergyAtPeakTop(MS1RawSpectrumIdTop);
-            foreach (var kvp in indexToEnergy) {
-                MS2RawSpectrumID2CE[kvp.Key] = kvp.Value;
-            }
-            MS2RawSpectrumID = spectra.FindOriginalIndexPeakTop(MS1RawSpectrumIdTop);
-        }
-
-        // ISpectrumPeak
-        double ISpectrumPeak.Intensity {
-            get => PeakFeature.PeakHeightTop;
-            set => PeakFeature.PeakHeightTop = value;
-        }
-
-        double ISpectrumPeak.Mass {
-            get => PrecursorMz;
-            set => PrecursorMz = value;
-        }
-
-        // IChromatogramPeak
-        int IChromatogramPeak.ID {
-            get => MasterPeakID;
-        }
-
-        ChromXs IChromatogramPeak.ChromXs {
-            get => PeakFeature.ChromXsTop;
-            set => PeakFeature.ChromXsTop = value;
-        }
-    }
-
-    [MessagePackObject]
-    public class LinkedPeakFeature {
-        [Key(0)]
-        public int LinkedPeakID { get; set; }
-        [Key(1)]
-        public PeakLinkFeatureEnum Character { get; set; }
-    }
-}
+Obsolete 側の番号（3〜10, 43）に依存していることに注意。

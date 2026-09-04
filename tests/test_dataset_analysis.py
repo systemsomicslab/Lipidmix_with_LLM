@@ -435,3 +435,60 @@ def test_run_dataset_differential_no_confounding_caveat_when_batches_mixed():
         group_b_samples=[n for n in ds.pp_sample_names if "treat" in n],
     )
     assert not any(c.startswith("交絡") for c in result["caveats"])
+
+
+# ---------- 検出率フィルタ（evidence sidecar 由来） ----------
+
+def test_min_detection_rate_drops_features_below_threshold():
+    """gap-fill を除いた実検出率で足切りする（ARF 経路の同名引数と同義）。"""
+    from lipidmix.analysis.dataset_analysis import run_dataset_preprocess
+    ds = _make_ds(n_features=4, n_samples=4)
+    # 特徴 0: 4/4 検出、特徴 1: 2/4、特徴 2: 1/4、特徴 3: 0/4
+    ds.detected_mask = np.array([
+        [True, True, True, True],
+        [True, True, False, False],
+        [True, False, False, False],
+        [False, False, False, False],
+    ])
+    ds.feature_qc = {"source": "arf"}
+
+    _, _, feature_names, _, _, report = run_dataset_preprocess(
+        ds, {"impute": "none", "min_detection_rate": 0.5})
+
+    assert feature_names == ["f0", "f1"]
+    assert report["detection_filter"]["min_detection_rate"] == 0.5
+    assert report["detection_filter"]["features_removed"] == 2
+
+
+def test_min_detection_rate_zero_keeps_everything():
+    from lipidmix.analysis.dataset_analysis import run_dataset_preprocess
+    ds = _make_ds(n_features=3, n_samples=4)
+    ds.detected_mask = np.zeros((3, 4), dtype=bool)
+    ds.feature_qc = {"source": "arf"}
+    _, _, feature_names, _, _, report = run_dataset_preprocess(
+        ds, {"impute": "none", "min_detection_rate": 0.0})
+    assert len(feature_names) == 3
+    assert "detection_filter" not in report
+
+
+def test_min_detection_rate_without_detection_state_is_a_bad_request():
+    """検出状態が無いのに足切りを求められたら、黙って 0 扱いにせず拒否する。"""
+    from lipidmix.analysis.dataset_analysis import (
+        PreconditionError, run_dataset_preprocess)
+    ds = _make_ds(n_features=3, n_samples=4)
+    assert ds.detected_mask is None
+    with pytest.raises(PreconditionError) as excinfo:
+        run_dataset_preprocess(ds, {"min_detection_rate": 0.5})
+    assert excinfo.value.kind == "bad_request"
+    assert "検出" in str(excinfo.value)
+
+
+def test_detection_rate_is_reported_even_without_filtering():
+    """フィルタを掛けなくても、検出状態があれば実検出率を報告する。"""
+    from lipidmix.analysis.dataset_analysis import run_dataset_preprocess
+    ds = _make_ds(n_features=2, n_samples=4)
+    ds.detected_mask = np.array([[True, True, True, True],
+                                 [True, False, False, False]])
+    ds.feature_qc = {"source": "arf"}
+    _, _, _, _, _, report = run_dataset_preprocess(ds, {"impute": "none"})
+    assert report["detection"]["gap_filled_rate"] == 0.375

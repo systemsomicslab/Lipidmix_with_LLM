@@ -112,7 +112,8 @@ class MissingStateContractTests(unittest.TestCase):
         self.assert_missing(
             server.save_pca_figure(analysis_id="x"),
             "pca_result",
-            ["arf_parser", "arf_pca_preprocessed", "load_dataset"],
+            # mzTab-M 経路（dataset_pca）も PCA の生産者なのでリプレイ候補に入る
+            ["arf_parser", "arf_pca_preprocessed", "load_dataset", "dataset_pca"],
             "PCA",
         )
 
@@ -120,7 +121,9 @@ class MissingStateContractTests(unittest.TestCase):
         self.assert_missing(
             server.save_volcano_figure(analysis_id="x"),
             "differential_result",
-            ["arf_differential"],
+            # 図の保存は mzTab-M 経路（dataset_differential）からもできる。
+            # arf_plot_volcano は ARF 専用なので候補は増やさない。
+            ["arf_differential", "dataset_differential"],
             "arf_differential",
         )
 

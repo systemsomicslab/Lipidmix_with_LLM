@@ -191,12 +191,25 @@ InChIKey・Ontology・m/z・RT と結合する。InChIKey が無い特徴は本�
 残さずエラーにする。`msi_level` は `arf2_annotate_identities` と同じ保守的な
 クラス上限であり、MS/MS 取得有無を表さない。
 
+列の組み立ては `lipidmix/analysis/export_contract.py` に閉じている（mzTab-M 経路の
+`dataset_export_differential` と同一の関数。[dataset_analysis.md](dataset_analysis.md) 参照）。
+15 列目 `significant` の判定も `is_significant()` に一本化してあり、ここには無い
+——ARF 側は `q_value`、DatasetState 側は `q` というキーで同じ量を持つため、
+判定を各経路に置くと 2 実装に分裂する（実際に分裂していた）。
+
 1. lipidmix/arf/tools.py  arf_export_differential()
-2. └─ lipidmix/core/mcp_errors.py  missing_state()
-3. └─ lipidmix/arf/tools.py  _sibling_arf2_path()
-4. └─ lipidmix/arf2/reader.py  load_catalog()
-5. └─ lipidmix/arf/identity_join.py  join_identity()
-6. └─ lipidmix/arf/tools.py  _format_export_number()
+2. ├─ lipidmix/core/mcp_errors.py  missing_state()
+3. ├─ lipidmix/arf/tools.py  _sibling_arf2_path()
+4. ├─ lipidmix/arf2/reader.py  load_catalog()
+5. ├─ lipidmix/arf/identity_join.py  join_identity()
+6. ├─ lipidmix/analysis/export_contract.py  build_meta()
+7. ├─ lipidmix/analysis/export_contract.py  is_significant()
+8. └─ lipidmix/analysis/export_contract.py  format_row()
+9.    └─ lipidmix/analysis/export_contract.py  format_number()
+
+`lipidmix/arf/tools.py` の `_format_export_number` は `export_contract.format_number`
+への別名で、**どこからも呼ばれていない**（後方互換のため意図的に残置）。連鎖に
+現れないのが正しい。
 
 ## arf_plot_volcano
 

@@ -132,6 +132,11 @@ def run_dataset_preprocess(ds, recipe: dict):
     """
     matrix, sample_names, feature_names, roles, sample_meta = build_dataset_pp_inputs(ds)
 
+    # 検出率フィルタは前処理より前に掛ける。正規化・補完のあとでは gap-fill セルが
+    # 実測値と区別できなくなり、「何を根拠に残したか」が言えなくなる。
+    matrix, feature_names, detection_report = _apply_detection_filter(
+        ds, matrix, feature_names, recipe.get("min_detection_rate"))
+
     run_order = {n: sample_meta[n]["run_order"] for n in sample_names}
 
     try:
@@ -145,6 +150,7 @@ def run_dataset_preprocess(ds, recipe: dict):
         ) from exc
 
     pp_feature_names = [feature_names[i] for i in kept_idx]
+    report.update(detection_report)
 
     # ブランクは blank_filter の参照として使い終えたので解析行列から外す。
     # 残すと総強度が桁違いに低い行が PCA の PC1 を支配する（arf_preprocess と同じ理由）。
@@ -356,6 +362,61 @@ def run_dataset_differential(
 
 
 # ---------- 内部ヘルパ ----------
+
+
+def _apply_detection_filter(ds, matrix, feature_names, min_detection_rate):
+    """実検出率（gap-fill を除く）で特徴量を足切りし、検出状況を報告する。
+
+    `matrix` は (サンプル × 特徴)、`ds.detected_mask` は (特徴 × サンプル) の並び。
+    足切りは列（特徴）に対して行う。
+
+    検出状態が無いのに閾値を渡された場合は例外にする。0 扱いで通すと「gap-fill
+    だけの特徴を実測として数えた行列」が黙って下流に流れるため。
+    """
+    mask = getattr(ds, "detected_mask", None)
+    requested = min_detection_rate is not None and min_detection_rate > 0.0
+
+    if mask is None:
+        if requested:
+            raise PreconditionError(
+                "bad_request",
+                "この DatasetState は検出状態（gap-fill の区別）を持たないため "
+                "min_detection_rate を適用できません。mzTab-M の非ゼロ値は実測ピークと "
+                "gap-fill 補間値の区別を持たず、隣接する .arf からも取り込めませんでした"
+                "（理由は dataset_status の detection を参照）。検出率での足切りが必要なら "
+                "ARF 経路（arf_parser / arf_preprocess）を使ってください。",
+                {"min_detection_rate": min_detection_rate,
+                 "detection": (ds.feature_qc or {}).get("reason")},
+            )
+        return matrix, feature_names, {}
+
+    rates = preprocessing.detection_rates(mask)
+    n_cells = int(mask.size)
+    n_detected = int(mask.sum())
+    report = {"detection": {
+        "source": (ds.feature_qc or {}).get("source"),
+        "n_cells": n_cells,
+        "n_detected": n_detected,
+        "gap_filled_rate": round(1.0 - n_detected / n_cells, 4) if n_cells else None,
+    }}
+    if not requested:
+        return matrix, feature_names, report
+
+    keep = [i for i, rate in enumerate(rates) if rate >= min_detection_rate]
+    removed = len(feature_names) - len(keep)
+    report["detection_filter"] = {
+        "min_detection_rate": min_detection_rate,
+        "features_before": len(feature_names),
+        "features_removed": removed,
+    }
+    if not keep:
+        raise PreconditionError(
+            "bad_request",
+            f"min_detection_rate={min_detection_rate} を満たす特徴量が 0 件です"
+            f"（{len(feature_names)} 件すべて除去）。閾値を下げてください。",
+            report["detection_filter"],
+        )
+    return matrix[:, keep], [feature_names[i] for i in keep], report
 
 def _require_pp_matrix(ds):
     if ds.pp_matrix is None:

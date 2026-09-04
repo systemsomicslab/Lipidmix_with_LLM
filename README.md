@@ -98,7 +98,7 @@ implementation lives under `lipidmix/`.
 | What each MCP tool takes and does | [USAGE.md](USAGE.md) |
 | What an output field *means* — row granularity, lipid-name grammar, caveats | [docs/output_format/](docs/output_format/core.md), also served as the MCP resource `lipidmix://docs/output-format` |
 | Which functions a tool calls, in what order | [docs/workflow/](docs/workflow/index.md) |
-| MessagePack key indices (the MS-DIAL C# class definitions) | [docs/schema/](docs/schema/AlignmentSpotProperty.md) |
+| MessagePack key indices, transcribed from MS-DIAL's `[Key(N)]` attributes | [docs/schema/](docs/schema/AlignmentSpotProperty.md) |
 | Running the parsers from the command line | [docs/cli.md](docs/cli.md) |
 | Deploying for a team, with knowledge on a shared NAS | [DEPLOY.md](DEPLOY.md), [docs/local_shared_knowledge_setup.md](docs/local_shared_knowledge_setup.md) |
 | Working on this repository | [CLAUDE.md](CLAUDE.md) |
@@ -125,3 +125,14 @@ following as known limits rather than surprises:
   an MSI level.
 - **Generated artifacts are not checked in.** `data/`, `analyses/`, and `reports/` are
   untracked; a clean checkout will not have them.
+
+## License
+
+[MIT](LICENSE).
+
+This project reads MS-DIAL's output files; it contains no MS-DIAL source code and is not
+a derivative of it. The MessagePack key indices in [docs/schema/](docs/schema/AlignmentSpotProperty.md)
+are transcribed from the `[Key(N)]` attributes of MS-DIAL's own classes, with the upstream
+repository and the commit they were checked against recorded in each file. MS-DIAL
+([systemsomicslab/MsdialWorkbench](https://github.com/systemsomicslab/MsdialWorkbench)) is
+licensed under LGPL-3.0 by its authors.

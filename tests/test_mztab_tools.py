@@ -426,3 +426,44 @@ def test_dataset_load_does_not_warn_for_completed_job(tmp_path):
 
     ds = session_state.session.dataset
     assert not any("partial" in w for w in ds.validation_result.get("warnings", []))
+
+
+# --- evidence sidecar（検出状態）の配線 ---
+
+def test_dataset_load_records_absence_of_detection_state(mztab_file):
+    """隣に .arf が無いなら「検出状態が無い」と記録する（0 件と混同させない）。"""
+    from lipidmix.tools.mztab_tools import dataset_load
+    dataset_load(str(mztab_file))
+    ds = session_state.session.dataset
+    assert ds.detected_mask is None
+    assert ds.feature_qc["source"] is None
+    assert ds.feature_qc["reason"] == "no_candidate"
+
+
+def test_dataset_status_says_detection_state_is_unavailable(mztab_file):
+    from lipidmix.tools.mztab_tools import dataset_load, dataset_status
+    dataset_load(str(mztab_file))
+    payload = json.loads(dataset_status())
+    assert payload["detection"]["available"] is False
+    assert payload["detection"]["reason"] == "no_candidate"
+
+
+def test_dataset_status_reports_detection_rate_when_available(mztab_file):
+    import numpy as np
+    from lipidmix.tools.mztab_tools import dataset_load, dataset_status
+    dataset_load(str(mztab_file))
+    ds = session_state.session.dataset
+    ds.detected_mask = np.array([[True, False]])
+    ds.feature_qc = {"source": "arf", "n_cells": 2, "n_detected": 1,
+                     "gap_filled_rate": 0.5, "join": {}}
+    payload = json.loads(dataset_status())
+    assert payload["detection"]["available"] is True
+    assert payload["detection"]["source"] == "arf"
+    assert payload["detection"]["gap_filled_rate"] == 0.5
+
+
+def test_dataset_load_summary_mentions_detection_when_absent(mztab_file):
+    """入口の要約で「検出率を語れない」ことを伝える（70% が gap-fill の実データがある）。"""
+    from lipidmix.tools.mztab_tools import dataset_load
+    out = dataset_load(str(mztab_file))
+    assert "検出状態" in out

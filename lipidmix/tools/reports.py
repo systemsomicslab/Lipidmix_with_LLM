@@ -12,7 +12,7 @@ from lipidmix.core import mcp_errors
 from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp, _resolve_report_dir, _report_dir_candidates, _build_report_meta
-from lipidmix.core.tool_helpers import _pca_scatter_arrays
+from lipidmix.core.tool_helpers import _pca_scatter_arrays, dataset_pca_plot
 from lipidmix.plots.eic import render_eic_plot
 from lipidmix.plots.volcano import render_volcano_plot
 
@@ -24,6 +24,37 @@ __all__ = [
     "save_volcano_figure",
     "save_eic_figure",
 ]
+
+
+# --- 図の入力元の選択（ARF 経路 / mzTab-M 経路） ---
+#
+# 図の描画は 2 つのセッションスロットから来る。ARF 経路は session.arf に、
+# mzTab-M 経路は session.dataset（DatasetState）に結果を置く。描画側に経路別の
+# 分岐を持たせず、ここで「どちらを使うか」と「どちらを使ったか」を決める。
+# 両方載っている場合は ARF を優先し、戻り値に source を書いて混同を防ぐ。
+
+def _select_pca_plot() -> tuple[dict | None, str | None]:
+    plot = getattr(session_state.session.arf, "last_pca_plot", None)
+    if plot and plot.get("points"):
+        return plot, "arf"
+    ds = getattr(session_state.session, "dataset", None)
+    ds_pca = getattr(ds, "last_pca", None) if ds is not None else None
+    if ds_pca:
+        projected = dataset_pca_plot(ds_pca)
+        if projected:
+            return projected, "mztab"
+    return None, None
+
+
+def _select_differential() -> tuple[dict | None, str | None]:
+    last = getattr(session_state.session.arf, "last_differential", None)
+    if last and last.get("volcano"):
+        return last, "arf"
+    ds = getattr(session_state.session, "dataset", None)
+    ds_diff = getattr(ds, "last_differential", None) if ds is not None else None
+    if ds_diff and ds_diff.get("volcano"):
+        return ds_diff, "mztab"
+    return None, None
 
 
 # --- 解析・解釈レポート（reports/<analysis_id>.md） ---
@@ -122,10 +153,11 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
     解析ツールの返り値に同梱されている）。返り値の相対パスは write_report の本文に
     `![PCA](figures/<analysis_id>_pca.png)` として埋め込める。
     """
-    plot = getattr(session_state.session.arf, "last_pca_plot", None)
-    if not plot or not plot.get("points"):
+    plot, source = _select_pca_plot()
+    if plot is None:
         return mcp_errors.missing_state(
-            "pca_result", ["arf_parser", "arf_pca_preprocessed", "load_dataset"],
+            "pca_result",
+            ["arf_parser", "arf_pca_preprocessed", "load_dataset", "dataset_pca"],
             "先に arf_parser / arf_pca_preprocessed / load_dataset 等でPCAを実行してください"
             "（PCA結果がありません）。")
 
@@ -150,7 +182,7 @@ def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
         plt.close(fig)
 
     rel = f"figures/{out_path.name}"
-    return f"PCA図を保存: {out_path}\n本文に ![PCA]({rel}) で埋め込めます。"
+    return f"PCA図を保存: {out_path}（source={source}）\n本文に ![PCA]({rel}) で埋め込めます。"
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -165,10 +197,10 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
     返り値の相対パスは write_report の本文に
     `![volcano](figures/<analysis_id>_volcano.png)` として埋め込める。
     """
-    last = getattr(session_state.session.arf, "last_differential", None)
-    if not last or not last.get("volcano"):
+    last, source = _select_differential()
+    if last is None:
         return mcp_errors.missing_state(
-            "differential_result", ["arf_differential"],
+            "differential_result", ["arf_differential", "dataset_differential"],
             "[error] 直近の差次的解析（volcano データ）がありません。"
             "先に arf_differential を実行してください。")
 
@@ -187,7 +219,7 @@ def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
         plt.close(fig)
 
     rel = f"figures/{out_path.name}"
-    return f"volcano図を保存: {out_path}\n本文に ![volcano]({rel}) で埋め込めます。"
+    return f"volcano図を保存: {out_path}（source={source}）\n本文に ![volcano]({rel}) で埋め込めます。"
 
 
 @mcp.tool(annotations=ToolAnnotations(
