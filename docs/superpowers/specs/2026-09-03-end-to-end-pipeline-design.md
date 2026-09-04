@@ -1,7 +1,7 @@
 # 一気通貫パイプライン設計: 生データ → MS-DIAL Console → mzTab-M → 差次的解析 → パスウェイ
 
 作成日: 2026-09-03
-状態: **目標状態の記述**。本文は `docs/task.md`「Console 適合の是正」ほか 13 項目が入った後の姿で書いてある。実装状況のスナップショットは §9。
+状態: **目標状態の記述**。本文は `docs/task.md`「Console 適合の是正」ほか 13 項目が入った後の姿で書いてある。2026-09-04 時点で 13 項目はすべて着地し、本文と実装は一致している（`.qa.tsv` の解釈だけが保留）。実装状況のスナップショットは §9。
 昇格先: 実装完了後に `docs/workflow/Lipidmix/` へ移す
 
 ---
@@ -92,6 +92,7 @@ flowchart TD
     EXP -->|"15 列 TSV + contract_version=1"| MB[["別リポ massbank-context<br/>load_differential → resolve_pathways<br/>→ pathway_activity"]]
 
     JOB -.->|artifact_paths| BRANCH[".arf / .arf2 / .pai2 / .dcl / .EIC.aef<br/>証拠系の枝（§6）"]
+    INDIR -.->|".arf: 検出状態（gap-fill の区別）"| LOAD
 ```
 
 ### 順序の要約（正準スパイン）
@@ -101,10 +102,10 @@ flowchart TD
 | 1 | `console_plan` | 生データフォルダ、メソッドファイル、極性、定量種別 | `analysis-job.json`（`status=planned`）、`session.current_job_path` |
 | 2 | `console_run` | `job_path`（省略時はセッション） | MS-DIAL 実行、成果物の role 付けとハッシュ、`status=completed`/`partial`/`failed` |
 | 3 | `console_status` / `job_list` | 同上 / `dataset_root` | （読むだけ） |
-| 4 | `dataset_load` | `job_path` または `mztab_path` | `session.dataset`（`DatasetState`） |
+| 4 | `dataset_load` | `job_path` または `mztab_path` | `session.dataset`（`DatasetState`）。隣接する `.arf` が接合できれば `detected_mask` も |
 | 5 | `dataset_status` | — | （読むだけ。**群指定に使うサンプル名はここで得る**） |
-| 6 | `dataset_preprocess` | 前処理レシピ | `pp_matrix` / `roles` / `sample_meta` / `preprocessing_recipe` |
-| 7 | `dataset_pca` | 主成分数、log 変換 | `last_pca` |
+| 6 | `dataset_preprocess` | 前処理レシピ（＋検出率の足切り） | `pp_matrix` / `roles` / `sample_meta` / `preprocessing_recipe` |
+| 7 | `dataset_pca` | 主成分数、log 変換 | `last_pca`（`save_pca_figure` で図に落とせる） |
 | 8 | `dataset_differential` | 2 群のサンプル名リスト | `last_differential` |
 | 9 | `dataset_export_differential` | 出力パス | 15 列 TSV ファイル |
 | 10 | （別リポ）`load_differential` → `pathway_activity` | 上の TSV | パスウェイ濃縮 |
@@ -147,9 +148,10 @@ flowchart TD
 |---|---|---|---|
 | `lipidmix/tools/console_tools.py console_plan()` | `dataset_root: str`, `method_file: str`, `polarity: str = "positive"`, `measure: str = "peak_height"`, `omics: str = "lipidomics"`, `save_project: bool = True`【A-7】, `timeout_s: int = 21600`【A-8】 | `str` — JSON。成功時 `status` / `job_id` / `job_path` / `run_dir` / `polarity` / `measure` / `omics` / `input_count` / `method_file` / `save_project` / `timeout_s` / `warnings` / `next`。失敗時はエラー封筒 | `analysis-job.json` を書き、`session.current_job_path` を設定 |
 | `lipidmix/console/runner.py get_exe_path()` | なし（環境変数 `MSDIAL_EXE` を読む） | `str` — 実行ファイルパス | なし。未設定なら `MsdialExeNotFoundError` |
-| `lipidmix/console/runner.py is_console_exe()` | `exe_path: str`, `timeout_s: int = 15` | `bool` — `--help` の出力に `lcms` を含むか。タイムアウト・`OSError` はどちらも `False` | 子プロセスを 1 回起動する（stdin は `DEVNULL`） |
+| `lipidmix/console/runner.py is_console_exe()` | `exe_path: str`, `timeout_s: int = 15`, キーワード専用で `raise_on_os_error: bool = False` | `bool` — `--help` の出力に `lcms` を含むか。タイムアウトは `False`。`OSError`（実在しないパス等）は既定で `False`、`raise_on_os_error=True` なら送出する | 子プロセスを 1 回起動する（stdin は `DEVNULL`） |
 | `lipidmix/console/job_manager.py raw_input_summary()`【A-4】 | `dataset_root: Path` | `dict[str, int]` — 拡張子（先頭ドット無し・小文字）→ 件数。例 `{"wiff": 2, "wiff2": 1, "d": 1}` | なし |
 | `lipidmix/console/job_manager.py count_raw_inputs()` | `dataset_root: Path` | `int` — `raw_input_summary()` の合計（後方互換） | なし |
+| `lipidmix/tools/console_tools.py _execution_options_error()`【A-7 / A-8】 | `save_project: object`, `timeout_s: object` | `str \| None` — 実行オプションが不正ならエラー封筒、正常なら `None` | なし |
 | `lipidmix/tools/console_tools.py _looks_like_method_text()`【A-5】 | `path: Path` | `bool` — ASCII の `key: value` テキストに見えるか | なし |
 | `lipidmix/console/job_manager.py create_job()` | `dataset_root: Path`, `method_file: Path`, `polarity: Polarity`, `measure: MeasureType`, `omics: OmicsType = "lipidomics"`, `software_version: str = ""`, `input_count: int = 0` | `tuple[AnalysisJob, Path]` — （ジョブ、`analysis-job.json` の絶対パス） | `run_dir` を `mkdir(parents=True)`、`analysis-job.json` を書く |
 | `lipidmix/console/job_manager.py _job_id()` | `polarity: str`, `measure: str` | `str` — `job_<YYYYmmdd_HHMMSS>_<極性3文字>_<h または a>` | なし |
@@ -168,22 +170,28 @@ flowchart TD
 #### 呼び出し連鎖
 
 1. lipidmix/tools/console_tools.py  console_plan()
-2. ├─ lipidmix/console/runner.py  get_exe_path()
-3. ├─ lipidmix/console/runner.py  is_console_exe()
-4. ├─ lipidmix/tools/console_tools.py  _looks_like_method_text()   【A-5】
-5. ├─ lipidmix/console/job_manager.py  raw_input_summary()         【A-4】
-6. ├─ lipidmix/console/job_manager.py  create_job()
-7. │  ├─ lipidmix/console/job_manager.py  _assert_not_in_repo()
-8. │  │  └─ lipidmix/core/data_config.py  get_data_dir()
-9. │  ├─ lipidmix/console/job_manager.py  _job_id()
-10.│  └─ lipidmix/handoff/schema.py  AnalysisJob.save()
-11.│     └─ lipidmix/handoff/schema.py  _to_dict()
-12.└─ lipidmix/console/job_manager.py  save_job()                  【A-7 / A-8】
+2. ├─ lipidmix/tools/console_tools.py  _execution_options_error()  【A-7 / A-8】
+3. ├─ lipidmix/tools/console_tools.py  _looks_like_method_text()   【A-5】
+4. ├─ lipidmix/console/runner.py  get_exe_path()
+5. ├─ lipidmix/console/runner.py  is_console_exe()
+6. ├─ lipidmix/console/job_manager.py  raw_input_summary()         【A-4】
+7. ├─ lipidmix/console/job_manager.py  create_job()
+8. │  ├─ lipidmix/console/job_manager.py  _assert_not_in_repo()
+9. │  │  └─ lipidmix/core/data_config.py  get_data_dir()
+10.│  ├─ lipidmix/console/job_manager.py  _job_id()
+11.│  └─ lipidmix/handoff/schema.py  AnalysisJob.save()
+12.│     └─ lipidmix/handoff/schema.py  _to_dict()
+13.└─ lipidmix/console/job_manager.py  save_job()                  【A-7 / A-8】
+
+検査の順序も契約の一部。**引数の検査（手順 2〜3）を子プロセス起動（手順 5）より前に置く**
+——`is_console_exe()` は実行体を 1 回起動するので、引数が不正なだけの呼び出しで
+プロセスを起こさない。`raw_input_summary()`（手順 6）が空 dict を返す場合も
+`MIXED_RAW_FORMATS` で止める（0 種類は「計測ファイルが 1 つも無い」の意味）。
 
 ### §2.2 console_run
 
 **前提**: `console_plan` 実行済みで `status == "planned"`。
-**状態変更**: `analysis-job.json` を `running` → `completed` / `failed` に遷移。成果物の `primary_mztab_files` / `artifacts` / `warnings` を書き込む。
+**状態変更**: `analysis-job.json` を `running` → `completed` / `partial` / `failed` に遷移。成果物の `primary_mztab_files` / `artifacts` / `warnings` を書き込む。終端状態の書き込みは `_persist_collected_outputs()` に 1 本化されている（収集結果と status を別々に書くと、片方だけ書けた中間状態が残る）。
 
 #### 生成物がどこに出るか（実測・最重要）
 
@@ -243,15 +251,25 @@ MS-DIAL Console は**引数 2 つのフォルダに書き分ける**。これを
 | `lipidmix/tools/console_tools.py _meta_conflict_warnings()` | `mztab_entries: list[MztabEntry]` | `list[str]` | なし |
 | `lipidmix/tools/console_tools.py _unsupported_mztab_warnings()` | `artifacts: list[Artifact]` | `list[str]` | なし |
 | `lipidmix/tools/console_tools.py _missing_per_sample_output_warnings()` | `artifacts: list[Artifact]` | `list[str]` — `format == "pai2"` が 1 件も無いときだけ 1 件 | なし |
+| `lipidmix/tools/console_tools.py _persist_collected_outputs()`【A-1 / A-8】 | `job_path: Path`, `mztab_entries`, `other_artifacts`, キーワード専用で `status: str`, `error: str \| None` | `AnalysisJob` — 保存後のジョブ | `analysis-job.json` を **1 回だけ**書く（収集結果 ＋ 3 種の warning ＋ 終端 status ＋ error をまとめて） |
+| `lipidmix/tools/console_tools.py _record_finalization_failure()` | `job_path: Path`, `error: str` | `None` | 最終化そのものが失敗したときに `failed` へ収束させる |
+| `lipidmix/tools/console_tools.py _timeout_details()`【A-8】 | `job_path: Path`, `status: str`, `mztab_count: int`, `artifact_count: int` | `dict` — `job_path` / `status` / `mztab_files` / `other_artifacts` | なし |
 | `lipidmix/console/job_manager.py save_job()` | `job: AnalysisJob`, `job_path: Path` | `None` | `analysis-job.json` を書く |
 
 `polarity` / `measure` は 2 つの独立な証拠から決める: **ファイル名は実物の性質を語り、ジョブの宣言は意図でしかない**。両方あって食い違えばファイル名を採り、食い違い自体を `validation.conflicts` に記録して warning を出す（`_meta_conflict_warnings()`）。Console のアライメント出力名には `Height_` 接頭辞も極性トークンも無いので、実際には宣言値が採用され `measure_source="job_declared"` になる。
 
-#### タイムアウト【A-8】
+#### タイムアウトと部分回収【A-8】
 
 4 サンプルで約 3 分。60 サンプルは 1 時間を超え得る。`console_plan(timeout_s=...)` の値を `analysis-job.json` 経由で `run_msdial()` に渡す（ツール層の既定は 6 時間、`run_msdial` 自身の既定は 1 時間）。
 
-**タイムアウト時の部分回収は未設計**。現行は `MsdialTimeoutError` を捕らえて即 `failed` にし、その時点で生成済みの成果物を収集しない。数時間走らせた結果が丸ごと失われる経路が残る（§9 参照）。
+**タイムアウトしても生成済みの成果物は捨てない。** `MsdialTimeoutError` はその場で `failed` にせず変数に退避し、`collect_artifacts()` を通常どおり回してから終端状態を決める:
+
+| 収集結果 | status | 返す封筒 |
+|---|---|---|
+| 生成物あり | `partial` | `MSDIAL_TIMEOUT` ＋ `_timeout_details()`（`job_path` / `status` / 件数） |
+| 生成物ゼロ | `failed` | 同上 |
+
+`partial` のジョブは `dataset_load(job_path=...)` からそのまま読める（`primary_mztab_files` が埋まっていれば）。数時間走らせた結果が丸ごと失われる経路を塞ぐのが目的なので、**タイムアウトを成功に見せない**（封筒は必ずエラーで返す）ことと両立させている。
 
 #### 呼び出し連鎖
 
@@ -260,22 +278,35 @@ MS-DIAL Console は**引数 2 つのフォルダに書き分ける**。これを
 3. ├─ lipidmix/console/job_manager.py  load_job()
 4. │  └─ lipidmix/handoff/schema.py  AnalysisJob.load()
 5. │     └─ lipidmix/handoff/schema.py  _from_dict()
-6. ├─ lipidmix/console/output_collector.py  snapshot()          ← run_dir
-7. ├─ lipidmix/console/output_collector.py  snapshot()          ← dataset_root（runs/ を除外）【A-1】
-8. ├─ lipidmix/console/job_manager.py  update_status()          ← running
-9. ├─ lipidmix/console/runner.py  run_msdial()
-10.│  └─ lipidmix/console/runner.py  get_exe_path()
-11.├─ lipidmix/console/output_collector.py  collect_artifacts()
-12.│  ├─ lipidmix/console/output_collector.py  snapshot()
-13.│  ├─ lipidmix/console/output_collector.py  _assign_role()
-14.│  ├─ lipidmix/handoff/schema.py  sha256_file()
-15.│  └─ lipidmix/console/output_collector.py  _resolve_mztab_meta()
-16.│     ├─ lipidmix/console/output_collector.py  _infer_mztab_meta()
-17.│     └─ lipidmix/console/output_collector.py  _pick()
-18.├─ lipidmix/tools/console_tools.py  _meta_conflict_warnings()
-19.├─ lipidmix/tools/console_tools.py  _unsupported_mztab_warnings()
-20.├─ lipidmix/tools/console_tools.py  _missing_per_sample_output_warnings()
-21.└─ lipidmix/console/job_manager.py  save_job()
+6. ├─ lipidmix/tools/console_tools.py  _execution_options_error()  【A-7 / A-8】
+7. ├─ lipidmix/console/runner.py  get_exe_path()
+8. ├─ lipidmix/console/runner.py  is_console_exe()
+9. ├─ lipidmix/console/output_collector.py  snapshot()             ← run_dir
+10.├─ lipidmix/console/output_collector.py  snapshot()             ← dataset_root（runs/ を除外）【A-1】
+11.├─ lipidmix/console/job_manager.py  update_status()             ← running
+12.├─ lipidmix/console/runner.py  run_msdial()
+13.│  └─ lipidmix/console/runner.py  get_exe_path()
+14.├─ lipidmix/console/output_collector.py  collect_artifacts()
+15.│  ├─ lipidmix/console/output_collector.py  snapshot()
+16.│  ├─ lipidmix/console/output_collector.py  _assign_role()
+17.│  ├─ lipidmix/handoff/schema.py  sha256_file()
+18.│  └─ lipidmix/console/output_collector.py  _resolve_mztab_meta()
+19.│     ├─ lipidmix/console/output_collector.py  _infer_mztab_meta()
+20.│     └─ lipidmix/console/output_collector.py  _pick()
+21.├─ [タイムアウト時] lipidmix/tools/console_tools.py  _timeout_details()      【A-8】
+22.├─ lipidmix/tools/console_tools.py  _persist_collected_outputs()
+23.│  ├─ lipidmix/console/job_manager.py  load_job()
+24.│  ├─ lipidmix/tools/console_tools.py  _meta_conflict_warnings()
+25.│  ├─ lipidmix/tools/console_tools.py  _unsupported_mztab_warnings()
+26.│  ├─ lipidmix/tools/console_tools.py  _missing_per_sample_output_warnings()
+27.│  └─ lipidmix/console/job_manager.py  save_job()
+28.└─ [最終化が失敗した場合] lipidmix/tools/console_tools.py  _record_finalization_failure()
+
+手順 6〜8 は `console_plan` と同じ検査をもう一度行う。計画から実行までの間に
+`MSDIAL_EXE` が差し替わることも、`analysis-job.json` が手で編集されることもあるので、
+**実行直前の状態で判断する**。手順 8 は `raise_on_os_error=True` で呼ぶ——実行前の
+最後の砦なので、実在しないパスを `False`（＝Console でない）に丸めず
+`MSDIAL_EXE_NOT_FOUND` として区別する。
 
 **`running` に固着させないことが最優先**。`run_msdial()` の例外は 4 種を個別に捕らえ（`MsdialExeNotFoundError` / `MsdialTimeoutError` / `MsdialNonZeroExitError` / `OSError`）、想定外は包括的な例外節で受けて必ず `update_status(..., "failed")` を通す。実行後処理（収集・ハッシュ・保存）も同様に包む——Windows でウイルススキャナが生成直後のファイルをロックしていると `sha256_file()` が `PermissionError` を投げ、`analysis-job.json` が `running` のまま残って以降の `console_run` が全部 `JOB_NOT_PLANNED` で拒否され、誰も直せなくなる（`JOB_POST_RUN_FAILED`）。
 
@@ -292,13 +323,15 @@ MS-DIAL Console は**引数 2 つのフォルダに書き分ける**。これを
 
 | 関数 | 引数 | 戻り値 | 副作用 |
 |---|---|---|---|
-| `lipidmix/tools/console_tools.py console_status()` | `job_path: str \| None = None` | `str` — JSON。`job_id` / `status` / `polarity` / `measure` / `omics` / `run_dir` / `mztab_files`（path・polarity・measure の配列） / `artifact_count` / `warnings` / `error` / `updated_at` | なし |
+| `lipidmix/tools/console_tools.py console_status()` | `job_path: str \| None = None` | `str` — JSON。`job_id` / `status` / `polarity` / `measure` / `omics` / `run_dir` / `mztab_files`（path・polarity・measure の配列） / `artifact_count` / `artifacts`（TSV 文字列）【A-9】 / `warnings` / `error` / `updated_at` | なし |
+| `lipidmix/tools/console_tools.py _artifacts_tsv()`【A-9】 | `artifacts: list[Artifact]` | `str` — `path<TAB>role<TAB>format<TAB>root` のヘッダ ＋ 1 行 1 生成物。**生成物ゼロなら空文字**（列名だけの行は「1 件ある」と読めるため） | なし |
 
 1. lipidmix/tools/console_tools.py  console_status()
 2. ├─ lipidmix/tools/console_tools.py  _resolve_job_path()
-3. └─ lipidmix/console/job_manager.py  load_job()
+3. ├─ lipidmix/console/job_manager.py  load_job()
+4. └─ lipidmix/tools/console_tools.py  _artifacts_tsv()
 
-**どの生成物が今回のジョブのものか**を辿る唯一の場所。§2.1 の警告（既存アライメント結果）と対になっている。
+**どの生成物が今回のジョブのものか**を辿る唯一の場所。`artifacts` の `root` 列が `run_dir` / `dataset_root` のどちらに出たかを示すので、生データフォルダに複数バッチが積み上がっていても今回の分を切り出せる。§2.1 の警告（既存アライメント結果）と対になっている。
 
 ### §2.4 job_list
 
@@ -346,10 +379,15 @@ MS-DIAL Console は**引数 2 つのフォルダに書き分ける**。これを
 
 型エイリアス（すべて `Literal`。値域を型で縛る）:
 
-- `JobStatus = Literal["planned", "running", "needs_input", "completed", "failed"]`
+- `JobStatus = Literal["planned", "running", "needs_input", "partial", "completed", "failed"]`
+  ——`"partial"` はタイムアウトしたが生成物は回収できた状態【A-8】
+- `ArtifactRoot = Literal["run_dir", "dataset_root"]`【A-1】
 - `Polarity = Literal["positive", "negative"]`
 - `MeasureType = Literal["peak_height", "peak_area_above_zero"]`
 - `OmicsType = Literal["lipidomics", "metabolomics"]`
+
+`SUPPORTED_SCHEMA_VERSIONS = frozenset({"analysis-job.v1", SCHEMA_VERSION})`。v1 を集合に
+残してあるので、v2 化前に作ったジョブも読める（`root` の無いエントリは既定の `"run_dir"`）。
 
 ### JSON 上の入れ子と dataclass のフラット構造は一致しない
 
@@ -437,6 +475,18 @@ MTD  assay[N]-custom[2]  [MS,MS:4000089,injection sequence label,N]
 
 **素の `assay[N]` 行を取りこぼしてはいけない。** MS-DIAL の表示名（例 `20220901_RAW_control_0h_1_NEG`）を持つ唯一の場所で、落とすと `sample_names` が `abundance_assay[N]` という不透明な列識別子のままになり、群選択（`dataset_differential`）と QC/blank ロール検出（`detect_sample_roles` はサンプル名のトークンを見る）が両方機能しなくなる。
 
+#### 検出状態は隣接する `.arf` から補う【B-12】
+
+mzTab-M の `abundance_assay[N]` は**非ゼロでも実測ピークか gap-fill 補間値かを区別しない**。実データ（60 サンプル × 714 特徴 = 42,840 セル）では **70.0% が gap-fill** だったので、非ゼロを検出と数えると検出率を 3 倍以上に過大評価する。`.arf` は (スポット × サンプル) の粒度で `MasterPeakID < 0` = gap-fill を持つので、そこから補う。
+
+**接合は名前ではなく数値で検証する。** `.arf` のスポット順が mzTab の `SMF_ID` と一致することを、スポット数の一致と**全特徴の m/z 差 ≤ 0.01 Da** で確かめる。実データでは位置一致で最大 6.7 mDa、1 つずらすと 87 Da に爆発するので偶然は起きない。確認できなければ**取り込まず**、`feature_qc` に理由を残して warning を出す——誤接合は検出/未検出を特徴間で入れ替えたまま静かに嘘をつく。
+
+サンプル軸は `.arf` のファイル名と mzTab の assay 表示名の一致で対応させ、列順は mzTab の assay 順にそろえる。結果は `ds.detected_mask`（(特徴 × サンプル) の bool 行列）と `ds.feature_qc`（要約）。
+
+**`feature-qc.tsv` というファイルは作らない。** 消費者のいない同名 TSV を 2026-09-03 に廃止した経緯があり、読み手のいないファイルを再び置くと同じ結末になる。spec §10.1 が求める `is_gap_filled` / `detected_peak` の区別は、この 2 つの状態で満たしている。
+
+`job_path` 経路では、この取り込みは `artifact_paths` を埋め**終えた後**に走る。handoff が記録した `peak_matrix_source`（Console が `dataset_root` に出した `.arf`）を候補の先頭に使えるのは、その時点以降だけ。`DriftSpots` / `DriftSopts` を名前に含む `.arf` は候補から外す（アライメント後のサンプル別ピークを持つのは `PeakProperties` 側）。
+
 #### RDKit 不在を明示する【B-13】
 
 `derive_inchikey()` は RDKit の不在を握り潰す。実データの InChIKey は **162/271 件すべて `smiles_derived`**（`database_identifier` 由来は 0 件）だったので、RDKit の無い環境では InChIKey が 0 件になり、`dataset_export_differential` が「InChIKey が付いた特徴が 0 件」で書き出しを拒否する。**下流への受け渡しが警告なしで環境依存に落ちる**。`rdkit_available()` を作り、`ds.inchikey_coverage["rdkit_available"]` として `dataset_load` の要約に出す。
@@ -467,6 +517,13 @@ MTD  assay[N]-custom[2]  [MS,MS:4000089,injection sequence label,N]
 | `lipidmix/mztab/dataset_state.py _resolve_sample_names()`【B-11】 | `abundance_cols: list[str]`, `assay_metadata: dict` | `tuple[list[str], list[str], list[str]]` — `(names, assay_ids, warnings)`。表示名が無い assay は列識別子のままフォールバック。表示名が重複する不正ファイルは置換しつつ warning | なし |
 | `lipidmix/mztab/dataset_state.py _seconds_to_minutes()` | `value: float \| None` | `float \| None` | なし |
 | `lipidmix/mztab/dataset_state.py _to_float()` | `v: str \| None` | `float \| None` — 変換できなければ `None` | なし |
+| `lipidmix/mztab/evidence.py attach_to_dataset()`【B-12】 | `ds`, `mztab_path: str \| Path` | `None` | `ds.detected_mask` / `ds.feature_qc` を設定し、失敗理由は `ds.validation_result["warnings"]` に足す |
+| `lipidmix/mztab/evidence.py arf_candidates()`【B-12】 | `mztab_path: str \| Path`, `artifact_paths: dict[str, list[str]] \| None = None` | `list[Path]` — 探索順に並べた `.arf` 候補（`peak_matrix_source` の記録 → mzTab の隣接フォルダ）。`DriftSpots` / `DriftSopts` は除外 | なし |
+| `lipidmix/mztab/evidence.py load_arf_evidence()`【B-12】 | `arf_path: str \| Path`, キーワード専用で `feature_mz: list[float \| None]`, `sample_names: list[str]`, `mz_tolerance: float = MZ_TOLERANCE` | `dict` — 接合できれば `detected_mask` と要約、できなければ `reason` 付きの不成立 | なし |
+| `lipidmix/mztab/evidence.py normalize_arf_spots()`【B-12】 | `spots: list[dict]` | `list[dict]` — スポットを ID 順に正規化した形 | なし |
+| `lipidmix/mztab/evidence.py build_evidence()`【B-12】 | `normalized_spots: list[dict]`, キーワード専用で `feature_mz`, `sample_names`, `mz_tolerance = MZ_TOLERANCE` | `dict` — m/z 照合の可否と `detected_mask` | なし |
+| `lipidmix/mztab/evidence.py apply_evidence()`【B-12】 | `ds`, `result: dict \| None` | `None` | `ds` に反映（不成立なら `detected_mask` を `None` のまま残す） |
+| `lipidmix/tools/mztab_tools.py _detection_line()`【B-12】 | `ds` | `str` — `dataset_load` の要約に出す検出状態 1 行 | なし |
 
 `_resolve_sample_names()` は**列順を変えない**。`extract_abundance_matrix()` が既に assay 番号昇順で確定させた列順に対し 1:1 で名前を置き換えるだけ。ここで並べ替えると全サンプルが黙って誤ラベルされる。
 
@@ -494,6 +551,15 @@ MTD  assay[N]-custom[2]  [MS,MS:4000089,injection sequence label,N]
 16.   ├─ lipidmix/mztab/dataset_state.py  _seconds_to_minutes()
 17.   ├─ lipidmix/mztab/dataset_state.py  _parse_cv_term()       【B-11】
 18.   └─ lipidmix/mztab/dataset_state.py  _resolve_sample_names()
+19. ├─ lipidmix/mztab/evidence.py  attach_to_dataset()             【B-12】
+20. │  ├─ lipidmix/mztab/evidence.py  arf_candidates()
+21. │  ├─ lipidmix/mztab/evidence.py  load_arf_evidence()
+22. │  │  ├─ lipidmix/arf/reader.py  deserialize()
+23. │  │  ├─ lipidmix/mztab/evidence.py  normalize_arf_spots()
+24. │  │  └─ lipidmix/mztab/evidence.py  build_evidence()
+25. │  └─ lipidmix/mztab/evidence.py  apply_evidence()
+26. └─ lipidmix/tools/mztab_tools.py  _summary_text()
+27.    └─ lipidmix/tools/mztab_tools.py  _detection_line()          【B-12】
 
 `job_path` 経路（推奨）:
 
@@ -506,7 +572,8 @@ MTD  assay[N]-custom[2]  [MS,MS:4000089,injection sequence label,N]
 7.    ├─ lipidmix/mztab/reader.py  parse_mztab()
 8.    ├─ lipidmix/tools/mztab_tools.py  _validate_or_error()
 9.    ├─ lipidmix/mztab/dataset_state.py  build_dataset_state()
-10.   └─ lipidmix/tools/mztab_tools.py  _summary_text()
+10.   ├─ lipidmix/mztab/evidence.py  attach_to_dataset()          【B-12】
+11.   └─ lipidmix/tools/mztab_tools.py  _summary_text()
 
 `job_path` 経路だけが `ds.job_path` と `ds.artifact_paths`（`role → 絶対パスの配列`）を埋める。これが §6 の枝への入口になる。
 
@@ -519,13 +586,18 @@ MTD  assay[N]-custom[2]  [MS,MS:4000089,injection sequence label,N]
 
 | 関数 | 引数 | 戻り値 | 副作用 |
 |---|---|---|---|
-| `lipidmix/tools/mztab_tools.py dataset_status()` | なし | `str` — JSON。`source_format` / `source_files` / `quantification_measure` / `quantification_confidence` / `n_features` / `n_samples` / `validation`（ok・n_errors・n_warnings） / `inchikey_coverage` / `samples`（TSV 文字列） ＋ あれば `job_path` / `artifact_roles` | なし |
+| `lipidmix/tools/mztab_tools.py dataset_status()` | なし | `str` — JSON。`source_format` / `source_files` / `quantification_measure` / `quantification_confidence` / `n_features` / `n_samples` / `validation`（ok・n_errors・n_warnings） / `inchikey_coverage` / `detection`【B-12】 / `samples`（TSV 文字列） ＋ あれば `job_path` / `artifact_roles` | なし |
+| `lipidmix/tools/mztab_tools.py _detection_summary()`【B-12】 | `ds: DatasetState` | `dict` — 取り込めていれば `available: true` / `source` / `n_cells` / `n_detected` / `gap_filled_rate`、取り込めていなければ `available: false` / `reason` / `note`。**(特徴 × サンプル) の行列そのものは返さない**（実データで 42,840 セル規模） | なし |
 | `lipidmix/tools/mztab_tools.py _samples_tsv()` | `ds: DatasetState` | `str` — `name<TAB>role` のヘッダ ＋ 1 行 1 サンプル | なし |
 | `lipidmix/analysis/preprocessing.py detect_sample_roles()` | `sample_names: list[str]`, `class_ids: dict[str, str] \| None = None`, `config: dict \| None = None` | `dict[str, str]` — サンプル名 → `sample` / `qc` / `blank` | なし |
 
 1. lipidmix/tools/mztab_tools.py  dataset_status()
-2. └─ lipidmix/tools/mztab_tools.py  _samples_tsv()
-3.    └─ lipidmix/analysis/preprocessing.py  detect_sample_roles()
+2. ├─ lipidmix/tools/mztab_tools.py  _samples_tsv()
+3. │  └─ lipidmix/analysis/preprocessing.py  detect_sample_roles()
+4. └─ lipidmix/tools/mztab_tools.py  _detection_summary()          【B-12】
+
+`detection.available == false` のときは「検出率・欠測率を語れない」ことを `note` で明示する。
+**0 件と混同させない**——「検出状態が無い」と「全部未検出」は解釈が正反対。
 
 前処理済みなら `ds.roles` を、まだなら同じ判定関数をその場で適用する。ARF 経路（`arf_list_sample_roles`）と同じ判定を使うので、どちらの経路でも同じ試料が同じ役割になる。
 
@@ -559,17 +631,25 @@ blank_filter → normalize → drift_correct → qc_rsd_filter → impute → dr
 
 同時に、現在 `run_dataset_preprocess()` が無条件に積んでいる caveat（「現在の実装は mzTab-M から注入順を読み取っていないため QC ドリフト補正は実施できません」）を削除する。読めるようになったのに残すと嘘になる。
 
-#### 検出率と欠測の扱い【B-12 条件付き】
+#### 検出率による足切り【B-12】
 
-mzTab-M の abundance 値からは **gap-fill（補完値）と実検出の区別が付かない**。非ゼロなら検出したものとして数えてしまう。master ビルドの MS-DIAL は `IsHeightMatrixExport`（既定 true）のとき `SMF × assay` の long 形式で `Height / RT / MZ / SN / MSMS / Reference matched` を `<alignmentFile>.qa.tsv` に出し、これが spec §10.1 の evidence sidecar に最も近い実物。
+`min_detection_rate` は §4.1 で取り込んだ `ds.detected_mask` を使い、**実検出率（gap-fill を除いた割合）**で特徴量を落とす。率の定義は `preprocessing.detection_rates()` が 1 つだけ持ち、ARF 経路と共有する。実データでは `min_detection_rate=0.5` で 714 → 193 特徴。
 
-**ラボのクローンは 2026-05-21 のコミットでこの機能を持たず、実走でも `.qa.tsv` は出なかった。** role を与えて収集はする（§2.2）が、どの値がギャップ補完を意味するかは未検証。ラボの MS-DIAL を master へ更新し、実 `.qa.tsv` を採取して意味を確定してから配線する。**それまでは、この経路の検出率・欠測を語ると gap-fill を実測と混ぜて数える。**
+**この足切りは前処理本体（`preprocess()`）より前に来る。** 正規化・補完のあとでは gap-fill セルが実測値と区別できなくなり、何を根拠に特徴を残したかが言えなくなる。
+
+**検出状態が無いのに閾値を渡されたら `bad_request` で拒否する。** 0 扱いで通すと「gap-fill だけの特徴を実測として数えた行列」が黙って下流に流れる。「検出状態が無い」と「全部未検出」は解釈が正反対なので、混ぜない（メッセージでは ARF 経路を代替として案内する）。
+
+`min_detection_rate=0.0`（既定）なら `detected_mask` の有無に関わらず素通しする。
+
+**`.qa.tsv` は別の話【B-12 条件付き】。** master ビルドの MS-DIAL は `IsHeightMatrixExport`（既定 true）のとき `SMF × assay` の long 形式で `Height / RT / MZ / SN / MSMS / Reference matched` を `<alignmentFile>.qa.tsv` に出す。ラボのクローンは 2026-05-21 のコミットでこの機能を持たず、実走でも出なかった。role を与えて収集はする（§2.2）が、どの値がギャップ補完を意味するかは未検証。`.arf` 由来の現行実装より粒度の細かい根拠（S/N・MS/MS の有無）を運べるので、ラボの MS-DIAL を master へ更新して実物を採取してから扱う。
 
 #### シグネチャ
 
 | 関数 | 引数 | 戻り値 | 副作用 |
 |---|---|---|---|
-| `lipidmix/tools/dataset_analysis_tools.py dataset_preprocess()` | `normalize: str = "none"`, `blank_min_fold: float \| None = None`, `drift_correct: bool = False`, `max_qc_rsd: float \| None = None`, `impute: str = "half_min"` | `str` — JSON。`status` / `n_samples` / `n_features` / `features_before` / `features_removed_total` / `recipe_applied` / `excluded_from_matrix` / `role_counts` / `steps` / `caveats` / `next` | `ds` の 6 フィールドを設定 |
+| `lipidmix/tools/dataset_analysis_tools.py dataset_preprocess()` | `normalize: str = "none"`, `blank_min_fold: float \| None = None`, `drift_correct: bool = False`, `max_qc_rsd: float \| None = None`, `impute: str = "half_min"`, `min_detection_rate: float = 0.0`【B-12】 | `str` — JSON。`status` / `n_samples` / `n_features` / `features_before` / `features_removed_total` / `recipe_applied` / `excluded_from_matrix` / `role_counts` / `steps` / `caveats` / `next` | `ds` の 6 フィールドを設定 |
+| `lipidmix/analysis/dataset_analysis.py _apply_detection_filter()`【B-12】 | `ds`, `matrix`, `feature_names`, `min_detection_rate` | `tuple` 3 要素 — `(matrix, feature_names, report)`。`matrix` は (サンプル × 特徴)、足切りは列に対して行う | なし。検出状態が無いのに 閾値 > 0 なら `PreconditionError(kind="bad_request")` |
+| `lipidmix/analysis/preprocessing.py detection_rates()`【B-12】 | `detected_mask` — (特徴 × サンプル) の bool 行列 | `np.ndarray` — 特徴ごとの実検出率 | なし |
 | `lipidmix/analysis/dataset_analysis.py run_dataset_preprocess()` | `ds`, `recipe: dict` | `tuple` 6 要素 — `(pp_matrix, pp_sample_names, pp_feature_names, roles, sample_meta, report)` | なし（`ds` は読むだけ） |
 | `lipidmix/analysis/dataset_analysis.py build_dataset_pp_inputs()` | `ds` | `tuple` 5 要素 — `(matrix, sample_names, feature_names, roles, sample_meta)`。matrix は `(n_samples, n_features)` | なし。行列が無ければ `PreconditionError(kind="missing_state", state="dataset")` |
 | `lipidmix/analysis/preprocessing.py preprocess()` | `matrix`, `sample_names`, `roles`, `run_order`, `recipe` | `tuple` 3 要素 — `(matrix, kept_idx, report)`。`kept_idx` は残った特徴量の元インデックス | なし。未知の正規化メソッド等は `ValueError` |
@@ -588,11 +668,13 @@ mzTab-M の abundance 値からは **gap-fill（補完値）と実検出の区�
 2. ├─ lipidmix/analysis/dataset_analysis.py  run_dataset_preprocess()
 3. │  ├─ lipidmix/analysis/dataset_analysis.py  build_dataset_pp_inputs()
 4. │  │  └─ lipidmix/analysis/preprocessing.py  detect_sample_roles()
-5. │  ├─ lipidmix/analysis/preprocessing.py  preprocess()
-6. │  ├─ lipidmix/analysis/preprocessing.py  drop_samples_by_role()
-7. │  └─ lipidmix/analysis/preprocessing.py  detect_qc_strata()
-8. ├─ lipidmix/tools/dataset_analysis_tools.py  _from_precondition()
-9. └─ lipidmix/tools/dataset_analysis_tools.py  _count_roles()
+5. │  ├─ lipidmix/analysis/dataset_analysis.py  _apply_detection_filter()   【B-12】
+6. │  │  └─ lipidmix/analysis/preprocessing.py  detection_rates()
+7. │  ├─ lipidmix/analysis/preprocessing.py  preprocess()
+8. │  ├─ lipidmix/analysis/preprocessing.py  drop_samples_by_role()
+9. │  └─ lipidmix/analysis/preprocessing.py  detect_qc_strata()
+10.├─ lipidmix/tools/dataset_analysis_tools.py  _from_precondition()
+11.└─ lipidmix/tools/dataset_analysis_tools.py  _count_roles()
 
 ### §4.4 dataset_pca
 
@@ -744,11 +826,13 @@ mz  rt  log2fc  p_value  q_value  mean_a  mean_b  significant
 
 正準スパイン（§2〜§5）は **mzTab-M しか読まない**。`.arf` / `.arf2` / `.pai2` / `.dcl` / `.EIC.aef` は Console が `-i` に出す成果物で、別の問いに答えるために使う。
 
-**枝は `session.dataset` を読まない。** 合流はセッション状態ではなく**ファイルパス経由**で起きる: `dataset_load(job_path=...)` が `ds.artifact_paths[role]` に絶対パスを入れ、ユーザー（または LLM）がそのパスを枝のツールに渡す。枝はそれぞれ独立したセッションスロット（`session.arf` / `.arf2` / `.pai2` / `.eic`）を持ち、**あるパーサが別スロットを触ってはいけない**（`pai2_parser` が ARF の前処理行列を無言破棄した過去のバグの再発防止）。
+**枝は `session.dataset` を読まない。** 合流はセッション状態ではなく**ファイルパス経由**で起きる: `dataset_load(job_path=...)` が `ds.artifact_paths[role]` に絶対パスを入れ、ユーザー（または LLM）がそのパスを枝のツールに渡す。
+
+**例外が 1 つある: `.arf` はスパイン自身も読む。**【B-12】 `dataset_load` は `evidence.attach_to_dataset()` で隣接する `.arf`（`artifact_paths["peak_matrix_source"]` を優先）を開き、gap-fill と実検出の区別を `ds.detected_mask` に取り込む（§4.1）。読むのは**ファイルだけ**で `session.arf` には触らないため、スロット分離の原則は保たれている。枝はそれぞれ独立したセッションスロット（`session.arf` / `.arf2` / `.pai2` / `.eic`）を持ち、**あるパーサが別スロットを触ってはいけない**（`pai2_parser` が ARF の前処理行列を無言破棄した過去のバグの再発防止）。
 
 | 枝 | role / 入口ツール | 何に答えるか | スパインに無いもの | 前提 | 詳細 |
 |---|---|---|---|---|---|
-| `.arf` | `peak_matrix_source` / `arf_parser` | **もう 1 本の下流**。サンプル別強度から前処理・PCA・差次的解析・エクスポートまで、mzTab-M 経路と**同じ純関数**で通す | Class ID・`*_tags.xml` のタグ・サンプル因子トークン・gap-fill 情報・ファイル名由来の注入順。`arf_export_differential` は兄弟 `.arf2` を `MasterAlignmentID` で結合するので `ontology` / `msi_level` が**埋まる**（mzTab-M 経路は空欄） | なし（自動解決。`PeakProperties.arf` を `DriftSpots.arf` より優先し、複数バッチは `AlignmentResult_<timestamp>` で最新を選ぶ） | `docs/workflow/arf.md` |
+| `.arf` | `peak_matrix_source` / `arf_parser`（＋スパインの `evidence.attach_to_dataset()`） | **もう 1 本の下流**。サンプル別強度から前処理・PCA・差次的解析・エクスポートまで、mzTab-M 経路と**同じ純関数**で通す。加えて mzTab-M 経路へ**検出状態（gap-fill の区別）を供給する唯一の材料**【B-12】 | Class ID・`*_tags.xml` のタグ・サンプル因子トークン・gap-fill 情報・ファイル名由来の注入順。`arf_export_differential` は兄弟 `.arf2` を `MasterAlignmentID` で結合するので `ontology` / `msi_level` が**埋まる**（mzTab-M 経路は空欄） | なし（自動解決。`PeakProperties.arf` を `DriftSpots.arf` より優先し、複数バッチは `AlignmentResult_<timestamp>` で最新を選ぶ） | `docs/workflow/arf.md` |
 | `.arf2` | `spot_catalog` / `arf2_parser`, `arf2_annotate_identities` | データセット全体の概観と注釈標準化 | GOSLIN 正規化・RefMet / LIPID MAPS ID・MSI レベルの**クラス上限見積もり** | なし | `docs/workflow/arf2.md` |
 | `.pai2` | `sample_peaks` / `pai2_parser`, `pai2_inspect_peak`, `verify_peak_annotation` | 個別ピークの同定確度 | 精密質量誤差 ppm・アダクト／イオンモード整合・S/N。単一測定なので**サンプル間比較はできない** | `pai2_parser` を先に実行（同名 `.dcl` を自動で付与する） | `docs/workflow/pai2.md` |
 | `.dcl` | `msms_evidence` / `dcl_parser`, `dcl_find_msms` | **MS/MS の実スペクトル** | 実測フラグメント。`.pai2` の `has_msms` は取得参照の有無を記録するだけで、スペクトル本体は `.dcl` にしかない | なし（`dcl_find_msms` は直接読む） | `docs/workflow/dcl.md` |
@@ -793,8 +877,9 @@ Console を経由せず、MS-DIAL GUI が既に出したフォルダを渡す経
 | `feature_matrix` / `sample_names` / `feature_ids` / `feature_metadata` / `assay_metadata` / `sample_assay_ids`【B-11】 / `inchikey_coverage` / `validation_result` | `dataset_load` | 以降すべて |
 | `job_path` / `artifact_paths` | `dataset_load(job_path=...)` のみ | §6 の枝への案内、エクスポートのメタ行 |
 | `pp_matrix` / `pp_sample_names` / `pp_feature_names` / `roles` / `sample_meta` / `preprocessing_recipe` | `dataset_preprocess` | `dataset_pca` / `dataset_differential` |
-| `last_pca` | `dataset_pca` | （現在の読者はいない。図保存は ARF 側のみ対応） |
-| `last_differential` | `dataset_differential` | `dataset_export_differential` |
+| `detected_mask` / `feature_qc`【B-12】 | `dataset_load`（`evidence.attach_to_dataset()`） | `dataset_status` の `detection`、`dataset_preprocess(min_detection_rate=...)` |
+| `last_pca` | `dataset_pca` | `save_pca_figure`（ARF が空なら DatasetState を見る） |
+| `last_differential` | `dataset_differential` | `dataset_export_differential`、`save_volcano_figure`（同上） |
 
 ### 前提が無いときの返し方
 
@@ -842,17 +927,17 @@ Console を経由せず、MS-DIAL GUI が既に出したフォルダを渡す経
 | 項目 | 内容 | 変わる関数・シグネチャ | 節 | 計画 |
 |---|---|---|---|---|
 | A-1 | 入力フォルダ側の生成物を収集する | `snapshot(directory, exclude_dir_names=frozenset())`、`collect_artifacts(roots: dict[str, Path], befores: dict[str, dict[str, int]], *, declared_polarity, declared_measure)`、`Artifact.root` / `MztabEntry.root`、`_artifact_abs_path(job, root, rel)`、role 未付与は sha256 を空文字 | §2.2 / §3 / §4.1 | Task 6・7・8・9 |
-| A-2 | `_ROLE_MAP` に Console のエクスポート拡張子を追加 | `_assign_role(rel_str)` の対応表を 6 → 16 種へ | §2.2 | Task 5 |
+| A-2 | `_ROLE_MAP` に Console のエクスポート拡張子を追加 | `_assign_role(rel_str)` の対応表を 6 → 15 種へ。role 未付与は `sha256` を空文字 | §2.2 | Task 5 |
 | A-3 | stdin を塞ぐ | `run_msdial()` が `stdin=DEVNULL` を渡す | §2.2 | Task 1 |
 | A-4 | `.wiff` + `.wiff2` 混在ガード | `raw_input_summary(dataset_root) -> dict[str, int]` を新設、`count_raw_inputs()` はその合計、`MIXED_RAW_FORMATS` | §2.0 / §2.1 | Task 3 |
 | A-5 | `-m` をテキスト検証に変える | `_looks_like_method_text(path) -> bool`、`METHOD_FILE_NOT_TEXT`、docstring の訂正 | §2.0 | Task 4 |
 | A-6 | `MSDIAL_EXE` が Console か検証 | `is_console_exe(exe_path, timeout_s=15) -> bool`、`MSDIAL_EXE_NOT_CONSOLE` | §2.0 | Task 2 |
 | A-7 | `-p` を渡せるようにする | `run_msdial(..., save_project=False)`、`console_plan(..., save_project=True)`、`AnalysisJob.save_project` | §2.1 / §2.2 / §3 | Task 1・6・8 |
-| A-8 | timeout を可変にする | `console_plan(..., timeout_s=21600)`、`AnalysisJob.timeout_s`、`run_msdial(timeout_s=job.timeout_s)` | §2.1 / §2.2 / §3 | Task 6・8 |
+| A-8 | timeout を可変にし、タイムアウト時も回収する | `console_plan(..., timeout_s=21600)`、`AnalysisJob.timeout_s`、`run_msdial(timeout_s=job.timeout_s)`、`JobStatus` に `"partial"`、`_persist_collected_outputs(..., status=...)`、`_timeout_details()` | §2.1 / §2.2 / §3 | Task 6・8 ＋ §9-1 |
 | A-9 | 反復実行の積み上がりを知らせる | `console_plan` の戻り値に `warnings: list[str]` | §2.1 | Task 3 |
 | A-10 | `msdial.log` の flush 漏れ | `run_msdial()` が子へ fd を渡す前に `log.flush()` | §2.2 | Task 1 |
 | B-11 | 注入順・バッチを mzTab から読む | `_parse_cv_term(value) -> tuple[str \| None, str \| None]`、`_resolve_sample_names(...) -> tuple[list[str], list[str], list[str]]`（3 要素へ）、`DatasetState.sample_assay_ids`、`assay_metadata[aid]["run_order" \| "batch"]`、`sample_meta[name]` に `run_order_source` | §4.1 / §4.3 | Task 10・11 |
-| B-12 | `.qa.tsv` の取り込み | `_ROLE_MAP` に `.qa.tsv → quality_matrix`（収集のみ）。中身の解釈は**別計画** | §2.2 / §4.3 | Task 5（収集のみ） |
+| B-12 | 検出状態（gap-fill の区別） | **`.qa.tsv` は収集のみ**（`_ROLE_MAP` に `quality_matrix`）。代わりに `.arf` 由来で実装: `lipidmix/mztab/evidence.py`（`attach_to_dataset` / `arf_candidates` / `load_arf_evidence` / `normalize_arf_spots` / `build_evidence` / `apply_evidence`）、`DatasetState.detected_mask` / `feature_qc`、`preprocessing.detection_rates()`、`dataset_preprocess(min_detection_rate=...)`、`_apply_detection_filter()`、`dataset_status` の `detection` | §2.2 / §4.1 / §4.3 | Task 5 ＋ §9-2 |
 | B-13 | InChIKey の RDKit 単一障害点 | `rdkit_available() -> bool`、`ds.inchikey_coverage["rdkit_available"]` | §4.1 | Task 12 |
 
 ---
