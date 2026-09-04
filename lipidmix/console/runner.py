@@ -69,6 +69,107 @@ def is_console_exe(
     return "lcms" in (completed.stdout or "")
 
 
+def build_msdial_cmd(
+    exe: str,
+    dataset_root: Path,
+    msdial_out_dir: Path,
+    method_file: Path,
+    save_project: bool = False,
+) -> list[str]:
+    """Console のコマンドラインを組む。
+
+    待って実行する経路と切り離して実行する経路で**同じ引数**でなければならない
+    ので、組み立てはここ 1 か所に置く。
+    """
+    cmd = [exe, "lcms", "-i", str(dataset_root), "-o", str(msdial_out_dir),
+           "-m", str(method_file)]
+    if save_project:
+        cmd.append("-p")
+    return cmd
+
+
+def _open_log(run_dir: Path, cmd: list[str]):
+    """msdial.log を開き、CMD 行を書いて flush 済みのハンドルを返す。
+
+    fd を子へ渡す前に必ず flush する。親のバッファと子は同じファイル記述の
+    オフセットを共有するため、flush しないと子の出力が先頭に、CMD 行がその
+    後ろに書かれる（失敗解析でまずログ先頭を見る運用が壊れる）。
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log = (run_dir / "msdial.log").open("w", encoding="utf-8")
+    log.write(f"CMD: {' '.join(cmd)}\n\n")
+    log.flush()
+    return log
+
+
+def is_process_running(pid: int) -> bool:
+    """pid が生きているかを返す（判定できないときは False ＝安全側）。
+
+    切り離して起動した Console は親を持たないので、待つ代わりにこれで見る。
+    """
+    if not pid or pid < 0:
+        return False
+    if os.name == "nt":
+        import subprocess as _sp
+        try:
+            out = _sp.run(["tasklist", "/FI", f"PID eq {int(pid)}", "/NH"],
+                          stdout=_sp.PIPE, stderr=_sp.DEVNULL, stdin=_sp.DEVNULL,
+                          timeout=15, text=True, errors="replace")
+        except (OSError, _sp.TimeoutExpired):
+            return False
+        return str(int(pid)) in (out.stdout or "")
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # 自分のものではないが存在はする
+    except OSError:
+        return False
+    return True
+
+
+def run_msdial_detached(
+    method_file: Path,
+    dataset_root: Path,
+    run_dir: Path,
+    exe_path: str | None = None,
+    save_project: bool = False,
+) -> int:
+    """MS-DIAL Console を親から切り離して起動し、pid を返す（待たない）。
+
+    実データ 60 サンプルは 44 分かかる。`subprocess.run` で待つと MCP の
+    1 ツール呼び出しがその間戻らず、呼び出し元の都合でプロセスツリーごと
+    落とされると生成物ごと失う（実測 2 回）。切り離しておけば、呼び出し元が
+    消えても Console は走り続ける。完了は `is_process_running` で見る。
+    """
+    exe = exe_path or get_exe_path()
+    msdial_out_dir = run_dir / "msdial"
+    msdial_out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = build_msdial_cmd(exe, dataset_root, msdial_out_dir, method_file, save_project)
+
+    log = _open_log(run_dir, cmd)
+    kwargs: dict = {
+        "stdout": log,
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+        "cwd": str(run_dir),
+    }
+    if os.name == "nt":
+        # 新しいプロセスグループ＋コンソール非継承。親が終了しても道連れにしない。
+        kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    else:
+        kwargs["start_new_session"] = True
+
+    try:
+        proc = subprocess.Popen(cmd, **kwargs)
+    finally:
+        log.close()
+    return int(proc.pid)
+
+
 def run_msdial(
     method_file: Path,
     dataset_root: Path,
@@ -107,9 +208,7 @@ def run_msdial(
     msdial_out_dir = run_dir / "msdial"
     msdial_out_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [exe, "lcms", "-i", str(dataset_root), "-o", str(msdial_out_dir), "-m", str(method_file)]
-    if save_project:
-        cmd.append("-p")
+    cmd = build_msdial_cmd(exe, dataset_root, msdial_out_dir, method_file, save_project)
 
     try:
         with log_path.open("w", encoding="utf-8") as log:
@@ -134,3 +233,40 @@ def run_msdial(
         raise MsdialNonZeroExitError(result.returncode)
 
     return result.returncode
+
+
+#: Console 実行体の名前。GUI（MSDIAL.exe）は候補にしない —— 引数を解釈せず
+#: ウィンドウを開いたまま返らないので、設定されると実行時に固まる。
+_CONSOLE_EXE_NAMES = ("msdialcui.exe", "msdialconsoleapp.exe")
+
+#: 候補探索の既定の起点。MS-DIAL は zip を展開しただけで使うことが多く、
+#: ホーム直下かデスクトップに置かれているのが実情。
+def _default_search_roots() -> list[Path]:
+    home = Path.home()
+    roots = [home, home / "Desktop", home / "Downloads",
+             Path("C:/Program Files"), Path("C:/Program Files (x86)")]
+    return [r for r in roots if r.is_dir()]
+
+
+def msdial_exe_candidates(search_roots=None, max_depth: int = 3) -> list[str]:
+    """MS-DIAL Console 実行体の候補を返す（設定はしない）。
+
+    MSDIAL_EXE を設定できるのは人間だけなので、サーバにできるのは「どこに
+    ありそうか」を示すところまで。深さを制限するのは、ホーム配下を無制限に
+    歩くと計画が数十秒止まるため。
+    """
+    roots = [Path(r) for r in (search_roots if search_roots is not None
+                               else _default_search_roots())]
+    found: list[str] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        base_depth = len(root.parts)
+        for dirpath, dirnames, filenames in os.walk(root):
+            depth = len(Path(dirpath).parts) - base_depth
+            if depth >= max_depth:
+                dirnames[:] = []
+            for name in filenames:
+                if name.lower() in _CONSOLE_EXE_NAMES:
+                    found.append(str(Path(dirpath) / name))
+    return found

@@ -14,19 +14,21 @@ from lipidmix.core.mcp_core import mcp
 from lipidmix.core.mcp_errors import console_error, mztab_error
 from lipidmix.core.serialization import json_payload
 
-__all__ = ["console_plan", "console_run", "console_status", "job_list"]
+__all__ = ["console_plan", "console_prepare_input", "console_method_template",
+           "console_run", "console_status", "console_cleanup", "job_list"]
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False),
           structured_output=False)
 def console_plan(
     dataset_root: str,
-    method_file: str,
+    method_file: str | None = None,
     polarity: str = "positive",
     measure: str = "peak_height",
     omics: str = "lipidomics",
     save_project: bool = True,
     timeout_s: int = 21600,
+    lbm_file: str | None = None,
 ) -> str:
     """MS-DIAL Console の実行計画を作成し、analysis-job.json を生成します。
 
@@ -37,9 +39,16 @@ def console_plan(
         リポジトリ外のパスを指定してください。
     method_file:
         MS-DIAL Console のパラメータファイル（ASCII テキスト。`key: value` 形式）。
-        MS-DIAL GUI の Export > Parameter で出力できます。
+        **省略できます** — 省略時は dataset_root から MS-DIAL GUI が実行のたびに
+        自動保存する `<project>_param_<終了時刻>.txt` を探し、`Ion mode` が
+        polarity と一致する最新のものを使います。
         **`.mdproject` / `.mddata` は使えません**（ZIP なので Console は中身を
         読めず、全パラメータが既定値のまま実行されます）。
+    lbm_file:
+        脂質ライブラリ（`.lbm2`）のパス。省略時は「メソッドファイルの宣言 →
+        環境変数 MSDIAL_LBM → MSDIAL_EXE と同じフォルダ」の順に、MS-DIAL GUI と
+        同じ規則で自動解決します。GUI 由来のパラメータは `Lbm file path:` が
+        必ず空なので、この自動解決が無いと**警告なしで同定 0 件**になります。
     polarity:
         "positive" または "negative"。
     measure:
@@ -78,7 +87,25 @@ def console_plan(
     if not root.is_dir():
         return console_error("JOB_NOT_PLANNED", f"dataset_root が存在しません: {dataset_root}")
 
-    mf = Path(method_file).expanduser()
+    from lipidmix.console import method_file as method_file_mod
+
+    discovered_from: str | None = None
+    if method_file is None:
+        candidates = method_file_mod.find_method_candidates([root], polarity=polarity)
+        if not candidates:
+            return console_error(
+                "METHOD_FILE_NOT_GIVEN",
+                "method_file が省略され、データフォルダに使えるパラメータファイルも"
+                f"見つかりませんでした（極性 {polarity}）: {root}  "
+                "MS-DIAL GUI は解析のたびに `<project>_param_<終了時刻>.txt` を"
+                "プロジェクトフォルダへ自動保存します。その極性で一度も GUI 実行が"
+                "無い場合は、別極性のパラメータから Ion mode と Searched adduct ions を"
+                "差し替えたものを用意して method_file で渡してください。",
+                {"dataset_root": str(root), "polarity": polarity})
+        discovered_from = candidates[0].path
+        mf = Path(discovered_from)
+    else:
+        mf = Path(method_file).expanduser()
     if not mf.is_file():
         return console_error("METHOD_FILE_NOT_FOUND", f"メソッドファイルが見つかりません: {method_file}")
     if not _looks_like_method_text(mf):
@@ -92,11 +119,23 @@ def console_plan(
             {"method_file": str(mf)},
         )
 
+    method_keys = method_file_mod.read_method_keys(mf)
+    declared_mode = (method_keys.get("ion mode") or "").strip().lower()
+    if declared_mode and declared_mode != polarity:
+        return console_error(
+            "METHOD_FILE_POLARITY_MISMATCH",
+            f"メソッドファイルの `Ion mode: {method_keys.get('ion mode')}` と "
+            f"polarity={polarity!r} が食い違っています: {mf}  "
+            "Console はメソッドファイル側を使うため、このまま実行すると"
+            "宣言と別の極性の結果が analysis-job に記録されます。",
+            {"method_file": str(mf), "method_ion_mode": declared_mode, "declared": polarity})
+
     try:
         from lipidmix.console import runner as console_runner
         exe = console_runner.get_exe_path()
     except EnvironmentError as exc:
-        return console_error("MSDIAL_EXE_NOT_FOUND", str(exc))
+        return console_error("MSDIAL_EXE_NOT_FOUND", str(exc),
+                             _msdial_exe_setup_help())
     if not console_runner.is_console_exe(exe):
         return console_error(
             "MSDIAL_EXE_NOT_CONSOLE",
@@ -126,11 +165,19 @@ def console_plan(
             "stdin を塞いだ実行では異常終了します。続行できたとしても、"
             "同じ測定が複数の解析ファイルとして扱われます。"
             "SCIEX の出力は 1 測定につき .wiff と .wiff2 が両方できるのが普通なので、"
-            "解析に使うほうだけを残したフォルダを作って指定してください"
-            "（.wiff.scan は拡張子が .scan なので残して構いません）。",
+            "解析に使うほうだけを残したフォルダを作って指定してください。"
+            "console_prepare_input(dataset_root, keep_extension) がハードリンクで"
+            "そのフォルダを作ります（実体コピーなし・元フォルダは無変更）。",
             {"formats": formats},
+            required_tools=["console_prepare_input"],
         )
     input_count = sum(formats.values())
+
+    lbm = method_file_mod.resolve_lbm(
+        method_keys, mf, omics=omics, exe_path=exe, env=os.environ, override=lbm_file)
+    if lbm.error_code:
+        return console_error(lbm.error_code, lbm.message or "",
+                             {"candidates": list(lbm.candidates)} if lbm.candidates else None)
 
     try:
         job, job_path = create_job(
@@ -147,6 +194,14 @@ def console_plan(
     from lipidmix.console.job_manager import save_job
     job.save_project = save_project
     job.timeout_s = timeout_s
+
+    # 解決した LBM は run_dir の実効メソッドファイルに書き、ジョブをそちらへ向ける。
+    # ユーザーのパラメータファイルは触らない（GUI が次に開いたときの整合が崩れる）。
+    if lbm.path and lbm.source != "method_file":
+        effective = method_file_mod.write_effective_method_file(
+            mf, Path(job.run_dir) / "effective-method.txt",
+            {method_file_mod.LBM_KEY: lbm.path})
+        job.method_file = str(effective)
     save_job(job, job_path)
     session_state.session.current_job_path = str(job_path)
 
@@ -170,7 +225,13 @@ def console_plan(
         "input_count": input_count,
         "save_project": save_project,
         "timeout_s": timeout_s,
-        "method_file": str(mf),
+        "method_file": job.method_file,
+        "method_source": {
+            "given": method_file,
+            "discovered_from": discovered_from,
+            "effective": job.method_file,
+        },
+        "lbm": {"path": lbm.path, "source": lbm.source},
         "warnings": warnings,
         "next": "console_run を呼び出して実行を開始してください",
     })
@@ -178,11 +239,17 @@ def console_plan(
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False),
           structured_output=False)
-def console_run(job_path: str | None = None) -> str:
+def console_run(job_path: str | None = None, detach: bool = False) -> str:
     """MS-DIAL Console を実行します。
 
     job_path: analysis-job.json へのパス。省略時は session.current_job_path を使用します。
     事前に console_plan を実行しておく必要があります。
+
+    detach: True にすると Console を**親から切り離して起動し、待たずに戻ります**
+        （pid を返す）。実データ 60 サンプルは約 44 分かかるため、既定の同期実行では
+        1 ツール呼び出しがその間ずっと戻らず、呼び出し元が中断されると生成物ごと
+        失います。切り離した実行の完了確認と生成物の収集は `console_status` が
+        引き継ぎます。**長い実行ではこちらを使ってください。**
 
     実行完了後、session.current_job_path は同じジョブを指し続けます。
     結果は console_status または dataset_load で確認してください。
@@ -246,6 +313,35 @@ def console_run(job_path: str | None = None) -> str:
     }
 
     update_status(resolved, "running")
+
+    if detach:
+        # 切り離した先では実行前スナップショットを撮れないので、ここで残す。
+        # 完了確認と収集は console_status が引き継ぐ。
+        from lipidmix.console.detached import write_detached_state
+        try:
+            pid = console_runner.run_msdial_detached(
+                method_file=Path(job.method_file),
+                dataset_root=dataset_root,
+                run_dir=run_dir,
+                exe_path=exe,
+                save_project=job.save_project,
+            )
+        except OSError as exc:
+            update_status(resolved, "failed", error=str(exc))
+            return console_error(
+                "MSDIAL_EXE_NOT_FOUND",
+                f"MS-DIAL Console を起動できませんでした: {exc}",
+                {"exe": exe, "log": str(run_dir / "msdial.log")})
+        write_detached_state(run_dir, pid, befores)
+        return json_payload({
+            "status": "running",
+            "job_id": job.job_id,
+            "job_path": str(resolved),
+            "pid": pid,
+            "run_dir": job.run_dir,
+            "log": str(run_dir / "msdial.log"),
+            "next": "console_status で完了を確認してください（完了時に生成物を収集します）",
+        })
 
     from lipidmix.console.runner import (
         run_msdial,
@@ -352,6 +448,53 @@ def console_run(job_path: str | None = None) -> str:
     })
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+          structured_output=False)
+def console_prepare_input(
+    dataset_root: str,
+    keep_extension: str = "wiff",
+    out_dir: str | None = None,
+) -> str:
+    """計測フォーマットが 1 種類だけの入力フォルダを作ります（MIXED_RAW_FORMATS の解消）。
+
+    MS-DIAL は `.wiff` と `.wiff2` を別フォーマットとして数えるため、SCIEX の
+    生データフォルダはそのままでは対話プロンプトが出て実行できません。
+    このツールは指定した拡張子の計測ファイルと**その随伴ファイル**
+    （`.wiff.scan` / `.timeseries.data` 等）だけを集めたフォルダを作ります。
+
+    実体はコピーせずハードリンクを張ります（同一ボリュームで無い場合のみコピー）。
+    **元フォルダは一切変更しません。** MS-DIAL の生成物はこの新しいフォルダ側に
+    出るので、生データ本体を汚さずに済みます。
+
+    dataset_root: 生データフォルダ。
+    keep_extension: 残す計測拡張子（既定 "wiff"）。
+    out_dir: 出力先。省略時は `<元フォルダ>_<拡張子>` を兄弟として作ります。
+    """
+    src = Path(dataset_root).expanduser()
+    dest = Path(out_dir).expanduser() if out_dir else src.parent / f"{src.name}_{keep_extension.lower().lstrip('.')}"
+
+    from lipidmix.console.input_prep import prepare_single_format_input
+    try:
+        result = prepare_single_format_input(src, keep_extension, dest)
+    except (ValueError, OSError) as exc:
+        return console_error("INPUT_PREP_FAILED", str(exc),
+                             {"dataset_root": str(src), "keep_extension": keep_extension})
+
+    from lipidmix.console.job_manager import raw_input_summary
+    return json_payload({
+        "status": "prepared",
+        "out_dir": result.out_dir,
+        "primary": result.primary,
+        "companions": result.companions,
+        "linked": result.linked,
+        "copied": result.copied,
+        "skipped_existing": result.skipped_existing,
+        "mode": result.mode,
+        "formats": raw_input_summary(Path(result.out_dir)),
+        "next": f"console_plan(dataset_root={result.out_dir!r}, ...) を実行してください",
+    })
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def console_status(job_path: str | None = None) -> str:
     """ジョブの現在のステータスを返します。
@@ -368,9 +511,14 @@ def console_status(job_path: str | None = None) -> str:
     except (FileNotFoundError, ValueError) as exc:
         return console_error("JOB_NOT_FOUND", str(exc))
 
+    job, detached = _finalize_detached_if_done(resolved, job)
+
+    from lipidmix.core.version import server_version
     return json_payload({
+        "server_version": server_version(),
         "job_id": job.job_id,
         "status": job.status,
+        **({"detached": detached} if detached else {}),
         "polarity": job.polarity,
         "measure": job.measure,
         "omics": job.omics,
@@ -390,6 +538,182 @@ def console_status(job_path: str | None = None) -> str:
         "warnings": job.warnings,
         "error": job.error,
         "updated_at": job.updated_at,
+    })
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+          structured_output=False)
+def console_method_template(
+    out_path: str,
+    polarity: str,
+    based_on: str | None = None,
+    dataset_root: str | None = None,
+    omics: str = "lipidomics",
+) -> str:
+    """既存のパラメータから、別極性用のメソッドファイルを作ります（最後の手段）。
+
+    **まず console_plan の method_file 省略を試してください。** MS-DIAL GUI は解析の
+    たびに `<project>_param_<終了時刻>.txt` を自動保存するので、その極性で一度でも
+    GUI 実行があれば、作る必要はありません。
+
+    このツールが要るのは「その極性で一度も処理していない」場合だけです
+    （別極性は処理済み、というのが典型）。やることは 2 行の差し替えです:
+    `Ion mode` と `Searched adduct ions` をその極性の標準セットにする。
+    **検出・アライメント条件は元のまま引き継ぎます**（勝手に変えると別の解析になる）。
+    加えて、GUI 由来では必ず空の `Lbm file path` を解決して埋めます。
+
+    out_path: 書き出し先。
+    polarity: "positive" / "negative"（作りたい側）。
+    based_on: 元にするパラメータファイル。省略時は dataset_root から探します
+        （**極性は問いません** — 別極性から作るのがこのツールの用途なので）。
+    dataset_root: based_on 省略時の探索先。
+    """
+    if polarity not in ("positive", "negative"):
+        return console_error("JOB_NOT_PLANNED",
+                             f"polarity は 'positive' または 'negative' です: {polarity!r}")
+
+    from lipidmix.console import method_file as method_file_mod
+
+    if based_on:
+        src = Path(based_on).expanduser()
+    elif dataset_root:
+        candidates = method_file_mod.find_method_candidates([Path(dataset_root).expanduser()])
+        if not candidates:
+            return console_error(
+                "METHOD_FILE_NOT_GIVEN",
+                "元にできるパラメータファイル（`*_param_<ts>.txt`）が見つかりません: "
+                f"{dataset_root}  MS-DIAL GUI で一度も解析していないフォルダには存在しません。"
+                "他のデータセットのパラメータを based_on で明示してください。",
+                {"dataset_root": dataset_root})
+        src = Path(candidates[0].path)
+    else:
+        return console_error("METHOD_FILE_NOT_GIVEN",
+                             "based_on か dataset_root のどちらかを指定してください。")
+
+    if not src.is_file():
+        return console_error("METHOD_FILE_NOT_FOUND", f"元ファイルが見つかりません: {src}")
+    if not _looks_like_method_text(src):
+        return console_error(
+            "METHOD_FILE_NOT_TEXT",
+            f"元ファイルが MS-DIAL Console の読める ASCII テキストではありません: {src}  "
+            ".mdproject / .mddata は ZIP で、解析パラメータを含んでいません"
+            "（中身は .mddata へのポインタだけです）。",
+            {"based_on": str(src)})
+
+    overrides = {
+        method_file_mod.ION_MODE_KEY: polarity.capitalize(),
+        method_file_mod.ADDUCT_KEY: method_file_mod.STANDARD_ADDUCTS[polarity],
+    }
+
+    exe = os.environ.get("MSDIAL_EXE") or None
+    lbm = method_file_mod.resolve_lbm(
+        method_file_mod.read_method_keys(src), src,
+        omics=omics, exe_path=exe, env=os.environ)
+    if lbm.error_code:
+        return console_error(lbm.error_code, lbm.message or "",
+                             {"candidates": list(lbm.candidates)} if lbm.candidates else None)
+    if lbm.path:
+        overrides[method_file_mod.LBM_KEY] = lbm.path
+
+    dest = Path(out_path).expanduser()
+    try:
+        method_file_mod.write_effective_method_file(src, dest, overrides)
+    except OSError as exc:
+        return console_error("METHOD_FILE_NOT_FOUND", f"書き出せませんでした: {exc}")
+
+    return json_payload({
+        "status": "written",
+        "out_path": str(dest),
+        "based_on": str(src),
+        "polarity": polarity,
+        "lbm": {"path": lbm.path, "source": lbm.source},
+        "changed_keys": sorted(overrides),
+        "caveat": "検出・アライメント条件は元ファイルのまま引き継いでいます。"
+                  "その極性に妥当かは実行前に確認してください。",
+        "next": f"console_plan(dataset_root=..., method_file={str(dest)!r}, polarity={polarity!r})",
+    })
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True),
+          structured_output=False)
+def console_cleanup(job_path: str | None = None, dry_run: bool = True) -> str:
+    """あるジョブが生成したファイルだけを一覧・削除します（既定は一覧のみ）。
+
+    MS-DIAL Console は生データフォルダ側にも生成物を出すため、再実行のたびに
+    別タイムスタンプのアライメント一式が同じフォルダへ積まれます。放置すると
+    「複数バッチ混在フォルダ」になり、どれが今回の結果か分からなくなります。
+
+    **消す対象は analysis-job.json が記録した生成物だけ**です。タイムスタンプの
+    推測では消しません（別バッチの成果物を巻き込むため）。記録が無いジョブは
+    NO_JOB_OUTPUT で拒否します。生データ（.wiff 等）には触れません。
+
+    dry_run: True（既定）なら一覧を返すだけ。False で実際に削除します。
+        削除後、ジョブの status は `cleaned` になります（生成物を指したまま
+        completed で残ると、dataset_load が存在しないファイルを読もうとします）。
+    """
+    resolved = _resolve_job_path(job_path)
+    if isinstance(resolved, str):
+        return resolved
+
+    from lipidmix.console.job_manager import load_job, update_status
+    try:
+        job = load_job(resolved)
+    except (FileNotFoundError, ValueError) as exc:
+        return console_error("JOB_NOT_FOUND", str(exc))
+
+    # 生成物は run_dir と dataset_root に書き分かれる。記録された出所から戻す
+    # 解決は mztab_tools が正準（関数レベル import で循環を避ける）。
+    from lipidmix.tools.mztab_tools import _artifact_abs_path
+
+    targets: list[Path] = []
+    for entry in job.primary_mztab_files:
+        targets.append(_artifact_abs_path(job, getattr(entry, "root", "run_dir"), entry.path))
+    for art in job.artifacts:
+        targets.append(_artifact_abs_path(job, getattr(art, "root", "run_dir"), art.path))
+
+    if not targets:
+        return console_error(
+            "NO_JOB_OUTPUT",
+            "このジョブは生成物を 1 件も記録していないため、何を消してよいか決められません"
+            f"（status={job.status}）。中断された実行はここに該当します。"
+            "ファイル名のタイムスタンプで推測すると別バッチの成果物を巻き込むため、"
+            "この場合は console_status と実フォルダを見て手で片付けてください。",
+            {"job_id": job.job_id, "status": job.status,
+             "dataset_root": job.dataset_root, "run_dir": job.run_dir})
+
+    if dry_run:
+        return json_payload({
+            "status": "dry_run",
+            "dry_run": True,
+            "job_id": job.job_id,
+            "count": len(targets),
+            "files": [str(p) for p in targets],
+            "next": "実際に削除するには dry_run=False を指定してください",
+        })
+
+    deleted = absent = failed = 0
+    errors: list[str] = []
+    for path in targets:
+        if not path.exists():
+            absent += 1
+            continue
+        try:
+            path.unlink()
+            deleted += 1
+        except OSError as exc:
+            failed += 1
+            errors.append(f"{path}: {exc}")
+
+    update_status(resolved, "cleaned")
+    return json_payload({
+        "status": "cleaned",
+        "dry_run": False,
+        "job_id": job.job_id,
+        "deleted": deleted,
+        "already_absent": absent,
+        "failed": failed,
+        "errors": errors,
+        "note": "生データ（.wiff 等）と analysis-job.json は残しています。",
     })
 
 
@@ -427,6 +751,54 @@ def job_list(dataset_root: str) -> str:
 
 
 # ---------- 内部ヘルパ ----------
+
+def _finalize_detached_if_done(job_path: Path, job):
+    """切り離した実行が終わっていれば、生成物を収集してジョブを確定する。
+
+    切り離した Console は親を持たないので、誰かが後から収集しないと生成物が
+    ジョブに載らない。その「誰か」が console_status。
+
+    Returns: (job, detached_info | None)
+    """
+    from lipidmix.console.detached import clear_detached_state, read_detached_state
+
+    run_dir = Path(job.run_dir)
+    state = read_detached_state(run_dir)
+    if state is None:
+        return job, None
+
+    from lipidmix.console import runner as console_runner
+    pid = state["pid"]
+    if console_runner.is_process_running(pid):
+        return job, {"pid": pid, "alive": True}
+
+    roots = {"run_dir": run_dir, "dataset_root": Path(job.dataset_root)}
+    befores = state.get("befores") or {}
+    # 収集の前に消す。この制御ファイル自体は実行前スナップショットの後に書かれる
+    # ので、残したまま収集すると「MS-DIAL の生成物」として拾われる。
+    clear_detached_state(run_dir)
+    try:
+        from lipidmix.console.output_collector import collect_artifacts
+        mztab_entries, other_artifacts = collect_artifacts(
+            roots, befores,
+            declared_polarity=job.polarity,
+            declared_measure=job.measure,
+        )
+    except Exception as exc:  # 収集失敗で running に固着させない
+        clear_detached_state(run_dir)
+        _record_finalization_failure(job_path, repr(exc))
+        from lipidmix.console.job_manager import load_job
+        return load_job(job_path), {"pid": pid, "alive": False, "collected": False}
+
+    # 生成物ゼロは、起動に失敗したか途中で落ちたかのどちらか。msdial.log を見る。
+    status = "completed" if (mztab_entries or other_artifacts) else "failed"
+    error = None if status == "completed" else (
+        f"切り離し実行の終了後に新規生成物が見つかりません: {run_dir / 'msdial.log'}")
+    job = _persist_collected_outputs(
+        job_path, mztab_entries, other_artifacts, status=status, error=error)
+    clear_detached_state(run_dir)
+    return job, {"pid": pid, "alive": False, "collected": True}
+
 
 def _looks_like_method_text(path: Path) -> bool:
     """MS-DIAL Console の ConfigParser が読める形かを判定する。
@@ -467,6 +839,79 @@ def _artifacts_tsv(artifacts) -> str:
     lines = ["path\trole\tformat\troot"]
     lines.extend(f"{a.path}\t{a.role}\t{a.format}\t{a.root}" for a in artifacts)
     return "\n".join(lines)
+
+
+def _msdial_exe_setup_help() -> dict:
+    """MSDIAL_EXE 未設定の封筒に、誰が何をすべきかを機械可読で載せる。
+
+    環境変数は MCP クライアントからは設定できず、設定しても**起動中のサーバには
+    反映されない**（サーバはクライアントが起動したまま生き続ける）。
+    LLM に「設定してください」とだけ返すと、設定を試みて失敗するか黙って諦める。
+    人間の作業であることを型で示し、コピペできる手順を渡す。
+    """
+    from lipidmix.console.runner import msdial_exe_candidates
+
+    try:
+        candidates = msdial_exe_candidates()
+    except OSError:
+        candidates = []
+    return {
+        "human_action_required": True,
+        "why": "環境変数の設定は MCP クライアントからはできません。",
+        "candidates": candidates[:10],
+        "how_to_set": [
+            'PowerShell（恒久設定）: [Environment]::SetEnvironmentVariable('
+            "'MSDIAL_EXE','<MSDIALCUI.exe のパス>','User')",
+            '.mcp.json の該当サーバに "env": {"MSDIAL_EXE": "<パス>"} を書く',
+        ],
+        "restart_required": True,
+        "restart_note": "設定後は MCP サーバを再起動してください。"
+                        "起動中のプロセスは環境変数の変更を読み直しません。",
+    }
+
+
+def _record_mztab_provenance(job, mztab_entries) -> None:
+    """成果物の mzTab から、ジョブ側で分からない出所情報を採る。
+
+    - `software.version`: Console 実行からは知りようがない。mzTab の
+      `MTD software[1]` に `Msdial console 5.5.241113` が入っている。
+    - 極性の裏取り: Console のアライメント出力名には極性トークンが無いので
+      `polarity_source` は `job_declared` にしかならない（仕様）。宣言ミスを
+      検出する手段が他に無いため、アダクトの多数決で**別フィールドとして**
+      裏取りする。`polarity_source` は書き換えない —— 推定を出所として
+      記録すると、そちらのほうが嘘になる。
+    """
+    from lipidmix.console.output_collector import (
+        read_adduct_polarity, read_software_version,
+    )
+    from lipidmix.tools.mztab_tools import _artifact_abs_path
+
+    for entry in mztab_entries:
+        path = _artifact_abs_path(job, getattr(entry, "root", "run_dir"), entry.path)
+        if not job.software_version:
+            version = read_software_version(path)
+            if version:
+                job.software_version = version
+        crosscheck = read_adduct_polarity(path)
+        majority = crosscheck["adduct_majority"]
+        crosscheck["agrees"] = None if majority is None else (majority == entry.polarity)
+        entry.validation["polarity_crosscheck"] = crosscheck
+
+
+def _polarity_crosscheck_warnings(mztab_entries) -> list[str]:
+    """アダクトから推定した極性が宣言と食い違うエントリを warning にする。"""
+    warnings: list[str] = []
+    for entry in mztab_entries:
+        check = entry.validation.get("polarity_crosscheck") or {}
+        if check.get("agrees") is False:
+            warnings.append(
+                f"{entry.path}: アダクトの多数決は {check['adduct_majority']} ですが、"
+                f"ジョブの宣言は {entry.polarity} です"
+                f"（陽性 {check['n_positive']} / 陰性 {check['n_negative']} 行）。"
+                "Console 出力のファイル名に極性が入らないため宣言をそのまま記録して"
+                "いますが、console_plan の polarity かメソッドファイルの Ion mode を"
+                "確認してください。")
+    return warnings
 
 
 def _meta_conflict_warnings(mztab_entries) -> list[str]:
@@ -552,7 +997,9 @@ def _persist_collected_outputs(
     job = load_job(job_path)
     job.primary_mztab_files = mztab_entries
     job.artifacts = other_artifacts
+    _record_mztab_provenance(job, mztab_entries)
     job.warnings.extend(_meta_conflict_warnings(mztab_entries))
+    job.warnings.extend(_polarity_crosscheck_warnings(mztab_entries))
     job.warnings.extend(_unsupported_mztab_warnings(other_artifacts))
     job.warnings.extend(_missing_per_sample_output_warnings(other_artifacts))
     job.status = status  # type: ignore[assignment]

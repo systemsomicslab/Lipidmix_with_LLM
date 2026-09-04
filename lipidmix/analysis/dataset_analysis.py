@@ -200,6 +200,10 @@ def run_dataset_preprocess(ds, recipe: dict):
     return matrix, pp_sample_names, pp_feature_names, roles, sample_meta, report
 
 
+#: 主成分と注入順の相関がこの絶対値を超えたら、分析ドリフトの疑いを caveat に出す。
+_DRIFT_CORRELATION_WARN = 0.5
+
+
 def run_dataset_pca(ds, n_components: int = 5, log_transform: bool = False) -> dict:
     """DatasetState の pp_matrix に PCA を実行する。"""
     matrix = _require_pp_matrix(ds)
@@ -224,10 +228,31 @@ def run_dataset_pca(ds, n_components: int = 5, log_transform: bool = False) -> d
             row[f"PC{pc + 1}"] = round(float(components[i, pc]), 4)
         scores.append(row)
 
+    # QC が無いバッチでは qc_drift_correct も QC-RSD フィルタも動かない。
+    # そこで注入順との相関を出す。補正はできなくても「その主成分が分析ドリフトを
+    # 写しているか」は言えるので、生物学として読む前の歯止めになる。
+    from lipidmix.analysis.preprocessing import run_order_correlation
+    sample_meta = getattr(ds, "sample_meta", None) or {}
+    run_order = {n: (sample_meta.get(n) or {}).get("run_order")
+                 for n in ds.pp_sample_names}
+    order_corr = run_order_correlation(components, ds.pp_sample_names, run_order)
+
+    caveats: list[str] = []
+    drifting = [(i + 1, r) for i, r in enumerate(order_corr)
+                if r is not None and abs(r) >= _DRIFT_CORRELATION_WARN]
+    if drifting:
+        detail = "、".join(f"PC{pc} (r={r:+.2f})" for pc, r in drifting)
+        caveats.append(
+            f"{detail} が注入順と強く相関しています。分析ドリフトを写している"
+            "可能性があるため、群差として読む前に確認してください。"
+            "QC 試料があれば dataset_preprocess(drift_correct=True) で補正できます。")
+
     return {
         "explained_variance_ratio": [round(float(v), 4)
                                      for v in pca["explained_variance_ratio"]],
         "scores": scores,
+        "run_order_correlation": order_corr,
+        "caveats": caveats,
         "n_samples": n_samples,
         "n_features": n_features,
         "log_transform": log_transform,
