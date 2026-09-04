@@ -39,3 +39,7 @@ archives/
 
 # Subagent-Driven Development の作業台帳・レビュー資材（スクラッチ）
 .superpowers/
+
+# git worktree の置き場。中身は別ブランチのチェックアウトそのものなので、
+# git add -A で丸ごと巻き込まないよう無視する。
+.worktrees/
