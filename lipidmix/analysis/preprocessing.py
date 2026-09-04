@@ -182,6 +182,44 @@ def _moving_median(values, window=5):
     return smoothed
 
 
+#: 相関を語るのに要る最小の点数。2 点なら必ず |r|=1 になり意味が無い。
+_MIN_ORDERED_SAMPLES = 3
+
+
+def run_order_correlation(components, sample_names, run_order):
+    """主成分ごとに注入順との Pearson 相関を返す（語れないものは None）。
+
+    QC が無いバッチでは `qc_drift_correct` も QC-RSD フィルタも動かない。
+    その状態でも注入順さえあれば「その主成分が分析ドリフトを写しているか」は
+    言える。**補正の代わりではなく、補正できないことの可視化**に使う。
+
+    注入順を持たないサンプルは計算から外す（欠測を 0 で埋めない）。分散ゼロの
+    主成分は相関が定義できないので None を返す —— nan は JSON にできない。
+    """
+    components = np.asarray(components, dtype=float)
+    if components.ndim != 2:
+        raise ValueError(f"components は 2 次元である必要があります: {components.shape}")
+
+    orders = [run_order.get(n) for n in sample_names]
+    keep = [i for i, o in enumerate(orders) if o is not None]
+    n_pc = components.shape[1]
+    if len(keep) < _MIN_ORDERED_SAMPLES:
+        return [None] * n_pc
+
+    x = np.array([float(orders[i]) for i in keep], dtype=float)
+    if np.std(x) == 0:
+        return [None] * n_pc
+
+    out = []
+    for pc in range(n_pc):
+        y = components[keep, pc]
+        if not np.all(np.isfinite(y)) or np.std(y) == 0:
+            out.append(None)
+            continue
+        out.append(round(float(np.corrcoef(x, y)[0, 1]), 3))
+    return out
+
+
 def qc_drift_correct(matrix, roles, sample_names, run_order, min_qc=4, window=5):
     """QC を注入順に平滑化した系統ドリフトで、特徴量ごとに全サンプルを補正する。
 
@@ -391,8 +429,35 @@ def preprocess(matrix, sample_names, roles, run_order, recipe):
     n_features = matrix.shape[1]
     keep = np.ones(n_features, dtype=bool)
     applied: list[str] = []
+    skipped: list[str] = []
     caveats: list[str] = []
     steps: dict = {}
+
+    def _record(name: str, rep: dict) -> None:
+        """要求されたステップを、実際に適用できたかで振り分ける。
+
+        `recipe_applied` に載せるのは本当に走ったものだけ。skipped を混ぜると
+        「やった」と「できなかった」が呼び出し側から区別できなくなる
+        （QC 不在のバッチで drift_correct を要求した場合が実例）。
+        """
+        steps[name] = rep
+        if rep.get("status") == "skipped":
+            skipped.append(name)
+        else:
+            applied.append(name)
+        if "caveat" in rep:
+            caveats.append(rep["caveat"])
+
+    # QC もブランクも無いバッチでは、前処理レシピの大半が原理的に効かない。
+    # それでも preprocess は成功を返すので、要求の有無によらず先に明示する
+    # （要求していないだけなのか、できないのかを呼び出し側が区別できるように）。
+    present_roles = set(roles.values()) if roles else set()
+    if not present_roles & {"qc", "blank"}:
+        caveats.append(
+            "この試料群には QC もブランクも含まれていないため、"
+            "ブランク背景除去・QC-RSD フィルタ・QC ドリフト補正は"
+            "いずれも適用できません（要求の有無によらず）。"
+            "注入順があれば、PCA の run_order_correlation でドリフトの有無だけは確認できます。")
 
     # 前処理の前に QC 自体の健全性を見る。失敗 QC は下流の全フィルタを汚染するため、
     # 正規化でスケールが動く前の生強度で判定する。
@@ -404,33 +469,21 @@ def preprocess(matrix, sample_names, roles, run_order, recipe):
     if recipe.get("blank_min_fold") is not None:
         mask, rep = blank_filter(matrix, roles, sample_names, recipe["blank_min_fold"])
         keep &= mask
-        applied.append("blank_filter")
-        steps["blank_filter"] = rep
-        if "caveat" in rep:
-            caveats.append(rep["caveat"])
+        _record("blank_filter", rep)
 
     method = recipe.get("normalize", "none")
     if method != "none":
         matrix, _, rep = normalize(matrix, method, roles, sample_names)
-        applied.append("normalize")
-        steps["normalize"] = rep
-        if "caveat" in rep:
-            caveats.append(rep["caveat"])
+        _record("normalize", rep)
 
     if recipe.get("drift_correct"):
         matrix, rep = qc_drift_correct(matrix, roles, sample_names, run_order)
-        applied.append("drift_correct")
-        steps["drift_correct"] = rep
-        if "caveat" in rep:
-            caveats.append(rep["caveat"])
+        _record("drift_correct", rep)
 
     if recipe.get("max_qc_rsd") is not None:
         mask, rep = qc_rsd_filter(matrix, roles, sample_names, recipe["max_qc_rsd"])
         keep &= mask
-        applied.append("qc_rsd_filter")
-        steps["qc_rsd_filter"] = rep
-        if "caveat" in rep:
-            caveats.append(rep["caveat"])
+        _record("qc_rsd_filter", rep)
 
     features_after = int(keep.sum())
     # 特徴量フィルタが過度（閾値が厳しすぎる等）で解析不能になる場合を前景化する。
@@ -456,6 +509,7 @@ def preprocess(matrix, sample_names, roles, run_order, recipe):
 
     report = {
         "recipe_applied": applied,
+        "recipe_skipped": skipped,
         "steps": steps,
         "caveats": caveats,
         "features_before": n_features,

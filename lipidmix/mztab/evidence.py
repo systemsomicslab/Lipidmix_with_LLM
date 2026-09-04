@@ -11,11 +11,14 @@ gap-fill（未検出セルの補間）かを区別しない。実データ（60 
 名前が合っていても別のアライメントということが起こりうるうえ、誤接合すると
 「検出/未検出」を特徴間で入れ替えたまま静かに嘘をつく。代わりに数値で確かめる:
 
-  - スポット数 == 特徴数
-  - 全特徴で |m/z(.arf 代表値) − m/z(mzTab 平均値)| <= 許容（既定 0.01 Da）
+  - スポット数 == 特徴数（完全一致）
+  - |m/z(.arf 代表値) − m/z(mzTab 平均値)| が許容（既定 0.01 Da）を超える特徴が
+    全体の 1% 以下、**かつ** 1 件も MZ_HARD_LIMIT（1 Da）を超えない
 
-実データでの裏取り: 位置一致では最大 6.7 mDa に収まり、1 つずらすと 87 Da・RT 20 分に
-爆発する。したがってこの 2 条件は偶然には成立しない。
+**最悪値では判定しない**。実データ 3944 特徴では許容超えが 1 件だけあり
+（14.8 mDa。幅の広いピークでは代表値と平均値が離れる）、最悪値で見ると
+3943 件の一致を棄却してしまった。一方、位置を 1 つずらした誤接合は 87 Da・
+RT 20 分に爆発するので、割合で緩めても誤接合は MZ_HARD_LIMIT が捕まえる。
 
 サンプル軸は `.arf` の Key0..9 に入るファイル名と mzTab の assay 表示名が一致する
 （実データで完全一致）。列順は `.arf` の FileID 順ではなく **mzTab の assay 順**に
@@ -37,6 +40,14 @@ from lipidmix.arf import reader as arf_reader
 #: 書くため、同一特徴でも完全一致はしない。実データの最大差 6.7 mDa に対して
 #: 1 桁の余裕を取り、隣接特徴（実データ最小間隔は Da オーダー）とは混同しない幅。
 MZ_TOLERANCE = 0.01
+
+#: 許容を超えてよい特徴の割合。実データ 3944 特徴のうち許容超えは 1 件
+#: （0.025%）だった。最悪値で判定すると、この 1 件が 3943 件の一致を veto する。
+MZ_OUTLIER_MAX_FRACTION = 0.01
+
+#: 1 件でも超えたら誤接合と断じる幅。位置を 1 つずらした誤接合は実測で
+#: 87 Da に爆発するので、外れ値の許容が誤接合の見逃しにならないための床。
+MZ_HARD_LIMIT = 1.0
 
 #: gap-fill 判定に使えない `.arf` の候補を弾くための除外語。MS-DIAL 自身の綴り
 #: 揺れ（DriftSopts）も含める。イオンモビリティのドリフトスポットは
@@ -91,20 +102,36 @@ def build_evidence(
 
     worst = 0.0
     worst_index = None
+    n_compared = 0
+    n_over = 0
+    over_hard_limit = False
     for index, (spot, mz_expected) in enumerate(zip(normalized_spots, feature_mz)):
         mz_actual = spot.get("mz")
         if mz_actual is None or mz_expected is None:
             continue
+        n_compared += 1
         delta = abs(float(mz_actual) - float(mz_expected))
+        if delta > mz_tolerance:
+            n_over += 1
+        if delta > MZ_HARD_LIMIT:
+            over_hard_limit = True
         if delta > worst:
             worst, worst_index = delta, index
-    if worst > mz_tolerance:
-        return {
-            "status": "rejected",
-            "reason": "mz_mismatch",
-            "detail": {"worst_mz_delta": worst, "at_feature_index": worst_index,
-                       "tolerance": mz_tolerance},
-        }
+
+    # 判定は「最悪値」ではなく「外れの割合」で行う。実データ 3944 特徴では
+    # 許容超えが 1 件（14.8 mDa）だけあり、最悪値で見ると 3943 件の一致を
+    # 捨てることになった。スポット代表値とアライメント平均値の差は、幅の広い
+    # ピークや共溶出で稀に許容を超える。
+    # 一方、1 つずらした誤接合は Da オーダーに爆発する（実測 87 Da）ので、
+    # 少数でも MZ_HARD_LIMIT を超えたら誤接合として棄却する。
+    over_fraction = (n_over / n_compared) if n_compared else 0.0
+    mz_detail = {"worst_mz_delta": worst, "at_feature_index": worst_index,
+                 "tolerance": mz_tolerance, "n_compared": n_compared,
+                 "n_over_tolerance": n_over,
+                 "over_tolerance_fraction": round(over_fraction, 6),
+                 "hard_limit": MZ_HARD_LIMIT}
+    if over_hard_limit or over_fraction > MZ_OUTLIER_MAX_FRACTION:
+        return {"status": "rejected", "reason": "mz_mismatch", "detail": mz_detail}
 
     arf_names = [cell["name"] for cell in (normalized_spots[0]["samples"]
                                           if normalized_spots else [])]
@@ -133,7 +160,7 @@ def build_evidence(
         "n_cells": n_cells,
         "n_detected": n_detected,
         "gap_filled_rate": round(1.0 - n_detected / n_cells, 4) if n_cells else None,
-        "detail": {"worst_mz_delta": worst, "tolerance": mz_tolerance,
+        "detail": {**mz_detail,
                    "feature_axis": "arf_spot_index == mztab_smf_id",
                    "sample_axis": "arf_file_name == mztab_assay_name"},
     }
@@ -198,7 +225,7 @@ def load_arf_evidence(
     return result
 
 
-def apply_evidence(ds, result: dict | None) -> None:
+def apply_evidence(ds, result: dict | None, tried: list[str] | None = None) -> None:
     """`build_evidence` の封筒を DatasetState に反映する。
 
     取り込めなかった場合に **黙って検出 0 として畳まない**のが要点。検出状態が
@@ -207,12 +234,13 @@ def apply_evidence(ds, result: dict | None) -> None:
     `feature_qc["source"] = None` と理由を書き、警告で利用者に伝える。
     """
     if result is None:
-        ds.feature_qc = {"source": None, "reason": "no_candidate"}
+        ds.feature_qc = {"source": None, "reason": "no_candidate", "tried": list(tried or [])}
         return
     if result.get("status") != "ok":
         reason = result.get("reason", "unknown")
         detail = {k: v for k, v in (result.get("detail") or {}).items()}
-        ds.feature_qc = {"source": None, "reason": reason, "detail": detail}
+        ds.feature_qc = {"source": None, "reason": reason, "detail": detail,
+                         "tried": list(tried or [])}
         ds.validation_result.setdefault("warnings", []).append(
             f"隣接する .arf から検出状態（gap-fill）を取り込めませんでした"
             f"（理由: {reason}）。この mzTab-M の非ゼロ値には gap-fill による補間値が"
@@ -223,6 +251,7 @@ def apply_evidence(ds, result: dict | None) -> None:
     ds.detected_mask = result["detected_mask"]
     ds.feature_qc = {
         "source": "arf",
+        "tried": list(tried or []),
         "n_cells": result["n_cells"],
         "n_detected": result["n_detected"],
         "gap_filled_rate": result["gap_filled_rate"],
@@ -243,4 +272,6 @@ def attach_to_dataset(ds, mztab_path: str | Path) -> None:
             candidate, feature_mz=feature_mz, sample_names=ds.sample_names)
         if last.get("status") == "ok":
             break
-    apply_evidence(ds, last)
+    # どの .arf と照合したかを必ず残す。これが無いと、棄却されたときに
+    # 「そもそも別のファイルを見ていた」のか「本当に合わなかった」のかを追えない。
+    apply_evidence(ds, last, tried=[str(p) for p in candidates])

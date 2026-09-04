@@ -385,3 +385,74 @@ class TestDropSamplesByRole(unittest.TestCase):
         self.assertEqual(names, [])
         self.assertEqual(dropped, {"blank": ["b1", "b2"]})
         self.assertEqual(matrix.shape[0], 0)
+
+
+class TestRecipeHonesty(unittest.TestCase):
+    """要求したステップが実際に適用されたかを、報告で区別する。
+
+    `recipe_applied` に "drift_correct" が載るのに中身は status=skipped、という
+    状態だと、「やった」と「できなかった」を呼び出し側が区別できない。
+    """
+
+    def _matrix(self):
+        return np.array([[10.0, 20.0], [12.0, 21.0], [11.0, 19.0], [13.0, 22.0]])
+
+    def test_requested_drift_correct_without_qc_is_reported_as_skipped(self):
+        names = ["s1", "s2", "s3", "s4"]
+        roles = {n: "sample" for n in names}
+        run_order = {n: i + 1 for i, n in enumerate(names)}
+        _, _, report = pp.preprocess(self._matrix(), names, roles, run_order,
+                                  {"drift_correct": True})
+        self.assertNotIn("drift_correct", report["recipe_applied"])
+        self.assertIn("drift_correct", report["recipe_skipped"])
+
+    def test_applied_steps_stay_in_recipe_applied(self):
+        names = ["s1", "s2", "s3", "s4"]
+        roles = {n: "sample" for n in names}
+        run_order = {n: None for n in names}
+        _, _, report = pp.preprocess(self._matrix(), names, roles, run_order,
+                                  {"normalize": "tic"})
+        self.assertIn("normalize", report["recipe_applied"])
+        self.assertIn("impute", report["recipe_applied"])
+        self.assertEqual(report["recipe_skipped"], [])
+
+    def test_recipe_skipped_is_always_present(self):
+        """キーの有無で分岐させると、呼び出し側が毎回 get() を書くことになる。"""
+        names = ["s1", "s2", "s3", "s4"]
+        roles = {n: "sample" for n in names}
+        _, _, report = pp.preprocess(self._matrix(), names, roles,
+                                  {n: None for n in names}, {})
+        self.assertEqual(report["recipe_skipped"], [])
+
+
+class TestNoQcNoBlankBatch(unittest.TestCase):
+    """QC もブランクも無いバッチでは、前処理の大半が原理的に効かない。
+
+    それでも preprocess は success を返すので、`recipe_applied` を読まない限り
+    「normalize と impute しかしていない」ことが分からない。実データの POS 60
+    サンプルがこれで、60/60 が role=sample だった。
+    """
+
+    def _run(self, roles):
+        names = list(roles)
+        m = np.arange(len(names) * 3, dtype=float).reshape(len(names), 3) + 1.0
+        return pp.preprocess(m, names, roles, {n: None for n in names}, {})[2]
+
+    def test_caveat_when_neither_qc_nor_blank_present(self):
+        report = self._run({f"s{i}": "sample" for i in range(4)})
+        self.assertTrue(any("QC" in c and "ブランク" in c for c in report["caveats"]),
+                        report["caveats"])
+
+    def test_no_caveat_when_qc_present(self):
+        roles = {f"s{i}": "sample" for i in range(3)}
+        roles["qc_1"] = "qc"
+        report = self._run(roles)
+        self.assertFalse(any("いずれも適用できません" in c for c in report["caveats"]),
+                         report["caveats"])
+
+    def test_no_caveat_when_blank_present(self):
+        roles = {f"s{i}": "sample" for i in range(3)}
+        roles["blank_1"] = "blank"
+        report = self._run(roles)
+        self.assertFalse(any("いずれも適用できません" in c for c in report["caveats"]),
+                         report["caveats"])

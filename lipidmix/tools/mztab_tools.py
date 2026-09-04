@@ -180,7 +180,11 @@ def dataset_status() -> str:
             "DatasetState がありません。先に dataset_load を実行してください。"
             "console_run 完了後は dataset_load(job_path=<analysis-job.json へのパス>) を推奨します。",
         )
+    from lipidmix.core.version import server_version
     payload = {
+        # 更新後に MCP サーバを再起動し忘れると古いプロセスが黙って動き続ける。
+        # 「おかしい」と思ったときに 1 回で分かるよう、ここに刻む。
+        "server_version": server_version(),
         "source_format": ds.source_format,
         "source_files": list(ds.source_files.keys()),
         "quantification_measure": ds.quantification_measure,

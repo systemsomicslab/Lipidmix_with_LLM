@@ -64,6 +64,16 @@ CONSOLE_ERROR_CODES = frozenset({
     "MSDIAL_EXE_NOT_CONSOLE",
     # MS-DIAL が対象とする計測拡張子が混在する、または 0 種類の場合。
     "MIXED_RAW_FORMATS",
+    # method_file 省略時に、使えるパラメータファイルが見つからなかった場合。
+    "METHOD_FILE_NOT_GIVEN",
+    # メソッドファイルの Ion mode と宣言 polarity が食い違う場合。
+    "METHOD_FILE_POLARITY_MISMATCH",
+    # 脂質ライブラリ（.lbm2）を解決できない／候補が 1 件に絞れない場合。
+    # 空のまま実行すると MS-DIAL は警告なしで同定 0 件のまま完走する。
+    "LBM_NOT_FOUND",
+    "LBM_AMBIGUOUS",
+    # console_prepare_input が単一フォーマットの入力フォルダを作れなかった場合。
+    "INPUT_PREP_FAILED",
     # MS-DIAL 実行自体は成功したが、その後の生成物収集・ハッシュ計算・
     # analysis-job.json への保存で失敗した場合。NO_JOB_OUTPUT（生成物が
     # そもそも無い）とは別のエラー: こちらは生成物はあるが確定処理に失敗した状態。
@@ -71,13 +81,22 @@ CONSOLE_ERROR_CODES = frozenset({
 })
 
 
-def console_error(code: str, message: str, details: dict | None = None) -> str:
-    """Console 実行層固有のエラーを機械可読エンベロープで返す。"""
+def console_error(code: str, message: str, details: dict | None = None,
+                  required_tools: list[str] | None = None) -> str:
+    """Console 実行層固有のエラーを機械可読エンベロープで返す。
+
+    `required_tools` は missing_state と同じ意味の**代替候補（OR）**で、
+    「このエラーを解消できるツール」を指す。文面がいくら正しくても、
+    MCP クライアントに実行できない手順（フォルダを作る等）を指示していては
+    復旧できない。封筒が自分の直し方を機械可読に指すためにある。
+    """
     if not code or not message:
         raise ValueError("code と message は必須です。")
     payload: dict = {"code": code, "message": message}
     if details is not None:
         payload["details"] = details
+    if required_tools:
+        payload["required_tools"] = list(required_tools)
     return json_payload({"error": payload})
 
 

@@ -1,0 +1,132 @@
+"""単一フォーマットの入力フォルダを作る（`MIXED_RAW_FORMATS` の解き方）。
+
+MS-DIAL の `SupportMsRawDataExtension` は `wiff` と `wiff2` を**別フォーマット**として
+数える。SCIEX は 1 測定につき両方を出すので、生データフォルダはそのままでは必ず
+混在し、`AnalysisFilesParser.ReadInput` が `Console.ReadLine()` で Y/N を聞く。
+stdin を塞いだ実行では NullReferenceException で終了コード 1 になり、Y と答えて
+進めた場合は 60 サンプルが 120 解析ファイルとして扱われる
+（docs/HISTRY.md 2026-09-03(5) §4）。
+
+`console_plan` のエラー封筒は「解析に使うほうだけを残したフォルダを作って指定して
+ください」と正しく言うが、**MCP クライアントにはフォルダを作る手段が無い**。
+ここがその手段。生データは読むだけなのでハードリンクで足りる（実測 4.1GB の
+フォルダを実体コピーせずに済む）。
+"""
+from __future__ import annotations
+
+import os
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+from lipidmix.console.job_manager import _RAW_EXTENSIONS
+
+
+@dataclass(frozen=True)
+class PrepareResult:
+    """作った入力フォルダの内訳。"""
+
+    out_dir: str
+    primary: int
+    companions: int
+    linked: int
+    copied: int
+    skipped_existing: int
+    mode: str  # hardlink | copy | mixed | none
+
+
+def _companions_of(entries: list[Path], primary: Path, keep_suffix: str) -> list[Path]:
+    """primary と同じ測定に属する随伴ファイルを返す。
+
+    `.wiff` は `.wiff.scan` が無いと読めず、`.timeseries.data` も同じ測定の一部。
+    一方 `.wiff2` は**別フォーマット**なので連れて行ってはいけない —— それを
+    置いていくことがこの関数の目的そのものだから。
+
+    判定: 名前が `<primary の先頭トークン>.` で始まり、最後の拡張子が
+    MS-DIAL の計測ファイル拡張子でないもの。
+    """
+    stem = primary.name[: -len(keep_suffix)]  # 末尾の ".wiff" を落とす
+    out = []
+    for p in entries:
+        if p == primary or not p.name.startswith(stem + "."):
+            continue
+        if p.suffix.lower().lstrip(".") in _RAW_EXTENSIONS:
+            continue  # 別フォーマットの計測ファイル（.wiff2 など）
+        out.append(p)
+    return out
+
+
+def prepare_single_format_input(
+    dataset_root, keep_extension: str, out_dir,
+) -> PrepareResult:
+    """`keep_extension` の計測ファイルと随伴ファイルだけの入力フォルダを作る。
+
+    同一ボリュームならハードリンク、またげないときはコピーへフォールバックする。
+    元フォルダは読むだけで一切変更しない。既に同名がある出力先は上書きしない
+    （掃除と作り直しを往復するので冪等であることが要る）。
+    """
+    src = Path(dataset_root).expanduser()
+    dest = Path(out_dir).expanduser()
+    ext = keep_extension.lower().lstrip(".")
+
+    if ext not in _RAW_EXTENSIONS:
+        raise ValueError(
+            f"MS-DIAL が計測ファイルとして数えない拡張子です: {keep_extension!r}  "
+            f"対象: {', '.join(sorted(_RAW_EXTENSIONS))}")
+    if not src.is_dir():
+        raise ValueError(f"dataset_root が存在しません: {src}")
+    if dest.resolve() == src.resolve():
+        raise ValueError(
+            "出力先が入力フォルダと同じです。混在を解消できないうえ、"
+            "元フォルダを変更することになります。別のフォルダを指定してください。")
+
+    entries = [p for p in sorted(src.iterdir()) if p.is_file()]
+    suffix = "." + ext
+    primaries = [p for p in entries if p.name.lower().endswith(suffix)
+                 and p.suffix.lower().lstrip(".") == ext]
+    if not primaries:
+        raise ValueError(
+            f"入力フォルダに .{ext} がありません: {src}  "
+            "list_data_files(all_files=True) で実際の拡張子を確認してください。")
+
+    to_copy: list[Path] = []
+    companions = 0
+    for primary in primaries:
+        to_copy.append(primary)
+        found = _companions_of(entries, primary, suffix)
+        companions += len(found)
+        to_copy.extend(found)
+
+    dest.mkdir(parents=True, exist_ok=True)
+    linked = copied = skipped = 0
+    for source in to_copy:
+        target = dest / source.name
+        if target.exists():
+            skipped += 1
+            continue
+        try:
+            os.link(source, target)
+            linked += 1
+        except OSError:
+            # ボリュームをまたぐ／リンク非対応のファイルシステム。
+            shutil.copy2(source, target)
+            copied += 1
+
+    if linked and copied:
+        mode = "mixed"
+    elif linked:
+        mode = "hardlink"
+    elif copied:
+        mode = "copy"
+    else:
+        mode = "none"
+
+    return PrepareResult(
+        out_dir=str(dest),
+        primary=len(primaries),
+        companions=companions,
+        linked=linked,
+        copied=copied,
+        skipped_existing=skipped,
+        mode=mode,
+    )

@@ -221,3 +221,80 @@ def _pick(inferred: str | None, declared: str | None, default: str) -> tuple[str
     if declared:
         return declared, "job_declared"
     return default, "default"
+
+
+#: mzTab から読む出所情報の上限。MTD は先頭にまとまっているが、SML の
+#: アダクト集計は全行を舐める必要があるので、行数ではなくバイト数で抑える。
+_PROVENANCE_MAX_BYTES = 8 << 20
+
+
+def _read_head(path, limit: int = _PROVENANCE_MAX_BYTES) -> str | None:
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(limit).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def read_software_version(mztab_path) -> str | None:
+    """mzTab の `MTD software[1]` から MS-DIAL の版数を読む。
+
+    実物は `[MS, MS:1003082, MS-DIAL, Msdial console 5.5.241113]` の形で、
+    4 番目の要素が版数。`analysis-job` の software.version は Console 実行から
+    知りようがないので、成果物側の記録を採る。
+    """
+    text = _read_head(mztab_path, 1 << 16)
+    if text is None:
+        return None
+    for line in text.splitlines():
+        if not line.startswith("MTD"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3 or not parts[1].strip().startswith("software["):
+            continue
+        term = parts[2].strip().strip("[]")
+        fields = [f.strip() for f in term.split(",")]
+        if len(fields) >= 4 and fields[3]:
+            return fields[3]
+    return None
+
+
+def read_adduct_polarity(mztab_path) -> dict:
+    """SML のアダクト表記から極性を多数決で推定する。
+
+    Console のアライメント出力名には極性トークンが無いため、`polarity_source` は
+    `job_declared` にしかならない（仕様）。宣言ミスを検出する手段がそれだと無い
+    ので、**中身**から裏取りする。推定なので `polarity_source` は書き換えず、
+    別フィールドとして持つ。
+    """
+    empty = {"adduct_majority": None, "n_positive": 0, "n_negative": 0}
+    text = _read_head(mztab_path)
+    if text is None:
+        return empty
+
+    column = None
+    n_pos = n_neg = 0
+    for line in text.splitlines():
+        if line.startswith("SMH"):
+            header = [h.strip() for h in line.split("\t")]
+            if "adduct_ions" in header:
+                column = header.index("adduct_ions")
+            continue
+        if column is None or not line.startswith("SML"):
+            continue
+        parts = line.split("\t")
+        if column >= len(parts):
+            continue
+        value = parts[column].strip()
+        if not value or value == "null":
+            continue
+        # `[M+H]1+` / `[M-H]1-` の末尾が電荷の符号。
+        if value.endswith("+"):
+            n_pos += 1
+        elif value.endswith("-"):
+            n_neg += 1
+
+    if not (n_pos or n_neg):
+        return empty
+    majority = "positive" if n_pos > n_neg else ("negative" if n_neg > n_pos else None)
+    return {"adduct_majority": majority, "n_positive": n_pos, "n_negative": n_neg}

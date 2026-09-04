@@ -272,6 +272,42 @@ def test_run_dataset_pca_returns_scores_per_sample():
     assert "PC1" in result["scores"][0]
 
 
+def test_run_dataset_pca_reports_run_order_correlation(monkeypatch):
+    """QC が無くても、注入順があればドリフトの有無は言える。"""
+    from lipidmix.analysis.dataset_analysis import run_dataset_pca
+    names = [f"s{i}" for i in range(8)]
+    ds = _ds_with_assay_meta(names, {
+        f"assay[{i + 1}]": {"run_order": i + 1, "batch": None} for i in range(8)})
+    _preprocessed(ds)
+    result = run_dataset_pca(ds, n_components=2)
+    assert len(result["run_order_correlation"]) == 2
+    assert all(v is None or -1.0 <= v <= 1.0 for v in result["run_order_correlation"])
+
+
+def test_run_dataset_pca_run_order_correlation_is_null_without_injection_order():
+    """注入順が無いのに相関を数字で返してはいけない。"""
+    from lipidmix.analysis.dataset_analysis import run_dataset_pca
+    ds = _make_ds(n_features=20, n_samples=8)
+    _preprocessed(ds)
+    result = run_dataset_pca(ds, n_components=2)
+    assert result["run_order_correlation"] == [None, None]
+
+
+def test_run_dataset_pca_caveats_strong_drift_component():
+    """主成分が注入順と強く相関したら、生物学と読む前に警告する。"""
+    import numpy as np
+    from lipidmix.analysis.dataset_analysis import run_dataset_pca
+    names = [f"s{i}" for i in range(8)]
+    ds = _ds_with_assay_meta(names, {
+        f"assay[{i + 1}]": {"run_order": i + 1, "batch": None} for i in range(8)})
+    # 注入順に沿って単調に増える強度＝典型的な分析ドリフト。
+    ds.feature_matrix = np.array([[100.0 * (i + 1) + f for i in range(8)] for f in range(20)])
+    ds.feature_ids = [f"f{i}" for i in range(20)]
+    _preprocessed(ds)
+    result = run_dataset_pca(ds, n_components=2)
+    assert any("注入順" in c for c in result["caveats"])
+
+
 # ---------- run_dataset_differential ----------
 
 def test_run_dataset_differential_summarizes():

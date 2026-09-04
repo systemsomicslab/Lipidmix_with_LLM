@@ -22,6 +22,8 @@ LOCAL_WRITE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint"
 # update_objective(add_subquestions=...) は既存 Q の最大+1 で採番して小問を追記する。
 LOCAL_WRITE_APPEND = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
 DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True}
+# ファイルを消すが、二度目は何も残っていないので同じ状態に落ち着く → 冪等。
+LOCAL_DELETE = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True}
 
 EXPECTED_ANNOTATIONS = {
     # --- ARF（多サンプル解析）。セッション状態は更新するが外部副作用は無い ---
@@ -53,6 +55,11 @@ EXPECTED_ANNOTATIONS = {
     "console_plan": LOCAL_WRITE_APPEND,
     "console_run": LOCAL_WRITE_APPEND,
     "console_status": READ_ONLY,
+    # 入力フォルダとメソッドファイルを作る。同じ引数なら同じ結果 → 冪等
+    "console_prepare_input": LOCAL_WRITE,
+    "console_method_template": LOCAL_WRITE,
+    # ジョブが記録した生成物を消す。破壊的だが、二度目は何も残っていない → 冪等
+    "console_cleanup": LOCAL_DELETE,
     "job_list": READ_ONLY,
     # --- DCL / PAI2 / EIC ---
     "dcl_parser": READ_ONLY,

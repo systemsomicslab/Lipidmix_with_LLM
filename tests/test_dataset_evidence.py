@@ -224,3 +224,88 @@ def test_arf_candidates_puts_handoff_artifact_first(tmp_path):
     names = [p.name for p in evidence.arf_candidates(
         mztab, {"peak_matrix_source": [str(recorded)]})]
     assert names[0] == "recorded_PeakProperties.arf"
+
+
+# ---------- 外れ値 1 件で接合全体を棄却しない（実データ 3944 特徴で 1 件） ----------
+
+def _many_spots(n, mz_offsets=None):
+    """特徴 n × サンプル 2。mz_offsets[i] だけ mzTab 側をずらす。"""
+    offsets = mz_offsets or {}
+    spots, feature_mz = [], []
+    for i in range(n):
+        mz = 100.0 + i
+        spots.append(_spot(mz, [
+            _raw_sample_row(0, "s1", 1000.0, mz, 10),
+            _raw_sample_row(1, "s2", 900.0, mz, 11),
+        ]))
+        feature_mz.append(mz + offsets.get(i, 0.0))
+    return spots, feature_mz
+
+
+def test_build_evidence_tolerates_a_single_outlier_among_many():
+    """1/3944 の外れ値で 3943 件の一致を捨てるのは、証拠の使い方として誤り。
+
+    実データ: スポット数 3944 == 特徴数 3944、先頭から小数 4 桁まで一致、
+    許容超えは 1 件だけ（14.8 mDa）。接合は明らかに正しい。
+    """
+    from lipidmix.mztab import evidence
+    spots, feature_mz = _many_spots(500, {123: 0.0148})
+    result = evidence.build_evidence(
+        evidence.normalize_arf_spots(spots), feature_mz=feature_mz,
+        sample_names=["s1", "s2"])
+    assert result["status"] == "ok"
+    assert result["detail"]["n_over_tolerance"] == 1
+
+
+def test_build_evidence_rejects_when_many_features_exceed_tolerance():
+    """外れが少数でなくなったら、それは接合が違うということ。"""
+    from lipidmix.mztab import evidence
+    spots, feature_mz = _many_spots(100, {i: 0.05 for i in range(20)})
+    result = evidence.build_evidence(
+        evidence.normalize_arf_spots(spots), feature_mz=feature_mz,
+        sample_names=["s1", "s2"])
+    assert result["status"] == "rejected"
+    assert result["reason"] == "mz_mismatch"
+    assert result["detail"]["n_over_tolerance"] == 20
+
+
+def test_build_evidence_rejects_any_feature_beyond_the_hard_limit():
+    """1 つずらした誤接合は Da オーダーに爆発する。少数でも見逃してはいけない。"""
+    from lipidmix.mztab import evidence
+    spots, feature_mz = _many_spots(500, {7: 87.0})
+    result = evidence.build_evidence(
+        evidence.normalize_arf_spots(spots), feature_mz=feature_mz,
+        sample_names=["s1", "s2"])
+    assert result["status"] == "rejected"
+    assert result["reason"] == "mz_mismatch"
+
+
+def test_build_evidence_still_rejects_two_feature_swap():
+    """小さな表でも順序入れ替えは棄却され続けること（既存の保護を壊さない）。"""
+    from lipidmix.mztab import evidence
+    result = evidence.build_evidence(
+        evidence.normalize_arf_spots(_two_by_two()),
+        feature_mz=[800.25, 700.5], sample_names=["s1", "s2"])
+    assert result["status"] == "rejected"
+
+
+def test_build_evidence_reports_outlier_counts_when_accepted():
+    """受け入れたときも、何件が許容を超えていたかは残す。"""
+    from lipidmix.mztab import evidence
+    spots, feature_mz = _many_spots(500)
+    result = evidence.build_evidence(
+        evidence.normalize_arf_spots(spots), feature_mz=feature_mz,
+        sample_names=["s1", "s2"])
+    assert result["detail"]["n_over_tolerance"] == 0
+    assert result["detail"]["n_compared"] == 500
+
+
+def test_attach_to_dataset_records_which_arf_files_were_tried(tmp_path):
+    """どの .arf と照合して落ちたのかが出ないと、原因を追えない。"""
+    from lipidmix.mztab import evidence
+    ds = _ds_with_features(n_features=2, sample_names=("s1", "s2"))
+    ds.artifact_paths = {}
+    (tmp_path / "a.mzTab").write_text("x", encoding="utf-8")
+    evidence.attach_to_dataset(ds, tmp_path / "a.mzTab")
+    assert ds.feature_qc["reason"] == "no_candidate"
+    assert ds.feature_qc["tried"] == []

@@ -21,7 +21,7 @@ SUPPORTED_SCHEMA_VERSIONS = frozenset({"analysis-job.v1", SCHEMA_VERSION})
 
 ArtifactRoot = Literal["run_dir", "dataset_root"]
 
-JobStatus = Literal["planned", "running", "needs_input", "partial", "completed", "failed"]
+JobStatus = Literal["planned", "running", "needs_input", "partial", "completed", "failed", "cleaned"]
 Polarity = Literal["positive", "negative"]
 MeasureType = Literal["peak_height", "peak_area_above_zero"]
 OmicsType = Literal["lipidomics", "metabolomics"]

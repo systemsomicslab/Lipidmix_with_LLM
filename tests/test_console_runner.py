@@ -407,6 +407,20 @@ def test_count_raw_inputs_totals_summary(tmp_path):
     assert count_raw_inputs(tmp_path) == 2
 
 
+
+def _stub_lbm(tmp_path, monkeypatch):
+    """脂質ライブラリを 1 件用意する。
+
+    console_plan は lipidomics で LBM を解決できなければ停止する（GUI と同じ規則）。
+    LBM そのものを見ていないテストは、ここで最小の 1 件を与えて本題に集中する。
+    LBM 解決の検証は tests/test_console_plan_method.py。
+    """
+    lbm = tmp_path / "stub.lbm2"
+    lbm.touch()
+    monkeypatch.setenv("MSDIAL_LBM", str(lbm))
+    return lbm
+
+
 # ---------- console_tools ----------
 
 def test_console_plan_unsupported_area(tmp_path):
@@ -441,6 +455,7 @@ def test_console_plan_missing_exe(tmp_path, monkeypatch):
 def test_console_plan_missing_method_file(tmp_path, monkeypatch):
     import json as _json
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     from lipidmix.tools.console_tools import console_plan
     result = console_plan(
         dataset_root=str(tmp_path),
@@ -455,6 +470,7 @@ def test_console_plan_missing_method_file(tmp_path, monkeypatch):
 def test_console_plan_rejects_non_console_exe(tmp_path, monkeypatch):
     import json as _json
     monkeypatch.setenv("MSDIAL_EXE", "gui.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     method = tmp_path / "params.txt"
     method.write_text("Ion mode: Negative\n", encoding="ascii")
     (tmp_path / "a.wiff").touch()
@@ -470,6 +486,7 @@ def test_console_plan_success(tmp_path, monkeypatch):
     from lipidmix.core import session_state
     session_state.session = session_state.AnalysisSession()
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.write_text("Ion mode: Negative\n", encoding="ascii")
@@ -491,6 +508,7 @@ def test_console_plan_rejects_mixed_raw_formats(tmp_path, monkeypatch):
     """.wiff と .wiff2 の併存は MS-DIAL が対話プロンプトを出す条件。"""
     import json as _json
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.txt"
     method.write_text("Ion mode: Negative\n", encoding="ascii")
@@ -506,6 +524,7 @@ def test_console_plan_rejects_mixed_raw_formats(tmp_path, monkeypatch):
 def test_console_plan_rejects_empty_dataset_root(tmp_path, monkeypatch):
     import json as _json
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.txt"
     method.write_text("Ion mode: Negative\n", encoding="ascii")
@@ -521,6 +540,7 @@ def test_console_plan_warns_existing_alignment_results(tmp_path, monkeypatch):
     from lipidmix.core import session_state
     session_state.session = session_state.AnalysisSession()
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.txt"
     method.write_text("Ion mode: Negative\n", encoding="ascii")
@@ -537,6 +557,7 @@ def test_console_plan_rejects_binary_method_file(tmp_path, monkeypatch):
     """.mdproject は ZIP。渡すと MS-DIAL は全パラメータ既定値で走ってしまう。"""
     import json as _json
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     (tmp_path / "a.wiff").touch()
     method = tmp_path / "project.mdproject"
@@ -550,6 +571,7 @@ def test_console_plan_rejects_binary_method_file(tmp_path, monkeypatch):
 def test_console_plan_rejects_text_without_key_value(tmp_path, monkeypatch):
     import json as _json
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     (tmp_path / "a.wiff").touch()
     method = tmp_path / "empty.txt"
@@ -565,6 +587,7 @@ def test_console_plan_accepts_key_value_method_file(tmp_path, monkeypatch):
     from lipidmix.core import session_state
     session_state.session = session_state.AnalysisSession()
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     (tmp_path / "a.wiff").touch()
     method = tmp_path / "params.txt"
@@ -588,6 +611,7 @@ def test_console_status_no_job():
 def test_console_run_nonplanned_job(tmp_path, monkeypatch):
     import json as _json
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     method = tmp_path / "params.msdial"
     method.touch()
     _, job_path = create_job(
@@ -610,6 +634,7 @@ def test_console_run_rejects_changed_non_console_exe_before_launch(tmp_path, mon
 
     session_state.session = session_state.AnalysisSession()
     monkeypatch.setenv("MSDIAL_EXE", "console.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     real_is_console_exe = runner.is_console_exe
     monkeypatch.setattr(runner, "is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.txt"
@@ -621,6 +646,7 @@ def test_console_run_rejects_changed_non_console_exe_before_launch(tmp_path, mon
     job_path = planned["job_path"]
 
     monkeypatch.setenv("MSDIAL_EXE", "MSDIAL.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr(runner, "is_console_exe", real_is_console_exe)
     completed = MagicMock()
     completed.stdout = "MS-DIAL GUI output without console commands\n"
@@ -653,6 +679,7 @@ def test_console_run_marks_missing_changed_exe_failed(tmp_path, monkeypatch):
         polarity="negative", measure="peak_height",
     )
     monkeypatch.setenv("MSDIAL_EXE", "removed-console.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     with patch("subprocess.run", side_effect=OSError("exe not found")) as mock_run:
         result = _json.loads(console_run(str(job_path)))
 
@@ -717,6 +744,7 @@ def test_console_run_reports_no_output(tmp_path, monkeypatch):
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
@@ -738,6 +766,7 @@ def test_console_run_unexpected_exception_marks_failed(tmp_path, monkeypatch):
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "definitely_not_here.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
@@ -767,6 +796,7 @@ def test_console_run_post_run_failure_marks_job_failed_not_running(tmp_path, mon
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
@@ -865,6 +895,7 @@ def test_console_run_records_declared_polarity_on_mztab_entries(tmp_path, monkey
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
@@ -886,6 +917,7 @@ def test_console_run_warns_when_filename_contradicts_declared_polarity(tmp_path,
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
@@ -914,6 +946,7 @@ def test_console_run_writes_no_sidecar_files(tmp_path, monkeypatch):
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
@@ -939,6 +972,7 @@ def test_console_run_warns_when_no_per_sample_pai2(tmp_path, monkeypatch):
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
@@ -960,6 +994,7 @@ def test_console_run_no_pai2_warning_when_pai2_present(tmp_path, monkeypatch):
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     method = tmp_path / "params.msdial"
     method.touch()
     job, job_path = create_job(dataset_root=tmp_path, method_file=method,
@@ -983,6 +1018,7 @@ def _planned_task8_job(tmp_path, monkeypatch, **kwargs):
 
     session_state.session = session_state.AnalysisSession()
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     (tmp_path / "S1.wiff").touch()
     method = tmp_path / "params.txt"
@@ -1081,6 +1117,7 @@ def test_console_plan_rejects_invalid_execution_options_before_job_side_effects(
 
     session_state.session = session_state.AnalysisSession()
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
+    _stub_lbm(tmp_path, monkeypatch)
     (tmp_path / "S1.wiff").touch()
     method = tmp_path / "params.txt"
     method.write_text("Ion mode: Negative\n", encoding="ascii")
