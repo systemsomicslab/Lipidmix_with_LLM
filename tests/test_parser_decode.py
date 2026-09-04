@@ -8,7 +8,7 @@
 警告している箇所に自動検知が無かった。
 
 ここでは msgpack + LZ4 のコンテナと CSS1 バイナリをテスト側で組み立て、
-`docs/schema/*.md`（MS-DIAL の C# クラス定義そのもの）から読んだ Key 番号に
+`docs/schema/*.md`（MS-DIAL の `[Key(N)]` から抽出した Key 番号表）から読んだ Key 番号に
 番兵値を置いて、リーダが**同じ番号から**拾うことを検証する。Key 番号の正解は
 実装ではなくスキーマ文書から取るため、実装をなぞるだけのテストにはならない。
 
@@ -37,34 +37,37 @@ SCHEMA_DIR = REPO_ROOT / "docs" / "schema"
 # docs/schema/*.md から Key 番号 → プロパティ名を読む
 # --------------------------------------------------------------------------
 def schema_keys(doc: str, cls: str) -> dict:
-    """MS-DIAL の C# クラス定義から `[Key(N)]` とプロパティ名の対応を取る。
+    """`docs/schema/*.md` の Key 番号表から Key 番号 → メンバ名の対応を取る。
 
-    2 つの罠がある。
-    1. 1 ファイルに複数のクラスが入っており（`AlignmentSpotVariableCorrelation`
-       `LinkedPeakFeature`）、後続クラスも Key(0) から振り直す。クラスの範囲に
-       限定しないと Key(0) が別クラスの値で上書きされる。
-    2. `[Key(N)]` と宣言の間に `[Obsolete(...)]` が挟まる項目がある
-       （`ChromXsLeft` `PeakHeightTop` `Mass` など）。属性行は読み飛ばす。
+    表は `| Key | 型 | メンバ | 備考 |` の行が並ぶ形。1 ファイルに複数クラスの表が
+    入っており（`AlignmentSpotVariableCorrelation` `LinkedPeakFeature`）、**後続クラスも
+    Key(0) から振り直す**ため、`## 同ファイル内の別クラス: <名前>` 見出しでクラスの範囲を
+    切らないと Key(0) が別クラスの値で上書きされる。主クラスの表はファイル冒頭にあり、
+    クラス名はファイル名と同じ。
+
+    「欠番」表（`| Key | 状態 |`）と入れ子型の表（1 列目が型名）は列の形が違うため、
+    「1 列目が数字・3 列目がバッククォート付きの識別子」という条件で自然に外れる。
     """
-    text = (SCHEMA_DIR / f"{doc}.md").read_text(encoding="utf-8", errors="ignore")
-    start = text.index(f"class {cls}")
-    nxt = text.find("\n    public class ", start + 1)
-    body = text[start: nxt if nxt != -1 else len(text)]
+    text = (SCHEMA_DIR / f"{doc}.md").read_text(encoding="utf-8")
 
     keys: dict = {}
-    pending = None
-    for line in body.splitlines():
-        stripped = line.strip()
-        marker = re.fullmatch(r"\[Key\((\d+)\)\]", stripped)
-        if marker:
-            pending = int(marker.group(1))
+    current = doc  # 主クラスの表はファイル名と同じクラス名で始まる
+    for line in text.splitlines():
+        heading = re.match(r"##\s*同ファイル内の別クラス:\s*(\w+)", line)
+        if heading:
+            current = heading.group(1)
             continue
-        if pending is None or stripped.startswith("["):
+        if current != cls:
             continue
-        name = re.search(r"\b(\w+)\s*(?:\{|;|=>|=)", stripped)
-        if "public" in stripped and name:
-            keys.setdefault(pending, name.group(1))
-            pending = None
+        row = re.match(r"\|\s*(\d+)\s*\|\s*`[^`]+`\s*\|\s*`(\w+)`\s*\|", line)
+        if row:
+            keys.setdefault(int(row.group(1)), row.group(2))
+
+    if not keys:
+        raise AssertionError(
+            f"{doc}.md から class {cls} の Key 番号表を読めなかった。"
+            "表の形（| Key | 型 | メンバ | 備考 |）が変わっていないか確認する。"
+        )
     return keys
 
 
