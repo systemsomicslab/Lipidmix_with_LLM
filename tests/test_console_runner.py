@@ -1300,7 +1300,7 @@ def test_console_status_exposes_roots_artifacts_and_execution_options(tmp_path, 
 
     monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
     console_run(str(job_path))
-    parsed = _json.loads(console_status(str(job_path)))
+    parsed = _json.loads(console_status(str(job_path), include_artifacts=True))
 
     assert parsed["dataset_root"] == str(tmp_path)
     assert parsed["execution"] == {"save_project": True, "timeout_s": 456}
@@ -1325,7 +1325,7 @@ def test_method_text_check_reads_only_the_head(tmp_path, monkeypatch):
 
 
 def test_console_status_returns_artifacts_as_tsv(tmp_path, monkeypatch):
-    """生成物は行が並ぶ一覧なので TSV（列名 1 回）で返す。"""
+    """生成物の全文は行が並ぶ一覧なので TSV（列名 1 回）で返す（include_artifacts=True 時）。"""
     import json as _json
     from lipidmix.tools.console_tools import console_run, console_status
 
@@ -1341,7 +1341,7 @@ def test_console_status_returns_artifacts_as_tsv(tmp_path, monkeypatch):
 
     monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
     console_run(str(job_path))
-    parsed = _json.loads(console_status(str(job_path)))
+    parsed = _json.loads(console_status(str(job_path), include_artifacts=True))
 
     tsv = parsed["artifacts"]
     assert isinstance(tsv, str)
@@ -1359,5 +1359,5 @@ def test_console_status_artifacts_tsv_is_empty_string_when_none(tmp_path, monkey
     from lipidmix.tools.console_tools import console_status
 
     job_path = _planned_task8_job(tmp_path, monkeypatch)
-    parsed = _json.loads(console_status(str(job_path)))
+    parsed = _json.loads(console_status(str(job_path), include_artifacts=True))
     assert parsed["artifacts"] == ""

@@ -496,10 +496,15 @@ def console_prepare_input(
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
-def console_status(job_path: str | None = None) -> str:
+def console_status(job_path: str | None = None, include_artifacts: bool = False) -> str:
     """ジョブの現在のステータスを返します。
 
     job_path: analysis-job.json へのパス。省略時は session.current_job_path を使用します。
+    include_artifacts: 生成物の全文一覧（TSV）を含めます。既定 False。
+        生成物は 1 サンプルにつき 5 件出るため 60 サンプルで 300 行を超え、
+        全文を返すと後ろの warnings / error が埋没します。既定では件数
+        (`artifact_count`) と役割別内訳 (`artifacts_by_role`) だけを返します。
+        個々のパスが必要なとき（欠落の特定など）だけ True にしてください。
     """
     resolved = _resolve_job_path(job_path)
     if isinstance(resolved, str):
@@ -530,10 +535,11 @@ def console_status(job_path: str | None = None) -> str:
         ],
         "artifact_count": len(job.artifacts),
         # 生成物は 1 サンプルにつき複数出る（.pai2 / .dcl / _tags.xml / .mdpeak /
-        # .mdmsp）。60 サンプルで数百行になるので、列名を 1 回だけ書く TSV で返す。
-        # 1 件 1 JSON オブジェクトにするとキー名の反復だけで戻り値が数万字になり、
-        # 後ろの warnings / error が埋没する。
-        "artifacts": _artifacts_tsv(job.artifacts),
+        # .mdmsp）。60 サンプルの実走で 313 件になり、全文 TSV は数万字に達して
+        # 後ろの warnings / error を埋没させた。既定は役割別の件数だけにし、
+        # 全文は include_artifacts=True のときだけ返す。
+        "artifacts_by_role": _artifacts_by_role(job.artifacts),
+        **({"artifacts": _artifacts_tsv(job.artifacts)} if include_artifacts else {}),
         "execution": {"save_project": job.save_project, "timeout_s": job.timeout_s},
         "warnings": job.warnings,
         "error": job.error,
@@ -826,6 +832,18 @@ def _looks_like_method_text(path: Path) -> bool:
         if positions:
             return True
     return False
+
+
+def _artifacts_by_role(artifacts) -> dict[str, int]:
+    """生成物を役割別に数える。役割名は handoff の `Artifact.role`。
+
+    「何が何件出たか」は取りこぼしの検出に足りる（60 サンプルなら各役割 60 件）。
+    個々のパスは include_artifacts に譲る。
+    """
+    counts: dict[str, int] = {}
+    for artifact in artifacts:
+        counts[artifact.role] = counts.get(artifact.role, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _artifacts_tsv(artifacts) -> str:

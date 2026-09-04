@@ -299,15 +299,33 @@ def _class_factors_by_position(class_ids) -> dict[str, list[str]]:
     return {str(position): sorted(tokens) for position, tokens in sorted(by_position.items())}
 
 
+# これを超えるクラス数は羅列しない。戻り値はそのまま LLM の文脈を占めるため、
+# 60 クラスの列挙は結論を押し出すだけで情報を増やさない（一覧は arf_list_classes）。
+_CLASS_LISTING_MAX = 12
+
+
 def _format_arf_class_summary(class_index: dict | None) -> str:
     if not class_index:
         return "- **Class IDメタデータ**: `.mddata` は見つかりませんでした。\n"
     counts = class_index.get("class_counts", {})
-    formatted = ", ".join(f"{class_id}={count}" for class_id, count in counts.items())
-    return (
-        f"- **Class IDメタデータ**: {Path(class_index['mddata_path']).name}\n"
-        f"- **Class ID分布**: {formatted or 'クラスなし'}\n"
-    )
+    head = f"- **Class IDメタデータ**: {Path(class_index['mddata_path']).name}\n"
+    if not counts:
+        return head + "- **Class ID分布**: クラスなし\n"
+    if len(counts) <= _CLASS_LISTING_MAX:
+        formatted = ", ".join(f"{class_id}={count}" for class_id, count in counts.items())
+        return head + f"- **Class ID分布**: {formatted}\n"
+
+    sizes = sorted(counts.values())
+    if sizes[0] == sizes[-1]:
+        detail = f"各 {sizes[0]} サンプル"
+        # MS-DIAL Console 実行では Class ID が 1 サンプル 1 クラスになり、群が入らない。
+        # 羅列を消すだけでは「群分けができない」と読まれるので代替手段を書く。
+        detail += ("（群構造なし。群分けは group_levels / group_factors に"
+                   "サンプル名トークンを渡す）" if sizes[0] == 1
+                   else "（一覧は arf_list_classes）")
+    else:
+        detail = f"{sizes[0]}〜{sizes[-1]} サンプル/クラス（一覧は arf_list_classes）"
+    return head + f"- **Class ID分布**: {len(counts)} クラス / {detail}\n"
 
 
 def _format_arf_parse_summary(features: list[dict]) -> str:

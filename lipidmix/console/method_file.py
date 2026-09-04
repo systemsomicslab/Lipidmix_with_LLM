@@ -74,7 +74,7 @@ class LbmResolution:
     """LBM の解決結果。`error_code` が非 None なら呼び出し側は停止する。"""
 
     path: str | None
-    source: str  # method_file | env | exe_dir | not_required
+    source: str  # argument | method_file | build_tree | env | exe_dir | not_required
     error_code: str | None = None
     message: str | None = None
     candidates: tuple[str, ...] = ()
@@ -133,6 +133,59 @@ def find_lbm_files(directory: Path) -> list[Path]:
     return [p for p in entries if p.is_file() and _LBM_SUFFIX.search(p.name)]
 
 
+# MsdialWorkbench のビルド生成物から .lbm2 を引くための座標。
+# Console 実行体は tests/MSDIAL5/MsdialCoreTestApp/bin/Debug/<TFM>/MSDIALCUI.exe に
+# 出るが、その exe フォルダに .lbm2 は無い。ライブラリは GUI アプリ側の
+# src/MSDIAL5/MsdialGuiApp/bin/Debug/<TFM>/ に出るため、exe フォルダ探索
+# （GUI と同じ TopDirectoryOnly）だけでは原理的に当たらない。
+# MSDIAL4（src/MSDIAL4/MsDial/...）は見ない。あちらの conventional ライブラリは
+# NCDK 無しの別世代で、MSDIAL5 の Console に食わせると同定結果が静かに変わる。
+_BUILD_LBM_RELATIVE = ("src", "MSDIAL5", "MsdialGuiApp", "bin", "Debug")
+_BUILD_TREE_MAX_ANCESTORS = 10
+
+
+def _pick_build_lbm(debug_dir: Path, exe_tfm: str) -> Path | None:
+    """`bin/Debug` 配下から 1 本選ぶ。
+
+    同じライブラリが TFM ごとに複製されるので「候補が複数あるから決められない」
+    とは扱わない（そう扱うと必ず LBM_AMBIGUOUS で止まる）。exe 自身の TFM に
+    揃えるのが最も安全で、無ければ素の `Debug/` 直下、それも無ければ最新の
+    mtime を採る。
+    """
+    for directory in (debug_dir / exe_tfm, debug_dir):
+        found = find_lbm_files(directory)
+        if found:
+            return found[0]
+
+    others: list[Path] = []
+    try:
+        entries = sorted(debug_dir.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if entry.is_dir():
+            others.extend(find_lbm_files(entry))
+    if not others:
+        return None
+    return max(others, key=lambda p: p.stat().st_mtime)
+
+
+def find_build_tree_lbm(exe_path: str | None) -> Path | None:
+    """Console exe を起点に MsdialWorkbench のビルド生成物内の .lbm2 を返す。
+
+    exe フォルダから上へ辿り、`src/MSDIAL5/MsdialGuiApp/bin/Debug` を持つ階層を
+    リポジトリルートと見なす。見つからなければ None（＝ビルド運用ではない）。
+    """
+    if not exe_path:
+        return None
+    exe_dir = Path(exe_path).expanduser().parent
+    for ancestor in [exe_dir, *exe_dir.parents][:_BUILD_TREE_MAX_ANCESTORS + 1]:
+        debug_dir = ancestor.joinpath(*_BUILD_LBM_RELATIVE)
+        if debug_dir.is_dir():
+            return _pick_build_lbm(debug_dir, exe_dir.name)
+    return None
+
+
 def resolve_lbm(
     method_keys: dict[str, str],
     method_file: Path,
@@ -143,8 +196,10 @@ def resolve_lbm(
 ) -> LbmResolution:
     """脂質ライブラリのパスを GUI と同じ規則で解決する。
 
-    順に: 明示引数 → メソッドファイルの宣言 → `MSDIAL_LBM` →
-    MSDIAL_EXE と同じフォルダ。
+    順に: 明示引数 → メソッドファイルの宣言 → **ビルド生成物** → `MSDIAL_LBM` →
+    MSDIAL_EXE と同じフォルダ。ビルド生成物を `MSDIAL_LBM` より上に置くのは、
+    この環境の Console がソースからのビルドで、ライブラリもそのツリー内の
+    新しいものを使うため（インストール版より優先する）。
     lipidomics 以外では LBM を要求しない（Console も読まないため）。
     """
     if omics != "lipidomics":
@@ -170,6 +225,10 @@ def resolve_lbm(
             path=None, source="method_file", error_code="LBM_NOT_FOUND",
             message=(f"メソッドファイルが指す脂質ライブラリが見つかりません: {declared}  "
                      f"（{method_file} 基準で解決: {candidate}）"))
+
+    from_build = find_build_tree_lbm(exe_path)
+    if from_build is not None:
+        return LbmResolution(path=str(from_build), source="build_tree")
 
     from_env = (env.get("MSDIAL_LBM") or "").strip()
     if from_env:
