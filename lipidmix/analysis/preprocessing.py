@@ -369,6 +369,19 @@ def drop_samples_by_role(matrix, sample_names, roles, drop_roles=("blank",)):
     return matrix[keep_idx], kept_names, dropped
 
 
+def detection_rates(detected_mask) -> np.ndarray:
+    """特徴ごとの実検出率（gap-fill を除いた割合）。
+
+    `detected_mask` は (特徴 × サンプル) の bool 行列。形式に依存しない純関数なので
+    ここに置く。mzTab-M 経路は `.arf` 由来のマスクを、ARF 経路は自前の検出数を
+    使うが、率の定義は 1 つに保つ。
+    """
+    mask = np.asarray(detected_mask, dtype=bool)
+    if mask.ndim != 2 or mask.shape[1] == 0:
+        return np.zeros(mask.shape[0] if mask.ndim == 2 else 0, dtype=float)
+    return mask.sum(axis=1) / mask.shape[1]
+
+
 def preprocess(matrix, sample_names, roles, run_order, recipe):
     """順序: ブランク除去 → 正規化 → ドリフト補正 → QC RSD フィルタ → 補完。
 

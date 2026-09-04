@@ -1,0 +1,27 @@
+#!/bin/sh
+# コミット前に全テストを通す（約5秒）。
+#
+# なぜフックなのか: 腐敗防止テストは揃っているが、CI が無く「誰かが走らせるはず」に
+# 依存していた。複数のエージェントを並列で走らせている以上、実行を人／モデルの
+# 記憶に任せると必ず取りこぼす。git 側に置けばエージェントの種類を問わず効く。
+#
+# 意図的にやらないこと: ステージ内容だけを検証するための stash はしない。
+# 並列で別のエージェントが同じ作業ツリーを触っているとき、stash は他人の
+# 未コミット変更を巻き込んで消しうる。作業ツリーそのものを検証する。
+#
+# 緊急時の迂回: git commit --no-verify
+set -e
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+PY=C:/Python314/python.exe
+[ -f "$PY" ] || PY=python
+
+echo "pre-commit: pytest tests -q"
+if ! "$PY" -m pytest tests -q; then
+    echo ""
+    echo "pre-commit: テストが落ちたためコミットを中止した。"
+    echo "  直してから再実行する。迂回が必要なときだけ: git commit --no-verify"
+    exit 1
+fi

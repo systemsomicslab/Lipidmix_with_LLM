@@ -1,0 +1,73 @@
+# パーサ単体の CLI
+
+MCP サーバを起動せずに、各 reader を直接叩いて `.arf` / `.arf2` / `.dcl` / `.EIC.aef` を
+確認するための入口。MCP ツール経由の使い方は [../USAGE.md](../USAGE.md) を参照。
+
+## 前提
+
+- Python は `C:/Python314/python.exe`（`.mcp.json` / `.vscode/mcp.json` が指しているのと同じ環境）。
+- 探索先はすべて `lipidmix.core.data_config.get_data_dir()` 経由。環境変数
+  `LIPIDMIX_DATA_DIR` を設定するとその MS-DIAL 出力フォルダが対象になる（未設定時は `<project>/data`）。
+- 出力（CSV / JSON / PNG）は、パスを渡さない限りカレントディレクトリに書かれる。
+  生成物はリポジトリに追跡させない。
+
+## `lipidmix.arf.reader` — `.arf`
+
+唯一、引数を取る本格的な CLI。`--file` を省略するとデータディレクトリから自動選択する
+（`--index` で候補の何番目かを指定）。
+
+| フラグ | 用途 |
+|---|---|
+| `--file` / `-f` | 解析する `.arf` のパス |
+| `--index` / `-i` | `--file` 省略時、自動検出した候補の何番目を使うか |
+| `--export` / `-e` | ピークプロパティを CSV に書き出すパス |
+| `--pca` | PCA を実行する |
+| `--components` | 主成分数 |
+| `--log-transform` | 標準化の前に log 変換する |
+| `--min-detection-rate` | 検出率がこの値未満の特徴量を落とす |
+| `--output-pca` | PCA 結果を JSON 保存するパス |
+| `--output-plot` | PCA プロットの PNG 保存先（**未指定なら PNG を作らない**） |
+| `--output-sample-scores` | サンプル別スコアプロットの保存先 |
+| `--top-features` / `-t` | PCA Loading の上位・下位を何件表示するか |
+| `--props` | 対象プロパティ（既定 `height`） |
+| `--group-replicates` | ファイル名の複製番号（`_1`, `_2` …）を畳んで群にする |
+| `--group-regex` | 畳む文字列を正規表現で直接指定する |
+| `--plot-distribution` | 脂質クラス別の PeakHeight 分布プロットを作る |
+| `--filter-name` | 分布プロットで抽出するキーワード（例 `TG`, `EtherPE_P`） |
+| `--output-dist-plot` | 分布プロットの PNG 保存先（未指定なら作らない） |
+
+ピークプロパティを CSV に書き出す:
+
+```bash
+C:/Python314/python.exe -m lipidmix.arf.reader --file "data/AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf" --export output_peaks.csv
+```
+
+PCA を実行して結果と図を保存する:
+
+```bash
+C:/Python314/python.exe -m lipidmix.arf.reader --file "data/AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf" --pca --output-pca pca_result.json --output-plot pca_plot.png --output-sample-scores sample_scores.png
+```
+
+PCA Loading の上位特徴量を見る:
+
+```bash
+C:/Python314/python.exe -m lipidmix.arf.reader --file "data/AlignmentResult_2026_05_15_10_13_35_PeakProperties.arf" --pca --top-features 10 --props height
+```
+
+## `lipidmix.arf2.reader` / `lipidmix.dcl.reader` / `lipidmix.eic.reader`
+
+いずれも引数を取らず、データディレクトリから対象ファイルを自動選択して要約を標準出力に出す
+簡易確認用。対象を切り替えるときは `LIPIDMIX_DATA_DIR` を変える。
+
+```bash
+C:/Python314/python.exe -m lipidmix.arf2.reader
+```
+
+## テスト
+
+```bash
+C:/Python314/python.exe -m pytest tests -q
+```
+
+リポジトリルートから `pytest` で実行する。`unittest discover` は pytest 関数形式で
+書かれたテストを拾わないため件数が合わない。

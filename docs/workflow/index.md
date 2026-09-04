@@ -36,13 +36,24 @@
 | 文書 | 対象 | ツール数 |
 |---|---|---|
 | [dataset.md](dataset.md) | データセット投入の入口 | 3 |
-| [arf.md](arf.md) | `.arf` — サンプル別強度・PCA・差次的解析 | 9 |
+| [arf.md](arf.md) | `.arf` — サンプル別強度・PCA・差次的解析 | 10 |
 | [arf2.md](arf2.md) | `.arf2` — スポット代表カタログ | 2 |
 | [pai2.md](pai2.md) | `.pai2` — 単一測定のピークと MS/MS 検証 | 3 |
 | [dcl.md](dcl.md) | `.dcl` — デコンボリューション済み MS/MS | 2 |
 | [eic.md](eic.md) | `.EIC.aef` — クロマトグラムの検索と描画 | 6 |
 | [plots.md](plots.md) | 図の PNG 保存と payload 契約の比較 | 3 |
+| [mztab.md](mztab.md) | mzTab-M — DatasetState への読み込み | 2 |
+| [dataset_analysis.md](dataset_analysis.md) | DatasetState — 前処理・PCA・差次的解析・エクスポート | 4 |
 
-合計 28 ツール。文献探索・レポート記録系の 12 ツール
-（`record_objective` `knowledge_coverage` `paper_search` `ingest_*` `write_report` など）は
-本文書群の対象外。登録ツール総数は 40。
+合計 35 ツール。対象外は 16 ツール——文献探索・レポート記録系 12
+（`record_objective` `knowledge_coverage` `paper_search` `ingest_*` `write_report` など）＋
+Console 実行層 4（`console_plan` `console_run` `console_status` `job_list`）。
+登録ツール総数は 51（35 + 16）。
+
+## 一気通貫の順序はここには無い
+
+本文書群は**ツール 1 つずつの内部呼び出し順**を記録する。生データから Console を経て
+mzTab-M・差次的解析・別リポジトリのパスウェイ濃縮まで、**どの順に何を行うか**と
+各関数の引数・戻り値は
+[../superpowers/specs/2026-09-03-end-to-end-pipeline-design.md](../superpowers/specs/2026-09-03-end-to-end-pipeline-design.md)
+にある（Console 実行層 4 ツールを含む。実装完了後に `Lipidmix/` へ昇格する予定）。

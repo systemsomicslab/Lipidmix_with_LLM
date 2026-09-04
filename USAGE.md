@@ -1,6 +1,6 @@
-# USAGE — ms-data-parser MCP ツール一覧(全40ツール)
+# USAGE — ms-data-parser MCP ツール一覧(全51ツール)
 
-MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.EIC.aef`)を解析し、PCA・差次的解析・
+MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.dcl` / `.EIC.aef`)と mzTab-M を解析し、PCA・差次的解析・
 アノテーション検証・文献探索・レポート記録までを行う MCP サーバーのツール群です。
 おおまかな標準フロー:
 
@@ -8,6 +8,10 @@ MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.EIC.aef`)を解析し、PCA・差�
 list_data_files → load_dataset → arf_list_classes / arf_preprocess
    → arf_pca_preprocessed / arf_differential → save_*_figure
    → record_objective → knowledge_coverage → paper_search → ingest_* → write_report
+
+生データから始める場合(別経路):
+console_plan → console_run → dataset_load → dataset_preprocess
+   → dataset_pca / dataset_differential → dataset_export_differential
 ```
 
 この文書は各ツールの**外形**（引数と用途）を扱います。内部でどのファイルのどの関数を
@@ -43,6 +47,7 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 | `arf_preprocess` | ロード済み ARF 行列に前処理レシピ(正規化・補完・ブランク/QC RSD 足切り・ドリフト補正)を適用し session を更新。 |
 | `arf_pca_preprocessed` | `arf_preprocess` 後の前処理済み行列で PCA を実行(生行列経路とは独立)。 |
 | `arf_differential` | 前処理後行列で差次的解析(2群 Welch t 検定＋log2FC、BH 補正)。因子トークンによるプール群指定に対応。多群 ANOVA は MCP から非公開(関心の2群を因子指定で切り出す)。 |
+| `arf_export_differential` | 直近の差次的結果を InChIKey 付きの 1 ファイルへ書き出す(`output_path`)。同一アラインメントの兄弟 `.arf2` から同定情報を `MasterAlignmentID` で結合する。濃縮解析の背景を保つため、有意行だけでなく **InChIKey が付いた全行**を出す。列定義は `lipidmix/analysis/export_contract.py` が正準(下流リポジトリとの契約)。 |
 
 ## 4. EIC 解析(`.EIC.aef`)
 
@@ -114,7 +119,35 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
 | `read_report` | 過去レポートを読み戻す(最新更新のものを返す。セッション継続用)。 |
 | `list_reports` | 既存レポートの1行索引(analysis_id / date / status)を返す。 |
 
-## 10. Class ID に無い因子で絞る・比べる
+## 10. MS-DIAL Console 実行(生データ → mzTab-M)
+
+MS-DIAL 本体を CLI 実行して解析結果そのものを生成する経路。GUI であらかじめ
+メソッドファイルを作っておき、以降をこのサーバから回す。成果物は
+`analysis-job.json`(受け渡しスキーマ)と mzTab-M で、`dataset_load` が続きを引き取る。
+
+| ツール | 機能 |
+|--------|------|
+| `console_plan` | 実行計画を作り `analysis-job.json` を生成(`dataset_root`, `method_file`, `polarity`, `measure`, `omics`, `save_project`, `timeout_s`)。`dataset_root` は生データフォルダ(リポジトリ外)。`method_file` は **GUI の Export > Parameter で出した ASCII テキスト**(`key: value` 形式)で、`.mdproject`/`.mddata` は ZIP のため `METHOD_FILE_NOT_TEXT` で停止する(渡しても全パラメータが既定値のまま走ってしまうため)。`measure` は `peak_height`(既定)のみ正確で、`peak_area_above_zero` は `UNSUPPORTED_AREA_CONSOLE` で停止する。`save_project`(既定 True)は `-p` を付け GUI で開ける `.mdproject` を出させる。`timeout_s` 既定 21600(6 時間)。実行前に `MSDIAL_EXE` が Console 実行体かを `--help` で確かめ、GUI を指していれば `MSDIAL_EXE_NOT_CONSOLE`。生データフォルダに MS-DIAL 対象の拡張子が 0 種類または 2 種類以上あると `MIXED_RAW_FORMATS`(MS-DIAL が対話プロンプトを出す条件。SCIEX の `.wiff` と `.wiff2` の併存が典型)。既存のアライメント結果があれば `warnings` で知らせる。成功すると `session.current_job_path` が設定される。 |
+| `console_run` | MS-DIAL Console を実行(`job_path` 省略時は `session.current_job_path`)。要 `console_plan` 先行。生成物は **`-o`(エクスポート)と生データフォルダ(`.pai2`/`.dcl`/`.arf`/`.arf2`/`.EIC.aef`)の 2 か所**に分かれて出るので両方を収集し、どちらから来たかを `root` に記録する。タイムアウトしても生成物があれば捨てずに `status="partial"` で保存する(無ければ `failed`)。結果は `console_status` か `dataset_load` で確認する。 |
+| `console_status` | ジョブの現在のステータスを返す(`job_path` 省略時は `session.current_job_path`)。`artifacts` は `path`/`role`/`format`/`root` の TSV(列名 1 回)、`execution` に `save_project`/`timeout_s` が入る。 |
+| `job_list` | `dataset_root/runs/` 以下のジョブ一覧を新しい順に返す。 |
+
+## 11. DatasetState 解析(mzTab-M 経路)
+
+mzTab-M 2.0 を正準状態(`DatasetState`)として読み、ARF 経路と同じ前処理・PCA・
+差次的解析を回す。**`session.arf` / `.arf2` / `.pai2` / `.eic` とは独立したスロット**なので、
+ARF 経路の状態を壊さない。
+
+| ツール | 機能 |
+|--------|------|
+| `dataset_load` | mzTab-M 2.0 を読み `session.dataset` を作る。隣接する `.arf` が同一アライメントだと**数値で検証できた場合だけ**、検出状態(gap-fill の区別)を evidence sidecar として取り込む(要約は戻り値の「検出状態」行)。`mztab_path`(絶対パス直指定)か `job_path`(ジョブの宣言 polarity・measure で正準エントリを一意選択。曖昧なら停止)の**どちらか一方**を渡す(両方省略・両方指定はエラー)。`console_run` 後は `job_path` 推奨(polarity・measure が確定済み)。生成物の絶対パスは記録された `root` から復元する。ジョブが `completed` 以外(`partial` 等)なら**中断された実行の生成物である旨を警告の先頭に差す**。 |
+| `dataset_status` | 現在の `DatasetState` の概要を返す。`samples` に name/role の TSV が入り、`dataset_differential` の `group_a`/`group_b` はここに出る名前をそのまま使う。`detection` は検出状態の有無(`available`)と gap-fill 率。**`available=false` の間は検出率・欠測率を語ってはいけない**(非ゼロ値に補間値が混在する)。 |
+| `dataset_preprocess` | 定量行列に前処理レシピを適用(引数は `arf_preprocess` と同一: `normalize` / `blank_min_fold` / `drift_correct` / `max_qc_rsd` / `impute` / `min_detection_rate`)。`min_detection_rate` は gap-fill を除いた実検出率での足切りで、`dataset_load` が検出状態を取り込めた場合にだけ使える(無い状態で 0 より大きい値を渡すと引数エラー。黙って未検出 0 件として通さない)。フィルタは正規化・補完より**前**に掛ける。注入順とバッチは mzTab-M の `MTD assay[N]-custom[...]`(`MS:4000089` injection sequence label / `MS:4000088` batch label)から読むので **`drift_correct` は実際に適用される**。注入順が無いファイルでは従来どおり未実施の caveat が出る。バッチラベルは 2 値以上あるときだけ採用し(MS-DIAL の既定は全件 `1` で情報を持たないため)、無ければファイル名の日付推定に戻す。採用元は `sample_meta` の `batch_source` / `run_order_source` に入る。 |
+| `dataset_pca` | 前処理済み `DatasetState` で PCA(`n_components` 既定 5、`log_transform` 既定 False)。ローディング全量は戻り値に載せず `session.dataset.last_pca` に保持する。 |
+| `dataset_differential` | 前処理済み行列で 2 群比較(Welch t 検定＋BH-FDR)。`group_a`/`group_b` は**サンプル名のリスト**(`dataset_status` の `samples` で確認)。**log2FC は正なら `group_b` が高い**(`group_a` が基準)。全特徴量の結果と volcano 点列は `session.dataset.last_differential` に保持する。 |
+| `dataset_export_differential` | 直近の差次的結果を InChIKey 付きの 1 ファイルへ書き出す。**`arf_export_differential` と同一の契約**(15 列 + `contract_version` メタ行)なので下流のパスウェイ解析にそのまま渡せる。InChIKey は mzTab-M 由来(`.arf2` との結合は不要)。`ontology` と `msi_level` は mzTab-M に対応物が無く空欄で、その旨をメタ行に書く。 |
+
+## 12. Class ID に無い因子で絞る・比べる
 
 MS-DIAL の Class ID は入力された1文字列にすぎず、時点や複製がサンプル名にしか
 無いことがある(例: Class ID = `ILG`/`control` だけで、時点 `6h` はサンプル名のみ)。

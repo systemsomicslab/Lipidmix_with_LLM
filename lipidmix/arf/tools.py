@@ -12,10 +12,10 @@ module 修飾（path_resolvers.* / tool_helpers.*）で参照し patch が確実
 """
 import math
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
 from lipidmix.analysis import differential
+from lipidmix.analysis import export_contract
 from lipidmix.arf import exclusions
 from lipidmix.arf import identity_join
 from lipidmix.core import mcp_errors
@@ -941,12 +941,16 @@ def arf_differential(
             caveats.append(
                 f"検定できた特徴は {n_tested}/{len(feature_names)} 件のみ（多くが p=NaN）。"
                 "群内 n 不足・分散0・欠損が多い可能性があります（前処理の見直しを検討）。")
+        # contract_version / log2fc_sign は export_contract を単一情報源として直接参照する
+        # （リテラルで複製すると CONTRACT_VERSION を上げたときここが追随せず、
+        # arf_export_differential の互換性チェックに永遠に落ち続ける再現ループになる。
+        # dataset_analysis.run_dataset_differential と同じ理由・同じ直し方）。
         session_state.session.arf.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
                                      "n_a": n_a, "n_b": n_b,
                                      "q_threshold": q_threshold,
                                      "log2fc_threshold": log2fc_threshold,
-                                     "contract_version": 1,
-                                     "log2fc_sign": "positive means group_b is higher",
+                                     "contract_version": export_contract.CONTRACT_VERSION,
+                                     "log2fc_sign": export_contract.LOG2FC_SIGN,
                                      "log_transform": log_transform,
                                      "results": results, "volcano": volcano}
         # 全量 volcano（~特徴数）は上の last_differential に保持し、arf_plot_volcano
@@ -975,23 +979,13 @@ def arf_differential(
     return json_payload(payload)
 
 
-_EXPORT_COLUMNS = [
-    "spot_id", "name", "name_source", "ontology", "inchikey",
-    "inchikey_source", "msi_level", "mz", "rt", "log2fc",
-    "p_value", "q_value", "mean_a", "mean_b", "significant",
-]
-_DIFFERENTIAL_CONTRACT_VERSION = 1
-_LOG2FC_SIGN = "positive means group_b is higher"
-
-
-def _format_export_number(value, format_spec: str) -> str:
-    """有限の数値だけを書き出し、欠測・NaN・inf は空欄にする。"""
-    if value is None:
-        return ""
-    number = float(value)
-    if not math.isfinite(number):
-        return ""
-    return format(number, format_spec)
+# 契約の実体は lipidmix.analysis.export_contract（leaf・別リポとの契約）。
+# ここでは後方互換の別名束縛のみ行う。tests/test_export_contract.py が `is` で
+# 同一性を見るため、値をコピーせず同じオブジェクトを束縛する。
+_EXPORT_COLUMNS = export_contract.EXPORT_COLUMNS
+_DIFFERENTIAL_CONTRACT_VERSION = export_contract.CONTRACT_VERSION
+_LOG2FC_SIGN = export_contract.LOG2FC_SIGN
+_format_export_number = export_contract.format_number
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -1040,33 +1034,23 @@ def arf_export_differential(output_path: str) -> str:
     q_threshold = last.get("q_threshold")
     log2fc_threshold = last.get("log2fc_threshold")
 
-    def _is_significant(row: dict) -> bool:
-        q_value = row.get("q_value")
-        log2fc = row.get("log2fc")
-        if q_value is None or log2fc is None:
-            return False
-        if not (math.isfinite(q_value) and math.isfinite(log2fc)):
-            return False
-        return q_value <= q_threshold and abs(log2fc) >= log2fc_threshold
+    meta = export_contract.build_meta(
+        group_a=last["a"], n_a=last["n_a"],
+        group_b=last["b"], n_b=last["n_b"],
+        q_threshold=q_threshold, log2fc_threshold=log2fc_threshold,
+        log_transform=last.get("log_transform"),
+        n_features_total=report["n_features_total"],
+        n_with_inchikey=report["n_with_inchikey"],
+        n_unannotated=report["n_unannotated"],
+        msi_note="# msi_level は .arf2 由来の注釈確度。MS/MS の有無ではない",
+        source_lines=[
+            f"# source_arf = {getattr(session_state.session.arf, 'current_file_path', '')}",
+            f"# source_arf2 = {arf2_path}",
+        ],
+        preprocess_line=f"# preprocess = {getattr(session_state.session.arf, 'preprocessing_recipe', None)}",
+    )
 
-    meta = [
-        f"# contract_version = {last['contract_version']}",
-        f"# exported_at = {datetime.now(timezone.utc).isoformat()}",
-        f"# source_arf = {getattr(session_state.session.arf, 'current_file_path', '')}",
-        f"# source_arf2 = {arf2_path}",
-        f"# group_a = {last['a']}\tn_a = {last['n_a']}",
-        f"# group_b = {last['b']}\tn_b = {last['n_b']}",
-        f"# log2fc_sign = {last['log2fc_sign']}",
-        f"# q_threshold = {q_threshold}\tlog2fc_threshold = {log2fc_threshold}"
-        f"\tlog_transform = {str(bool(last.get('log_transform'))).lower()}",
-        f"# preprocess = {getattr(session_state.session.arf, 'preprocessing_recipe', None)}",
-        f"# n_features_total = {report['n_features_total']}"
-        f"\tn_with_inchikey = {report['n_with_inchikey']}"
-        f"\tn_unannotated = {report['n_unannotated']}",
-        "# msi_level は .arf2 由来の注釈確度。MS/MS の有無ではない",
-    ]
-
-    lines = [*meta, "\t".join(_EXPORT_COLUMNS)]
+    lines = [*meta, "\t".join(export_contract.EXPORT_COLUMNS)]
     identity_tables = tool_helpers._identity_tables()
     for row in rows:
         identity_name = row["name"]
@@ -1078,18 +1062,22 @@ def arf_export_differential(output_path: str) -> str:
             mass_error_band="UNKNOWN",
             adduct_band="UNKNOWN",
         )
-        lines.append("\t".join([
-            str(row["spot_id"]), row["name"], "arf2", row["ontology"],
-            row["inchikey"], "arf2", str(identity["msi"]["level"]),
-            _format_export_number(row["mz"], ".4f"),
-            _format_export_number(row["rt"], ".4f"),
-            _format_export_number(row["log2fc"], ".6f"),
-            _format_export_number(row["p_value"], ".6g"),
-            _format_export_number(row["q_value"], ".6g"),
-            _format_export_number(row["mean_a"], ".6g"),
-            _format_export_number(row["mean_b"], ".6g"),
-            "true" if _is_significant(row) else "false",
-        ]))
+        lines.append(export_contract.format_row({
+            "spot_id": row["spot_id"],
+            "name": row["name"],
+            "name_source": "arf2",
+            "ontology": row["ontology"],
+            "inchikey": row["inchikey"],
+            "inchikey_source": "arf2",
+            "msi_level": identity["msi"]["level"],
+            "mz": row["mz"], "rt": row["rt"],
+            "log2fc": row["log2fc"],
+            "p_value": row["p_value"], "q_value": row["q_value"],
+            "mean_a": row["mean_a"], "mean_b": row["mean_b"],
+            "significant": export_contract.is_significant(
+                q=row["q_value"], log2fc=row["log2fc"],
+                q_threshold=q_threshold, log2fc_threshold=log2fc_threshold),
+        }))
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)

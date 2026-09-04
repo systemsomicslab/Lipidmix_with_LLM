@@ -80,6 +80,8 @@ from lipidmix.arf2.tools import *
 from lipidmix.eic.tools import *
 from lipidmix.tools.dataset import *  # list_data_files, load_dataset
 from lipidmix.tools.mztab_tools import *  # dataset_load, dataset_status
+from lipidmix.tools.console_tools import *  # console_plan, console_run, console_status, job_list
+from lipidmix.tools.dataset_analysis_tools import *  # dataset_preprocess, dataset_pca, dataset_differential, dataset_export_differential
 
 
 if __name__ == "__main__":

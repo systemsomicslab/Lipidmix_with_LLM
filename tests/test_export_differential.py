@@ -14,6 +14,15 @@ from lipidmix.core import session_state
 # 既存テストと同じ既知の落とし穴）。直接 import した session_state を参照する。
 
 
+_EXPECTED_META_KEYS = [
+    "# contract_version", "# exported_at",
+    "# source_arf", "# source_arf2",
+    "# group_a", "# group_b", "# log2fc_sign", "# q_threshold",
+    "# preprocess", "# n_features_total",
+    "# msi_level は .arf2 由来の注釈確度。MS/MS の有無ではない",
+]
+
+
 class TestExportDifferential(unittest.TestCase):
     def setUp(self):
         session_state.session = server.AnalysisSession()
@@ -153,6 +162,24 @@ class TestExportDifferential(unittest.TestCase):
         self.assertEqual(cells["mean_a"], "10")
         # NaN/inf は非有意扱い（q<=threshold の判定ができないため）
         self.assertEqual(cells["significant"], "false")
+
+    def test_arf_export_meta_line_order_is_frozen(self):
+        """メタ行の順序と文面を固定する。
+
+        Task 5 Step 6 で export_contract.build_meta() へ寄せるとき、この順序が
+        変わっていないことを保証する。行の順序も下流との契約の一部。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "differential.tsv"
+            arf2 = Path(tmp) / "AlignmentResult_2026_01_01_00_00_00.arf2"
+            arf2.write_bytes(b"")
+            with patch("lipidmix.arf.tools._sibling_arf2_path", return_value=arf2), \
+                 patch("lipidmix.arf2.reader.load_catalog", return_value=self.catalog):
+                server.arf_export_differential(str(out))
+            text = out.read_text(encoding="utf-8")
+        meta = [l for l in text.splitlines() if l.startswith("#")]
+        keys = [l.split(" = ")[0].split("\t")[0] for l in meta]
+        self.assertEqual(keys, _EXPECTED_META_KEYS)
 
     def test_log2fc_sign_meta_line_is_verbatim(self):
         """massbank-context 側の契約リーダはこの文字列と逐語一致しないと拒否する。"""

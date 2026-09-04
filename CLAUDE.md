@@ -5,7 +5,7 @@
 ## このリポジトリは何か
 
 MS-DIAL（リピドミクス LC-MS 解析ソフト）のバイナリ出力を読み、LLM から使える形で公開する
-**MCP サーバ `ms-data-parser`**。ツール 40・リソース 4・リソーステンプレート 3。
+**MCP サーバ `ms-data-parser`**。ツール 51・リソース 4・リソーステンプレート 3。
 対象形式は `.arf`（アライン後・サンプル別ピーク）/ `.arf2`（スポット代表）/ `.pai2`（個別測定）/
 `.dcl`（デコンボリューション済み MS/MS、独自バイナリ）/ `.EIC.aef`（クロマトグラム）。
 解析（PCA・前処理/QC・差次的解析）に加え、文献知識と再利用手順の蓄積層（`knowledge/` `playbook/`
@@ -19,8 +19,10 @@ MS-DIAL（リピドミクス LC-MS 解析ソフト）のバイナリ出力を読
 C:/Python314/python.exe -m pytest tests -q
 ```
 
-- 全 **563 件**（`-m unittest discover -s tests -t .` は 5 件少ない。差は
-  `tests/test_server_registration.py` の関数形式テストで、pytest でしか拾えない）。**リポジトリルートから実行する**。
+- **リポジトリルートから `pytest` で実行する**。`-m unittest discover -s tests -t .` は
+  これより少なく拾う（`test_dataset_state.py` `test_console_runner.py` `test_mztab_tools.py` 等、
+  pytest 関数形式で書かれたファイルは `unittest.TestCase` を継承しないため拾えない）。
+  **テストの数はここに書かない**。pytest の出力が正準（写しだけが腐るため）。
 - MCP サーバ起動: `C:/Python314/python.exe server.py`（既定 stdio）。
 - パーサ単体の CLI: `python -m lipidmix.arf.reader --file <path> --pca` など（README「Command-line examples」）。
 
@@ -41,9 +43,12 @@ NAS 共有運用向け）/ `LIPIDMIX_TRANSPORT` `LIPIDMIX_HOST` `LIPIDMIX_PORT`�
 ```
 lipidmix/core/      FastMCP インスタンス・設定・セッション状態・パス解決・共通ヘルパ（依存グラフの leaf）
 lipidmix/msdial/    MS-DIAL 固有サイドカー（*_tags.xml / .mddata）・同定・ピーク検証・サンプル因子
-lipidmix/analysis/  入力形式に依存しない数値処理（前処理/QC・差次的解析）
+lipidmix/analysis/  入力形式に依存しない数値処理（前処理/QC・PCA・差次的解析・エクスポート契約）
 lipidmix/plots/     描画 payload の組み立てと matplotlib 描画（volcano / eic / render）
 lipidmix/{arf,arf2,pai2,dcl,eic}/   形式ごとの reader.py（パーサ）と tools.py（MCP ツール）
+lipidmix/mztab/     mzTab-M リーダ・DatasetState 構築
+lipidmix/console/   MS-DIAL Console 実行層（job_manager / runner / output_collector）
+lipidmix/handoff/   Console 成果物の受け渡しスキーマ（analysis-job.json）
 lipidmix/corpus/    蓄積ノートの純ロジック（knowledge_store / paper_ingest）
 lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプル検索・目的・レポート・リソース）
 ```
@@ -65,6 +70,14 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
   （`lipidmix/core/mcp_errors.py` の `missing_state`）。クライアントはこれを読んでリプレイする契約。
 - **reader の MessagePack Key インデックスの正解表は `docs/schema/*.md`**（MS-DIAL の C# クラス定義）。
   インデックス定数を変える前に必ず参照する。推測で直さない。
+- **`run_pca` の正準は `lipidmix/analysis/pca.py`**。`lipidmix/arf/reader.py` の同名は後方互換の
+  再エクスポートで、ARF テストが `patch.object(server.arf_reader, "run_pca", ...)` で module 属性
+  としてこの束縛を差し替えてモックしている。**消すとモックが効かなくなり、テストは緑のまま
+  実物の scikit-learn PCA が走り出す。**
+- **差次的エクスポートの列定義は `lipidmix/analysis/export_contract.py` が唯一の正準**。
+  ARF（`arf_export_differential`）と mzTab-M（`dataset_export_differential`）の両経路がここを
+  共有しており、**別リポジトリ（massbank-context）との契約**でもある。列の追加・改名・並べ替えは
+  `CONTRACT_VERSION` の引き上げと下流の同時更新なしにやってはいけない。
 - **ツールの戻り値を肥大させない**。戻り値はそのまま LLM の文脈を占め、結論が埋没する。
   守るべき決まりごと:
   - JSON は `lipidmix.core.serialization.json_payload()` で返す（`json.dumps(..., indent=2)`
@@ -83,20 +96,29 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 
 | 知りたいこと | 見る場所 |
 |---|---|
-| ツールの引数・用途（全 40） | `USAGE.md` |
+| ツールの引数・用途（`tests/test_readme_links.py` が一覧と件数を実登録と突き合わせている） | `USAGE.md` |
 | 出力フィールドの**意味**（行の粒度・脂質名文法・必須注意） | `docs/output_format/core.md` ＋ トピック別（`arf` `arf2` `pai2` `dcl` `eic` `identity`）。MCP リソース `lipidmix://docs/output-format[/{topic}]` としても配信 |
-| ツールが**どのファイルのどの関数をどの順に呼ぶか** | `docs/workflow/`（8 文書・パーサ/プロット系 28 ツール分）。行番号は書かない規約 |
+| ツールが**どのファイルのどの関数をどの順に呼ぶか** | `docs/workflow/`（対象範囲の線引きと内訳は `index.md` が正準。`tests/test_workflow_docs.py` が実登録と突き合わせている）。行番号は書かない規約 |
+| **生データ → Console → mzTab-M → 差次的解析 → パスウェイ**の一気通貫の順序と、内部関数の引数・戻り値 | [docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md](docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md)（**目標状態**の記述。実装状況は同文書 §9。完成後 `docs/workflow/Lipidmix/` へ昇格） |
 | MessagePack の Key 番号 | `docs/schema/*.md` |
+| パーサ単体の CLI（フラグ一覧と実行例） | `docs/cli.md` |
 | 設計判断の経緯・調査で判明した事実 | `docs/HISTRY.md`（綴りはこのまま。**追跡外＝ローカル専用ログ**） |
 | 進行中/完了タスク | `docs/task.md`（**追跡外**。ステータス = TODO/DOING/DONE/HOLD） |
 | 過去の設計書・計画書 | `docs/superpowers/{specs,plans,notes}/` |
 
 ## テストの規約
 
-- 腐敗防止テストが 2 つ効いている。壊すと落ちる:
+- 腐敗防止テストが効いている。壊すと落ちる:
   - `tests/test_workflow_docs.py` — `docs/workflow/` が挙げるパス・関数名を AST で実在検証し、
     対象ツール数を実登録数と突き合わせる。
-  - `tests/test_package_layout.py` — 移動で静かに壊れる `BASE_DIR` 起点の解決を縛る。
+  - `tests/test_package_layout.py` — 移動で静かに壊れる `BASE_DIR` 起点の解決と、
+    ルート直下の `.py` が `server.py` `check.py` だけであることを縛る。
+  - `tests/test_readme_links.py` — 入口文書（`README.md` `USAGE.md` `DEPLOY.md` `CLAUDE.md`）の
+    相対リンクが実在するか、`USAGE.md` のツール集合・宣言件数が実登録と一致するか、
+    CLAUDE.md 冒頭の規模表記が実登録と一致するかを検証する。
+    加えて **README.md / CLAUDE.md に数量表現を書かせない**（正準は別文書にあり、
+    写しだけが腐るため）。README は詳細を他文書へ委譲した要約なので、
+    ポインタが切れると案内そのものが壊れる。
 - `tests/test_server_registration.py` がツール/リソースの登録数と `ToolAnnotations` を検証する。
 - **fixture はテスト自身が作る**。`analyses/` `knowledge/` の実ファイルに依存させない
   （追跡外なのでユーザ環境依存の不安定テストになる。tmp に作って `ANALYSES_DIR` を差し替える流儀）。
@@ -104,8 +126,14 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 ## 作業の記録と Git
 
 - 調査・実装をしたら `docs/HISTRY.md` に追記し、`docs/task.md` のステータスを更新する。
+- **この 2 つは追記専用**。日付見出しで区切って末尾に足し、既存の節は書き換えない。
+  どちらも追跡外で git が競合を検出しないため、複数のエージェントが同時に走ると
+  書き換えは後勝ちで静かに消える。
 - `check.py` はスクラッチ（疑似ワークスペース）。一時検証コードをここに書き、通ったら適切な
   モジュールへ移して中身を消す。何もここに依存させない。
+- **コミット時に全テストが自動で走る**（`.githooks/pre-commit`・約 5 秒）。
+  クローン直後は `git config core.hooksPath .githooks` を 1 度実行して有効化する。
+  迂回は `git commit --no-verify`（緊急時のみ）。
 - `main` へのマージは `--no-ff`、`Merge <branch>: <日本語の要約>` 形式のマージコミット。
 - マージ済みブランチは**ローカルのみ削除**し `origin` 側は残す。`push` は指示があっても都度確認する。
 

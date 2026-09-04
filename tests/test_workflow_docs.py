@@ -38,6 +38,10 @@ IN_SCOPE: dict[str, tuple[str, ...]] = {
     ),
     "plots.md": ("save_pca_figure", "save_volcano_figure", "save_eic_figure"),
     "mztab.md": ("dataset_load", "dataset_status"),
+    "dataset_analysis.md": (
+        "dataset_preprocess", "dataset_pca", "dataset_differential",
+        "dataset_export_differential",
+    ),
 }
 
 # 今回の範囲外。文書に混入したら落とす（線引きを固定するため）。
@@ -45,6 +49,8 @@ OUT_OF_SCOPE: tuple[str, ...] = (
     "record_objective", "update_objective", "log_search", "knowledge_coverage",
     "paper_search", "ingest_stage", "ingest_review_queue", "ingest_promote",
     "ingest_reject", "write_report", "read_report", "list_reports",
+    # Console 実行層（Phase 2 追加・ワークフロー文書は Phase 2 完了後に追加）
+    "console_plan", "console_run", "console_status", "job_list",
 )
 
 
@@ -74,7 +80,7 @@ def _defined_names(py_path: Path) -> set[str]:
 
 def _iter_chain_refs():
     """全文書の呼び出し連鎖行を (文書名, 行番号, パス, 関数名) で返す。"""
-    for md in sorted(WORKFLOW_DIR.glob("*.md")):
+    for md in sorted(WORKFLOW_DIR.rglob("*.md")):
         for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
             m = CHAIN_RE.match(line)
             if m:
@@ -85,7 +91,7 @@ class TestWorkflowDocsExist(unittest.TestCase):
     def test_all_expected_documents_exist(self):
         self.assertTrue(WORKFLOW_DIR.is_dir(), f"{WORKFLOW_DIR} がない")
         expected = {"index.md", *IN_SCOPE}
-        actual = {p.name for p in WORKFLOW_DIR.glob("*.md")}
+        actual = {p.name for p in WORKFLOW_DIR.rglob("*.md")}
         self.assertEqual(expected, actual)
 
 
@@ -137,7 +143,7 @@ class TestScopeBoundary(unittest.TestCase):
                     self.assertIn(tool, headings, f"{doc} に `## {tool}` 節がない")
 
     def test_out_of_scope_tools_have_no_section(self):
-        for md in sorted(WORKFLOW_DIR.glob("*.md")):
+        for md in sorted(WORKFLOW_DIR.rglob("*.md")):
             headings = set(HEADING_RE.findall(md.read_text(encoding="utf-8")))
             for tool in OUT_OF_SCOPE:
                 with self.subTest(doc=md.name, tool=tool):
@@ -149,7 +155,7 @@ class TestScopeBoundary(unittest.TestCase):
     def test_scope_totals_match_registered_tool_count(self):
         """対象範囲の分割が、実際に登録されているツール数と一致することを縛る。
 
-        28 / 12 という分割は設計上の線引きだが、その合計は「全ツールを漏れなく
+        35 / 16 という分割は設計上の線引きだが、その合計は「全ツールを漏れなく
         分類した」という主張でもある。リテラルどうしの比較では自分自身を検証して
         しまうので、実際の登録数を引いて突き合わせる。
         """
@@ -164,4 +170,4 @@ class TestScopeBoundary(unittest.TestCase):
             registered,
             "対象範囲の分類と登録済みツールが一致しない",
         )
-        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 31)
+        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 35)

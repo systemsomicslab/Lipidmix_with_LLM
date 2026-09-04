@@ -39,6 +39,22 @@ class TestBaseDirResolution(unittest.TestCase):
         )
 
 
+class TestRootLayout(unittest.TestCase):
+    """ルート直下の .py は server.py と check.py の 2 つだけ、という鉄則を縛る。
+
+    CLAUDE.md が明文化している規約だが、これまで散文にしかなかった。スクラッチや
+    使い捨てスクリプトがルートに置き去りにされても誰も気づかず、`server.py` が
+    薄いファサードであるという前提だけが静かに崩れる。
+    """
+
+    def test_root_python_files_are_exactly_the_two(self):
+        found = {p.name for p in REPO_ROOT.glob("*.py")}
+        self.assertEqual(
+            found, {"server.py", "check.py"},
+            "ルート直下の .py が増減している。実装は lipidmix/ に置く",
+        )
+
+
 class TestStateDirsOutsidePackage(unittest.TestCase):
     def test_state_dirs_are_not_inside_lipidmix(self):
         package_dir = (REPO_ROOT / "lipidmix").resolve()

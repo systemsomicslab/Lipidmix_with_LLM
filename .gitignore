@@ -36,3 +36,6 @@ interp_eval_out/
 archives/interp_eval/out/
 # 退避物置き場。既に追跡済みの archives/interp_eval/ 配下は追跡が継続する。
 archives/
+
+# Subagent-Driven Development の作業台帳・レビュー資材（スクラッチ）
+.superpowers/

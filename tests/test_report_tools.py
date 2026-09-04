@@ -310,3 +310,91 @@ class ReportEdgeCaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DatasetFigureFallbackTests(unittest.TestCase):
+    """mzTab-M（DatasetState）経路からも図を保存できること。
+
+    session.arf 側だけを見ていたため、ds.last_pca / ds.last_differential に
+    全量があるのに mzTab-M 経路からはレポート用の図が作れなかった。
+    """
+
+    def setUp(self):
+        import tempfile
+        from lipidmix.mztab.dataset_state import DatasetState
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self._saved_data_dir = mcp_core.DATA_DIR
+        mcp_core.DATA_DIR = self.tmp
+        self._saved_env = os.environ.get("LIPIDMIX_REPORTS_DIR")
+        os.environ["LIPIDMIX_REPORTS_DIR"] = str(self.tmp / "reports_fallback")
+        self._saved_plot = session_state.session.arf.last_pca_plot
+        self._saved_diff = session_state.session.arf.last_differential
+        self._saved_ds = session_state.session.dataset
+        session_state.session.arf.last_pca_plot = None
+        session_state.session.arf.last_differential = None
+        session_state.session.dataset = DatasetState()
+
+    def tearDown(self):
+        mcp_core.DATA_DIR = self._saved_data_dir
+        session_state.session.arf.last_pca_plot = self._saved_plot
+        session_state.session.arf.last_differential = self._saved_diff
+        session_state.session.dataset = self._saved_ds
+        if self._saved_env is None:
+            os.environ.pop("LIPIDMIX_REPORTS_DIR", None)
+        else:
+            os.environ["LIPIDMIX_REPORTS_DIR"] = self._saved_env
+        self._tmp.cleanup()
+
+    def test_save_pca_figure_falls_back_to_dataset_state(self):
+        session_state.session.dataset.last_pca = {
+            "explained_variance_ratio": [0.31, 0.22],
+            "scores": [
+                {"name": "s1", "role": "sample", "PC1": 1.0, "PC2": 2.0},
+                {"name": "s2", "role": "sample", "PC1": -1.0, "PC2": 0.5},
+            ],
+            "n_samples": 2, "n_features": 10, "log_transform": False,
+        }
+        msg = server.save_pca_figure("ds-1")
+        png = self.tmp / "reports" / "figures" / "ds-1_pca.png"
+        self.assertTrue(png.is_file())
+        self.assertIn("figures/ds-1_pca.png", msg)
+        # どちらの経路で描いたかを明示する（ARF と混同させない）
+        self.assertIn("mztab", msg)
+
+    def test_save_volcano_figure_falls_back_to_dataset_state(self):
+        session_state.session.dataset.last_differential = {
+            "kind": "two_group", "a": "ctrl", "b": "treat", "n_a": 3, "n_b": 3,
+            "q_threshold": 0.05, "log2fc_threshold": 1.0, "log_transform": True,
+            # 実形状: differential.volcano_data() の戻り値そのまま（点の list）
+            "volcano": [
+                {"feature": "f1", "log2fc": 1.5, "neg_log10_p": 2.0, "sig": "up"},
+                {"feature": "f2", "log2fc": -1.8, "neg_log10_p": 2.2, "sig": "down"},
+                {"feature": "f3", "log2fc": 0.1, "neg_log10_p": 0.2, "sig": "ns"},
+            ],
+        }
+        msg = server.save_volcano_figure("ds-2")
+        png = self.tmp / "reports" / "figures" / "ds-2_volcano.png"
+        self.assertTrue(png.is_file())
+        self.assertIn("figures/ds-2_volcano.png", msg)
+        self.assertIn("mztab", msg)
+
+    def test_arf_wins_when_both_paths_have_results(self):
+        """両方載っている場合は ARF を使い、その旨を明示する。"""
+        session_state.session.arf.last_pca_plot = {
+            "title": "ARF", "x_label": "PC1", "y_label": "PC2",
+            "points": [{"x": 0.0, "y": 0.0, "label": "arf-sample"}],
+        }
+        session_state.session.dataset.last_pca = {
+            "explained_variance_ratio": [0.9],
+            "scores": [{"name": "ds-sample", "role": "sample", "PC1": 5.0, "PC2": 5.0}],
+            "n_samples": 1, "n_features": 3, "log_transform": False,
+        }
+        msg = server.save_pca_figure("both-1")
+        self.assertIn("arf", msg)
+        self.assertNotIn("mztab", msg)
+
+    def test_guidance_mentions_dataset_tools_when_nothing_available(self):
+        session_state.session.dataset = None
+        msg = server.save_pca_figure("none-1")
+        self.assertIn("dataset_pca", msg)

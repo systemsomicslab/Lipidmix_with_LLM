@@ -10,13 +10,12 @@ import lz4.block
 import msgpack
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 import matplotlib
 matplotlib.use('Agg')  # 非インタラクティブバックエンドを使用
 import matplotlib.pyplot as plt
 import pprint
 
+from lipidmix.analysis.pca import run_pca  # 後方互換の再エクスポート。消すと ARF テストのモックが効かなくなる
 from lipidmix.core.data_config import get_data_dir
 from lipidmix.msdial.classes import get_sample_class_id
 from lipidmix.msdial.tags import get_sample_peak_tag_info
@@ -508,45 +507,6 @@ def build_pca_matrix(deserialized_list: list[dict], use_properties: list[str] = 
     df = df.loc[:, df.var(numeric_only=True) > 0]
 
     return df.to_numpy(dtype=float), list(df.index), list(df.columns)
-
-
-def run_pca(matrix: np.ndarray, n_components: int | None = None,
-            log_transform: bool = False) -> dict:
-    """
-    標準化（スケーリング）を行った上で多次元PCAを実行する
-
-    引数:
-      log_transform: True のとき標準化の前に log10 変換を適用する（既定 False=従来動作）。
-        ピーク強度は右に大きく歪むため、log変換で正規性が改善し条件分離が向上しやすい。
-        0以下/極小値対策として下限1.0でクリップしてから log10 を取る。
-    """
-    n_samples, n_features = matrix.shape
-    max_components = min(n_samples, n_features)
-    
-    if max_components < 2:
-        raise ValueError(f"PCAには2つ以上のサンプルと特徴量が必要です。（現在: サンプル={n_samples}, 特徴量={n_features}）")
-
-    # n_componentsが指定されていない場合は最大次元数まで計算
-    target_components = max_components if n_components is None else min(n_components, max_components)
-    
-    work_matrix = matrix
-    # 任意: log変換（既定オフ）。強度の歪みを抑える。
-    if log_transform:
-        work_matrix = np.log10(np.clip(matrix, 1.0, None))
-
-    # 【重要】スケールの異なる多変量（Height, RTなど）を扱うための標準化
-    scaler = StandardScaler()
-    scaled_matrix = scaler.fit_transform(work_matrix)
-
-    pca = PCA(n_components=target_components)
-    transformed = pca.fit_transform(scaled_matrix)
-    
-    return {
-        "components": transformed.tolist(),
-        "explained_variance_ratio": pca.explained_variance_ratio_.tolist(),
-        "singular_values": pca.singular_values_.tolist(),
-        "loadings": pca.components_.tolist()
-    }
 
 
 def plot_pca(pca_result: dict, sample_names: list[str], props: list[str], file_path: str, output_file: str = "pca_plot.png"):

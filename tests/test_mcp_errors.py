@@ -54,5 +54,28 @@ class MissingStateEnvelopeTests(unittest.TestCase):
             mcp_errors.missing_state("arf_dataset", ["arf_parser"], "")
 
 
+class TestDatasetBadRequest(unittest.TestCase):
+    def test_code_is_registered(self):
+        from lipidmix.core.mcp_errors import MZTAB_ERROR_CODES
+        self.assertIn("DATASET_BAD_REQUEST", MZTAB_ERROR_CODES)
+
+    def test_envelope_carries_details(self):
+        import json
+        from lipidmix.core.mcp_errors import mztab_error
+        parsed = json.loads(mztab_error(
+            "DATASET_BAD_REQUEST", "群サイズ不足", {"n_a": 1, "n_b": 1}))
+        self.assertEqual(parsed["error"]["code"], "DATASET_BAD_REQUEST")
+        self.assertEqual(parsed["error"]["message"], "群サイズ不足")
+        self.assertEqual(parsed["error"]["details"], {"n_a": 1, "n_b": 1})
+
+    def test_is_not_missing_state(self):
+        """引数エラーを missing_state と混同しないことを固定する。"""
+        import json
+        from lipidmix.core.mcp_errors import MISSING_STATE, mztab_error
+        parsed = json.loads(mztab_error("DATASET_BAD_REQUEST", "x"))
+        self.assertNotEqual(parsed["error"]["code"], MISSING_STATE)
+        self.assertNotIn("required_tools", parsed["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

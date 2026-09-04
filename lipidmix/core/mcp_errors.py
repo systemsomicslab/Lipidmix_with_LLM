@@ -49,6 +49,38 @@ def missing_state(state: str, required_tools: list[str], message: str) -> str:
         })
 
 
+CONSOLE_ERROR_CODES = frozenset({
+    "MSDIAL_EXE_NOT_FOUND",
+    "MSDIAL_TIMEOUT",
+    "MSDIAL_NONZERO_EXIT",
+    "NO_JOB_OUTPUT",
+    "JOB_NOT_FOUND",
+    "JOB_NOT_PLANNED",
+    "DATASET_ROOT_IN_REPO",
+    "METHOD_FILE_NOT_FOUND",
+    # MS-DIAL Console が読む ASCII の key/value テキストではない場合。
+    "METHOD_FILE_NOT_TEXT",
+    # MSDIAL_EXE が Console ではなく GUI を指している場合。
+    "MSDIAL_EXE_NOT_CONSOLE",
+    # MS-DIAL が対象とする計測拡張子が混在する、または 0 種類の場合。
+    "MIXED_RAW_FORMATS",
+    # MS-DIAL 実行自体は成功したが、その後の生成物収集・ハッシュ計算・
+    # analysis-job.json への保存で失敗した場合。NO_JOB_OUTPUT（生成物が
+    # そもそも無い）とは別のエラー: こちらは生成物はあるが確定処理に失敗した状態。
+    "JOB_POST_RUN_FAILED",
+})
+
+
+def console_error(code: str, message: str, details: dict | None = None) -> str:
+    """Console 実行層固有のエラーを機械可読エンベロープで返す。"""
+    if not code or not message:
+        raise ValueError("code と message は必須です。")
+    payload: dict = {"code": code, "message": message}
+    if details is not None:
+        payload["details"] = details
+    return json_payload({"error": payload})
+
+
 MZTAB_ERROR_CODES = frozenset({
     "MZTAB_NOT_FOUND",
     "MZTAB_STRUCTURE_INVALID",
@@ -59,6 +91,9 @@ MZTAB_ERROR_CODES = frozenset({
     "COMPANION_ARTIFACT_MISSING",
     "ARTIFACT_HASH_MISMATCH",
     "POLARITY_MISMATCH",
+    # DatasetState 解析層の引数エラー。missing_state と違い、別のツールを先に
+    # 呼んでも直らない（引数を直して呼び直すしかない）。
+    "DATASET_BAD_REQUEST",
 })
 
 
