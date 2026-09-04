@@ -68,7 +68,8 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 - **前提状態が無いときは例外でなく機械可読な封筒を返す**:
   `{"error": {"code": "missing_state", "state": ..., "required_tools": [...], "message": ...}}`
   （`lipidmix/core/mcp_errors.py` の `missing_state`）。クライアントはこれを読んでリプレイする契約。
-- **reader の MessagePack Key インデックスの正解表は `docs/schema/*.md`**（MS-DIAL の C# クラス定義）。
+- **reader の MessagePack Key インデックスの正解表は `docs/schema/*.md`**（MS-DIAL の C# クラス
+  `[Key(N)]` から抽出した Key 番号表。上流のコミットと欠番も記載してある）。
   インデックス定数を変える前に必ず参照する。推測で直さない。
 - **`run_pca` の正準は `lipidmix/analysis/pca.py`**。`lipidmix/arf/reader.py` の同名は後方互換の
   再エクスポートで、ARF テストが `patch.object(server.arf_reader, "run_pca", ...)` で module 属性

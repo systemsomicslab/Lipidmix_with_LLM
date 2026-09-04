@@ -4,7 +4,7 @@
 
 > 先に `lipidmix://docs/output-format`（共通核）を読むこと。行・列の粒度、脂質名文法、必須注意事項はそちらで定義され、ここでは繰り返さない。節番号は分割前の通し番号。
 >
-> 対応する MS-DIAL C# スキーマ: `docs/schema/AlignmentSpotProperty.md`（MessagePack キー番号の一次資料）。
+> 対応する Key 番号表: `docs/schema/AlignmentSpotProperty.md`（MS-DIAL の `[Key(N)]` から抽出した一次資料）。
 > リーダーのインデックス定数を変更するときは必ずこちらを先に確認する。
 
 ## 4. ARF2 (`arf2_reader.py`)
