@@ -211,7 +211,7 @@ def dataset_export_differential(output_path: str,
     メタ行）なので、下流のパスウェイ解析にそのまま渡せる。
 
     result_id: 書き出す結果を名指しする（省略時は直近の差次的結果）。
-        **前処理をやり直した後の古い結果は書き出しません**（`RESULT_STALE`）。
+        **前処理をやり直した後の古い結果は書き出しません**（`STALE_ANALYSIS_RESULT`）。
         古い数字に現在の前処理条件のラベルが付いた TSV は、どちらも正しく見えて
         ずれが分からなくなります。
 
@@ -242,7 +242,7 @@ def dataset_export_differential(output_path: str,
     try:
         info = export_dataset_result(ds, last, Path(output_path))
     except DomainError as exc:
-        if exc.code in ("RESULT_STALE", "ANALYSIS_RESULT_NOT_FOUND"):
+        if exc.code in ("STALE_ANALYSIS_RESULT", "ANALYSIS_RESULT_NOT_FOUND"):
             # 再計算すれば直る。どのツールを呼べばよいかを機械可読に返す。
             return _missing("dataset_differential_result", exc.message)
         return mztab_error(exc.code, exc.message, exc.details or None)

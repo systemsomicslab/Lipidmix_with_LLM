@@ -192,7 +192,7 @@ def test_export_refuses_a_result_from_a_superseded_preprocessing(tmp_path):
     with pytest.raises(DomainError) as exc:
         export_dataset_result(ds, result, tmp_path / "stale.tsv")
 
-    assert exc.value.code == "RESULT_STALE"
+    assert exc.value.code == "STALE_ANALYSIS_RESULT"
     assert not (tmp_path / "stale.tsv").exists()
 
 

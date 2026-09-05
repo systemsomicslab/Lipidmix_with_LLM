@@ -196,7 +196,7 @@ def assert_current(ds, result: dict) -> None:
         return
     prov = (result or {}).get("provenance") or {}
     raise DomainError(
-        "RESULT_STALE",
+        "STALE_ANALYSIS_RESULT",
         "この結果は現在のデータセットの状態から出たものではありません"
         "（前処理のやり直し・別データセットの結果）。再計算してください。",
         {"result_id": prov.get("result_id"),

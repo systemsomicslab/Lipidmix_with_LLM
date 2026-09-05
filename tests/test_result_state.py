@@ -213,7 +213,7 @@ def test_assert_current_rejects_a_result_from_a_superseded_preprocessing():
     preprocess_dataset(ds, {"normalize": "tic", "impute": "half_min"})
     with pytest.raises(DomainError) as exc:
         assert_current(ds, stale)
-    assert exc.value.code == "RESULT_STALE"
+    assert exc.value.code == "STALE_ANALYSIS_RESULT"
 
 
 def test_assert_current_rejects_a_result_from_another_dataset():
