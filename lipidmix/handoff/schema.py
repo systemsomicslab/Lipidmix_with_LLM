@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from lipidmix.core.atomic_io import atomic_write_json
+
 # v2: 生成物のルートと実行オプションを明示する。読み込みは v1 も受けるが、
 # 書き出しは常に v2 とする。
 SCHEMA_VERSION = "analysis-job.v2"
@@ -79,11 +81,13 @@ class AnalysisJob:
     timeout_s: int = 3600
 
     def save(self, path: Path) -> None:
+        """analysis-job.json を原子的に保存する（v2固定）。
+
+        書込途中でプロセスが落ちても、既存ファイルは壊れた内容に置き換わらない
+        （lipidmix.core.atomic_io.atomic_write_json）。
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(_to_dict(self), ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
+        atomic_write_json(path, _to_dict(self))
 
     @staticmethod
     def load(path: Path) -> "AnalysisJob":
