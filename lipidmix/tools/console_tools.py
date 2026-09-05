@@ -15,7 +15,8 @@ from lipidmix.core.mcp_errors import console_error, mztab_error
 from lipidmix.core.serialization import json_payload
 
 __all__ = ["console_plan", "console_prepare_input", "console_method_template",
-           "console_run", "console_status", "console_cleanup", "job_list"]
+           "console_method_candidates", "console_run", "console_status",
+           "console_cleanup", "job_list"]
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False),
@@ -39,13 +40,16 @@ def console_plan(
         リポジトリ外のパスを指定してください。
     method_file:
         MS-DIAL Console のパラメータファイル（ASCII テキスト。`key: value` 形式）。
-        **省略できます** — 省略時は dataset_root から MS-DIAL GUI が実行のたびに
-        自動保存する `<project>_param_<終了時刻>.txt` を探し、`Ion mode` が
-        polarity と一致する最新のものを使います。
+        **省略できます** — 省略時は dataset_root 直下・兄弟フォルダ・過去 run
+        （`runs/*/analysis-job.json`）まで探し、`Ion mode` が polarity と
+        一致する最新のものを使います。一致が無く別極性の候補があれば
+        METHOD_FILE_CHOICE_REQUIRED で止まります（候補の列挙だけなら
+        console_method_candidates）。
         **`.mdproject` / `.mddata` は使えません**（ZIP なので Console は中身を
         読めず、全パラメータが既定値のまま実行されます）。
     lbm_file:
         脂質ライブラリ（`.lbm2`）のパス。省略時は「メソッドファイルの宣言 →
+        ビルド生成物（MsdialWorkbench をソースからビルドしている場合） →
         環境変数 MSDIAL_LBM → MSDIAL_EXE と同じフォルダ」の順に、MS-DIAL GUI と
         同じ規則で自動解決します。GUI 由来のパラメータは `Lbm file path:` が
         必ず空なので、この自動解決が無いと**警告なしで同定 0 件**になります。
@@ -91,19 +95,38 @@ def console_plan(
 
     discovered_from: str | None = None
     if method_file is None:
-        candidates = method_file_mod.find_method_candidates([root], polarity=polarity)
-        if not candidates:
+        candidates, searched = method_file_mod.discover_method_candidates(
+            root, polarity=polarity, omics=omics)
+        direct = [c for c in candidates if c.usable == "direct"]
+        if direct:
+            discovered_from = direct[0].path
+            mf = Path(discovered_from)
+        elif candidates:
+            # 別極性を黙って採ると Ion mode と Searched adduct ions が違うまま走り、
+            # 別の解析になる。console_method_template を通して caveat を出させる。
+            return console_error(
+                "METHOD_FILE_CHOICE_REQUIRED",
+                f"極性 {polarity} に一致するパラメータファイルはありませんが、"
+                f"別極性の候補が {len(candidates)} 件あります。"
+                "console_method_template(based_on=<選んだ path>, polarity=...) で"
+                "その極性用に変換してから console_plan に渡してください。"
+                "検出・アライメント条件は元のまま引き継がれます。",
+                {"dataset_root": str(root), "polarity": polarity,
+                 "searched": searched,
+                 **_capped_candidates(candidates)},
+                required_tools=["console_method_template", "console_plan"])
+        else:
             return console_error(
                 "METHOD_FILE_NOT_GIVEN",
-                "method_file が省略され、データフォルダに使えるパラメータファイルも"
+                "method_file が省略され、使えるパラメータファイルも"
                 f"見つかりませんでした（極性 {polarity}）: {root}  "
                 "MS-DIAL GUI は解析のたびに `<project>_param_<終了時刻>.txt` を"
-                "プロジェクトフォルダへ自動保存します。その極性で一度も GUI 実行が"
-                "無い場合は、別極性のパラメータから Ion mode と Searched adduct ions を"
-                "差し替えたものを用意して method_file で渡してください。",
-                {"dataset_root": str(root), "polarity": polarity})
-        discovered_from = candidates[0].path
-        mf = Path(discovered_from)
+                "プロジェクトフォルダへ自動保存します。その極性でも別極性でも"
+                "GUI 実行が無い場合は、他のデータセットのパラメータを "
+                "console_method_template の based_on で明示してください。",
+                {"dataset_root": str(root), "polarity": polarity,
+                 "searched": searched},
+                required_tools=["console_method_template", "console_method_candidates"])
     else:
         mf = Path(method_file).expanduser()
     if not mf.is_file():
@@ -496,10 +519,15 @@ def console_prepare_input(
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
-def console_status(job_path: str | None = None) -> str:
+def console_status(job_path: str | None = None, include_artifacts: bool = False) -> str:
     """ジョブの現在のステータスを返します。
 
     job_path: analysis-job.json へのパス。省略時は session.current_job_path を使用します。
+    include_artifacts: 生成物の全文一覧（TSV）を含めます。既定 False。
+        生成物は 1 サンプルにつき 5 件出るため 60 サンプルで 300 行を超え、
+        全文を返すと後ろの warnings / error が埋没します。既定では件数
+        (`artifact_count`) と役割別内訳 (`artifacts_by_role`) だけを返します。
+        個々のパスが必要なとき（欠落の特定など）だけ True にしてください。
     """
     resolved = _resolve_job_path(job_path)
     if isinstance(resolved, str):
@@ -530,10 +558,11 @@ def console_status(job_path: str | None = None) -> str:
         ],
         "artifact_count": len(job.artifacts),
         # 生成物は 1 サンプルにつき複数出る（.pai2 / .dcl / _tags.xml / .mdpeak /
-        # .mdmsp）。60 サンプルで数百行になるので、列名を 1 回だけ書く TSV で返す。
-        # 1 件 1 JSON オブジェクトにするとキー名の反復だけで戻り値が数万字になり、
-        # 後ろの warnings / error が埋没する。
-        "artifacts": _artifacts_tsv(job.artifacts),
+        # .mdmsp）。60 サンプルの実走で 313 件になり、全文 TSV は数万字に達して
+        # 後ろの warnings / error を埋没させた。既定は役割別の件数だけにし、
+        # 全文は include_artifacts=True のときだけ返す。
+        "artifacts_by_role": _artifacts_by_role(job.artifacts),
+        **({"artifacts": _artifacts_tsv(job.artifacts)} if include_artifacts else {}),
         "execution": {"save_project": job.save_project, "timeout_s": job.timeout_s},
         "warnings": job.warnings,
         "error": job.error,
@@ -566,7 +595,10 @@ def console_method_template(
     polarity: "positive" / "negative"（作りたい側）。
     based_on: 元にするパラメータファイル。省略時は dataset_root から探します
         （**極性は問いません** — 別極性から作るのがこのツールの用途なので）。
-    dataset_root: based_on 省略時の探索先。
+    dataset_root: based_on 省略時の探索先。dataset_root 直下・兄弟フォルダ・
+        過去 run まで探します。候補が複数あれば based_on で選ぶよう
+        METHOD_FILE_CHOICE_REQUIRED で止まります（土台の選択は解析条件そのもの
+        なので、最新を黙って採りません）。
     """
     if polarity not in ("positive", "negative"):
         return console_error("JOB_NOT_PLANNED",
@@ -577,14 +609,27 @@ def console_method_template(
     if based_on:
         src = Path(based_on).expanduser()
     elif dataset_root:
-        candidates = method_file_mod.find_method_candidates([Path(dataset_root).expanduser()])
+        # 極性で絞らない。「別極性から作る」のがこのツールの用途なので、
+        # polarity=None のまま候補を集める。
+        candidates, searched = method_file_mod.discover_method_candidates(
+            Path(dataset_root).expanduser(), polarity=None, omics=omics)
         if not candidates:
             return console_error(
                 "METHOD_FILE_NOT_GIVEN",
                 "元にできるパラメータファイル（`*_param_<ts>.txt`）が見つかりません: "
-                f"{dataset_root}  MS-DIAL GUI で一度も解析していないフォルダには存在しません。"
+                f"{dataset_root}  MS-DIAL GUI で一度も解析していないフォルダには"
+                "存在しません（兄弟フォルダと過去 run も探しました）。"
                 "他のデータセットのパラメータを based_on で明示してください。",
-                {"dataset_root": dataset_root})
+                {"dataset_root": dataset_root, "searched": searched})
+        if len(candidates) > 1:
+            return console_error(
+                "METHOD_FILE_CHOICE_REQUIRED",
+                f"元にできる候補が {len(candidates)} 件あります。based_on で 1 つ"
+                "選んでください。検出・アライメント条件は選んだファイルのものが"
+                "そのまま引き継がれるため、どれを土台にするかは解析条件の選択です。",
+                {"dataset_root": dataset_root, "searched": searched,
+                 **_capped_candidates(candidates)},
+                required_tools=["console_method_template"])
         src = Path(candidates[0].path)
     else:
         return console_error("METHOD_FILE_NOT_GIVEN",
@@ -631,6 +676,51 @@ def console_method_template(
         "caveat": "検出・アライメント条件は元ファイルのまま引き継いでいます。"
                   "その極性に妥当かは実行前に確認してください。",
         "next": f"console_plan(dataset_root=..., method_file={str(dest)!r}, polarity={polarity!r})",
+    })
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+          structured_output=False)
+def console_method_candidates(
+    dataset_root: str,
+    polarity: str | None = None,
+    omics: str | None = "lipidomics",
+    search_dirs: list[str] | None = None,
+) -> str:
+    """使えるメソッドファイルの候補を列挙します（console_plan が失敗する前に呼べます）。
+
+    MS-DIAL GUI は解析のたびに `<project>_param_<終了時刻>.txt` をプロジェクト
+    フォルダへ自動保存します。その極性で一度も GUI 実行が無いフォルダには存在
+    しないため、**兄弟フォルダ**（POS の隣の NEG 等）と**過去 run** まで探します。
+
+    dataset_root: 生データフォルダ。
+    polarity: "positive" / "negative"。省略すると極性で区別せず全件返します。
+        指定すると各候補に `usable` が付き、一致しないものは
+        `needs_polarity_conversion`（console_method_template を経由させる）。
+    omics: 既定 "lipidomics"。None で絞り込みません。
+    search_dirs: 追加で探すフォルダ。再帰はしません。
+
+    候補には比較用の `key_params`（検出・アライメント条件のうち結果を変える少数）が
+    付きます。候補が 10 件を超えるときは付きません（戻り値が肥大するため）。
+    """
+    root = Path(dataset_root).expanduser()
+    if not root.is_dir():
+        return console_error("DATASET_ROOT_NOT_FOUND",
+                             f"データフォルダが見つかりません: {dataset_root}",
+                             {"dataset_root": str(dataset_root)})
+
+    from lipidmix.console import method_file as method_file_mod
+
+    candidates, searched = method_file_mod.discover_method_candidates(
+        root, polarity=polarity, omics=omics, search_dirs=search_dirs)
+    return json_payload({
+        "dataset_root": str(root),
+        "polarity": polarity,
+        "omics": omics,
+        "searched": searched,
+        "n_candidates": len(candidates),
+        **_capped_candidates(candidates),
+        "next": _candidates_next_hint(polarity),
     })
 
 
@@ -828,6 +918,18 @@ def _looks_like_method_text(path: Path) -> bool:
     return False
 
 
+def _artifacts_by_role(artifacts) -> dict[str, int]:
+    """生成物を役割別に数える。役割名は handoff の `Artifact.role`。
+
+    「何が何件出たか」は取りこぼしの検出に足りる（60 サンプルなら各役割 60 件）。
+    個々のパスは include_artifacts に譲る。
+    """
+    counts: dict[str, int] = {}
+    for artifact in artifacts:
+        counts[artifact.role] = counts.get(artifact.role, 0) + 1
+    return dict(sorted(counts.items()))
+
+
 def _artifacts_tsv(artifacts) -> str:
     """生成物一覧を TSV（列名 1 回）で返す。生成物ゼロなら空文字。
 
@@ -839,6 +941,62 @@ def _artifacts_tsv(artifacts) -> str:
     lines = ["path\trole\tformat\troot"]
     lines.extend(f"{a.path}\t{a.role}\t{a.format}\t{a.root}" for a in artifacts)
     return "\n".join(lines)
+
+
+def _candidate_payload(candidate) -> dict:
+    """MethodCandidate を UI が読める辞書にする。mtime は ISO 文字列で返す。
+
+    `usable` は polarity を指定せずに探索したとき None になる（「一致するか」を
+    判定しようがないため）。"direct" と取り違えられないよう、`key_params` と
+    同じくキーごと省く。
+    """
+    from datetime import datetime
+    payload = {
+        "path": candidate.path,
+        "origin": candidate.origin,
+        "ion_mode": candidate.ion_mode,
+        "omics": candidate.omics,
+        "has_lbm": candidate.has_lbm,
+        "mtime": datetime.fromtimestamp(candidate.mtime).isoformat(timespec="seconds"),
+    }
+    if candidate.usable is not None:
+        payload["usable"] = candidate.usable
+    if candidate.key_params is not None:
+        payload["key_params"] = candidate.key_params
+    return payload
+
+
+def _candidates_next_hint(polarity: str | None) -> str:
+    """console_method_candidates の `next` 文面。polarity 省略時は usable が
+    候補に付かない（finding 2）ので、判断材料を ion_mode に差し替える。
+    """
+    if polarity is None:
+        return ("polarity を省略したため候補に usable は付きません。"
+                "ion_mode を見て、目的の極性と一致するものを "
+                "console_plan(method_file=...) に、違うものは "
+                "console_method_template(based_on=..., polarity=...) を"
+                "通してから console_plan に渡してください。")
+    return ("usable=direct なら console_plan(method_file=...)、"
+            "usable=needs_polarity_conversion なら console_method_template("
+            "based_on=..., polarity=...) を通してから console_plan")
+
+
+def _capped_candidates(candidates) -> dict:
+    """候補一覧を `MAX_REPORTED_CANDIDATES` で切る。
+
+    候補は `discover_method_candidates` が direct 優先・新しい順にソート済みなので、
+    先頭から切れば最も有用な候補が残る。切ったときだけ `truncated: true` を立て、
+    切っていないときはキー自体を出さない。呼び出し側が別途持つ「総数」
+    （`n_candidates` や封筒メッセージの件数）はここでは変えない —
+    切った件数と混同させないため。
+    """
+    from lipidmix.console import method_file as method_file_mod
+
+    emitted = candidates[:method_file_mod.MAX_REPORTED_CANDIDATES]
+    section: dict = {"candidates": [_candidate_payload(c) for c in emitted]}
+    if len(candidates) > method_file_mod.MAX_REPORTED_CANDIDATES:
+        section["truncated"] = True
+    return section
 
 
 def _msdial_exe_setup_help() -> dict:

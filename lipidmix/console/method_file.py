@@ -21,16 +21,12 @@ MS-DIAL 5 の GUI と Console は、脂質ライブラリ（LBM）の持ち方�
 この層は GUI と同じ規則を再現して段差を埋める。**GUI が拒否する状況でだけ拒否する**
 （アプリフォルダの `*.lbm?` がちょうど 1 件でなければ GUI も MessageBox で止める。
 `DatasetParameterSettingModel.Prepare`）。
-
-もう一方の `find_method_candidates` は、GUI が実行のたびに自動保存する
-`<project>_param_<endtimestamp>.txt`（`MethodModelBase.AutoParametersSave`。
-ASCII の `key: value`＝Console が読める形式）を探す。ユーザーは手動エクスポートを
-しなくてよい。
 """
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 # GUI の DataBaseSettingViewModel が使う判定と同じ（`@"\.lbm\d*"`）。
@@ -74,7 +70,7 @@ class LbmResolution:
     """LBM の解決結果。`error_code` が非 None なら呼び出し側は停止する。"""
 
     path: str | None
-    source: str  # method_file | env | exe_dir | not_required
+    source: str  # argument | method_file | build_tree | env | exe_dir | not_required
     error_code: str | None = None
     message: str | None = None
     candidates: tuple[str, ...] = ()
@@ -89,6 +85,62 @@ class MethodCandidate:
     omics: str | None
     has_lbm: bool
     mtime: float
+    # どこで見つかったか。UI のグルーピングと、同じパスが二重に出たときの優先に使う。
+    origin: str = "same_dir"          # same_dir | sibling | past_run | given
+    # 求める極性に対してそのまま使えるか。別極性は console_method_template を経由させる。
+    # polarity を指定せずに探索したときは「一致するか」を判定しようがないので None
+    # （「一致する」を意味する "direct" と取り違えられないよう、値を出さない）。
+    usable: str | None = "direct"     # direct | needs_polarity_conversion | None
+    key_params: dict[str, str] | None = None
+
+
+# 候補どうしの差を読むのに要る少数キー。全キー（実測 287 行 / 11.7 KB）を候補ごとに
+# 返すと戻り値が肥大する。綴りは実ファイル（param_POS_generated.txt）準拠。
+KEY_PARAM_KEYS: tuple[str, ...] = (
+    "Ion mode",
+    "Target omics",
+    "Minimum peak height",
+    "Retention time begin",
+    "Retention time end",
+    "MS1 mass range begin",
+    "MS1 mass range end",
+    "MS1 tolerance for centroid",
+    "Retention time tolerance for alignment",
+    "MS1 tolerance for alignment",
+    "Searched adduct ions",
+)
+
+# これを超える候補数では key_params を付けない。比較表は絞ってから引き直す。
+KEY_PARAMS_MAX_CANDIDATES = 10
+
+# 一覧として実際に返す候補数の上限。KEY_PARAMS_MAX_CANDIDATES とは意味の違う
+# 別の定数にしてある — 1 つに束ねると、どちらか片方のつもりの変更がもう片方の
+# 挙動（key_params を付けるかどうか）まで静かに動かしてしまう。実測でラボの
+# レイアウト（兄弟フォルダ数十 × GUI 自動保存複数）は候補 240 件・69KB になり得る。
+# ソート済み（direct 優先・新しい順）の先頭から切るので、有用な候補ほど残る。
+MAX_REPORTED_CANDIDATES = 10
+
+_ADDUCT_PREVIEW = 3
+
+
+def extract_key_params(method_keys: dict[str, str]) -> dict[str, str]:
+    """判断に効くキーだけを、実ファイルの綴りで取り出す。
+
+    `Searched adduct ions` は POS の実値が 37 種・約 700 文字あるので要約する。
+    極性の違いは先頭 3 種で判別できる。
+    """
+    out: dict[str, str] = {}
+    for key in KEY_PARAM_KEYS:
+        value = method_keys.get(key.lower())
+        if value is None or value == "":
+            continue
+        if key == ADDUCT_KEY:
+            items = [t.strip() for t in value.split(",") if t.strip()]
+            head = ", ".join(items[:_ADDUCT_PREVIEW])
+            out[key] = f"{len(items)} 種（先頭: {head}）"
+        else:
+            out[key] = value
+    return out
 
 
 def read_method_keys(path: Path) -> dict[str, str]:
@@ -133,6 +185,70 @@ def find_lbm_files(directory: Path) -> list[Path]:
     return [p for p in entries if p.is_file() and _LBM_SUFFIX.search(p.name)]
 
 
+# MsdialWorkbench のビルド生成物から .lbm2 を引くための座標。
+# Console 実行体は tests/MSDIAL5/MsdialCoreTestApp/bin/Debug/<TFM>/MSDIALCUI.exe に
+# 出るが、その exe フォルダに .lbm2 は無い。ライブラリは GUI アプリ側の
+# src/MSDIAL5/MsdialGuiApp/bin/Debug/<TFM>/ に出るため、exe フォルダ探索
+# （GUI と同じ TopDirectoryOnly）だけでは原理的に当たらない。
+# MSDIAL4（src/MSDIAL4/MsDial/...）は見ない。あちらの conventional ライブラリは
+# NCDK 無しの別世代で、MSDIAL5 の Console に食わせると同定結果が静かに変わる。
+_BUILD_LBM_RELATIVE = ("src", "MSDIAL5", "MsdialGuiApp", "bin", "Debug")
+_BUILD_TREE_MAX_ANCESTORS = 10
+
+
+def _pick_build_lbm(debug_dir: Path, exe_tfm: str) -> tuple[Path | None, tuple[Path, ...]]:
+    """`bin/Debug` 配下から 1 本選ぶ。
+
+    同じライブラリが TFM ごとに複製されるので「候補が複数あるから決められない」
+    とは扱わない（そう扱うと必ず LBM_AMBIGUOUS で止まる）。exe 自身の TFM に
+    揃えるのが最も安全で、無ければ素の `Debug/` 直下、それも無ければ最新の
+    mtime を採る。
+
+    ただし、選んだ 1 フォルダの中に**ファイル名の異なる** `.lbm2` が複数あるときは
+    TFM 複製ではなく別ライブラリなので、`found[0]`（アルファベット順）を黙って
+    選ぶと識別結果を静かに変える。戻り値の第 2 要素にその候補を入れて返し、
+    呼び出し側（`resolve_lbm`）で `exe_dir` 探索と同じ LBM_AMBIGUOUS にする。
+
+    Returns: (選んだパス | None, 曖昧だったときの候補 | 空タプル)
+    """
+    for directory in (debug_dir / exe_tfm, debug_dir):
+        found = find_lbm_files(directory)
+        if found:
+            if len({p.name for p in found}) > 1:
+                return None, tuple(found)
+            return found[0], ()
+
+    others: list[Path] = []
+    try:
+        entries = sorted(debug_dir.iterdir())
+    except OSError:
+        return None, ()
+    for entry in entries:
+        if entry.is_dir():
+            others.extend(find_lbm_files(entry))
+    if not others:
+        return None, ()
+    return max(others, key=lambda p: p.stat().st_mtime), ()
+
+
+def find_build_tree_lbm(exe_path: str | None) -> tuple[Path | None, tuple[Path, ...]]:
+    """Console exe を起点に MsdialWorkbench のビルド生成物内の .lbm2 を返す。
+
+    exe フォルダから上へ辿り、`src/MSDIAL5/MsdialGuiApp/bin/Debug` を持つ階層を
+    リポジトリルートと見なす。見つからなければ (None, ())（＝ビルド運用ではない）。
+    第 2 要素が非空なら、選んだフォルダに名前の異なる `.lbm2` が複数あり
+    1 本に決められないことを示す（`_pick_build_lbm` 参照）。
+    """
+    if not exe_path:
+        return None, ()
+    exe_dir = Path(exe_path).expanduser().parent
+    for ancestor in [exe_dir, *exe_dir.parents][:_BUILD_TREE_MAX_ANCESTORS + 1]:
+        debug_dir = ancestor.joinpath(*_BUILD_LBM_RELATIVE)
+        if debug_dir.is_dir():
+            return _pick_build_lbm(debug_dir, exe_dir.name)
+    return None, ()
+
+
 def resolve_lbm(
     method_keys: dict[str, str],
     method_file: Path,
@@ -143,8 +259,10 @@ def resolve_lbm(
 ) -> LbmResolution:
     """脂質ライブラリのパスを GUI と同じ規則で解決する。
 
-    順に: 明示引数 → メソッドファイルの宣言 → `MSDIAL_LBM` →
-    MSDIAL_EXE と同じフォルダ。
+    順に: 明示引数 → メソッドファイルの宣言 → **ビルド生成物** → `MSDIAL_LBM` →
+    MSDIAL_EXE と同じフォルダ。ビルド生成物を `MSDIAL_LBM` より上に置くのは、
+    この環境の Console がソースからのビルドで、ライブラリもそのツリー内の
+    新しいものを使うため（インストール版より優先する）。
     lipidomics 以外では LBM を要求しない（Console も読まないため）。
     """
     if omics != "lipidomics":
@@ -170,6 +288,20 @@ def resolve_lbm(
             path=None, source="method_file", error_code="LBM_NOT_FOUND",
             message=(f"メソッドファイルが指す脂質ライブラリが見つかりません: {declared}  "
                      f"（{method_file} 基準で解決: {candidate}）"))
+
+    from_build, build_ambiguous = find_build_tree_lbm(exe_path)
+    if build_ambiguous:
+        return LbmResolution(
+            path=None, source="build_tree", error_code="LBM_AMBIGUOUS",
+            message=(
+                f"ビルド生成物の脂質ライブラリ候補が {len(build_ambiguous)} 件あり、"
+                f"どれを使うか決められません: {build_ambiguous[0].parent}  "
+                "TFM ごとの複製（同名コピー）ではなく、名前の異なる .lbm2 が"
+                "同じフォルダに複数あります。MS-DIAL GUI も 1 件でなければ実行を"
+                "止めます。1 件だけ残すか、lbm_file 引数で明示してください。"),
+            candidates=tuple(str(p) for p in build_ambiguous))
+    if from_build is not None:
+        return LbmResolution(path=str(from_build), source="build_tree")
 
     from_env = (env.get("MSDIAL_LBM") or "").strip()
     if from_env:
@@ -210,46 +342,93 @@ def resolve_lbm(
         candidates=tuple(str(p) for p in found))
 
 
-def find_method_candidates(
-    directories, polarity: str | None = None, omics: str | None = None,
-) -> list[MethodCandidate]:
-    """既存の自動保存パラメータ（`*_param_<ts>.txt`）を新しい順に返す。
+def scan_dir_for_method_files(directory: Path, origin: str) -> list[MethodCandidate]:
+    """1 フォルダ直下の `*_param_<ts>.txt` を候補にする。絞り込みはしない。
 
-    GUI は解析のたびに `MethodModelBase.AutoParametersSave` でこれを
-    プロジェクトフォルダへ書く。ASCII の `key: value` なので Console がそのまま読める。
+    絞り込み（極性・omics）を呼び出し側に残すのは、別極性の候補を
+    「使えないから消す」のではなく「変換が要る」と提示するため。
     """
-    seen: set[Path] = set()
     out: list[MethodCandidate] = []
-    for directory in directories:
-        d = Path(directory)
-        try:
-            entries = sorted(d.iterdir())
-        except OSError:
+    try:
+        entries = sorted(Path(directory).iterdir())
+    except OSError:
+        return out
+    for p in entries:
+        if not p.is_file() or not _PARAM_FILENAME.search(p.name):
             continue
-        for p in entries:
-            if not p.is_file() or not _PARAM_FILENAME.search(p.name):
-                continue
-            resolved = p.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            keys = read_method_keys(p)
-            if not keys:
-                continue  # バイナリ／読めない
-            ion = (keys.get("ion mode") or "").strip().lower() or None
-            om = (keys.get("target omics") or "").strip().lower() or None
-            if polarity is not None and ion != polarity:
-                continue
-            if omics is not None and om != omics:
-                continue
-            out.append(MethodCandidate(
-                path=str(p),
-                ion_mode=ion,
-                omics=om,
-                has_lbm=bool((keys.get(LBM_KEY.lower()) or "").strip()),
-                mtime=p.stat().st_mtime,
-            ))
-    out.sort(key=lambda c: c.mtime, reverse=True)
+        keys = read_method_keys(p)
+        if not keys:
+            continue  # バイナリ／読めない
+        out.append(MethodCandidate(
+            path=str(p),
+            ion_mode=(keys.get("ion mode") or "").strip().lower() or None,
+            omics=(keys.get("target omics") or "").strip().lower() or None,
+            has_lbm=bool((keys.get(LBM_KEY.lower()) or "").strip()),
+            mtime=p.stat().st_mtime,
+            origin=origin,
+        ))
+    return out
+
+
+RUNS_SUBDIR_NAME = "runs"
+
+
+def method_search_dirs(dataset_root: Path, search_dirs=None) -> list[tuple[Path, str]]:
+    """メソッドファイルを探すフォルダを優先順に返す。
+
+    `dataset_root` 直下 → 兄弟フォルダ直下 → 明示追加。**再帰しない** — 深く掘ると
+    無関係なプロジェクトのパラメータが候補に混ざり、比較表が意味を失う。
+    """
+    root = Path(dataset_root).expanduser()
+    pairs: list[tuple[Path, str]] = [(root, "same_dir")]
+    try:
+        siblings = sorted(p for p in root.parent.iterdir() if p.is_dir())
+    except OSError:
+        siblings = []
+    for sibling in siblings:
+        if sibling.resolve() == root.resolve():
+            continue
+        pairs.append((sibling, "sibling"))
+    for extra in (search_dirs or []):
+        pairs.append((Path(extra).expanduser(), "given"))
+    return pairs
+
+
+def past_run_method_files(dataset_root: Path) -> list[Path]:
+    """過去 run が実際に使ったメソッドファイルを返す。
+
+    `analysis-job.json` の `software.method_file` から引く。**ファイル名で拾わない** —
+    `run_dir/effective-method.txt` は「LBM の解決元がメソッドファイル以外だったとき」
+    だけ書かれるので、グロブでは取りこぼす。
+    """
+    runs = Path(dataset_root).expanduser() / RUNS_SUBDIR_NAME
+    out: list[Path] = []
+    try:
+        entries = sorted(runs.iterdir())
+    except OSError:
+        return out
+    for run_dir in entries:
+        job = run_dir / "analysis-job.json"
+        try:
+            record = json.loads(job.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        # 有効な JSON でも object とは限らない（`[]` / `"x"` / `3` 等）。そのまま
+        # `.get()` すると AttributeError が MCP 境界まで漏れる。
+        if not isinstance(record, dict):
+            continue
+        software = record.get("software")
+        if not isinstance(software, dict):
+            software = {}
+        declared = software.get("method_file")
+        if not isinstance(declared, str):
+            declared = ""
+        declared = declared.strip()
+        if not declared:
+            continue
+        path = Path(declared)
+        if path.is_file():
+            out.append(path)
     return out
 
 
@@ -283,3 +462,59 @@ def write_effective_method_file(src: Path, dest: Path, overrides: dict[str, str]
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
     return dest
+
+
+def discover_method_candidates(
+    dataset_root,
+    *,
+    polarity: str | None = None,
+    omics: str | None = "lipidomics",
+    search_dirs=None,
+) -> tuple[list[MethodCandidate], list[str]]:
+    """候補を集めて `usable` と `key_params` を付ける。探した場所も返す。
+
+    極性で**落とさない**。別極性は `needs_polarity_conversion` として提示し、
+    console_method_template を経由させる（黙って別解析にしないため）。
+    """
+    root = Path(dataset_root).expanduser()
+    by_path: dict[Path, MethodCandidate] = {}
+    searched: list[str] = []
+
+    for directory, origin in method_search_dirs(root, search_dirs):
+        searched.append(str(directory))
+        for candidate in scan_dir_for_method_files(directory, origin):
+            by_path.setdefault(Path(candidate.path).resolve(), candidate)
+
+    runs_dir = root / RUNS_SUBDIR_NAME
+    if runs_dir.is_dir():
+        searched.append(str(runs_dir))
+    for path in past_run_method_files(root):
+        keys = read_method_keys(path)
+        if not keys:
+            continue
+        # 出所の情報量が多い past_run を優先して上書きする（同じパスが
+        # same_dir としても拾われうる）。
+        by_path[path.resolve()] = MethodCandidate(
+            path=str(path),
+            ion_mode=(keys.get("ion mode") or "").strip().lower() or None,
+            omics=(keys.get("target omics") or "").strip().lower() or None,
+            has_lbm=bool((keys.get(LBM_KEY.lower()) or "").strip()),
+            mtime=path.stat().st_mtime,
+            origin="past_run",
+        )
+
+    selected = [c for c in by_path.values()
+                if omics is None or c.omics == omics]
+    annotated: list[MethodCandidate] = []
+    attach_params = len(selected) <= KEY_PARAMS_MAX_CANDIDATES
+    for candidate in selected:
+        usable = None
+        if polarity is not None:
+            usable = ("direct" if candidate.ion_mode == polarity
+                      else "needs_polarity_conversion")
+        key_params = (extract_key_params(read_method_keys(Path(candidate.path)))
+                      if attach_params else None)
+        annotated.append(replace(candidate, usable=usable, key_params=key_params))
+
+    annotated.sort(key=lambda c: (c.usable != "direct", -c.mtime))
+    return annotated, searched
