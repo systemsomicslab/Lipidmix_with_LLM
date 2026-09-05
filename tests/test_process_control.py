@@ -5,6 +5,7 @@
 「本当に終了したか」「本当に排他できているか」を確かめる。Job Objectもbyte-range
 lockもOSの状態であり、Python側の記録を読んでも検証にならないため。
 """
+import contextlib
 import ctypes
 import ctypes.wintypes as wintypes
 import json
@@ -492,9 +493,123 @@ def test_breakaway_mode_decision_table(in_job, flags, expected):
     assert pc._breakaway_mode(in_job, flags) == expected
 
 
+# --- テスト自前のJob Object操作（検証対象のコードを流用しない） ---
+#
+# Windowsには「親が死んだら子も死ぬ」という仕組みが無い。孤児になった子は
+# 既定で生き続けるので、親プロセスを終わらせて生存を見ても切り離しの検証には
+# ならない。実際に道連れにするのはJob Objectの KILL_ON_JOB_CLOSE なので、
+# テスト側でそのJobを作り、その中でlaunch_detachedを走らせる。
+
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
+_TEST_JOB_LIMIT_BREAKAWAY_OK = 0x00000800
+_TEST_JOB_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_PROCESS_TERMINATE = 0x0001
+_PROCESS_SET_QUOTA = 0x0100
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_SYNCHRONIZE = 0x00100000
+
+
+class _TEST_JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", wintypes.DWORD),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", wintypes.DWORD),
+        ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+        ("PriorityClass", wintypes.DWORD),
+        ("SchedulingClass", wintypes.DWORD),
+    ]
+
+
+class _TEST_IO_COUNTERS(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint64) for name in (
+        "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+        "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+
+class _TEST_JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _TEST_JOBOBJECT_BASIC_LIMIT_INFORMATION),
+        ("IoInfo", _TEST_IO_COUNTERS),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+def _job_kernel32():
+    """Job Object操作用のkernel32。全関数にargtypes/restypeを宣言する。
+
+    宣言を省くとHANDLEが既定のint32へ切り詰められ、別のJobやプロセスを
+    指したまま「検証できたつもり」になる。
+    """
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    k.CreateJobObjectW.restype = wintypes.HANDLE
+    k.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                          ctypes.c_void_p, wintypes.DWORD]
+    k.SetInformationJobObject.restype = wintypes.BOOL
+    k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k.AssignProcessToJobObject.restype = wintypes.BOOL
+    k.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE,
+                                 ctypes.POINTER(wintypes.BOOL)]
+    k.IsProcessInJob.restype = wintypes.BOOL
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.CloseHandle.restype = wintypes.BOOL
+    return k
+
+
+@contextlib.contextmanager
+def _test_job(limit_flags: int):
+    """指定した制限フラグのJobを作り、`(job, close)`を渡す。
+
+    `close`は明示的にJobハンドルを閉じる（＝KILL_ON_JOB_CLOSEを発動させる）
+    ためのもの。二重解放しないよう冪等にしてある。テストが途中で失敗しても
+    finallyで必ず閉じるので、Jobハンドルもその中のプロセスも残らない。
+    """
+    k = _job_kernel32()
+    job = k.CreateJobObjectW(None, None)
+    assert job, f"CreateJobObjectWに失敗した: {ctypes.get_last_error()}"
+    state = {"closed": False}
+
+    def close():
+        if not state["closed"]:
+            state["closed"] = True
+            k.CloseHandle(job)
+
+    try:
+        limits = _TEST_JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limits.BasicLimitInformation.LimitFlags = limit_flags
+        assert k.SetInformationJobObject(
+            job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+            ctypes.byref(limits), ctypes.sizeof(limits)), \
+            f"SetInformationJobObjectに失敗した: {ctypes.get_last_error()}"
+        yield k, job, close
+    finally:
+        close()
+
+
+def _is_in_job(k, process_handle, job) -> bool:
+    flag = wintypes.BOOL()
+    assert k.IsProcessInJob(process_handle, job, ctypes.byref(flag)), \
+        f"IsProcessInJobに失敗した: {ctypes.get_last_error()}"
+    return bool(flag.value)
+
+
+def _stays_alive(identity: dict, duration: float = 2.0) -> bool:
+    """identityのプロセスがduration秒のあいだ生き続けたらTrue。"""
+    return not _wait_until_gone(identity, timeout=duration)
+
+
 _DETACHER_SRC = """\
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
@@ -505,6 +620,16 @@ out_path = Path(sys.argv[2])
 cwd = Path(sys.argv[3])
 log_path = Path(sys.argv[4])
 worker_script = sys.argv[5]
+# argv[6] は任意のゲート。呼び出し側がこのプロセスをJobへ割り当て終えるまで
+# 待たせるために使う。待たずに起動すると、まだJobの外にいる状態でworkerを
+# 作ってしまい「切り離せた」ように見えるだけの検証になる。
+gate = Path(sys.argv[6]) if len(sys.argv) > 6 else None
+if gate is not None:
+    deadline = time.monotonic() + 60.0
+    while not gate.exists():
+        if time.monotonic() > deadline:
+            sys.exit(3)
+        time.sleep(0.02)
 try:
     info = launch_detached([sys.executable, worker_script], cwd=cwd,
                            log_path=log_path)
@@ -517,28 +642,80 @@ _WORKER_SRC = "import time\ntime.sleep(300)\n"
 
 
 @windows_only
-def test_detached_worker_survives_its_parent(tmp_path):
-    """切り離したワーカーは、起動した親が終了しても走り続ける。"""
+def test_detached_worker_survives_the_job_that_launched_it(tmp_path):
+    """切り離したワーカーは、親プロセスの終了でもJobの終了でも死なない。
+
+    親の終了だけを見ても検証にならない。Windowsには親の死を子へ伝える仕組みが
+    無く、孤児は放置されるだけなので、切り離しを全部外しても「親が終わった後も
+    生きている」は成立してしまう。実際にMCP呼び出しの終了で解析を道連れにするのは
+    Job Objectの KILL_ON_JOB_CLOSE なので、ここでは
+
+      BREAKAWAY_OK | KILL_ON_JOB_CLOSE のJobを自前で作る
+        → その中でdetacherを走らせ、launch_detachedにworkerを起こさせる
+        → detacherの終了を待ってから、Jobハンドルを閉じる
+
+    という順で、ワーカーが本当にJobの外へ出たかを見る。
+    `launch_detached`が CREATE_BREAKAWAY_FROM_JOB を付けなければ、ワーカーは
+    このJobに残り、Jobを閉じた瞬間に殺される（＝このテストは赤くなる）。
+    """
     detacher = _write_script(tmp_path, "detacher.py", _DETACHER_SRC)
-    worker = _write_script(tmp_path, "worker.py", _WORKER_SRC)
+    worker_script = _write_script(tmp_path, "worker.py", _WORKER_SRC)
     out_path = tmp_path / "detached.json"
+    gate = tmp_path / "assigned.gate"
 
-    parent = subprocess.run(
-        [sys.executable, str(detacher), _REPO_ROOT, str(out_path), str(tmp_path),
-         str(tmp_path / "worker.log"), str(worker)],
-        cwd=str(tmp_path), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, timeout=60, check=True)
-    assert parent.returncode == 0
-
-    info = json.loads(out_path.read_text(encoding="utf-8"))
-    assert "error" not in info, f"切り離しに失敗した: {info}"
-    identity = info["identity"]
+    identity = None
     try:
-        # 親（detacher）は既に終了している。それでもワーカーは生きている。
-        assert same_process(identity), "親の終了とともにワーカーが消えた"
-        assert info["pid"] == identity["pid"]
-        assert info["breakaway"] in {"not_in_job", "inherited_job",
-                                     "breakaway_ok", "silent_breakaway"}
+        with _test_job(_TEST_JOB_LIMIT_BREAKAWAY_OK
+                       | _TEST_JOB_LIMIT_KILL_ON_JOB_CLOSE) as (k, job, close_job):
+            launcher = subprocess.Popen(
+                [sys.executable, str(detacher), _REPO_ROOT, str(out_path),
+                 str(tmp_path), str(tmp_path / "worker.log"),
+                 str(worker_script), str(gate)],
+                cwd=str(tmp_path), stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                # AssignProcessToJobObject には SET_QUOTA と TERMINATE が要る。
+                launcher_handle = k.OpenProcess(
+                    _PROCESS_SET_QUOTA | _PROCESS_TERMINATE
+                    | _PROCESS_QUERY_LIMITED_INFORMATION, False, launcher.pid)
+                assert launcher_handle, \
+                    f"OpenProcessに失敗した: {ctypes.get_last_error()}"
+                try:
+                    assert k.AssignProcessToJobObject(job, launcher_handle), \
+                        f"detacherをJobへ入れられなかった: {ctypes.get_last_error()}"
+                    assert _is_in_job(k, launcher_handle, job), \
+                        "detacherが自前Jobに入っていない（前提が崩れている）"
+                finally:
+                    k.CloseHandle(launcher_handle)
+                # Jobへの割当が済んでから初めて切り離しを始めさせる。
+                gate.write_text("go", encoding="utf-8")
+                assert launcher.wait(timeout=60) == 0
+            finally:
+                if launcher.poll() is None:
+                    launcher.kill()
+                    launcher.wait(timeout=20)
+
+            info = json.loads(out_path.read_text(encoding="utf-8"))
+            assert "error" not in info, f"切り離しに失敗した: {info}"
+            identity = info["identity"]
+            assert info["pid"] == identity["pid"]
+            # このJobの制限では breakaway_ok 以外を選んではならない。
+            assert info["breakaway"] == "breakaway_ok"
+
+            worker_handle = k.OpenProcess(
+                _PROCESS_QUERY_LIMITED_INFORMATION | _SYNCHRONIZE, False,
+                int(info["pid"]))
+            assert worker_handle, \
+                f"ワーカーのOpenProcessに失敗した: {ctypes.get_last_error()}"
+            try:
+                assert not _is_in_job(k, worker_handle, job), \
+                    "ワーカーが親Jobに残っている（breakawayできていない）"
+                # ここでKILL_ON_JOB_CLOSEが発動する。detacherは既に終了済み。
+                close_job()
+                assert _stays_alive(identity), \
+                    "Jobを閉じたらワーカーが道連れになった"
+            finally:
+                k.CloseHandle(worker_handle)
     finally:
         _kill_pid_if_same(identity)
     assert _wait_until_gone(identity)
