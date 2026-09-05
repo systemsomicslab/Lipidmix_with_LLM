@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 # GUI の DataBaseSettingViewModel が使う判定と同じ（`@"\.lbm\d*"`）。
@@ -452,3 +452,57 @@ def write_effective_method_file(src: Path, dest: Path, overrides: dict[str, str]
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
     return dest
+
+
+def discover_method_candidates(
+    dataset_root,
+    *,
+    polarity: str | None = None,
+    omics: str | None = "lipidomics",
+    search_dirs=None,
+) -> tuple[list[MethodCandidate], list[str]]:
+    """候補を集めて `usable` と `key_params` を付ける。探した場所も返す。
+
+    極性で**落とさない**。別極性は `needs_polarity_conversion` として提示し、
+    console_method_template を経由させる（黙って別解析にしないため）。
+    """
+    root = Path(dataset_root).expanduser()
+    by_path: dict[Path, MethodCandidate] = {}
+    searched: list[str] = []
+
+    for directory, origin in method_search_dirs(root, search_dirs):
+        searched.append(str(directory))
+        for candidate in scan_dir_for_method_files(directory, origin):
+            by_path.setdefault(Path(candidate.path).resolve(), candidate)
+
+    runs_dir = root / RUNS_SUBDIR_NAME
+    if runs_dir.is_dir():
+        searched.append(str(runs_dir))
+    for path in past_run_method_files(root):
+        keys = read_method_keys(path)
+        if not keys:
+            continue
+        # 出所の情報量が多い past_run を優先して上書きする（同じパスが
+        # same_dir としても拾われうる）。
+        by_path[path.resolve()] = MethodCandidate(
+            path=str(path),
+            ion_mode=(keys.get("ion mode") or "").strip().lower() or None,
+            omics=(keys.get("target omics") or "").strip().lower() or None,
+            has_lbm=bool((keys.get(LBM_KEY.lower()) or "").strip()),
+            mtime=path.stat().st_mtime,
+            origin="past_run",
+        )
+
+    selected = [c for c in by_path.values()
+                if omics is None or c.omics == omics]
+    annotated: list[MethodCandidate] = []
+    attach_params = len(selected) <= KEY_PARAMS_MAX_CANDIDATES
+    for candidate in selected:
+        usable = ("direct" if polarity is None or candidate.ion_mode == polarity
+                  else "needs_polarity_conversion")
+        key_params = (extract_key_params(read_method_keys(Path(candidate.path)))
+                      if attach_params else None)
+        annotated.append(replace(candidate, usable=usable, key_params=key_params))
+
+    annotated.sort(key=lambda c: (c.usable != "direct", -c.mtime))
+    return annotated, searched

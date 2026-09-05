@@ -18,8 +18,10 @@ from pathlib import Path
 import pytest
 
 from lipidmix.console.method_file import (
+    KEY_PARAMS_MAX_CANDIDATES,
     LbmResolution,
     MethodCandidate,
+    discover_method_candidates,
     extract_key_params,
     find_lbm_files,
     find_method_candidates,
@@ -498,3 +500,76 @@ def test_past_run_method_files_ignores_a_broken_job_file(tmp_path):
     run.mkdir(parents=True)
     (run / "analysis-job.json").write_text("{not json", encoding="utf-8")
     assert past_run_method_files(tmp_path) == []
+
+
+# ---------- discover_method_candidates ----------
+
+def _write_param(directory, name, ion="Positive", omics="Lipidomics"):
+    directory.mkdir(parents=True, exist_ok=True)
+    p = directory / name
+    p.write_text(f"Ion mode: {ion}\nTarget omics: {omics}\n"
+                 "Minimum peak height: 1000\nLbm file path: \n", encoding="ascii")
+    return p
+
+
+def test_discover_marks_the_other_polarity_as_needing_conversion(tmp_path):
+    root = tmp_path / "POS"
+    root.mkdir()
+    _write_param(tmp_path / "NEG", "d_param_1.txt", ion="Negative")
+    found, _searched = discover_method_candidates(root, polarity="positive")
+    assert [(c.origin, c.usable) for c in found] == [("sibling", "needs_polarity_conversion")]
+
+
+def test_discover_puts_directly_usable_candidates_first(tmp_path):
+    root = tmp_path / "POS"
+    _write_param(root, "own_param_2.txt", ion="Positive")
+    _write_param(tmp_path / "NEG", "neg_param_1.txt", ion="Negative")
+    found, _searched = discover_method_candidates(root, polarity="positive")
+    assert [c.usable for c in found] == ["direct", "needs_polarity_conversion"]
+
+
+def test_discover_attaches_key_params_for_a_small_candidate_set(tmp_path):
+    root = tmp_path / "POS"
+    _write_param(root, "own_param_1.txt")
+    found, _searched = discover_method_candidates(root, polarity="positive")
+    assert found[0].key_params["Minimum peak height"] == "1000"
+
+
+def test_discover_omits_key_params_beyond_the_cap(tmp_path):
+    root = tmp_path / "POS"
+    for i in range(KEY_PARAMS_MAX_CANDIDATES + 1):
+        _write_param(root, f"p{i}_param_{i}.txt")
+    found, _searched = discover_method_candidates(root, polarity="positive")
+    assert len(found) == KEY_PARAMS_MAX_CANDIDATES + 1
+    assert all(c.key_params is None for c in found)
+
+
+def test_discover_prefers_past_run_origin_for_a_duplicate_path(tmp_path):
+    """過去 run のメソッドがユーザーのフォルダにある元ファイルを指すことがある。"""
+    import json
+    root = tmp_path / "POS"
+    used = _write_param(root, "own_param_1.txt")
+    run = root / "runs" / "job_1"
+    run.mkdir(parents=True)
+    (run / "analysis-job.json").write_text(
+        json.dumps({"software": {"method_file": str(used)}}), encoding="utf-8")
+    found, _searched = discover_method_candidates(root, polarity="positive")
+    assert len(found) == 1
+    assert found[0].origin == "past_run"
+
+
+def test_discover_filters_by_omics(tmp_path):
+    root = tmp_path / "POS"
+    _write_param(root, "lip_param_1.txt", omics="Lipidomics")
+    _write_param(root, "met_param_2.txt", omics="Metabolomics")
+    found, _searched = discover_method_candidates(root, polarity="positive", omics="lipidomics")
+    assert [Path(c.path).name for c in found] == ["lip_param_1.txt"]
+
+
+def test_discover_reports_where_it_looked(tmp_path):
+    root = tmp_path / "POS"
+    root.mkdir()
+    (tmp_path / "NEG").mkdir()
+    _found, searched = discover_method_candidates(root, polarity="positive")
+    assert str(root) in searched
+    assert str(tmp_path / "NEG") in searched
