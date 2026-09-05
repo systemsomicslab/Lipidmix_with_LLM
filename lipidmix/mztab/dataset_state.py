@@ -102,6 +102,11 @@ class DatasetState:
         # sample_metadata_rows: 明示的に与えられた実験情報シートの行（Task 9）。
         # 無いうちは None で、役割・バッチはサンプル名からの推定に頼る。
         self.sample_metadata_rows = None
+        # sample_ids: sample_metadata_rowsのsample_id列を、sample_namesと同じ順で
+        # 保持する安定ID。apply_metadataだけが書く。表示名（sample_names）は
+        # 上書きしない——比較定義・出力はsample_idsを、表示・群選択の見た目は
+        # 引き続きsample_namesを使い分けられるようにするための別スロット。
+        self.sample_ids: list[str] = []
         # preprocess_id / preprocess_metadata_hash: 現在の前処理済み行列がどの計算から
         # 出たか。派生結果（PCA・差次的解析）はこの ID を parent_ids に持つ。
         self.preprocess_id: str | None = None

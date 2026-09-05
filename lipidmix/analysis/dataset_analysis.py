@@ -59,6 +59,32 @@ class PreconditionError(Exception):
         self.state = state
 
 
+def _pp_inputs_from_explicit_metadata(sample_names: list[str], rows: list[dict]) -> tuple[dict, dict]:
+    """Task 9 で適用済みの実験情報シートを、前処理入力（roles/sample_meta）へ変換する。
+
+    `ds.sample_metadata_rows` は `sample_manifest.resolve_metadata` が
+    `ds.sample_names` と同じ順に揃えてから `apply_metadata` が書き込むので、
+    ここでは位置で対応させる（sample_id では結合しない——表示名を上書きしない
+    設計と対称に、サンプル名の並びだけを唯一の対応軸にする）。
+    """
+    roles: dict[str, str] = {}
+    sample_meta: dict = {}
+    for name, row in zip(sample_names, rows):
+        role = row.get("role") or "sample"
+        roles[name] = role
+        provenance = row.get("provenance") or {}
+        batch_prov = provenance.get("batch") or {}
+        order_prov = provenance.get("injection_order") or {}
+        sample_meta[name] = {
+            "role": role,
+            "batch": row.get("batch"),
+            "batch_source": batch_prov.get("source"),
+            "run_order": row.get("injection_order"),
+            "run_order_source": order_prov.get("source"),
+        }
+    return roles, sample_meta
+
+
 def build_dataset_pp_inputs(ds):
     """DatasetState から preprocessing.preprocess() の引数を組む。
 
@@ -81,6 +107,22 @@ def build_dataset_pp_inputs(ds):
     matrix = np.asarray(ds.feature_matrix, dtype=float).T.copy()
     sample_names = list(ds.sample_names)
     feature_names = list(ds.feature_ids)
+
+    # 実験情報シート（Task 9 apply_metadata）が適用済みなら、そちらを優先する。
+    # 未適用（sample_metadata_rows が None）のデータセットは、この下の
+    # トークン判定 + mzTab MTD 推定という既存経路をそのまま使い続ける
+    # （明示メタデータが無いデータセットの挙動を変えない）。
+    explicit_rows = getattr(ds, "sample_metadata_rows", None)
+    if explicit_rows:
+        if len(explicit_rows) != len(sample_names):
+            raise PreconditionError(
+                "bad_request",
+                "適用済みの実験情報シートの行数がサンプル数と一致しません。"
+                "dataset_load をやり直してから metadata を再適用してください。",
+                {"rows": len(explicit_rows), "samples": len(sample_names)},
+            )
+        roles, sample_meta = _pp_inputs_from_explicit_metadata(sample_names, explicit_rows)
+        return matrix, sample_names, feature_names, roles, sample_meta
 
     # class_ids は mzTab-M に対応物が無いので渡さない（既定 None）。
     roles = preprocessing.detect_sample_roles(sample_names)

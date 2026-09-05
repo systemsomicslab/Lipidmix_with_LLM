@@ -172,3 +172,34 @@ def make_dataset():
                                      "inchikey_source": "database_identifier"}
                            for i in range(6)}
     return ds
+
+
+# ---------- sample-manifest.v1 の合成行（Task 9 apply_metadata の契約） ----------
+
+def metadata_rows(ds, *, n_qc=4, confirmed=True):
+    """make_dataset()の8検体へ、resolve_metadata出力と同じ形の行を合成する。
+
+    n_qcで健全なQC数（0〜4件）を振り、conservative-v1のQC閾値（Task 11）を
+    跨いだ挙動をテストできるようにする。confirmed=Falseはbatch/injection_order/
+    qc_poolだけをmzTab由来unverifiedへ落とし、他タスクが「出所で挙動が変わる」
+    経路を確認するための契約。
+    """
+    assert len(ds.sample_names) == 8 and 0 <= n_qc <= 4
+    qc_orders = [1, 3, 6, 8][:n_qc]
+    orders = qc_orders + [i for i in range(1, 9) if i not in qc_orders]
+    rows = []
+    for i, name in enumerate(ds.sample_names):
+        row = dict(sample_id=name, source_file=f"{name}.wiff",
+                   role="qc" if i < n_qc else "sample", group=None,
+                   batch="B1", injection_order=orders[i],
+                   qc_pool="pool1" if i < n_qc else None, include=True)
+        row["provenance"] = {
+            key: {"value": value, "source": "user_manifest", "confidence": "confirmed"}
+            for key, value in row.items()
+        }
+        if not confirmed:
+            for key in ("batch", "injection_order", "qc_pool"):
+                row["provenance"][key].update(source="mztab", confidence="unverified")
+        row["conflicts"] = []
+        rows.append(row)
+    return rows
