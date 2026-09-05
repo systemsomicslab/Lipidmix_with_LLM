@@ -1,11 +1,22 @@
-"""切り離して起動した Console 実行の引き継ぎ状態。
+"""**旧方式**の切り離し実行が残したサイドカー（読むためだけに残す）。
 
-`console_run(detach=True)` は起動して即座に戻るので、**完了時の生成物収集を
-別の呼び出し（`console_status`）が引き継ぐ**必要がある。収集には「実行前に
-何があったか」のスナップショットが要るが、それを撮れるのは起動側だけ。
+かつて `console_run(detach=True)` は Console を起動して即座に戻り、完了時の
+生成物収集を別の呼び出し（`console_status`）に引き継がせていた。その引き継ぎに
+使ったのがこのファイル（run_dir の `.detached-state.json`）で、pid と実行前
+スナップショットだけを持つ。
 
-置き場所は `analysis-job.json` ではなく run_dir のサイドカー。
-`analysis-job.v2` は別リポジトリ（massbank-context）との契約でもあるので、
+**新しい実行はこれを書かない**。いまは監視ワーカー（`lipidmix.console.worker`）が
+最後まで見張り、終了証跡（`execution-result.json`）と成果物を自分で残す。旧 state に
+無いのは終了コードと process identity で、それが無いと「もう走っていない」ことしか
+分からない——成功したかどうかは分からない。ファイルが増えた事実だけで完了と
+判定すると、途中で落ちた実行が completed に化ける。
+
+そのため残っている旧 state は `console_status` が `EXECUTION_UNRESOLVED` として
+報告するだけで、成果物の収集も状態の昇格も行わない。`write_detached_state` は
+その状況を再現するテストのためだけに残している。
+
+置き場所が `analysis-job.json` ではなく run_dir のサイドカーなのは、
+`analysis-job.v2` が別リポジトリ（massbank-context）との契約でもあるため。
 実行方式という内部事情でスキーマを増やさない。
 """
 from __future__ import annotations

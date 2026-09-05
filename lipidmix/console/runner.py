@@ -1,23 +1,20 @@
-"""MS-DIAL Console の実行体解決・コマンド組み立てと、**旧**実行ラッパー。
+"""MS-DIAL Console の実行体解決とコマンド組み立て。
 
 exe_path は引数で注入できる（テスト用 fake の差し込みに使う）。
 既定は環境変数 MSDIAL_EXE から取得し、未設定なら EnvironmentError を上げる。
-stdout/stderr は run_dir/msdial.log に書く（リポジトリ外）。
 
-**Console の監視の正準は `lipidmix.console.execution.supervise`**。同期呼出しも
-切り離しワーカーも pipeline の上流工程もそこを通り、成功・非ゼロ・timeout・取消・
-起動不能のどの終了経路でも終了証跡と成果物を残す。
+**Console を実際に起動して見張るのは `lipidmix.console.execution.supervise`**。
+同期呼出しも切り離しワーカー（`lipidmix.console.worker`）も pipeline の上流工程も
+そこを通り、成功・非ゼロ・timeout・取消・起動不能のどの終了経路でも終了証跡と
+成果物を残す。
 
-このモジュールに残る `run_msdial` / `run_msdial_detached` は **旧経路**で、
-`supervise` に置き換わる。特に `run_msdial` は非ゼロ終了で
-`MsdialNonZeroExitError` を送出し、呼び出し側（`lipidmix.tools.console_tools`
-の同期分岐）がそこで即 return して生成物の収集を丸ごと飛ばす——**失敗した実行が
-何の証拠も残さない**という、`supervise` が解いた欠陥そのもの。この分岐の除去は
-`console_run` を worker 経由へ切り替える作業と不可分なので、
-`lipidmix/tools/console_tools.py` と `tests/test_console_runner.py` を含む
-移行としてまとめて行う。それまでこの旧経路に新しい呼び出しを増やさないこと。
+かつてここにあった `run_msdial` / `run_msdial_detached` は削除した。前者は非ゼロ
+終了で例外を送出し、呼び出し側（`console_run` の同期分岐）がそこで即 return して
+生成物の収集を丸ごと飛ばしていた——**失敗した実行が何の証拠も残さない**という、
+`supervise` が解いた欠陥そのもの。後者は誰も監視しないまま Console を放流し、
+終了コードも終了理由も回収できなかった。どちらも代わりを増やさずに消す。
 
-`get_exe_path` と `build_msdial_cmd` は旧経路と `supervise` の共有部分で、
+`get_exe_path` と `build_msdial_cmd` は `supervise` と計画層の共有部分で、
 Console のコマンドラインが 2 通りに分裂しないための唯一の組み立て場所。
 """
 from __future__ import annotations
@@ -29,16 +26,6 @@ from pathlib import Path
 
 class MsdialExeNotFoundError(EnvironmentError):
     pass
-
-
-class MsdialTimeoutError(TimeoutError):
-    pass
-
-
-class MsdialNonZeroExitError(RuntimeError):
-    def __init__(self, returncode: int):
-        super().__init__(f"MS-DIAL Console が終了コード {returncode} で終了しました")
-        self.returncode = returncode
 
 
 def get_exe_path() -> str:
@@ -104,24 +91,14 @@ def build_msdial_cmd(
     return cmd
 
 
-def _open_log(run_dir: Path, cmd: list[str]):
-    """msdial.log を開き、CMD 行を書いて flush 済みのハンドルを返す。
-
-    fd を子へ渡す前に必ず flush する。親のバッファと子は同じファイル記述の
-    オフセットを共有するため、flush しないと子の出力が先頭に、CMD 行がその
-    後ろに書かれる（失敗解析でまずログ先頭を見る運用が壊れる）。
-    """
-    run_dir.mkdir(parents=True, exist_ok=True)
-    log = (run_dir / "msdial.log").open("w", encoding="utf-8")
-    log.write(f"CMD: {' '.join(cmd)}\n\n")
-    log.flush()
-    return log
-
-
 def is_process_running(pid: int) -> bool:
     """pid が生きているかを返す（判定できないときは False ＝安全側）。
 
-    切り離して起動した Console は親を持たないので、待つ代わりにこれで見る。
+    **旧 `.detached-state.json` を持つジョブを判定するためだけに残している
+    互換 wrapper**。新しい経路は `lipidmix.core.process_control.same_process` を
+    使う——pid だけでは pid 再利用を見分けられず、別のプロセスを「同じ実行が
+    まだ生きている」と誤読するため。旧 state には creation_time が無いので、
+    そこだけはこの弱い判定しか使えない。
     """
     if not pid or pid < 0:
         return False
@@ -143,121 +120,6 @@ def is_process_running(pid: int) -> bool:
     except OSError:
         return False
     return True
-
-
-def run_msdial_detached(
-    method_file: Path,
-    dataset_root: Path,
-    run_dir: Path,
-    exe_path: str | None = None,
-    save_project: bool = False,
-) -> int:
-    """MS-DIAL Console を親から切り離して起動し、pid を返す（待たない）。**旧経路**。
-
-    誰も監視しないまま Console を放流するため、終了コードも終了理由も回収できない
-    （収集は `console_status` の後追いに委ねられる）。新しい呼び出しは
-    `lipidmix.console.execution.supervise` を使うこと。
-
-    実データ 60 サンプルは 44 分かかる。`subprocess.run` で待つと MCP の
-    1 ツール呼び出しがその間戻らず、呼び出し元の都合でプロセスツリーごと
-    落とされると生成物ごと失う（実測 2 回）。切り離しておけば、呼び出し元が
-    消えても Console は走り続ける。完了は `is_process_running` で見る。
-    """
-    exe = exe_path or get_exe_path()
-    msdial_out_dir = run_dir / "msdial"
-    msdial_out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = build_msdial_cmd(exe, dataset_root, msdial_out_dir, method_file, save_project)
-
-    log = _open_log(run_dir, cmd)
-    kwargs: dict = {
-        "stdout": log,
-        "stderr": subprocess.STDOUT,
-        "stdin": subprocess.DEVNULL,
-        "cwd": str(run_dir),
-    }
-    if os.name == "nt":
-        # 新しいプロセスグループ＋コンソール非継承。親が終了しても道連れにしない。
-        kwargs["creationflags"] = (
-            getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
-    else:
-        kwargs["start_new_session"] = True
-
-    try:
-        proc = subprocess.Popen(cmd, **kwargs)
-    finally:
-        log.close()
-    return int(proc.pid)
-
-
-def run_msdial(
-    method_file: Path,
-    dataset_root: Path,
-    run_dir: Path,
-    timeout_s: int = 3600,
-    exe_path: str | None = None,
-    save_project: bool = False,
-) -> int:
-    """MS-DIAL Console を実行し、終了コードを返す。**旧経路**。
-
-    非ゼロ終了・タイムアウトを例外で返すため、呼び出し側はそこで実行を打ち切り、
-    生成物の収集にも終了証跡の保存にも到達しない。全終了経路で証跡と成果物を残す
-    共通経路は `lipidmix.console.execution.supervise`。この関数は
-    `console_run` の同期分岐が supervise へ移るまでの互換のためだけに残っている。
-
-    Parameters
-    ----------
-    method_file:
-        MS-DIAL Console のパラメータファイル（ASCII テキスト。`key: value` 形式）。
-    dataset_root:
-        生データフォルダ（-i 引数）。
-    run_dir:
-        出力先（-o 引数）。msdial.log もここに書く。
-    timeout_s:
-        タイムアウト秒数（既定 1 時間）。
-    exe_path:
-        省略時は MSDIAL_EXE 環境変数から取得。テストでは fake パスを注入する。
-    save_project:
-        True なら -p を付け、GUI で開ける .mdproject を出力させる。
-
-    Raises
-    ------
-    MsdialExeNotFoundError: MSDIAL_EXE 未設定。
-    MsdialTimeoutError: タイムアウト。
-    MsdialNonZeroExitError: 終了コード非ゼロ。
-    """
-    exe = exe_path or get_exe_path()
-    run_dir.mkdir(parents=True, exist_ok=True)
-    log_path = run_dir / "msdial.log"
-
-    msdial_out_dir = run_dir / "msdial"
-    msdial_out_dir.mkdir(parents=True, exist_ok=True)
-
-    cmd = build_msdial_cmd(exe, dataset_root, msdial_out_dir, method_file, save_project)
-
-    try:
-        with log_path.open("w", encoding="utf-8") as log:
-            log.write(f"CMD: {' '.join(cmd)}\n\n")
-            # 子へ fd を渡す前に必ず flush する。親のバッファと子は同じ
-            # ファイル記述のオフセットを共有するため、flush しないと
-            # 子の出力が先頭に、CMD 行がその後ろに書かれる。
-            log.flush()
-            result = subprocess.run(
-                cmd,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                timeout=timeout_s,
-            )
-    except subprocess.TimeoutExpired as exc:
-        raise MsdialTimeoutError(
-            f"MS-DIAL Console がタイムアウトしました（{timeout_s}s）"
-        ) from exc
-
-    if result.returncode != 0:
-        raise MsdialNonZeroExitError(result.returncode)
-
-    return result.returncode
 
 
 #: Console 実行体の名前。GUI（MSDIAL.exe）は候補にしない —— 引数を解釈せず

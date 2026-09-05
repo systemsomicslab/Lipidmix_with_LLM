@@ -268,11 +268,19 @@ def console_run(job_path: str | None = None, detach: bool = False) -> str:
     job_path: analysis-job.json へのパス。省略時は session.current_job_path を使用します。
     事前に console_plan を実行しておく必要があります。
 
-    detach: True にすると Console を**親から切り離して起動し、待たずに戻ります**
-        （pid を返す）。実データ 60 サンプルは約 44 分かかるため、既定の同期実行では
-        1 ツール呼び出しがその間ずっと戻らず、呼び出し元が中断されると生成物ごと
-        失います。切り離した実行の完了確認と生成物の収集は `console_status` が
-        引き継ぎます。**長い実行ではこちらを使ってください。**
+    detach: True にすると**監視ワーカーを親から切り離して起動し、待たずに戻ります**。
+        実データ 60 サンプルは約 44 分かかるため、既定の同期実行では 1 ツール
+        呼び出しがその間ずっと戻らず、呼び出し元が中断されると生成物ごと失います。
+        **長い実行ではこちらを使ってください。**
+
+        返る `pid` は**監視ワーカーのもの**で、MS-DIAL Console のものではありません
+        （Console の pid は run_dir の execution-result.json に載ります）。ワーカーが
+        終了まで見張り、生成物の収集とジョブの確定まで行うので、`console_status` を
+        呼ばなくても結果は確定します。
+
+    どちらの経路でも run_dir に終了証跡（execution-result.json）が残ります。
+    終了コードが 0 でも、主 mzTab-M が一意に選べ、定量行列に有限値があり、予定した
+    入力が全て assay に対応していなければ completed にはなりません（partial / failed）。
 
     実行完了後、session.current_job_path は同じジョブを指し続けます。
     結果は console_status または dataset_load で確認してください。
@@ -281,7 +289,7 @@ def console_run(job_path: str | None = None, detach: bool = False) -> str:
     if isinstance(resolved, str):
         return resolved  # error envelope
 
-    from lipidmix.console.job_manager import load_job, update_status, save_job
+    from lipidmix.console.job_manager import load_job, update_status
     try:
         job = load_job(resolved)
     except FileNotFoundError:
@@ -324,151 +332,95 @@ def console_run(job_path: str | None = None, detach: bool = False) -> str:
 
     run_dir = Path(job.run_dir)
     dataset_root = Path(job.dataset_root)
-    from lipidmix.console.output_collector import RUNS_SUBDIR, snapshot
-    # MS-DIAL Console は -o にエクスポートだけを出し、.pai2 / .dcl / .arf /
-    # .arf2 / .EIC.aef は生データフォルダへ出す。両方を撮らないと MS/MS 根拠の
-    # 経路が丸ごと空になる（docs/HISTRY.md 2026-09-03(6)）。run_dir は
-    # dataset_root 配下なので、dataset_root 側では runs/ を除く。
-    roots = {"run_dir": run_dir, "dataset_root": dataset_root}
-    befores = {
-        "run_dir": snapshot(run_dir),
-        "dataset_root": snapshot(dataset_root, exclude_dir_names={RUNS_SUBDIR}),
-    }
 
-    update_status(resolved, "running")
+    # 何を入力として実行するかを、起動より前に固定する。実行後に mzTab の
+    # ms_run[N]-location と 1 対 1 で突き合わせるのはこの目録で、無いまま走らせると
+    # 「予定した検体が全部入っているか」を誰も検証できない。
+    from lipidmix.console.execution import write_supervision_inputs
+    from lipidmix.console.job_manager import list_raw_inputs
+    try:
+        write_supervision_inputs(run_dir, {
+            "raw_inventory": [str(p.resolve()) for p in list_raw_inputs(dataset_root)],
+            "method_sha256": _file_sha256_or_none(Path(job.method_file)),
+            "exe_path": exe,
+            "exe_sha256": _file_sha256_or_none(Path(exe)),
+        })
+    except OSError as exc:
+        update_status(resolved, "failed", error=repr(exc))
+        return console_error(
+            "JOB_POST_RUN_FAILED",
+            f"実行前の監視入力を run_dir へ書けませんでした: {exc!r}",
+            {"run_dir": str(run_dir)})
+
+    from lipidmix.console import worker as console_worker
+    from lipidmix.core.atomic_io import DomainError
 
     if detach:
-        # 切り離した先では実行前スナップショットを撮れないので、ここで残す。
-        # 完了確認と収集は console_status が引き継ぐ。
-        from lipidmix.console.detached import write_detached_state
         try:
-            pid = console_runner.run_msdial_detached(
-                method_file=Path(job.method_file),
-                dataset_root=dataset_root,
-                run_dir=run_dir,
-                exe_path=exe,
-                save_project=job.save_project,
-            )
-        except OSError as exc:
-            update_status(resolved, "failed", error=str(exc))
+            launched = console_worker.launch_console_worker(resolved)
+        except (DomainError, OSError) as exc:
+            update_status(resolved, "failed", error=repr(exc))
             return console_error(
-                "MSDIAL_EXE_NOT_FOUND",
-                f"MS-DIAL Console を起動できませんでした: {exc}",
-                {"exe": exe, "log": str(run_dir / "msdial.log")})
-        write_detached_state(run_dir, pid, befores)
+                "WORKER_LAUNCH_FAILED",
+                f"監視ワーカーを起動できませんでした: {exc}",
+                {"job_path": str(resolved),
+                 "worker_log": str(console_worker.worker_log_path(run_dir))})
+        # 起動できてから running にする。起動前に書くと、失敗したときに
+        # 誰も走っていないジョブが running のまま残る。
+        update_status(resolved, "running")
+        warnings: list[str] = []
+        try:
+            # 起動できた事実を先に記録する。ここで失敗しても走り出した
+            # ワーカーは取り消せないので、応答では必ず pid を返す。
+            console_worker.write_owner(run_dir, {
+                "kind": console_worker.OWNER_KIND_CONSOLE,
+                "pid": launched["pid"],
+                "identity": launched["identity"],
+                "job_path": str(resolved),
+                "status": "running",
+            })
+        except OSError as exc:
+            warnings.append(
+                f"監視ワーカー（pid={launched['pid']}）は起動しましたが、"
+                f"所有記録を worker.json へ書けませんでした: {exc!r}")
         return json_payload({
             "status": "running",
             "job_id": job.job_id,
             "job_path": str(resolved),
-            "pid": pid,
+            "pid": launched["pid"],
+            # pid はワーカーのもの。Console の pid は起動後に証跡へ載る。
+            "pid_of": "worker",
             "run_dir": job.run_dir,
             "log": str(run_dir / "msdial.log"),
-            "next": "console_status で完了を確認してください（完了時に生成物を収集します）",
+            "worker_log": str(console_worker.worker_log_path(run_dir)),
+            "warnings": warnings,
+            "next": "console_status で完了を確認してください"
+                    "（ワーカーが最後まで監視し、生成物の収集まで行います）",
         })
 
-    from lipidmix.console.runner import (
-        run_msdial,
-        MsdialExeNotFoundError,
-        MsdialTimeoutError,
-        MsdialNonZeroExitError,
-    )
-    timeout_error: MsdialTimeoutError | None = None
     try:
-        run_msdial(
-            method_file=Path(job.method_file),
-            dataset_root=dataset_root,
-            run_dir=run_dir,
-            timeout_s=job.timeout_s,
-            exe_path=exe,
-            save_project=job.save_project,
-        )
-    except MsdialExeNotFoundError as exc:
-        update_status(resolved, "failed", error=str(exc))
-        return console_error("MSDIAL_EXE_NOT_FOUND", str(exc))
-    except MsdialTimeoutError as exc:
-        timeout_error = exc
-    except MsdialNonZeroExitError as exc:
-        update_status(resolved, "failed", error=str(exc))
-        return console_error(
-            "MSDIAL_NONZERO_EXIT", str(exc),
-            {"log": str(run_dir / "msdial.log")},
-        )
-    except OSError as exc:
-        # MSDIAL_EXE が実在しないパスを指す等。console_plan は環境変数が
-        # 空でないことしか見ていないため、ここが実在確認の最後の砦になる。
-        update_status(resolved, "failed", error=str(exc))
-        return console_error(
-            "MSDIAL_EXE_NOT_FOUND",
-            f"MS-DIAL Console を起動できませんでした: {exc}",
-            {"exe": os.environ.get("MSDIAL_EXE", ""), "log": str(run_dir / "msdial.log")},
-        )
+        receipt = console_worker.run_job(resolved)
+    except DomainError as exc:
+        if exc.code == "LOCK_TIMEOUT":
+            # 状態は書き換えない。このジョブを持っているのは別のプロセスで、
+            # そちらが終端状態を書く。ここで planned へ戻すと、勝者が書いた
+            # running / completed を敗者が消してしまう。
+            return console_error(
+                "JOB_BUSY",
+                "このジョブは別のプロセスが実行中です。"
+                "console_status で進行を確認してください。",
+                {"job_path": str(resolved), "run_dir": job.run_dir})
+        _record_finalization_failure(resolved, repr(exc))
+        return console_error("JOB_POST_RUN_FAILED", str(exc),
+                             {"job_path": str(resolved)})
     except Exception as exc:  # 想定外。running に固着させないことが最優先
-        update_status(resolved, "failed", error=repr(exc))
-        return console_error(
-            "MSDIAL_NONZERO_EXIT",
-            f"MS-DIAL Console の実行中に想定外のエラーが発生しました: {exc!r}",
-            {"log": str(run_dir / "msdial.log")},
-        )
-
-    # 成功時もタイムアウト時も同じ二重ルートを一度だけ収集し、収集後の
-    # 出力判定・永続化までを同じ最終化用の保護経路に置く。タイムアウトは Console
-    # の停止理由であって、停止前の生成物を捨てる理由ではない。
-    try:
-        from lipidmix.console.output_collector import collect_artifacts
-        # ジョブが宣言した polarity / measure を渡す。MS-DIAL のアライメント出力名は
-        # 極性トークンを持たないので、渡さないと全エントリが既定の positive になる。
-        mztab_entries, other_artifacts = collect_artifacts(
-            roots, befores,
-            declared_polarity=job.polarity,
-            declared_measure=job.measure,
-        )
-
-        if timeout_error:
-            status = "partial" if mztab_entries or other_artifacts else "failed"
-            _persist_collected_outputs(
-                resolved, mztab_entries, other_artifacts, status=status, error=str(timeout_error))
-            return console_error(
-                "MSDIAL_TIMEOUT", str(timeout_error),
-                _timeout_details(resolved, status, len(mztab_entries), len(other_artifacts)),
-            )
-
-        if not mztab_entries and not other_artifacts:
-            update_status(resolved, "failed", error="実行後に新規生成物が見つかりません")
-            return console_error(
-                "NO_JOB_OUTPUT",
-                "MS-DIAL Console が終了しましたが、出力ファイルが生成されませんでした。"
-                f"ログを確認してください: {run_dir / 'msdial.log'}",
-            )
-
-        job = _persist_collected_outputs(
-            resolved, mztab_entries, other_artifacts, status="completed", error=None)
-    except Exception as exc:  # 想定外。running に固着させないことが最優先
-        error = repr(exc)
-        if timeout_error:
-            error = f"{timeout_error}; 実行後処理に失敗しました: {error}"
-        _record_finalization_failure(resolved, error)
-        if timeout_error:
-            return console_error(
-                "MSDIAL_TIMEOUT", str(timeout_error),
-                _timeout_details(resolved, "failed", 0, 0),
-            )
+        _record_finalization_failure(resolved, repr(exc))
         return console_error(
             "JOB_POST_RUN_FAILED",
-            "MS-DIAL Console の実行後処理（生成物収集・保存）でエラーが"
-            f"発生しました: {exc!r}",
-            {"log": str(run_dir / "msdial.log")},
-        )
+            f"MS-DIAL Console の実行中に想定外のエラーが発生しました: {exc!r}",
+            {"log": str(run_dir / "msdial.log")})
 
-    return json_payload({
-        "status": "completed",
-        "job_id": job.job_id,
-        "job_path": str(resolved),
-        "mztab_files": len(mztab_entries),
-        "other_artifacts": len(other_artifacts),
-        "run_dir": job.run_dir,
-        "warnings": job.warnings,
-        "next": "dataset_load でmzTab-M を読み込み、解析を開始してください",
-    })
+    return _console_run_result(resolved, receipt)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
@@ -522,6 +474,10 @@ def console_prepare_input(
 def console_status(job_path: str | None = None, include_artifacts: bool = False) -> str:
     """ジョブの現在のステータスを返します。
 
+    **保存済みの状態を読むだけ**で、完了処理はしません。実行の監視・生成物の
+    収集・ジョブの確定は切り離しワーカー（console_run が起こす）が最後まで行うので、
+    このツールを呼ばなくても結果は確定します。
+
     job_path: analysis-job.json へのパス。省略時は session.current_job_path を使用します。
     include_artifacts: 生成物の全文一覧（TSV）を含めます。既定 False。
         生成物は 1 サンプルにつき 5 件出るため 60 サンプルで 300 行を超え、
@@ -539,14 +495,18 @@ def console_status(job_path: str | None = None, include_artifacts: bool = False)
     except (FileNotFoundError, ValueError) as exc:
         return console_error("JOB_NOT_FOUND", str(exc))
 
-    job, detached = _finalize_detached_if_done(resolved, job)
+    legacy = _legacy_detached_note(job)
+    if isinstance(legacy, str):
+        return legacy  # error envelope（旧 detach の終了が未解決）
 
     from lipidmix.core.version import server_version
     return json_payload({
         "server_version": server_version(),
         "job_id": job.job_id,
         "status": job.status,
-        **({"detached": detached} if detached else {}),
+        **({"detached": legacy} if legacy else {}),
+        **({"execution_receipt": _receipt_summary(job)}
+           if _receipt_summary(job) else {}),
         "polarity": job.polarity,
         "measure": job.measure,
         "omics": job.omics,
@@ -771,6 +731,12 @@ def console_cleanup(job_path: str | None = None, dry_run: bool = True) -> str:
             {"job_id": job.job_id, "status": job.status,
              "dataset_root": job.dataset_root, "run_dir": job.run_dir})
 
+    # 実行中のジョブの生成物を消すと、監視ワーカーが書いている最中のファイルを
+    # 足元から抜くことになる。所有者が今も生きているかは process identity で見る
+    # （pid だけでは pid 再利用を見分けられない）。
+    from lipidmix.console.worker import owner_is_active
+    owned = owner_is_active(Path(job.run_dir))
+
     if dry_run:
         return json_payload({
             "status": "dry_run",
@@ -778,8 +744,19 @@ def console_cleanup(job_path: str | None = None, dry_run: bool = True) -> str:
             "job_id": job.job_id,
             "count": len(targets),
             "files": [str(p) for p in targets],
+            "warnings": (["このジョブは監視ワーカー（worker）が実行中です。"
+                          "実行が終わるまで削除は拒否されます。"] if owned else []),
             "next": "実際に削除するには dry_run=False を指定してください",
         })
+
+    if owned:
+        return console_error(
+            "JOB_BUSY",
+            "このジョブは監視ワーカーが実行中です。生成物を消すと、書き込み中の"
+            "ファイルを実行中のプロセスから奪うことになります。"
+            "console_status で完了を確認してからやり直してください。",
+            {"job_id": job.job_id, "status": job.status, "run_dir": job.run_dir},
+            required_tools=["console_status"])
 
     deleted = absent = failed = 0
     errors: list[str] = []
@@ -842,52 +819,178 @@ def job_list(dataset_root: str) -> str:
 
 # ---------- 内部ヘルパ ----------
 
-def _finalize_detached_if_done(job_path: Path, job):
-    """切り離した実行が終わっていれば、生成物を収集してジョブを確定する。
+def _file_sha256_or_none(path: Path) -> str | None:
+    """読めれば SHA-256、読めなければ None（証跡側が読めなかった標識を置く）。"""
+    from lipidmix.handoff.schema import sha256_file
+    try:
+        return sha256_file(path)
+    except OSError:
+        return None
 
-    切り離した Console は親を持たないので、誰かが後から収集しないと生成物が
-    ジョブに載らない。その「誰か」が console_status。
 
-    Returns: (job, detached_info | None)
+def _console_run_result(job_path: Path, receipt: dict) -> str:
+    """終了証跡と保存済みジョブから、同期実行の応答を組む。
+
+    分岐は「どう終わったか」の因果順に並べる。起動できなかった実行を非ゼロ終了と
+    呼んだり、収集に失敗した実行を出力ゼロと呼んだりすると、復旧手順が変わる。
+    どの経路でも終了証跡（execution-result.json）は run_dir に残っているので、
+    封筒には必ずその場所を入れる。
     """
-    from lipidmix.console.detached import clear_detached_state, read_detached_state
+    from lipidmix.console.execution import receipt_path
+    from lipidmix.console.job_manager import load_job
+
+    job = load_job(job_path)
+    if receipt["job_save"]["status"] != "succeeded":
+        # supervise が終端状態を書けなかった。封筒を組む前にここで直す——
+        # running のまま残ると以降の console_run が全部 JOB_NOT_PLANNED で
+        # 拒否され、誰もこのジョブを直せなくなる。終了の理由（timeout 等）は
+        # 保存失敗より前の事実なので、両方を 1 行に残す。
+        _record_finalization_failure(
+            job_path,
+            f"termination={receipt['termination']} exit_code={receipt['exit_code']}: "
+            f"ジョブを保存できませんでした: {receipt['job_save'].get('error')}")
+        job = load_job(job_path)
+    run_dir = Path(job.run_dir)
+    validation = receipt.get("validation") or {}
+    details = {
+        "job_path": str(job_path),
+        "status": job.status,
+        "termination": receipt["termination"],
+        "exit_code": receipt["exit_code"],
+        "mztab_files": len(job.primary_mztab_files),
+        "other_artifacts": len(job.artifacts),
+        "errors": validation.get("errors", []),
+        # 完了しなかった実行こそ所見が要る。warnings は数件で、原因の説明を
+        # 別の呼び出し（console_status）に取りに行かせない。
+        "warnings": job.warnings,
+        "log": str(run_dir / "msdial.log"),
+        "receipt": str(receipt_path(run_dir)),
+    }
+
+    if job.status == "completed":
+        return json_payload({
+            "status": "completed",
+            "job_id": job.job_id,
+            "job_path": str(job_path),
+            "mztab_files": len(job.primary_mztab_files),
+            "other_artifacts": len(job.artifacts),
+            "run_dir": job.run_dir,
+            "warnings": job.warnings,
+            "next": "dataset_load でmzTab-M を読み込み、解析を開始してください",
+        })
+
+    if receipt["termination"] == "launch_failed":
+        return console_error(
+            "MSDIAL_EXE_NOT_FOUND",
+            f"MS-DIAL Console を起動できませんでした: {receipt.get('error', '')}",
+            {**details, "exe": os.environ.get("MSDIAL_EXE", "")})
+    if receipt["termination"] == "timeout":
+        return console_error(
+            "MSDIAL_TIMEOUT",
+            f"MS-DIAL Console がタイムアウトしました（{receipt['timeout_s']}s）",
+            details)
+    if receipt["termination"] == "cancelled":
+        return console_error("MSDIAL_CANCELLED", "実行が取り消されました", details)
+    if receipt["termination"] == "worker_lost":
+        return console_error(
+            "EXECUTION_UNRESOLVED",
+            "Console の停止も終了コードの回収もできませんでした。終了の事実が"
+            "確定していないため、成果物だけで完了とは判定しません。",
+            details)
+    if receipt["exit_code"] != 0:
+        return console_error(
+            "MSDIAL_NONZERO_EXIT",
+            f"MS-DIAL Console が終了コード {receipt['exit_code']} で終了しました",
+            details)
+    if receipt["collection"]["status"] != "succeeded":
+        return console_error(
+            "JOB_POST_RUN_FAILED",
+            "MS-DIAL Console の実行後処理（生成物の収集）でエラーが発生しました: "
+            f"{receipt['collection'].get('error')}",
+            details)
+    if receipt["job_save"]["status"] != "succeeded":
+        return console_error(
+            "JOB_POST_RUN_FAILED",
+            "MS-DIAL Console の実行後処理（ジョブの保存）でエラーが発生しました: "
+            f"{receipt['job_save'].get('error')}",
+            {**details, "recovery": receipt["job_save"].get("recovery")})
+    if not job.primary_mztab_files and not job.artifacts:
+        return console_error(
+            "NO_JOB_OUTPUT",
+            "MS-DIAL Console が終了しましたが、出力ファイルが生成されませんでした。"
+            f"ログを確認してください: {run_dir / 'msdial.log'}",
+            details)
+    return console_error(
+        "OUTPUT_VALIDATION_FAILED",
+        "MS-DIAL Console は終了しましたが、出力が完了条件を満たしませんでした"
+        "（details.errors に検証コードが入ります）。",
+        details)
+
+
+def _legacy_detached_note(job) -> dict | str | None:
+    """旧 `.detached-state.json` を持つジョブの扱いを決める（状態は書き換えない）。
+
+    旧経路は誰も監視しないまま Console を放流していたので、この state には
+    **終了コードも process identity も無い**。プロセスが消えていても分かるのは
+    「もう走っていない」ことだけで、成功したかどうかは分からない。ファイルが
+    増えたという事実だけで completed へ進めると、途中で落ちた実行が完了に化ける
+    ——それが `console-execution.v1` の証跡を導入した理由そのもの。
+
+    Returns
+    -------
+    None
+        旧 state は無い（新しい実行は証跡で判定する）。
+    dict
+        まだ生きている旧実行。実行中として表示する。
+    str
+        終了済みだが結果が確定できない旧実行。`EXECUTION_UNRESOLVED` の封筒。
+    """
+    from lipidmix.console.detached import read_detached_state
 
     run_dir = Path(job.run_dir)
     state = read_detached_state(run_dir)
     if state is None:
-        return job, None
+        return None
 
     from lipidmix.console import runner as console_runner
     pid = state["pid"]
     if console_runner.is_process_running(pid):
-        return job, {"pid": pid, "alive": True}
+        return {"pid": pid, "alive": True, "legacy": True}
 
-    roots = {"run_dir": run_dir, "dataset_root": Path(job.dataset_root)}
-    befores = state.get("befores") or {}
-    # 収集の前に消す。この制御ファイル自体は実行前スナップショットの後に書かれる
-    # ので、残したまま収集すると「MS-DIAL の生成物」として拾われる。
-    clear_detached_state(run_dir)
+    return console_error(
+        "EXECUTION_UNRESOLVED",
+        "監視されていない旧方式の実行（.detached-state.json）が残っています。"
+        "終了コードも実行の同一性も記録されていないため、生成物の有無だけでは"
+        "完了と判定できません。msdial.log を確認し、必要なら console_plan から"
+        "実行し直してください（新しい実行は終了証跡を残します）。",
+        {"job_id": job.job_id, "status": job.status, "pid": pid,
+         "run_dir": job.run_dir, "log": str(run_dir / "msdial.log"),
+         "detached_state": str(run_dir / ".detached-state.json")},
+        required_tools=["console_plan"])
+
+
+def _receipt_summary(job) -> dict | None:
+    """終了証跡があれば、その要点だけを返す（無い・壊れているなら None）。
+
+    `validate_execution_record` を通してから読む。検証していない記録を状態表示に
+    流用すると、壊れた証跡がそのまま「実行の事実」として伝播する。
+    """
+    import json as _json
+
+    from lipidmix.console.execution import receipt_path, validate_execution_record
+    from lipidmix.core.atomic_io import DomainError
+
     try:
-        from lipidmix.console.output_collector import collect_artifacts
-        mztab_entries, other_artifacts = collect_artifacts(
-            roots, befores,
-            declared_polarity=job.polarity,
-            declared_measure=job.measure,
-        )
-    except Exception as exc:  # 収集失敗で running に固着させない
-        clear_detached_state(run_dir)
-        _record_finalization_failure(job_path, repr(exc))
-        from lipidmix.console.job_manager import load_job
-        return load_job(job_path), {"pid": pid, "alive": False, "collected": False}
-
-    # 生成物ゼロは、起動に失敗したか途中で落ちたかのどちらか。msdial.log を見る。
-    status = "completed" if (mztab_entries or other_artifacts) else "failed"
-    error = None if status == "completed" else (
-        f"切り離し実行の終了後に新規生成物が見つかりません: {run_dir / 'msdial.log'}")
-    job = _persist_collected_outputs(
-        job_path, mztab_entries, other_artifacts, status=status, error=error)
-    clear_detached_state(run_dir)
-    return job, {"pid": pid, "alive": False, "collected": True}
+        data = _json.loads(receipt_path(Path(job.run_dir)).read_text(encoding="utf-8"))
+        record = validate_execution_record(data)
+    except (OSError, ValueError, DomainError):
+        return None
+    return {
+        "execution_id": record["execution_id"],
+        "termination": record["termination"],
+        "exit_code": record["exit_code"],
+        "ended_at": record["ended_at"],
+    }
 
 
 def _looks_like_method_text(path: Path) -> bool:
@@ -1028,104 +1131,6 @@ def _msdial_exe_setup_help() -> dict:
     }
 
 
-def _record_mztab_provenance(job, mztab_entries) -> None:
-    """成果物の mzTab から、ジョブ側で分からない出所情報を採る。
-
-    - `software.version`: Console 実行からは知りようがない。mzTab の
-      `MTD software[1]` に `Msdial console 5.5.241113` が入っている。
-    - 極性の裏取り: Console のアライメント出力名には極性トークンが無いので
-      `polarity_source` は `job_declared` にしかならない（仕様）。宣言ミスを
-      検出する手段が他に無いため、アダクトの多数決で**別フィールドとして**
-      裏取りする。`polarity_source` は書き換えない —— 推定を出所として
-      記録すると、そちらのほうが嘘になる。
-    """
-    from lipidmix.console.output_collector import (
-        read_adduct_polarity, read_software_version,
-    )
-    from lipidmix.tools.mztab_tools import _artifact_abs_path
-
-    for entry in mztab_entries:
-        path = _artifact_abs_path(job, getattr(entry, "root", "run_dir"), entry.path)
-        if not job.software_version:
-            version = read_software_version(path)
-            if version:
-                job.software_version = version
-        crosscheck = read_adduct_polarity(path)
-        majority = crosscheck["adduct_majority"]
-        crosscheck["agrees"] = None if majority is None else (majority == entry.polarity)
-        entry.validation["polarity_crosscheck"] = crosscheck
-
-
-def _polarity_crosscheck_warnings(mztab_entries) -> list[str]:
-    """アダクトから推定した極性が宣言と食い違うエントリを warning にする。"""
-    warnings: list[str] = []
-    for entry in mztab_entries:
-        check = entry.validation.get("polarity_crosscheck") or {}
-        if check.get("agrees") is False:
-            warnings.append(
-                f"{entry.path}: アダクトの多数決は {check['adduct_majority']} ですが、"
-                f"ジョブの宣言は {entry.polarity} です"
-                f"（陽性 {check['n_positive']} / 陰性 {check['n_negative']} 行）。"
-                "Console 出力のファイル名に極性が入らないため宣言をそのまま記録して"
-                "いますが、console_plan の polarity かメソッドファイルの Ion mode を"
-                "確認してください。")
-    return warnings
-
-
-def _meta_conflict_warnings(mztab_entries) -> list[str]:
-    """ファイル名と宣言値が食い違ったエントリを warning にする。
-
-    collect_artifacts はファイル名側を採用する（実物の性質を語るのはファイル）。
-    採用の事実だけを validation に残して黙っていると、ユーザーは自分が
-    console_plan で宣言した値と違うものを解析していることに気付けない。
-    """
-    warnings: list[str] = []
-    for entry in mztab_entries:
-        for axis, detail in (entry.validation.get("conflicts") or {}).items():
-            warnings.append(
-                f"{entry.path}: {axis} がジョブの宣言と食い違います"
-                f"（ファイル名={detail['filename']} / 宣言={detail['job_declared']}）。"
-                "ファイル名側を採用しました。"
-            )
-    return warnings
-
-
-def _unsupported_mztab_warnings(artifacts) -> list[str]:
-    """未対応 measure の .mzTab（Normalized*）を拾ったことを伝える。
-
-    記録は残すが正準候補にはしない（spec §8.1）。黙って捨てると
-    「出力があるのに dataset_load が読めない」という説明不能な状態になる。
-    """
-    from lipidmix.console.output_collector import UNSUPPORTED_MZTAB_ROLE
-    paths = [a.path for a in artifacts if a.role == UNSUPPORTED_MZTAB_ROLE]
-    if not paths:
-        return []
-    return [
-        "未対応の定量種別（normalized）の mzTab を検出しました: "
-        + ", ".join(paths)
-        + "。peak_height / peak_area_above_zero のみ対応するため、"
-        "正準候補（primary_mztab_files）には含めていません。"
-    ]
-
-
-def _missing_per_sample_output_warnings(artifacts) -> list[str]:
-    """サンプル別ファイル（.pai2）が 1 つも出ていないことを伝える。
-
-    MS-DIAL Console は .pai2 を**生データフォルダ側**に書く（-o ではない。
-    docs/HISTRY.md 2026-09-03(6) の実走で確認）。collect_artifacts が両ルートを
-    見るようになったので、この検査は「本当に出ていない」ときだけ発火する。
-    .pai2 が無いと pai2_parser / dcl_find_msms が読むものが無く、MS/MS 根拠の
-    経路が丸ごと空になる。アライメント結果だけは出ているので実行は成功扱いの
-    まま、「後で MS/MS を辿れない」ことだけ先に知らせる。
-    """
-    if any(a.format == "pai2" for a in artifacts):
-        return []
-    return [
-        "サンプル別ファイル（.pai2）が 1 つも生成されていません。"
-        "MS/MS 根拠（pai2_parser / dcl_find_msms）を辿る経路が使えません。"
-    ]
-
-
 def _execution_options_error(save_project: object, timeout_s: object) -> str | None:
     """新しい実行オプションを、ジョブ作成・実行の両入口で同じ規則で検査する。"""
     if type(save_project) is not bool:
@@ -1141,31 +1146,6 @@ def _execution_options_error(save_project: object, timeout_s: object) -> str | N
     return None
 
 
-def _persist_collected_outputs(
-    job_path: Path,
-    mztab_entries,
-    other_artifacts,
-    *,
-    status: str,
-    error: str | None,
-):
-    """収集済みの生成物と終端状態を一度だけ永続化する。"""
-    from lipidmix.console.job_manager import load_job, save_job
-
-    job = load_job(job_path)
-    job.primary_mztab_files = mztab_entries
-    job.artifacts = other_artifacts
-    _record_mztab_provenance(job, mztab_entries)
-    job.warnings.extend(_meta_conflict_warnings(mztab_entries))
-    job.warnings.extend(_polarity_crosscheck_warnings(mztab_entries))
-    job.warnings.extend(_unsupported_mztab_warnings(other_artifacts))
-    job.warnings.extend(_missing_per_sample_output_warnings(other_artifacts))
-    job.status = status  # type: ignore[assignment]
-    job.error = error
-    save_job(job, job_path)
-    return job
-
-
 def _record_finalization_failure(job_path: Path, error: str) -> None:
     """最終化に失敗したジョブを、書き込める場合は failed として残す。"""
     from lipidmix.console.job_manager import update_status
@@ -1175,21 +1155,6 @@ def _record_finalization_failure(job_path: Path, error: str) -> None:
     except Exception:
         # ロック等で failed を書けない場合も、MCP 境界から例外を漏らさない。
         pass
-
-
-def _timeout_details(
-    job_path: Path,
-    status: str,
-    mztab_count: int,
-    artifact_count: int,
-) -> dict:
-    """タイムアウト封筒へ、後からジョブを追える最小限の状況を入れる。"""
-    return {
-        "job_path": str(job_path),
-        "status": status,
-        "mztab_files": mztab_count,
-        "other_artifacts": artifact_count,
-    }
 
 
 def _resolve_job_path(job_path: str | None) -> Path | str:

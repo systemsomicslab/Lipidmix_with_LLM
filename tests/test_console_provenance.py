@@ -78,11 +78,11 @@ def test_adduct_majority_handles_missing_column(tmp_path):
 # ---------- 結線 ----------
 
 def test_console_run_records_software_version_from_mztab(tmp_path, monkeypatch):
-    """mzTab に版数があるのに job が空文字のままなのは、単に読んでいないから。"""
-    from unittest.mock import MagicMock
+    """Console 実行からは分からない版数を、成果物の mzTab から採る。"""
     from pathlib import Path
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
+    from tests.pipeline_fixtures import fake_console_command, use_fake_console
 
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
@@ -90,29 +90,26 @@ def test_console_run_records_software_version_from_mztab(tmp_path, monkeypatch):
     method.write_text("Ion mode: Negative\n", encoding="ascii")
     _, job_path = create_job(dataset_root=tmp_path, method_file=method,
                              polarity="negative", measure="peak_height")
-    run_dir = Path(load_job(job_path).run_dir)
+    out = Path(load_job(job_path).run_dir) / "msdial"
+    use_fake_console(monkeypatch, fake_console_command({
+        out / "AlignResult-1.mzTab": _MTD + _sml_rows(["[M-H]1-", "[M-H]1-"])}))
 
-    def fake_run(cmd, **kwargs):
-        out = run_dir / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "AlignResult-1.mzTab").write_text(
-            _MTD + _sml_rows(["[M-H]1-", "[M-H]1-"]), encoding="utf-8")
-        result = MagicMock()
-        result.returncode = 0
-        return result
-
-    monkeypatch.setattr("subprocess.run", fake_run)
     console_run(str(job_path))
-    job = load_job(job_path)
-    assert job.software_version == "Msdial console 5.5.241113"
+
+    assert load_job(job_path).software_version == "Msdial console 5.5.241113"
 
 
 def test_console_run_crosschecks_polarity_without_overwriting_the_source(tmp_path, monkeypatch):
-    """裏取りは別フィールドに置く。polarity_source は job_declared のまま嘘をつかない。"""
-    from unittest.mock import MagicMock
+    """裏取りは別フィールドに置く。polarity_source は job_declared のまま嘘をつかない。
+
+    宣言（negative）と中身（positive のアダクトばかり）が食い違うので、この実行は
+    completed にならない。それでも出所と裏取りの記録は残す——「完了しなかった」と
+    「何も分からない」は別のことなので、原因を読める形にしてから止める。
+    """
     from pathlib import Path
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
+    from tests.pipeline_fixtures import fake_console_command, use_fake_console
 
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
@@ -120,26 +117,20 @@ def test_console_run_crosschecks_polarity_without_overwriting_the_source(tmp_pat
     method.write_text("Ion mode: Negative\n", encoding="ascii")
     _, job_path = create_job(dataset_root=tmp_path, method_file=method,
                              polarity="negative", measure="peak_height")
-    run_dir = Path(load_job(job_path).run_dir)
+    out = Path(load_job(job_path).run_dir) / "msdial"
+    use_fake_console(monkeypatch, fake_console_command({
+        out / "AlignResult-1.mzTab":
+            _MTD + _sml_rows(["[M+H]1+", "[M+NH4]1+", "[M+Na]1+"])}))
 
-    def fake_run(cmd, **kwargs):
-        out = run_dir / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        # 宣言は negative だが中身は positive のアダクトばかり＝宣言ミス。
-        (out / "AlignResult-1.mzTab").write_text(
-            _MTD + _sml_rows(["[M+H]1+", "[M+NH4]1+", "[M+Na]1+"]), encoding="utf-8")
-        result = MagicMock()
-        result.returncode = 0
-        return result
-
-    monkeypatch.setattr("subprocess.run", fake_run)
     parsed = _json.loads(console_run(str(job_path)))
     job = load_job(job_path)
+
     entry = job.primary_mztab_files[0]
     assert entry.validation["polarity_source"] == "job_declared"
     assert entry.validation["polarity_crosscheck"]["adduct_majority"] == "positive"
     assert entry.validation["polarity_crosscheck"]["agrees"] is False
-    assert any("アダクト" in w for w in parsed["warnings"])
+    assert "POLARITY_MISMATCH" in parsed["error"]["details"]["errors"]
+    assert any("アダクト" in w for w in parsed["error"]["details"]["warnings"])
 
 
 # ---------- サーバ版数 ----------

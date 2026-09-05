@@ -12,7 +12,10 @@ MS-DIAL Console は `-i`（生データフォルダ）側にも生成物を出�
 from __future__ import annotations
 
 import json as _json
+import os
 from pathlib import Path
+
+import pytest
 
 from lipidmix.console.job_manager import create_job, load_job
 
@@ -106,3 +109,62 @@ def test_reports_already_absent_files_without_failing(tmp_path):
     parsed = _json.loads(console_cleanup(str(job_path), dry_run=False))
     assert parsed["deleted"] == 2
     assert parsed["already_absent"] == 1
+
+
+# ---------- 所有中のジョブを消させない ----------
+# 実行中のジョブの生成物を消すと、監視ワーカーが書いている最中のファイルを
+# 足元から抜くことになる。所有者（worker.json の owner）が**今も生きている**
+# かどうかは process identity で見る。pid だけでは pid 再利用を見分けられない。
+
+_WINDOWS_ONLY = pytest.mark.skipif(
+    os.name != "nt", reason="process identity による所有者判定は Windows 専用")
+
+
+def _own_job(job_path, *, alive: bool) -> None:
+    """このジョブを「実行中のワーカーが所有している」状態にする。"""
+    from lipidmix.console.worker import write_owner
+    from lipidmix.core.process_control import process_identity
+    run_dir = Path(load_job(job_path).run_dir)
+    identity = (process_identity(os.getpid()) if alive
+                else {"pid": 999_999_999, "creation_time": 1})
+    write_owner(run_dir, {"kind": "console_worker", "pid": identity["pid"],
+                          "identity": identity, "status": "running"})
+
+
+@_WINDOWS_ONLY
+def test_refuses_to_delete_while_a_worker_owns_the_job(tmp_path):
+    from lipidmix.tools.console_tools import console_cleanup
+    job_path = _job_with_outputs(tmp_path)
+    _own_job(job_path, alive=True)
+
+    parsed = _json.loads(console_cleanup(str(job_path), dry_run=False))
+
+    assert parsed["error"]["code"] == "JOB_BUSY"
+    assert (tmp_path / "s1_1.pai2").exists()
+    assert load_job(job_path).status == "completed"
+
+
+@_WINDOWS_ONLY
+def test_dry_run_lists_but_warns_while_a_worker_owns_the_job(tmp_path):
+    """一覧は読み取りだけなので許す。ただし黙って渡さない。"""
+    from lipidmix.tools.console_tools import console_cleanup
+    job_path = _job_with_outputs(tmp_path)
+    _own_job(job_path, alive=True)
+
+    parsed = _json.loads(console_cleanup(str(job_path)))
+
+    assert parsed["dry_run"] is True
+    assert any("worker" in w for w in parsed["warnings"])
+
+
+@_WINDOWS_ONLY
+def test_deletes_when_the_recorded_owner_is_no_longer_running(tmp_path):
+    """終了したワーカーの記録が残っているだけなら、片付けを止めない。"""
+    from lipidmix.tools.console_tools import console_cleanup
+    job_path = _job_with_outputs(tmp_path)
+    _own_job(job_path, alive=False)
+
+    parsed = _json.loads(console_cleanup(str(job_path), dry_run=False))
+
+    assert parsed["deleted"] == 3
+    assert load_job(job_path).status == "cleaned"

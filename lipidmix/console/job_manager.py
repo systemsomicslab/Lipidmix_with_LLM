@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,10 +30,17 @@ def _now_iso() -> str:
 
 
 def _job_id(polarity: str, measure: str) -> str:
+    """人が読める接頭辞に UUID を足したジョブ ID を作る。
+
+    秒精度のタイムスタンプだけでは、同じ秒に 2 件計画すると ID が衝突して
+    **同じランディレクトリを 2 つのジョブが共有する**（後から計画したほうが
+    先のジョブの analysis-job.json を上書きし、実行中の証跡も混ざる）。
+    人が一覧で読める部分は残したまま、一意性は UUID 側に持たせる。
+    """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     m_short = "h" if measure == "peak_height" else "a"
     p_short = polarity[:3]
-    return f"job_{ts}_{p_short}_{m_short}"
+    return f"job_{ts}_{p_short}_{m_short}_{uuid.uuid4().hex[:8]}"
 
 
 def create_job(
@@ -111,13 +119,27 @@ def list_jobs(dataset_root: Path) -> list[Path]:
     return found
 
 
+def list_raw_inputs(dataset_root: Path) -> list[Path]:
+    """データフォルダ直下の計測ファイルを安定順で返す。
+
+    「Console が実際に読む入力はどれか」の唯一の答え。監視入力の目録
+    （`write_supervision_inputs` の `raw_inventory`）はこの一覧で固定し、
+    実行後に mzTab の `ms_run[N]-location` と 1 対 1 で突き合わせる。
+    数えるだけの `raw_input_summary` もここを通す（数と中身が食い違わない）。
+    """
+    # is_file() で絞らない。Agilent の `.d` と Bruker の一部はフォルダそのものが
+    # 1 検体の計測データで、MS-DIAL もフォルダを入力として受ける。
+    entries = [entry for entry in Path(dataset_root).iterdir()
+               if entry.suffix.lower().lstrip(".") in _RAW_EXTENSIONS]
+    return sorted(entries, key=lambda p: str(p).lower())
+
+
 def raw_input_summary(dataset_root: Path) -> dict[str, int]:
     """データフォルダ直下の計測ファイルを拡張子ごとに数える。"""
     counts: dict[str, int] = {}
-    for entry in dataset_root.iterdir():
+    for entry in list_raw_inputs(dataset_root):
         ext = entry.suffix.lower().lstrip(".")
-        if ext in _RAW_EXTENSIONS:
-            counts[ext] = counts.get(ext, 0) + 1
+        counts[ext] = counts.get(ext, 0) + 1
     return counts
 
 

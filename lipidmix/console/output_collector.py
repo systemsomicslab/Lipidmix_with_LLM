@@ -24,14 +24,17 @@ from pathlib import Path
 from lipidmix.handoff.schema import Artifact, MztabEntry, sha256_file
 
 # ジョブ運用のためにランディレクトリへ書かれるファイル。MS-DIAL の生成物ではない。
-# msdial.log は run_msdial が必ず作るため、除外しないと「出力ゼロ」を検出できない。
+# msdial.log は supervise が必ず作るため、除外しないと「出力ゼロ」を検出できない。
 # analysis-job.json は実行中に status 遷移で書き換わるため、差分に混入する。
-# execution-result.json / worker.json / control.json は監視ワーカー（Task 2/4）が
-# 書く終了証跡・監視状態・排他制御用のファイルで、これも MS-DIAL の生成物ではない。
-# 除外しないと completion 判定前の control ファイルが「出力」として誤収集される。
+# execution-result.json / worker.json / control.json は監視ワーカーが書く終了証跡・
+# 監視状態・排他制御用のファイル。worker.log は切り離しワーカー自身の出力、
+# job.lock は job 単位の排他ロックの実体ファイル。いずれも MS-DIAL の生成物では
+# ないので、除外しないと「実行の結果できたファイル」として誤収集され、
+# 生成物ゼロの実行が partial に化ける。
 _OPERATIONAL_FILES = frozenset({
     "msdial.log", "analysis-job.json",
     "execution-result.json", "worker.json", "control.json",
+    "worker.log", "job.lock",
 })
 
 # dataset_root を撮るときに降りないディレクトリ名。job_manager の RUNS_SUBDIR と
@@ -304,3 +307,107 @@ def read_adduct_polarity(mztab_path) -> dict:
         return empty
     majority = "positive" if n_pos > n_neg else ("negative" if n_neg > n_pos else None)
     return {"adduct_majority": majority, "n_positive": n_pos, "n_negative": n_neg}
+
+
+# ---------- 実行後の所見（証跡だけでは読めないもの）----------
+# ここに置くのは、収集した成果物そのものを読まないと分からないことだけ。
+# 同期実行も切り離しワーカーも lipidmix.console.worker.annotate_job 経由で
+# 通るので、実行方式によって所見が変わることはない。ワーカーは MCP ツール層を
+# import しないため、この層に置く必要がある。
+
+def artifact_abs_path(job, root: str, rel: str) -> Path:
+    """analysis-job.v2 の root に応じて生成物の絶対パスを解決する。"""
+    base = Path(job.dataset_root) if root == "dataset_root" else Path(job.run_dir)
+    return (base / rel).resolve()
+
+
+def record_mztab_provenance(job, mztab_entries) -> None:
+    """成果物の mzTab から、ジョブ側で分からない出所情報を採る。
+
+    - `software.version`: Console 実行からは知りようがない。mzTab の
+      `MTD software[1]` に `Msdial console 5.5.241113` が入っている。
+    - 極性の裏取り: Console のアライメント出力名には極性トークンが無いので
+      `polarity_source` は `job_declared` にしかならない（仕様）。宣言ミスを
+      検出する手段が他に無いため、アダクトの多数決で**別フィールドとして**
+      裏取りする。`polarity_source` は書き換えない —— 推定を出所として
+      記録すると、そちらのほうが嘘になる。
+    """
+    for entry in mztab_entries:
+        path = artifact_abs_path(job, getattr(entry, "root", "run_dir"), entry.path)
+        if not job.software_version:
+            version = read_software_version(path)
+            if version:
+                job.software_version = version
+        crosscheck = read_adduct_polarity(path)
+        majority = crosscheck["adduct_majority"]
+        crosscheck["agrees"] = None if majority is None else (majority == entry.polarity)
+        entry.validation["polarity_crosscheck"] = crosscheck
+
+
+def polarity_crosscheck_warnings(mztab_entries) -> list[str]:
+    """アダクトから推定した極性が宣言と食い違うエントリを warning にする。"""
+    warnings: list[str] = []
+    for entry in mztab_entries:
+        check = entry.validation.get("polarity_crosscheck") or {}
+        if check.get("agrees") is False:
+            warnings.append(
+                f"{entry.path}: アダクトの多数決は {check['adduct_majority']} ですが、"
+                f"ジョブの宣言は {entry.polarity} です"
+                f"（陽性 {check['n_positive']} / 陰性 {check['n_negative']} 行）。"
+                "Console 出力のファイル名に極性が入らないため宣言をそのまま記録して"
+                "いますが、console_plan の polarity かメソッドファイルの Ion mode を"
+                "確認してください。")
+    return warnings
+
+
+def meta_conflict_warnings(mztab_entries) -> list[str]:
+    """ファイル名と宣言値が食い違ったエントリを warning にする。
+
+    collect_artifacts はファイル名側を採用する（実物の性質を語るのはファイル）。
+    採用の事実だけを validation に残して黙っていると、ユーザーは自分が
+    console_plan で宣言した値と違うものを解析していることに気付けない。
+    """
+    warnings: list[str] = []
+    for entry in mztab_entries:
+        for axis, detail in (entry.validation.get("conflicts") or {}).items():
+            warnings.append(
+                f"{entry.path}: {axis} がジョブの宣言と食い違います"
+                f"（ファイル名={detail['filename']} / 宣言={detail['job_declared']}）。"
+                "ファイル名側を採用しました。"
+            )
+    return warnings
+
+
+def unsupported_mztab_warnings(artifacts) -> list[str]:
+    """未対応 measure の .mzTab（Normalized*）を拾ったことを伝える。
+
+    記録は残すが正準候補にはしない（spec §8.1）。黙って捨てると
+    「出力があるのに dataset_load が読めない」という説明不能な状態になる。
+    """
+    paths = [a.path for a in artifacts if a.role == UNSUPPORTED_MZTAB_ROLE]
+    if not paths:
+        return []
+    return [
+        "未対応の定量種別（normalized）の mzTab を検出しました: "
+        + ", ".join(paths)
+        + "。peak_height / peak_area_above_zero のみ対応するため、"
+        "正準候補（primary_mztab_files）には含めていません。"
+    ]
+
+
+def missing_per_sample_output_warnings(artifacts) -> list[str]:
+    """サンプル別ファイル（.pai2）が 1 つも出ていないことを伝える。
+
+    MS-DIAL Console は .pai2 を**生データフォルダ側**に書く（-o ではない。
+    docs/HISTRY.md 2026-09-03(6) の実走で確認）。collect_artifacts が両ルートを
+    見るようになったので、この検査は「本当に出ていない」ときだけ発火する。
+    .pai2 が無いと pai2_parser / dcl_find_msms が読むものが無く、MS/MS 根拠の
+    経路が丸ごと空になる。アライメント結果だけは出ているので実行は成功扱いの
+    まま、「後で MS/MS を辿れない」ことだけ先に知らせる。
+    """
+    if any(a.format == "pai2" for a in artifacts):
+        return []
+    return [
+        "サンプル別ファイル（.pai2）が 1 つも生成されていません。"
+        "MS/MS 根拠（pai2_parser / dcl_find_msms）を辿る経路が使えません。"
+    ]

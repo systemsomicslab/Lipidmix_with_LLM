@@ -6,6 +6,7 @@ helperを足していく前提なので、既存helperの必須フィールド�
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 
@@ -96,3 +97,52 @@ def write_mztab(path: Path, sources: list[Path], *, with_inchikey: bool = True) 
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+# ---------- 実プロセスとして走る偽 Console ----------
+# supervise は「本当に起動したプロセスが本当にどう終わったか」を証跡にする。
+# subprocess をモックで置き換えると、監視・停止・収集のどれが壊れても緑のままに
+# なるため、実行系のテストは実際に子プロセスを起こす。tests/fixtures/fake_console.py
+# は決まったシナリオ用（import せずスクリプトパスとして渡す）で、こちらは
+# 「任意のファイルを書いて任意の終了コードで終わる」だけの汎用版。
+
+def fake_console_command(files: dict | None = None, *, exit_code: int = 0,
+                         sleep_s: float = 0.0) -> list[str]:
+    """指定のファイルを書き、必要なら待ってから、指定の終了コードで終わるコマンド。"""
+    payload = [(str(path), text) for path, text in
+               sorted((files or {}).items(), key=lambda kv: str(kv[0]))]
+    script = (
+        "import pathlib, sys, time\n"
+        f"for path, text in {payload!r}:\n"
+        "    p = pathlib.Path(path)\n"
+        "    p.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    p.write_text(text, encoding='utf-8')\n"
+        f"time.sleep({sleep_s!r})\n"
+        f"sys.exit({exit_code!r})\n"
+    )
+    return [sys.executable, "-c", script]
+
+
+def use_fake_console(monkeypatch, command: list[str]) -> None:
+    """Console のコマンドライン組み立てだけを偽 Console へ差し替える。
+
+    差し替えるのは「何を起動するか」だけで、起動・監視・収集・完了判定は本物を
+    通る。`supervise` の `command` 注入は MCP の公開引数にできない（任意コマンドの
+    実行口になる）ので、テストからは唯一の組み立て場所である build_msdial_cmd を
+    差し替える。
+    """
+    monkeypatch.setattr("lipidmix.console.runner.build_msdial_cmd",
+                        lambda *args, **kwargs: command)
+
+
+def mztab_text(tmp_path: Path, sources) -> str:
+    """構造検証と定量抽出を通る合成 mzTab-M の中身を返す。
+
+    完了ゲートは「拡張子が .mzTab である」ことではなく、主 mzTab が一意に選べ・
+    構造が妥当で・定量行列に有限値があり・予定した入力が全て assay に対応して
+    いることを要求する。偽 Console にはこの中身を書かせる。
+    """
+    scratch = Path(tmp_path) / "_mztab_template"
+    text = write_mztab(scratch, list(sources)).read_text(encoding="utf-8")
+    scratch.unlink()
+    return text
