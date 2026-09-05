@@ -482,3 +482,21 @@ class TestNoQcNoBlankBatch(unittest.TestCase):
         report = self._run(roles)
         self.assertFalse(any("いずれも適用できません" in c for c in report["caveats"]),
                          report["caveats"])
+
+    def test_caveat_ignores_role_entry_not_in_sample_names(self):
+        """rolesに残る評価対象外のエントリで、注意書きの判定を誤らせない。
+
+        呼び出し側（dataset_analysis.build_dataset_pp_inputs）はinclude=falseの
+        試料をmatrix/sample_namesから落とす一方、roles辞書は監査・表示用に
+        全件分（除外分込み）のまま渡す設計にしている。present_rolesが
+        `set(roles.values())`のようにroles辞書の全件を見ると、実際には
+        渡されていない（=sample_namesに無い）"qc_stale"のroleを拾って
+        しまい、実評価対象にQCが無いのに「QCがある」と誤認する。
+        """
+        names = [f"s{i}" for i in range(4)]
+        roles = {n: "sample" for n in names}
+        roles["qc_stale"] = "qc"  # sample_names には含まれない、除外済みQCの残骸
+        m = np.arange(len(names) * 3, dtype=float).reshape(len(names), 3) + 1.0
+        _, _, report = pp.preprocess(m, names, roles, {n: None for n in names}, {})
+        self.assertTrue(any("QC" in c and "ブランク" in c for c in report["caveats"]),
+                        report["caveats"])

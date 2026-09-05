@@ -610,3 +610,40 @@ def test_build_dataset_pp_inputs_passes_unknown_role_through_but_excludes_includ
     # ——表示・監査用途（例: dataset_status/samples_tsv）が除外理由込みで引ける
     # ように、数値評価の入力を絞ることと写像を消すことは別の判断。
     assert roles[excluded_name] == "sample"
+
+
+def test_run_dataset_preprocess_ignores_excluded_qc_when_deciding_no_qc_blank_caveat():
+    """include=falseで除外されたQCのstale roleが、注意書きの判定に漏れ出さない。
+
+    round1の修正で build_dataset_pp_inputs は include=false の行を matrix/
+    sample_names から正しく落とすが、roles/sample_meta 辞書は監査・表示用に
+    全件分（除外分込み）のまま維持する設計にした（上のテストが固定）。
+    ところが preprocessing.preprocess() 内の present_roles は
+    `set(roles.values())` で辞書の全件を見ていたため、実際に評価される7検体
+    には QC が1件も無いのに、除外されたはずのQC(role="qc")のstale値を
+    拾って「QCがある」と誤認していた。その結果「この試料群には QC も
+    ブランクも含まれていない」という安全側の注意書きが出なくなる
+    （controller裁定 round2 で指摘されたregression）。
+    """
+    from lipidmix.analysis.dataset_analysis import run_dataset_preprocess
+
+    ds = make_dataset()
+    rows = metadata_rows(ds, n_qc=1)
+    excluded_name = ds.sample_names[0]
+    assert rows[0]["sample_id"] == excluded_name and rows[0]["role"] == "qc"
+    rows[0]["include"] = False
+    rows[0]["provenance"]["include"] = {
+        "value": False, "source": "user_manifest", "confidence": "confirmed"}
+    apply_metadata(ds, rows)
+
+    _, pp_sample_names, _, roles, _, report = run_dataset_preprocess(ds, {})
+
+    # 除外されたQCはroles辞書には残る（意図的な設計）が、実際に評価される
+    # 試料には含まれず、残り7件は全て role="sample"。
+    assert excluded_name not in pp_sample_names
+    assert roles[excluded_name] == "qc"
+    assert len(pp_sample_names) == 7
+    assert all(roles[name] == "sample" for name in pp_sample_names)
+    # 実評価対象にQCもブランクも無いのだから、注意書きは出るべき。
+    assert any("QC もブランクも含まれていない" in c for c in report["caveats"]), \
+        report["caveats"]
