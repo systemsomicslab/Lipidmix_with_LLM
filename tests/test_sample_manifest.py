@@ -564,3 +564,35 @@ def test_build_dataset_pp_inputs_keeps_the_legacy_path_when_no_metadata_applied(
     assert set(roles.values()) <= {"sample", "qc", "blank"}
     assert all(sample_meta[name]["run_order_source"] != "user_manifest"
               for name in sample_names)
+
+
+def test_build_dataset_pp_inputs_passes_unknown_role_and_excluded_rows_through():
+    """role="unknown"・include=falseの除外はTask 12（比較ガード、spec §7.4）の
+    責務であり、build_dataset_pp_inputsはそれを先取りしない。
+
+    このテストは**現状の**素通り挙動を固定する（役割の絞り込みも除外もしない）。
+    Task 12が比較からの除外を実装したら、このテストの前提（"unknown"と
+    include=falseの行が前処理入力にそのまま残ること）ごと意図的に見直す必要が
+    あるので、無言で挙動が変わらないための回帰テストとして残す。
+    """
+    ds = make_dataset()
+    rows = metadata_rows(ds, n_qc=0)
+    rows[0]["role"] = "unknown"
+    rows[0]["provenance"]["role"] = {
+        "value": "unknown", "source": "user_manifest", "confidence": "confirmed"}
+    rows[1]["include"] = False
+    rows[1]["provenance"]["include"] = {
+        "value": False, "source": "user_manifest", "confidence": "confirmed"}
+    apply_metadata(ds, rows)
+
+    matrix, sample_names, _, roles, sample_meta = build_dataset_pp_inputs(ds)
+
+    # role="unknown" はここでは "sample"/"qc"/"blank" のどれにも矯正されず、
+    # そのまま preprocessing.preprocess() へ渡る（弾かれもしない）。
+    assert roles[sample_names[0]] == "unknown"
+    assert sample_meta[sample_names[0]]["role"] == "unknown"
+    # include=false は前処理入力からの除外ではない（比較からの除外のみ）ので、
+    # 行列・サンプル名からも落ちず、role も明示値のまま残る。
+    assert sample_names[1] in sample_names
+    assert roles[sample_names[1]] == "sample"
+    assert matrix.shape[0] == len(ds.sample_names) == 8

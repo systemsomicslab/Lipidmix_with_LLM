@@ -66,10 +66,29 @@ def _pp_inputs_from_explicit_metadata(sample_names: list[str], rows: list[dict])
     `ds.sample_names` と同じ順に揃えてから `apply_metadata` が書き込むので、
     ここでは位置で対応させる（sample_id では結合しない——表示名を上書きしない
     設計と対称に、サンプル名の並びだけを唯一の対応軸にする）。
+
+    `row["include"]` はここでは一切参照しない。include=false は「下流解析
+    （比較）からの除外」であって前処理入力からの除外ではないため（spec §7.2）、
+    matrix/sample_names からも落とさず、そのまま preprocessing.preprocess() へ
+    渡す。除外の実施は Task 12 の比較ガードの責務。
     """
     roles: dict[str, str] = {}
     sample_meta: dict = {}
     for name, row in zip(sample_names, rows):
+        # role はここでは "sample"/"qc"/"blank" へ絞り込まず、シートの値を
+        # そのまま渡す（空欄だけ "sample" を既定にする）。明示 role="unknown"
+        # （sample_manifest が正当な列挙値として保持する）はそのまま
+        # preprocessing.preprocess() へ渡り、"blank" のように弾かれることも
+        # "qc"/"sample" として扱われることもない——preprocessing.py は
+        # role を `== "qc"` / `== "sample"` の完全一致と `drop_roles=("blank",)`
+        # でしか見ないため、"unknown" は前処理を素通りして解析行列に残る。
+        # role="unknown" と include=false を比較（compare_dataset）から除外する
+        # ルールは Task 12（resolve_comparison の比較ガード、spec §7.4）が持つ。
+        # ここで先回りして弾くと、その判定基準を2箇所に複製することになる。
+        # 現在の素通り挙動は tests/test_sample_manifest.py の
+        # test_build_dataset_pp_inputs_passes_unknown_role_and_excluded_rows_through
+        # が固定しているので、Task 12 が除外を実装したら、まずそのテストを
+        # 意図的に更新してから進めること。
         role = row.get("role") or "sample"
         roles[name] = role
         provenance = row.get("provenance") or {}
@@ -92,7 +111,17 @@ def build_dataset_pp_inputs(ds):
         matrix        : (n_samples, n_features) — feature_matrix の転置
         sample_names  : list[str]
         feature_names : list[str]（SMF_ID）
-        roles         : {sample_name: "sample"|"qc"|"blank"} — preprocess の第3引数
+        roles         : {sample_name: "sample"|"qc"|"blank"} — preprocess の第3引数。
+                        **ただし** 明示メタデータ適用済み（`ds.sample_metadata_rows`
+                        あり）の場合は、シートが持つ正当な列挙値 "unknown" もここへ
+                        素通りする（"sample"/"qc"/"blank" の3値へ絞り込まない）。
+                        preprocessing.py は role を `== "qc"` / `== "sample"` の
+                        完全一致と `drop_roles=("blank",)` でしか見ないため、
+                        "unknown" は「サンプルでもQCでもblankでもない」まま前処理を
+                        通過する——現状はここでは弾かない。role="unknown" と
+                        include=false を比較（2群比較）から除外するのは Task 12
+                        （`resolve_comparison`、spec §7.4）の責務であり、本関数は
+                        それを先取りしない。
         sample_meta   : {sample_name: {role, batch, batch_source, run_order,
                          run_order_source}}
                         — 交絡判定（群⟂バッチ）とドリフト補正の材料
