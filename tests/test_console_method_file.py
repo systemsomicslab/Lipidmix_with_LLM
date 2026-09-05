@@ -23,6 +23,8 @@ from lipidmix.console.method_file import (
     extract_key_params,
     find_lbm_files,
     find_method_candidates,
+    method_search_dirs,
+    past_run_method_files,
     read_method_keys,
     resolve_lbm,
     scan_dir_for_method_files,
@@ -431,3 +433,68 @@ def test_scan_dir_for_method_files_does_not_filter_by_polarity(tmp_path):
 
 def test_scan_dir_for_method_files_skips_unreadable_directory(tmp_path):
     assert scan_dir_for_method_files(tmp_path / "nope", "same_dir") == []
+
+
+# ---------- 探索先の列挙 ----------
+
+def test_method_search_dirs_lists_self_then_siblings(tmp_path):
+    root = tmp_path / "POS"
+    root.mkdir()
+    (tmp_path / "NEG").mkdir()
+    (tmp_path / "OTHER").mkdir()
+    pairs = method_search_dirs(root)
+    assert pairs[0] == (root, "same_dir")
+    assert sorted(str(d.name) for d, o in pairs if o == "sibling") == ["NEG", "OTHER"]
+
+
+def test_method_search_dirs_excludes_itself_from_the_siblings(tmp_path):
+    root = tmp_path / "POS"
+    root.mkdir()
+    (tmp_path / "NEG").mkdir()
+    assert [d for d, o in method_search_dirs(root) if o == "sibling"] == [tmp_path / "NEG"]
+
+
+def test_method_search_dirs_appends_explicit_dirs_as_given(tmp_path):
+    root = tmp_path / "POS"
+    root.mkdir()
+    extra = tmp_path / "elsewhere"
+    extra.mkdir()
+    pairs = method_search_dirs(root, [str(extra)])
+    assert (extra, "given") in pairs
+
+
+def test_method_search_dirs_does_not_recurse(tmp_path):
+    """兄弟までで止める。深く掘ると無関係なパラメータが候補を濁らせる。"""
+    root = tmp_path / "POS"
+    root.mkdir()
+    deep = tmp_path / "NEG" / "inner"
+    deep.mkdir(parents=True)
+    assert deep not in [d for d, _o in method_search_dirs(root)]
+
+
+def test_past_run_method_files_reads_the_recorded_method(tmp_path):
+    """analysis-job.json の software.method_file が実際に使ったメソッドを指す。"""
+    import json
+    used = tmp_path / "param_POS_generated.txt"
+    used.write_text("Ion mode: Positive\n", encoding="ascii")
+    run = tmp_path / "runs" / "job_1"
+    run.mkdir(parents=True)
+    (run / "analysis-job.json").write_text(
+        json.dumps({"software": {"method_file": str(used)}}), encoding="utf-8")
+    assert past_run_method_files(tmp_path) == [used]
+
+
+def test_past_run_method_files_skips_records_pointing_at_a_deleted_file(tmp_path):
+    import json
+    run = tmp_path / "runs" / "job_1"
+    run.mkdir(parents=True)
+    (run / "analysis-job.json").write_text(
+        json.dumps({"software": {"method_file": str(tmp_path / "gone.txt")}}), encoding="utf-8")
+    assert past_run_method_files(tmp_path) == []
+
+
+def test_past_run_method_files_ignores_a_broken_job_file(tmp_path):
+    run = tmp_path / "runs" / "job_1"
+    run.mkdir(parents=True)
+    (run / "analysis-job.json").write_text("{not json", encoding="utf-8")
+    assert past_run_method_files(tmp_path) == []

@@ -29,6 +29,7 @@ ASCII の `key: value`＝Console が読める形式）を探す。ユーザー�
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -366,6 +367,58 @@ def find_method_candidates(
                 continue
             out.append(candidate)
     out.sort(key=lambda c: c.mtime, reverse=True)
+    return out
+
+
+RUNS_SUBDIR_NAME = "runs"
+
+
+def method_search_dirs(dataset_root: Path, search_dirs=None) -> list[tuple[Path, str]]:
+    """メソッドファイルを探すフォルダを優先順に返す。
+
+    `dataset_root` 直下 → 兄弟フォルダ直下 → 明示追加。**再帰しない** — 深く掘ると
+    無関係なプロジェクトのパラメータが候補に混ざり、比較表が意味を失う。
+    """
+    root = Path(dataset_root).expanduser()
+    pairs: list[tuple[Path, str]] = [(root, "same_dir")]
+    try:
+        siblings = sorted(p for p in root.parent.iterdir() if p.is_dir())
+    except OSError:
+        siblings = []
+    for sibling in siblings:
+        if sibling.resolve() == root.resolve():
+            continue
+        pairs.append((sibling, "sibling"))
+    for extra in (search_dirs or []):
+        pairs.append((Path(extra).expanduser(), "given"))
+    return pairs
+
+
+def past_run_method_files(dataset_root: Path) -> list[Path]:
+    """過去 run が実際に使ったメソッドファイルを返す。
+
+    `analysis-job.json` の `software.method_file` から引く。**ファイル名で拾わない** —
+    `run_dir/effective-method.txt` は「LBM の解決元がメソッドファイル以外だったとき」
+    だけ書かれるので、グロブでは取りこぼす。
+    """
+    runs = Path(dataset_root).expanduser() / RUNS_SUBDIR_NAME
+    out: list[Path] = []
+    try:
+        entries = sorted(runs.iterdir())
+    except OSError:
+        return out
+    for run_dir in entries:
+        job = run_dir / "analysis-job.json"
+        try:
+            record = json.loads(job.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        declared = ((record.get("software") or {}).get("method_file") or "").strip()
+        if not declared:
+            continue
+        path = Path(declared)
+        if path.is_file():
+            out.append(path)
     return out
 
 
