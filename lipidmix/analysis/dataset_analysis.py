@@ -67,10 +67,12 @@ def _pp_inputs_from_explicit_metadata(sample_names: list[str], rows: list[dict])
     ここでは位置で対応させる（sample_id では結合しない——表示名を上書きしない
     設計と対称に、サンプル名の並びだけを唯一の対応軸にする）。
 
-    `row["include"]` はここでは一切参照しない。include=false は「下流解析
-    （比較）からの除外」であって前処理入力からの除外ではないため（spec §7.2）、
-    matrix/sample_names からも落とさず、そのまま preprocessing.preprocess() へ
-    渡す。除外の実施は Task 12 の比較ガードの責務。
+    ここでは各行の role/batch/injection_order を roles/sample_meta へ写すだけで、
+    `row["include"]` は見ない——include=false を matrix/sample_names から落とす
+    判断は呼び出し側（`build_dataset_pp_inputs`）が行毎に持つ（spec §8.1
+    「include=falseの試料はこれらの評価前に除外する」）。ここで返す roles/
+    sample_meta は除外対象も含めた全件分のまま返す。数値評価に渡す入力を絞る
+    ことと、役割の写像（監査・表示用）を保持することは別の判断だからである。
     """
     roles: dict[str, str] = {}
     sample_meta: dict = {}
@@ -82,13 +84,12 @@ def _pp_inputs_from_explicit_metadata(sample_names: list[str], rows: list[dict])
         # "qc"/"sample" として扱われることもない——preprocessing.py は
         # role を `== "qc"` / `== "sample"` の完全一致と `drop_roles=("blank",)`
         # でしか見ないため、"unknown" は前処理を素通りして解析行列に残る。
-        # role="unknown" と include=false を比較（compare_dataset）から除外する
-        # ルールは Task 12（resolve_comparison の比較ガード、spec §7.4）が持つ。
-        # ここで先回りして弾くと、その判定基準を2箇所に複製することになる。
-        # 現在の素通り挙動は tests/test_sample_manifest.py の
-        # test_build_dataset_pp_inputs_passes_unknown_role_and_excluded_rows_through
-        # が固定しているので、Task 12 が除外を実装したら、まずそのテストを
-        # 意図的に更新してから進めること。
+        # role="unknown" を比較（compare_dataset）から除外するルールは Task 12
+        # （resolve_comparison の比較ガード、spec §7.4）が持つ。ここで先回りして
+        # 弾くと、その判定基準を2箇所に複製することになる。
+        # 一方 include=false は「数値評価（前処理）からの除外」（spec §8.1）
+        # ——role とは別の軸なので、ここでは弾かず、呼び出し側
+        # （build_dataset_pp_inputs）が matrix/sample_names を絞る。
         role = row.get("role") or "sample"
         roles[name] = role
         provenance = row.get("provenance") or {}
@@ -108,8 +109,12 @@ def build_dataset_pp_inputs(ds):
     """DatasetState から preprocessing.preprocess() の引数を組む。
 
     Returns:
-        matrix        : (n_samples, n_features) — feature_matrix の転置
-        sample_names  : list[str]
+        matrix        : (n_samples, n_features) — feature_matrix の転置。
+                        明示メタデータ適用済みなら include=false の行は含まない
+                        （spec §8.1「include=falseの試料はこれらの評価前に除外する」。
+                        下記 sample_names と同じ行だけを残す）。
+        sample_names  : list[str] — 同上の理由で include=false のサンプル名は
+                        含まない。
         feature_names : list[str]（SMF_ID）
         roles         : {sample_name: "sample"|"qc"|"blank"} — preprocess の第3引数。
                         **ただし** 明示メタデータ適用済み（`ds.sample_metadata_rows`
@@ -118,13 +123,17 @@ def build_dataset_pp_inputs(ds):
                         preprocessing.py は role を `== "qc"` / `== "sample"` の
                         完全一致と `drop_roles=("blank",)` でしか見ないため、
                         "unknown" は「サンプルでもQCでもblankでもない」まま前処理を
-                        通過する——現状はここでは弾かない。role="unknown" と
-                        include=false を比較（2群比較）から除外するのは Task 12
-                        （`resolve_comparison`、spec §7.4）の責務であり、本関数は
-                        それを先取りしない。
+                        通過する——現状はここでは弾かない。role="unknown" を比較
+                        （2群比較）から除外するのは Task 12（`resolve_comparison`、
+                        spec §7.4）の責務であり、本関数はそれを先取りしない。
+                        **この辞書自体は include=false のサンプルも含めた全件分**
+                        （数値評価の入力を絞ることと、監査・表示用の写像を保持
+                        することは別の判断——`sample_names`/`matrix` には現れない
+                        キーが残ることがある）。
         sample_meta   : {sample_name: {role, batch, batch_source, run_order,
                          run_order_source}}
-                        — 交絡判定（群⟂バッチ）とドリフト補正の材料
+                        — 交絡判定（群⟂バッチ）とドリフト補正の材料。
+                        roles と同じく include=false 分も含めた全件分を返す。
     """
     if ds.feature_matrix is None or not ds.sample_names or not ds.feature_ids:
         raise PreconditionError(
@@ -151,6 +160,21 @@ def build_dataset_pp_inputs(ds):
                 {"rows": len(explicit_rows), "samples": len(sample_names)},
             )
         roles, sample_meta = _pp_inputs_from_explicit_metadata(sample_names, explicit_rows)
+
+        # include=false は数値評価（ブランク評価・正規化・ドリフト補正・RSD
+        # フィルタ等）へ一切参加させない（spec §8.1「include=falseの試料はこれら
+        # の評価前に除外する」）。Task 11 の resolve_policy が既に include=true
+        # だけを集計してレシピの可否を決めているので（preprocess_policy.py
+        # 「include=true 対象の集計」）、実行側もここで同じ集合に揃える——
+        # 揃えないと、resolve_policy が「除外前提で安全」と判断した include=false
+        # のQCが、実際にはPQN参照・ドリフト補正参照として使われてしまう
+        # （controller裁定R15・レビュー Finding 1）。
+        # roles/sample_meta の写像自体は削らない——除外理由の監査・表示
+        # （dataset_status 等）は全件分の役割を必要とするため。
+        keep_idx = [i for i, row in enumerate(explicit_rows) if row.get("include", True)]
+        if len(keep_idx) != len(sample_names):
+            matrix = matrix[keep_idx, :]
+            sample_names = [sample_names[i] for i in keep_idx]
         return matrix, sample_names, feature_names, roles, sample_meta
 
     # class_ids は mzTab-M に対応物が無いので渡さない（既定 None）。

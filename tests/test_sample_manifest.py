@@ -566,14 +566,24 @@ def test_build_dataset_pp_inputs_keeps_the_legacy_path_when_no_metadata_applied(
               for name in sample_names)
 
 
-def test_build_dataset_pp_inputs_passes_unknown_role_and_excluded_rows_through():
-    """role="unknown"・include=falseの除外はTask 12（比較ガード、spec §7.4）の
-    責務であり、build_dataset_pp_inputsはそれを先取りしない。
+def test_build_dataset_pp_inputs_passes_unknown_role_through_but_excludes_include_false():
+    """role="unknown"とinclude=falseは別の軸——扱いが違う（controller裁定R15）。
 
-    このテストは**現状の**素通り挙動を固定する（役割の絞り込みも除外もしない）。
-    Task 12が比較からの除外を実装したら、このテストの前提（"unknown"と
-    include=falseの行が前処理入力にそのまま残ること）ごと意図的に見直す必要が
-    あるので、無言で挙動が変わらないための回帰テストとして残す。
+    role="unknown"の絞り込み/除外は引き続きTask 12（比較ガード、spec §7.4）の
+    責務のままで、build_dataset_pp_inputsはそれを先取りしない
+    （"sample"/"qc"/"blank"のどれにも矯正されず素通りする）。
+
+    一方include=falseは、spec §8.1「include=falseの試料はこれらの評価前に除外
+    する」により、ここ（前処理の数値評価に渡す行列・サンプル名の組み立て）で
+    除外する——ブランク評価・正規化(PQN)参照・ドリフト補正・RSDフィルタの
+    どれにも参加させない。この行を「比較専用の除外」のままにしていたのが
+    Task 12レビューのFinding 1（`resolve_policy`はinclude=trueだけを集計して
+    レシピの可否を決めるのに、実行側はinclude=false込みの全件を数値評価へ渡して
+    いた）で、ここで両者を揃える。
+
+    このテストは元々「現状の素通り挙動」を固定していたが、上記の理由により
+    include=false側の期待値を意図的に反転させた（旧: 行列・サンプル名に残る /
+    新: 除外される）。role="unknown"側の期待値は変更していない。
     """
     ds = make_dataset()
     rows = metadata_rows(ds, n_qc=0)
@@ -591,8 +601,12 @@ def test_build_dataset_pp_inputs_passes_unknown_role_and_excluded_rows_through()
     # そのまま preprocessing.preprocess() へ渡る（弾かれもしない）。
     assert roles[sample_names[0]] == "unknown"
     assert sample_meta[sample_names[0]]["role"] == "unknown"
-    # include=false は前処理入力からの除外ではない（比較からの除外のみ）ので、
-    # 行列・サンプル名からも落ちず、role も明示値のまま残る。
-    assert sample_names[1] in sample_names
-    assert roles[sample_names[1]] == "sample"
-    assert matrix.shape[0] == len(ds.sample_names) == 8
+    # include=false（元のds.sample_names[1]）は前処理の数値評価から除外される
+    # ——行列・サンプル名の両方から落ちる。
+    excluded_name = ds.sample_names[1]
+    assert excluded_name not in sample_names
+    assert matrix.shape[0] == len(sample_names) == len(ds.sample_names) - 1 == 7
+    # role/sample_metaの写像自体は全件分（除外された試料も含む）保持したままにする
+    # ——表示・監査用途（例: dataset_status/samples_tsv）が除外理由込みで引ける
+    # ように、数値評価の入力を絞ることと写像を消すことは別の判断。
+    assert roles[excluded_name] == "sample"

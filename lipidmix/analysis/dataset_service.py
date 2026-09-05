@@ -321,6 +321,14 @@ def run_comparison(ds, comparison: dict, metadata: list[dict]) -> dict:
         result["caveats"].append(
             "allow_confounded=true が明示されたため、群とバッチの完全交絡を未調整の"
             "まま解析を継続しました（図・TSV・レポートにこの旨を残すこと）。")
+    # compare_dataset は provenance.warnings を「compare_dataset を呼んだ時点の
+    # result['caveats']」でスナップショットする（result_state.new_provenance に
+    # list(...) で渡すコピー）。run_comparison がこの後に caveats へ追記した注記
+    # （上記の未調整注記を含む）はそのコピーには反映されない——spec §7.4が求める
+    # 「未調整であることを...レポートへ記録して継続」の記録先は永続化された
+    # provenance（図/TSV/レポートが読む来歴）であって result['caveats'] という
+    # その場限りの戻り値ではないため、ここで両者を同期し直す（レビュー Finding 2）。
+    result["provenance"]["warnings"] = list(result["caveats"])
     return result
 
 

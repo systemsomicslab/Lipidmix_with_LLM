@@ -126,7 +126,14 @@ def test_run_comparison_stops_on_complete_confounding_without_override():
 
 
 def test_run_comparison_continues_with_explicit_allow_confounded():
-    """allow_confounded=trueを明示すれば継続し、未調整である旨を来歴とcaveatsへ残す。"""
+    """allow_confounded=trueを明示すれば継続し、未調整である旨を来歴とcaveatsへ残す。
+
+    spec §7.4「未調整であることを図・TSV付随メタ・レポートへ記録して継続できる」の
+    記録先は永続化されたprovenance（`result["provenance"]["warnings"]`）でなければ
+    ならない——`compare_dataset`は`result["caveats"]`を先にスナップショットして
+    provenance.warningsを作るため、run_comparisonがそのあとに追記したこの注記が
+    provenance側に反映されるかは別に確認する必要がある（レビュー Finding 2）。
+    """
     from lipidmix.analysis.dataset_service import preprocess_dataset, run_comparison
 
     ds = make_dataset()
@@ -146,6 +153,9 @@ def test_run_comparison_continues_with_explicit_allow_confounded():
     assert result["provenance"]["comparison"]["unadjusted_confounded"] is True
     assert result["provenance"]["comparison"]["confounding"]["confounded"] is True
     assert any("未調整" in c for c in result["caveats"])
+    # 永続化されたprovenance側にも同じ注記が残っていること（caveatsだけでは
+    # 図/TSV/レポートの来歴側から読めない——Task 17がこのprovenanceを読む）。
+    assert any("未調整" in w for w in result["provenance"]["warnings"])
 
 
 def test_run_comparison_insufficient_batch_info_is_not_confounded():
