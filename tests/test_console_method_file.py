@@ -25,6 +25,7 @@ from lipidmix.console.method_file import (
     find_method_candidates,
     read_method_keys,
     resolve_lbm,
+    scan_dir_for_method_files,
     write_effective_method_file,
 )
 
@@ -409,3 +410,24 @@ def test_method_candidate_defaults_keep_existing_callers_working():
     c = MethodCandidate(path="p", ion_mode="positive", omics="lipidomics",
                         has_lbm=False, mtime=0.0)
     assert (c.origin, c.usable, c.key_params) == ("same_dir", "direct", None)
+
+
+# ---------- scan_dir_for_method_files ----------
+
+def test_scan_dir_for_method_files_labels_the_origin(tmp_path):
+    p = tmp_path / "Dataset_2026_05_15_10_12_46_param_202605151055.txt"
+    p.write_text("Ion mode: Negative\nTarget omics: Lipidomics\n", encoding="ascii")
+    found = scan_dir_for_method_files(tmp_path, "sibling")
+    assert [c.origin for c in found] == ["sibling"]
+    assert found[0].ion_mode == "negative"
+
+
+def test_scan_dir_for_method_files_does_not_filter_by_polarity(tmp_path):
+    """絞り込みは呼び出し側の仕事。ここで落とすと別極性の候補を提示できない。"""
+    for name, ion in (("a_param_1.txt", "Positive"), ("b_param_2.txt", "Negative")):
+        (tmp_path / name).write_text(f"Ion mode: {ion}\n", encoding="ascii")
+    assert len(scan_dir_for_method_files(tmp_path, "same_dir")) == 2
+
+
+def test_scan_dir_for_method_files_skips_unreadable_directory(tmp_path):
+    assert scan_dir_for_method_files(tmp_path / "nope", "same_dir") == []

@@ -316,6 +316,34 @@ def resolve_lbm(
         candidates=tuple(str(p) for p in found))
 
 
+def scan_dir_for_method_files(directory: Path, origin: str) -> list[MethodCandidate]:
+    """1 フォルダ直下の `*_param_<ts>.txt` を候補にする。絞り込みはしない。
+
+    絞り込み（極性・omics）を呼び出し側に残すのは、別極性の候補を
+    「使えないから消す」のではなく「変換が要る」と提示するため。
+    """
+    out: list[MethodCandidate] = []
+    try:
+        entries = sorted(Path(directory).iterdir())
+    except OSError:
+        return out
+    for p in entries:
+        if not p.is_file() or not _PARAM_FILENAME.search(p.name):
+            continue
+        keys = read_method_keys(p)
+        if not keys:
+            continue  # バイナリ／読めない
+        out.append(MethodCandidate(
+            path=str(p),
+            ion_mode=(keys.get("ion mode") or "").strip().lower() or None,
+            omics=(keys.get("target omics") or "").strip().lower() or None,
+            has_lbm=bool((keys.get(LBM_KEY.lower()) or "").strip()),
+            mtime=p.stat().st_mtime,
+            origin=origin,
+        ))
+    return out
+
+
 def find_method_candidates(
     directories, polarity: str | None = None, omics: str | None = None,
 ) -> list[MethodCandidate]:
@@ -327,34 +355,16 @@ def find_method_candidates(
     seen: set[Path] = set()
     out: list[MethodCandidate] = []
     for directory in directories:
-        d = Path(directory)
-        try:
-            entries = sorted(d.iterdir())
-        except OSError:
-            continue
-        for p in entries:
-            if not p.is_file() or not _PARAM_FILENAME.search(p.name):
-                continue
-            resolved = p.resolve()
+        for candidate in scan_dir_for_method_files(Path(directory), "same_dir"):
+            resolved = Path(candidate.path).resolve()
             if resolved in seen:
                 continue
             seen.add(resolved)
-            keys = read_method_keys(p)
-            if not keys:
-                continue  # バイナリ／読めない
-            ion = (keys.get("ion mode") or "").strip().lower() or None
-            om = (keys.get("target omics") or "").strip().lower() or None
-            if polarity is not None and ion != polarity:
+            if polarity is not None and candidate.ion_mode != polarity:
                 continue
-            if omics is not None and om != omics:
+            if omics is not None and candidate.omics != omics:
                 continue
-            out.append(MethodCandidate(
-                path=str(p),
-                ion_mode=ion,
-                omics=om,
-                has_lbm=bool((keys.get(LBM_KEY.lower()) or "").strip()),
-                mtime=p.stat().st_mtime,
-            ))
+            out.append(candidate)
     out.sort(key=lambda c: c.mtime, reverse=True)
     return out
 
