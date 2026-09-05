@@ -28,6 +28,7 @@ __all__ = [
     "dataset_pca",
     "dataset_differential",
     "dataset_export_differential",
+    "dataset_set_sample_metadata",
 ]
 
 # 欠けている状態 → それを作れるツール。missing_state の required_tools になる。
@@ -253,6 +254,55 @@ def dataset_export_differential(output_path: str,
         "log2fc_sign": "log2fc は正なら group_b が高い（上昇）。",
         "note": ("n_unannotated は InChIKey が付かず書き出さなかった行数です。"
                  "「変化が無かった」ではなく「調べていない」行です。"),
+    })
+
+
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+    structured_output=False)
+def dataset_set_sample_metadata(manifest_path: str) -> str:
+    """実験情報シート(sample-manifest.v1)を読み込み、検証してから DatasetState へ
+    一括適用する（spec §7.3）。
+
+    上流のConsole実行をやり直さずに、群・バッチ・注入順・qc_pool などの誤記入を
+    このツール単体で訂正できる。列の意味・拒否条件は sample-manifest.v1 の仕様
+    （`docs/superpowers/specs/2026-09-05-raw-folder-pipeline-integrity-and-metadata-design.md`
+    §7.2）を参照。
+
+    検証は全件そろってから一括反映する（**一部だけ適用される状態は作らない**）。
+    シートに不備があれば `session.dataset` を一切変更せずエラーを返すので、
+    そのまま再送してよい。
+
+    前処理入力（role/batch/injection_order/qc_pool/include/sample_id/source_file）が
+    変われば前処理済み行列ごと・PCA・差次的解析まで無効化する。`group` だけの変更なら
+    差次的解析だけを無効化し、PCA は生かしたまま返す（`changed_fields` で確認できる）。
+
+    `dataset_differential` を直接呼ぶ経路（比較する2群のサンプル名を都度自分で
+    組み立てる）とは別に、比較を明示するのは pipeline 側の役割になる——群名だけで
+    対照/処置の向きを決めない・QC/blank/unknown/include=false を混ぜない・完全交絡を
+    止める、という前提検証は `resolve_comparison`/`run_comparison`（内部関数）が持つ。
+    """
+    ds = session_state.session.dataset
+    if ds is None:
+        return _missing("dataset", "DatasetState がありません。先に dataset_load を実行してください。")
+
+    from lipidmix.analysis.dataset_service import apply_sample_manifest
+    from lipidmix.core.atomic_io import DomainError
+
+    try:
+        summary = apply_sample_manifest(ds, manifest_path)
+    except DomainError as exc:
+        return mztab_error(exc.code, exc.message, exc.details or None)
+    except OSError as exc:
+        return mztab_error(
+            "SAMPLE_MANIFEST_NOT_FOUND", str(exc), {"manifest_path": manifest_path})
+
+    return json_payload({
+        "status": "success",
+        **summary,
+        "next": ("changed_fields に前処理入力が含まれる場合は dataset_preprocess から"
+                 "やり直してください。group のみの変更なら dataset_differential を"
+                 "再実行するだけで構いません。"),
     })
 
 

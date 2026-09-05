@@ -16,16 +16,28 @@ MCP ツールも pipeline ワーカーもここを通る。ツール層はグロ
 """
 from __future__ import annotations
 
-from lipidmix.analysis import result_state
+import os
+from pathlib import Path
+
+from lipidmix.analysis import differential, result_state
 from lipidmix.analysis.dataset_analysis import (
     run_dataset_differential,
     run_dataset_pca,
     run_dataset_preprocess,
 )
 from lipidmix.analysis.preprocess_policy import check_applied_policy, resolve_policy
-from lipidmix.analysis.sample_manifest import apply_metadata
+from lipidmix.analysis.sample_manifest import apply_metadata, parse_manifest, resolve_metadata
+from lipidmix.core.atomic_io import DomainError
 
-__all__ = ["compare_dataset", "pca_dataset", "preprocess_auto", "preprocess_dataset"]
+__all__ = [
+    "apply_sample_manifest",
+    "compare_dataset",
+    "pca_dataset",
+    "preprocess_auto",
+    "preprocess_dataset",
+    "resolve_comparison",
+    "run_comparison",
+]
 
 
 def preprocess_dataset(ds, recipe: dict, *, request_revision: int | None = None) -> dict:
@@ -151,6 +163,200 @@ def compare_dataset(ds, group_a: list[str], group_b: list[str], *,
         request_revision=request_revision)
     ds.last_differential = result
     return result_state.register_result(ds, result)
+
+
+def resolve_comparison(ds, comparison: dict, metadata: list[dict]) -> dict:
+    """比較定義とサンプルメタデータから、実際に比較へ回す2群を解決する（spec §7.4）。
+
+    群名から向きを推測しない——``comparison`` に ``reference_group``/``test_group``が
+    無ければ、群ラベルがどれだけ「対照/処置」らしく見えても ``COMPARISON_REQUIRED`` にする。
+
+    ``metadata`` は ``ds.sample_names`` と同じ順・同じ件数の sample-manifest.v1 行
+    （Task 9 ``resolve_metadata``/``metadata_rows`` と同じ契約）。``include=true`` かつ
+    ``role=="sample"`` の行だけを比較対象にする——QC・blank・unknown（Task 9 が
+    ``build_dataset_pp_inputs`` で素通りさせた3値目）は前処理入力には残るが、
+    比較には混ぜない（`docs/superpowers/.../task-12-brief.md` step 3）。
+
+    行の ``sample_id`` は前処理へ渡す実際のサンプル名（``ds.sample_names``）とは別の
+    ユーザー定義IDになりうるため、位置対応（``zip(ds.sample_names, metadata)``）で
+    変換してから返す——差次的解析（`compare_dataset`）は ``ds.pp_sample_names`` に
+    含まれる名前しか受け付けない。
+
+    Returns
+    -------
+    dict
+        ``reference_group``/``test_group``（実際に使った群ラベル）、
+        ``reference_sample_ids``/``test_sample_ids``（sample-manifest.v1 の sample_id）、
+        ``reference_samples``/``test_samples``（`compare_dataset` にそのまま渡せる
+        サンプル名）、``confounding``（``differential.check_confounding`` の結果）、
+        ``allow_confounded``（明示されたoverride）を持つ。
+    """
+    reference_group = comparison.get("reference_group")
+    test_group = comparison.get("test_group")
+    if not reference_group or not test_group or reference_group == test_group:
+        raise DomainError(
+            "COMPARISON_REQUIRED",
+            "対照群(reference_group)と比較群(test_group)を異なる値で明示してください"
+            "（群名だけでは比較の向きを決めません）。",
+            {"reference_group": reference_group, "test_group": test_group},
+        )
+
+    sample_names = list(getattr(ds, "sample_names", []) or [])
+    if len(metadata) != len(sample_names):
+        raise DomainError(
+            "SAMPLE_MANIFEST_INVALID",
+            f"metadataの行数がサンプル数と一致しません(rows={len(metadata)}, "
+            f"samples={len(sample_names)})。",
+            {"rows": len(metadata), "samples": len(sample_names)},
+        )
+
+    id_to_name: dict[str, str] = {}
+    for name, row in zip(sample_names, metadata):
+        sample_id = row.get("sample_id")
+        if not sample_id:
+            raise DomainError(
+                "SAMPLE_MANIFEST_INVALID",
+                f"sample_idが空です（sample={name!r}）。",
+                {"sample_name": name},
+            )
+        if sample_id in id_to_name:
+            raise DomainError(
+                "SAMPLE_MANIFEST_INVALID",
+                f"sample_idが重複しています: {sample_id!r}",
+                {"sample_id": sample_id},
+            )
+        id_to_name[sample_id] = name
+
+    # include=true かつ role=="sample" だけが比較対象（QC/blank/unknownは混ぜない）。
+    included = [(name, row) for name, row in zip(sample_names, metadata)
+                if row.get("include", True) and row.get("role") == "sample"]
+
+    def _group_members(label: str) -> tuple[list[str], list[str], list]:
+        ids = [row["sample_id"] for _, row in included if row.get("group") == label]
+        names = [id_to_name[sid] for sid in ids]
+        batches = [row.get("batch") for _, row in included if row.get("group") == label]
+        return ids, names, batches
+
+    ref_ids, ref_names, ref_batches = _group_members(reference_group)
+    test_ids, test_names, test_batches = _group_members(test_group)
+
+    if len(ref_ids) < 2:
+        raise DomainError(
+            "COMPARISON_GROUP_TOO_SMALL",
+            f"reference_group={reference_group!r} に該当する試料が2件未満です"
+            f"(n={len(ref_ids)})。群ラベルの誤り、またはinclude/role除外の可能性があります。",
+            {"group": reference_group, "n": len(ref_ids)},
+        )
+    if len(test_ids) < 2:
+        raise DomainError(
+            "COMPARISON_GROUP_TOO_SMALL",
+            f"test_group={test_group!r} に該当する試料が2件未満です"
+            f"(n={len(test_ids)})。群ラベルの誤り、またはinclude/role除外の可能性があります。",
+            {"group": test_group, "n": len(test_ids)},
+        )
+
+    group_labels = [reference_group] * len(ref_ids) + [test_group] * len(test_ids)
+    batch_labels = ref_batches + test_batches
+    confounding = differential.check_confounding(group_labels, batch_labels)
+
+    return {
+        "comparison_id": comparison.get("comparison_id"),
+        "reference_group": reference_group,
+        "test_group": test_group,
+        "reference_sample_ids": ref_ids,
+        "test_sample_ids": test_ids,
+        "reference_samples": ref_names,
+        "test_samples": test_names,
+        "confounding": confounding,
+        "allow_confounded": bool(comparison.get("allow_confounded", False)),
+    }
+
+
+def run_comparison(ds, comparison: dict, metadata: list[dict]) -> dict:
+    """比較前提を検証してから `compare_dataset` を実行する（spec §7.4）。
+
+    完全交絡（群⟂バッチが分離不能）は ``allow_confounded=true`` の明示が無い限り
+    ``CONFOUNDED_COMPARISON`` で止める。バッチ情報不足で交絡を評価できない場合
+    （``confounding.assessable=False``）は「評価不可」であって「交絡あり」ではない
+    ——ここで止めない（spec §7.4、common-context 参照）。
+
+    正の log2FC は ``test_group`` が高い方向に固定する（`compare_dataset` の
+    ``group_b`` に ``test_group`` を渡すことで実現。`export_contract.LOG2FC_SIGN`
+    と整合）。
+    """
+    resolved = resolve_comparison(ds, comparison, metadata)
+    confounding = resolved["confounding"]
+    if confounding["confounded"] and not resolved["allow_confounded"]:
+        raise DomainError(
+            "CONFOUNDED_COMPARISON",
+            f"{resolved['reference_group']!r} と {resolved['test_group']!r} は群と"
+            "バッチが完全に交絡しており、処理効果と測定バッチを分離できません。"
+            "allow_confounded=true を明示しない限り差次的解析は実行しません。",
+            {"reference_group": resolved["reference_group"],
+             "test_group": resolved["test_group"],
+             "detail": confounding["detail"]},
+        )
+
+    result = compare_dataset(
+        ds, resolved["reference_samples"], resolved["test_samples"],
+        q_threshold=comparison.get("q_threshold", 0.05),
+        log2fc_threshold=comparison.get("log2fc_threshold", 1.0),
+        log_transform=comparison.get("log_transform", True),
+        group_a_label=resolved["reference_group"],
+        group_b_label=resolved["test_group"],
+    )
+
+    unadjusted = bool(confounding["confounded"] and resolved["allow_confounded"])
+    result["provenance"]["comparison"] = {
+        "comparison_id": resolved["comparison_id"],
+        "reference_group": resolved["reference_group"],
+        "test_group": resolved["test_group"],
+        "reference_sample_ids": resolved["reference_sample_ids"],
+        "test_sample_ids": resolved["test_sample_ids"],
+        "confounding": confounding,
+        "allow_confounded": resolved["allow_confounded"],
+        "unadjusted_confounded": unadjusted,
+    }
+    if unadjusted:
+        result["caveats"].append(
+            "allow_confounded=true が明示されたため、群とバッチの完全交絡を未調整の"
+            "まま解析を継続しました（図・TSV・レポートにこの旨を残すこと）。")
+    return result
+
+
+def apply_sample_manifest(ds, manifest_path: str) -> dict:
+    """実験情報シート(sample-manifest.v1)を読み込み、検証してから一括適用する（spec §7.3）。
+
+    Task 9 の ``parse_manifest`` → ``resolve_metadata`` → ``apply_metadata`` を
+    この順に呼ぶだけの薄い合成——検証で1件でも落ちれば ``apply_metadata`` 自身の
+    契約により ``ds`` には一切触れない（対話的なDatasetState経路にも同じ検証・出所・
+    無効化規則を適用する、spec §7.3）。
+
+    ``DatasetState`` は ``source_root`` 自体を保持しないため、実行時に予定した raw の
+    絶対パス（``ds.assay_sources``）から逆算する。
+    """
+    source_root, expected_sources = _raw_manifest_layout(ds)
+    rows = parse_manifest(Path(manifest_path), source_root=source_root,
+                          expected_sources=expected_sources)
+    resolved = resolve_metadata(ds, rows)
+    return apply_metadata(ds, resolved)
+
+
+def _raw_manifest_layout(ds) -> tuple[Path, list[str]]:
+    """``ds.assay_sources``（実行時に予定したrawの絶対パス）から、
+    sample-manifest.v1 検証に使う ``source_root``/相対パス一覧を逆算する。
+    """
+    paths = [Path(p) for p in (getattr(ds, "assay_sources", None) or {}).values() if p]
+    if not paths:
+        raise DomainError(
+            "SAMPLE_MANIFEST_INVALID",
+            "raw参照(assay_sources)が無いため実験情報シートを検証できません"
+            "（console_run経由のjob_pathからdataset_loadしたデータセットが必要です）。",
+            {},
+        )
+    root = paths[0].parent if len(paths) == 1 else Path(os.path.commonpath([str(p) for p in paths]))
+    expected = [str(p.relative_to(root)) for p in paths]
+    return root, expected
 
 
 def _refuse_exploratory(ds, what: str) -> None:

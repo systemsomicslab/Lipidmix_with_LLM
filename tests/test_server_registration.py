@@ -58,6 +58,7 @@ EXPECTED_TOOLS = sorted([
     "dataset_export_differential",
     "dataset_pca",
     "dataset_preprocess",
+    "dataset_set_sample_metadata",
     "dcl_find_msms",
     "dcl_parser",
     "pai2_parser",

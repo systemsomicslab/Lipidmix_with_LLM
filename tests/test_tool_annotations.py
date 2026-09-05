@@ -51,6 +51,10 @@ EXPECTED_ANNOTATIONS = {
     "dataset_differential": READ_ONLY,
     # ファイルを書き、同じ引数なら同じ内容で上書きする → 冪等
     "dataset_export_differential": LOCAL_WRITE,
+    # シートを読み検証してからセッション状態を一括反映する。外部副作用はセッション
+    # 状態の更新のみ（ファイル書き込みは無い）が、同じシートの再送は同じ状態に
+    # 落ち着く → destructive ではなく idempotent。
+    "dataset_set_sample_metadata": LOCAL_WRITE,
     # --- Console 実行層（console_plan/run はジョブ状態・ファイルを生成する） ---
     "console_plan": LOCAL_WRITE_APPEND,
     "console_run": LOCAL_WRITE_APPEND,

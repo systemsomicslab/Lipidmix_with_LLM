@@ -271,6 +271,72 @@ def test_repreprocessing_makes_the_previous_comparison_unavailable(tmp_path):
     assert not (tmp_path / "out.tsv").exists()
 
 
+# ---------- dataset_set_sample_metadata（Task 9のparse/resolve/applyをMCPへ接続） ----------
+
+def _load_ds_with_raws(tmp_path, n_samples=8):
+    """assay_sources（実行時rawの絶対パス）を持つDatasetStateをセッションへ設定する。"""
+    ds = _load_ds(n_features=4, n_samples=n_samples)
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    ds.assay_sources = {}
+    ds.sample_assay_ids = [f"assay[{i + 1}]" for i in range(n_samples)]
+    for i, name in enumerate(ds.sample_names):
+        raw_path = raw_dir / f"{name}.wiff"
+        raw_path.write_text("x", encoding="utf-8")
+        ds.assay_sources[f"abundance_assay[{i + 1}]"] = str(raw_path)
+    return ds
+
+
+def _manifest_text(ds, groups):
+    header = ("# schema = sample-manifest.v1\n"
+              "sample_id\tsource_file\trole\tgroup\tbatch\tinjection_order\tqc_pool\tinclude")
+    lines = [header]
+    for i, name in enumerate(ds.sample_names):
+        lines.append(f"{name}\t{name}.wiff\tsample\t{groups[i]}\tB1\t{i + 1}\t\ttrue")
+    return "\n".join(lines) + "\n"
+
+
+def test_dataset_set_sample_metadata_without_dataset_returns_missing_state():
+    from lipidmix.tools.dataset_analysis_tools import dataset_set_sample_metadata
+    parsed = json.loads(dataset_set_sample_metadata("manifest.tsv"))
+    assert parsed["error"]["code"] == MISSING_STATE
+    assert parsed["error"]["required_tools"] == ["dataset_load"]
+
+
+def test_dataset_set_sample_metadata_success_applies_rows(tmp_path):
+    ds = _load_ds_with_raws(tmp_path)
+    manifest = tmp_path / "sample-manifest.tsv"
+    groups = ["ctrl"] * 4 + ["treat"] * 4
+    manifest.write_text(_manifest_text(ds, groups), encoding="utf-8")
+
+    from lipidmix.tools.dataset_analysis_tools import dataset_set_sample_metadata
+    parsed = json.loads(dataset_set_sample_metadata(str(manifest)))
+
+    assert parsed["status"] == "success"
+    assert parsed["metadata_revision"] == 1
+    assert ds.sample_metadata_rows[0]["group"] == "ctrl"
+
+
+def test_dataset_set_sample_metadata_invalid_sheet_does_not_touch_session(tmp_path):
+    ds = _load_ds_with_raws(tmp_path)
+    manifest = tmp_path / "bad-manifest.tsv"
+    manifest.write_text(
+        "# schema = sample-manifest.v1\n"
+        "sample_id\tsource_file\trole\tgroup\tbatch\tinjection_order\tqc_pool\tinclude\n"
+        "dup\tctrl_0.wiff\tsample\t\t\t\t\ttrue\n"
+        "dup\tctrl_1.wiff\tsample\t\t\t\t\ttrue\n",
+        encoding="utf-8",
+    )
+    before_revision = ds.metadata_revision
+
+    from lipidmix.tools.dataset_analysis_tools import dataset_set_sample_metadata
+    parsed = json.loads(dataset_set_sample_metadata(str(manifest)))
+
+    assert parsed["error"]["code"] != MISSING_STATE
+    assert ds.metadata_revision == before_revision
+    assert ds.sample_metadata_rows is None
+
+
 def test_export_records_which_result_it_came_from(tmp_path):
     from lipidmix.tools.dataset_analysis_tools import (
         dataset_differential, dataset_export_differential, dataset_preprocess)

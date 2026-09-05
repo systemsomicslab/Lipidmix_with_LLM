@@ -56,3 +56,22 @@ gap-fill だけの特徴を実測として数えた行列が黙って下流に�
 7. │  │  └─ lipidmix/analysis/export_contract.py  build_meta()
 8. │  └─ lipidmix/analysis/export_contract.py  format_row()
 9. │  └─ lipidmix/analysis/dataset_export.py  _atomic_write_text()
+
+## dataset_set_sample_metadata
+
+実験情報シート(sample-manifest.v1)を読み、全件検証してから一括反映する。検証で
+1件でも落ちれば `apply_metadata` の契約により `session.dataset` は一切変更しない。
+
+1. lipidmix/tools/dataset_analysis_tools.py  dataset_set_sample_metadata()
+2. └─ lipidmix/analysis/dataset_service.py  apply_sample_manifest()
+3.    └─ lipidmix/analysis/dataset_service.py  _raw_manifest_layout()
+4.    └─ lipidmix/analysis/sample_manifest.py  parse_manifest()
+5.    └─ lipidmix/analysis/sample_manifest.py  resolve_metadata()
+6.    └─ lipidmix/analysis/sample_manifest.py  apply_metadata()
+7.       └─ lipidmix/analysis/result_state.py  invalidate_results()
+
+pipeline が比較を明示するときに使う `resolve_comparison`/`run_comparison`
+（`lipidmix/analysis/dataset_service.py`）は、群名だけで対照/処置の向きを決めない・
+QC/blank/unknown・`include=false` を混ぜない・完全交絡を `allow_confounded=true` の
+明示なしには通さない、という前提検証を `compare_dataset()` の前に挟む。単体ツール
+`dataset_differential` はこの前提検証を経ない汎用呼び出し（USAGE.md 参照）。

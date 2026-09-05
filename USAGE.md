@@ -1,4 +1,4 @@
-# USAGE — ms-data-parser MCP ツール一覧(全55ツール)
+# USAGE — ms-data-parser MCP ツール一覧(全56ツール)
 
 MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.dcl` / `.EIC.aef`)と mzTab-M を解析し、PCA・差次的解析・
 アノテーション検証・文献探索・レポート記録までを行う MCP サーバーのツール群です。
@@ -150,6 +150,7 @@ ARF 経路の状態を壊さない。
 | `dataset_pca` | 前処理済み `DatasetState` で PCA(`n_components` 既定 5、`log_transform` 既定 False)。ローディング全量は戻り値に載せず `session.dataset.last_pca` に保持する。 |
 | `dataset_differential` | 前処理済み行列で 2 群比較(Welch t 検定＋BH-FDR)。`group_a`/`group_b` は**サンプル名のリスト**(`dataset_status` の `samples` で確認)。**log2FC は正なら `group_b` が高い**(`group_a` が基準)。全特徴量の結果と volcano 点列は `session.dataset.last_differential` に保持する。 |
 | `dataset_export_differential` | 指定した差次的結果(`result_id` 省略時は直近)を InChIKey 付きの 1 ファイルへ書き出す。**前処理をやり直した後の古い結果は書き出さない**(古い数字に現在の前処理条件のラベルが付いた TSV は、どちらも正しく見えてずれが分からない)。メタ行に `result_id` / `preprocess_id` / `source_verification` が入り、前処理条件は結果自身の来歴から書く。出力は一時ファイルから置換して確定する。**`arf_export_differential` と同一の契約**(15 列 + `contract_version` メタ行)なので下流のパスウェイ解析にそのまま渡せる。InChIKey は mzTab-M 由来(`.arf2` との結合は不要)。`ontology` と `msi_level` は mzTab-M に対応物が無く空欄で、その旨をメタ行に書く。 |
+| `dataset_set_sample_metadata` | 実験情報シート(`sample-manifest.v1`、TSV)を読み込み、全件検証してから `session.dataset` へ一括反映する。上流の Console 実行をやり直さずに群・バッチ・注入順・qc_pool 等の誤記入を訂正できる。**一部だけ適用される状態は作らない**(シートに不備があれば `session.dataset` を一切変更せずエラーを返すので、そのまま再送してよい)。前処理入力(role/batch/injection_order/qc_pool/include/sample_id/source_file)が変われば前処理済み行列・PCA・差次的解析まで無効化するが、**`group` だけの変更なら差次的解析だけを無効化し PCA は生かす**(`changed_fields` で確認できる)。**`dataset_differential` を直接呼ぶ経路との違い**: `dataset_differential` は呼び出し側が `group_a`/`group_b` にサンプル名のリストを都度自分で組み立てる汎用ツールで、群名から対照/処置の向きを決めたり QC/blank/unknown・除外行を弾いたりはしない。pipeline 側が使う明示比較(`comparison_id`/`reference_group`/`test_group`)は、群名だけでは向きを推測しない・QC/blank/unknown・`include=false` を混ぜない・完全交絡(群⟂バッチが分離不能)を `allow_confounded=true` の明示なしには実行しない、という前提検証を経てから同じ計算を呼ぶ(内部関数 `resolve_comparison`/`run_comparison`。バッチ情報が無い場合は「評価不可」であって「交絡あり」ではない)。 |
 
 ## 12. Class ID に無い因子で絞る・比べる
 
