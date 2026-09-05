@@ -109,11 +109,19 @@ flowchart TD
 11.7 KB）を候補ごとに返すと戻り値が肥大する（CLAUDE.md「戻り値を肥大させない」）。載せるのは
 検出・アライメント条件のうち解析結果を変える少数に限る:
 
+キー名は実ファイル（`POS_wiff/param_POS_generated.txt`、287 行）から確認した綴りをそのまま使う:
+
 ```
-Ion mode / Target omics / Retention time begin / Retention time end /
-Mass range begin / Mass range end / Centroid MS1 tolerance /
-Retention time tolerance for alignment / Searched adduct ions
+Ion mode / Target omics / Minimum peak height /
+Retention time begin / Retention time end /
+MS1 mass range begin / MS1 mass range end / MS1 tolerance for centroid /
+Retention time tolerance for alignment / MS1 tolerance for alignment /
+Searched adduct ions
 ```
+
+**`Searched adduct ions` だけは値をそのまま載せない。** POS の実値は 37 種・約 700 文字で、
+候補 10 件なら 7 KB になる。`"37 種（先頭: [M+H]+, [M+NH4]+, [M+Na]+）"` の形に要約する
+（極性の違いは先頭 3 種で判別できる）。
 
 **候補が 10 件を超えるときは `key_params` を付けない**（`None`）。その規模なら UI は先に絞り込みを
 出すべきで、比較表は絞ってから引き直す。
