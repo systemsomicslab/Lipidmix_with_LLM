@@ -370,6 +370,25 @@ def test_resolve_lbm_build_tree_excludes_msdial4(tmp_path):
     assert Path(res.path) == installed
 
 
+def test_resolve_lbm_build_tree_is_ambiguous_for_distinct_libraries(tmp_path):
+    """TFM 複製ではなく、ファイル名が異なる .lbm2 が同じフォルダに複数ある場合は
+    found[0]（アルファベット順）を黙って選ばず LBM_AMBIGUOUS にする。"""
+    repo = tmp_path / "MsdialWorkbench"
+    debug_net48 = repo / "src/MSDIAL5/MsdialGuiApp/bin/Debug/net48"
+    debug_net48.mkdir(parents=True)
+    (debug_net48 / "Msp_a.lbm2").touch()
+    (debug_net48 / "Msp_b.lbm2").touch()
+    exe_dir = repo / "tests/MSDIAL5/MsdialCoreTestApp/bin/Debug/net48"
+    exe_dir.mkdir(parents=True)
+    exe = exe_dir / "MSDIALCUI.exe"
+    exe.touch()
+    res = resolve_lbm({"lbm file path": ""}, tmp_path / "param.txt",
+                      omics="lipidomics", exe_path=str(exe), env={})
+    assert res.error_code == "LBM_AMBIGUOUS"
+    assert res.path is None
+    assert len(res.candidates) == 2
+
+
 def test_resolve_lbm_method_file_declaration_still_beats_the_build_tree(tmp_path):
     """メソッドファイルの明示宣言はビルドツリーより強い（MS-DIAL の規則を維持）。"""
     _repo, exe = _build_tree(tmp_path)
@@ -503,6 +522,27 @@ def test_past_run_method_files_ignores_a_broken_job_file(tmp_path):
     run = tmp_path / "runs" / "job_1"
     run.mkdir(parents=True)
     (run / "analysis-job.json").write_text("{not json", encoding="utf-8")
+    assert past_run_method_files(tmp_path) == []
+
+
+def test_past_run_method_files_ignores_a_top_level_json_array(tmp_path):
+    """valid JSON だが object ではない（[]・"x"・3 等）は例外にせず読み飛ばす。"""
+    run = tmp_path / "runs" / "job_1"
+    run.mkdir(parents=True)
+    (run / "analysis-job.json").write_text("[]", encoding="utf-8")
+    assert past_run_method_files(tmp_path) == []
+
+
+def test_past_run_method_files_ignores_a_non_dict_software_value(tmp_path):
+    """`software` が object でない（配列等）ときも .get() で落ちずに読み飛ばす。
+
+    空配列は既存の `or {}` が偶然拾うため、非空の配列で確実に .get() へ届かせる。
+    """
+    import json
+    run = tmp_path / "runs" / "job_1"
+    run.mkdir(parents=True)
+    (run / "analysis-job.json").write_text(
+        json.dumps({"software": ["not", "a", "dict"]}), encoding="utf-8")
     assert past_run_method_files(tmp_path) == []
 
 

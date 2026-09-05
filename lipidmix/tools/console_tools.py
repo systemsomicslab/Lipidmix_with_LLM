@@ -40,13 +40,16 @@ def console_plan(
         リポジトリ外のパスを指定してください。
     method_file:
         MS-DIAL Console のパラメータファイル（ASCII テキスト。`key: value` 形式）。
-        **省略できます** — 省略時は dataset_root から MS-DIAL GUI が実行のたびに
-        自動保存する `<project>_param_<終了時刻>.txt` を探し、`Ion mode` が
-        polarity と一致する最新のものを使います。
+        **省略できます** — 省略時は dataset_root 直下・兄弟フォルダ・過去 run
+        （`runs/*/analysis-job.json`）まで探し、`Ion mode` が polarity と
+        一致する最新のものを使います。一致が無く別極性の候補があれば
+        METHOD_FILE_CHOICE_REQUIRED で止まります（候補の列挙だけなら
+        console_method_candidates）。
         **`.mdproject` / `.mddata` は使えません**（ZIP なので Console は中身を
         読めず、全パラメータが既定値のまま実行されます）。
     lbm_file:
         脂質ライブラリ（`.lbm2`）のパス。省略時は「メソッドファイルの宣言 →
+        ビルド生成物（MsdialWorkbench をソースからビルドしている場合） →
         環境変数 MSDIAL_LBM → MSDIAL_EXE と同じフォルダ」の順に、MS-DIAL GUI と
         同じ規則で自動解決します。GUI 由来のパラメータは `Lbm file path:` が
         必ず空なので、この自動解決が無いと**警告なしで同定 0 件**になります。
@@ -110,7 +113,7 @@ def console_plan(
                 "検出・アライメント条件は元のまま引き継がれます。",
                 {"dataset_root": str(root), "polarity": polarity,
                  "searched": searched,
-                 "candidates": [_candidate_payload(c) for c in candidates]},
+                 **_capped_candidates(candidates)},
                 required_tools=["console_method_template", "console_plan"])
         else:
             return console_error(
@@ -592,7 +595,10 @@ def console_method_template(
     polarity: "positive" / "negative"（作りたい側）。
     based_on: 元にするパラメータファイル。省略時は dataset_root から探します
         （**極性は問いません** — 別極性から作るのがこのツールの用途なので）。
-    dataset_root: based_on 省略時の探索先。
+    dataset_root: based_on 省略時の探索先。dataset_root 直下・兄弟フォルダ・
+        過去 run まで探します。候補が複数あれば based_on で選ぶよう
+        METHOD_FILE_CHOICE_REQUIRED で止まります（土台の選択は解析条件そのもの
+        なので、最新を黙って採りません）。
     """
     if polarity not in ("positive", "negative"):
         return console_error("JOB_NOT_PLANNED",
@@ -622,7 +628,7 @@ def console_method_template(
                 "選んでください。検出・アライメント条件は選んだファイルのものが"
                 "そのまま引き継がれるため、どれを土台にするかは解析条件の選択です。",
                 {"dataset_root": dataset_root, "searched": searched,
-                 "candidates": [_candidate_payload(c) for c in candidates]},
+                 **_capped_candidates(candidates)},
                 required_tools=["console_method_template"])
         src = Path(candidates[0].path)
     else:
@@ -713,10 +719,8 @@ def console_method_candidates(
         "omics": omics,
         "searched": searched,
         "n_candidates": len(candidates),
-        "candidates": [_candidate_payload(c) for c in candidates],
-        "next": ("usable=direct なら console_plan(method_file=...)、"
-                 "needs_polarity_conversion なら console_method_template("
-                 "based_on=..., polarity=...) を通してから console_plan"),
+        **_capped_candidates(candidates),
+        "next": _candidates_next_hint(polarity),
     })
 
 
@@ -940,20 +944,59 @@ def _artifacts_tsv(artifacts) -> str:
 
 
 def _candidate_payload(candidate) -> dict:
-    """MethodCandidate を UI が読める辞書にする。mtime は ISO 文字列で返す。"""
+    """MethodCandidate を UI が読める辞書にする。mtime は ISO 文字列で返す。
+
+    `usable` は polarity を指定せずに探索したとき None になる（「一致するか」を
+    判定しようがないため）。"direct" と取り違えられないよう、`key_params` と
+    同じくキーごと省く。
+    """
     from datetime import datetime
     payload = {
         "path": candidate.path,
         "origin": candidate.origin,
-        "usable": candidate.usable,
         "ion_mode": candidate.ion_mode,
         "omics": candidate.omics,
         "has_lbm": candidate.has_lbm,
         "mtime": datetime.fromtimestamp(candidate.mtime).isoformat(timespec="seconds"),
     }
+    if candidate.usable is not None:
+        payload["usable"] = candidate.usable
     if candidate.key_params is not None:
         payload["key_params"] = candidate.key_params
     return payload
+
+
+def _candidates_next_hint(polarity: str | None) -> str:
+    """console_method_candidates の `next` 文面。polarity 省略時は usable が
+    候補に付かない（finding 2）ので、判断材料を ion_mode に差し替える。
+    """
+    if polarity is None:
+        return ("polarity を省略したため候補に usable は付きません。"
+                "ion_mode を見て、目的の極性と一致するものを "
+                "console_plan(method_file=...) に、違うものは "
+                "console_method_template(based_on=..., polarity=...) を"
+                "通してから console_plan に渡してください。")
+    return ("usable=direct なら console_plan(method_file=...)、"
+            "usable=needs_polarity_conversion なら console_method_template("
+            "based_on=..., polarity=...) を通してから console_plan")
+
+
+def _capped_candidates(candidates) -> dict:
+    """候補一覧を `MAX_REPORTED_CANDIDATES` で切る。
+
+    候補は `discover_method_candidates` が direct 優先・新しい順にソート済みなので、
+    先頭から切れば最も有用な候補が残る。切ったときだけ `truncated: true` を立て、
+    切っていないときはキー自体を出さない。呼び出し側が別途持つ「総数」
+    （`n_candidates` や封筒メッセージの件数）はここでは変えない —
+    切った件数と混同させないため。
+    """
+    from lipidmix.console import method_file as method_file_mod
+
+    emitted = candidates[:method_file_mod.MAX_REPORTED_CANDIDATES]
+    section: dict = {"candidates": [_candidate_payload(c) for c in emitted]}
+    if len(candidates) > method_file_mod.MAX_REPORTED_CANDIDATES:
+        section["truncated"] = True
+    return section
 
 
 def _msdial_exe_setup_help() -> dict:

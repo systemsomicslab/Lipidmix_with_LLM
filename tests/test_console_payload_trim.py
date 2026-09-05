@@ -2,7 +2,9 @@
 
 `console_status` は生成物を 1 サンプルにつき 5 件出す（.pai2 / .dcl / _tags.xml /
 .mdpeak / .mdmsp）。60 サンプルの実走で 313 件になり、全文 TSV は数万字に達して
-後ろの warnings / error を埋没させた。件数と役割別内訳が既定で、全文は明示要求時のみ。
+後ろの warnings / error を埋没させた（このテストのフィクスチャは同じ形を
+`_job_with_artifacts` の既定 60 サンプルで再現し、300 件になる）。件数と
+役割別内訳が既定で、全文は明示要求時のみ。
 
 ARF の Class ID 分布も同じ問題を持つ。MS-DIAL Console 実行では Class ID が
 1 サンプル 1 クラスになるため、60 サンプルで 60 項目の羅列になる（しかも群構造は

@@ -226,6 +226,29 @@ def test_console_plan_adopts_a_sibling_of_the_same_polarity(tmp_path, monkeypatc
         "Dataset_2026_param_202605151055.txt")
 
 
+def test_console_plan_choice_required_truncates_many_candidates(tmp_path, monkeypatch):
+    """兄弟フォルダが多いラボ配置でも METHOD_FILE_CHOICE_REQUIRED の戻り値を
+    無制限に太らせない。n_candidates 相当のメッセージ中の件数は総数のまま。"""
+    from lipidmix.console.method_file import MAX_REPORTED_CANDIDATES
+    exe = _fake_exe_with_lbm(tmp_path, "x.lbm2")
+    _plan_ready(tmp_path, monkeypatch, exe)
+    root = _nested_root(tmp_path)
+    n_siblings = MAX_REPORTED_CANDIDATES + 2
+    for i in range(n_siblings):
+        sib = tmp_path / f"SIB{i}"
+        sib.mkdir()
+        (sib / f"d{i}_param_1.txt").write_text(
+            "Ion mode: Negative\nTarget omics: Lipidomics\n", encoding="ascii")
+
+    from lipidmix.tools.console_tools import console_plan
+    parsed = _json.loads(console_plan(dataset_root=str(root), polarity="positive"))
+    error = parsed["error"]
+    assert error["code"] == "METHOD_FILE_CHOICE_REQUIRED"
+    assert f"{n_siblings} 件" in error["message"]
+    assert len(error["details"]["candidates"]) == MAX_REPORTED_CANDIDATES
+    assert error["details"]["truncated"] is True
+
+
 def test_console_plan_not_given_reports_where_it_looked(tmp_path, monkeypatch):
     exe = _fake_exe_with_lbm(tmp_path, "x.lbm2")
     _plan_ready(tmp_path, monkeypatch, exe)

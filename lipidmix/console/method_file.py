@@ -88,7 +88,9 @@ class MethodCandidate:
     # どこで見つかったか。UI のグルーピングと、同じパスが二重に出たときの優先に使う。
     origin: str = "same_dir"          # same_dir | sibling | past_run | given
     # 求める極性に対してそのまま使えるか。別極性は console_method_template を経由させる。
-    usable: str = "direct"            # direct | needs_polarity_conversion
+    # polarity を指定せずに探索したときは「一致するか」を判定しようがないので None
+    # （「一致する」を意味する "direct" と取り違えられないよう、値を出さない）。
+    usable: str | None = "direct"     # direct | needs_polarity_conversion | None
     key_params: dict[str, str] | None = None
 
 
@@ -110,6 +112,13 @@ KEY_PARAM_KEYS: tuple[str, ...] = (
 
 # これを超える候補数では key_params を付けない。比較表は絞ってから引き直す。
 KEY_PARAMS_MAX_CANDIDATES = 10
+
+# 一覧として実際に返す候補数の上限。KEY_PARAMS_MAX_CANDIDATES とは意味の違う
+# 別の定数にしてある — 1 つに束ねると、どちらか片方のつもりの変更がもう片方の
+# 挙動（key_params を付けるかどうか）まで静かに動かしてしまう。実測でラボの
+# レイアウト（兄弟フォルダ数十 × GUI 自動保存複数）は候補 240 件・69KB になり得る。
+# ソート済み（direct 優先・新しい順）の先頭から切るので、有用な候補ほど残る。
+MAX_REPORTED_CANDIDATES = 10
 
 _ADDUCT_PREVIEW = 3
 
@@ -187,46 +196,57 @@ _BUILD_LBM_RELATIVE = ("src", "MSDIAL5", "MsdialGuiApp", "bin", "Debug")
 _BUILD_TREE_MAX_ANCESTORS = 10
 
 
-def _pick_build_lbm(debug_dir: Path, exe_tfm: str) -> Path | None:
+def _pick_build_lbm(debug_dir: Path, exe_tfm: str) -> tuple[Path | None, tuple[Path, ...]]:
     """`bin/Debug` 配下から 1 本選ぶ。
 
     同じライブラリが TFM ごとに複製されるので「候補が複数あるから決められない」
     とは扱わない（そう扱うと必ず LBM_AMBIGUOUS で止まる）。exe 自身の TFM に
     揃えるのが最も安全で、無ければ素の `Debug/` 直下、それも無ければ最新の
     mtime を採る。
+
+    ただし、選んだ 1 フォルダの中に**ファイル名の異なる** `.lbm2` が複数あるときは
+    TFM 複製ではなく別ライブラリなので、`found[0]`（アルファベット順）を黙って
+    選ぶと識別結果を静かに変える。戻り値の第 2 要素にその候補を入れて返し、
+    呼び出し側（`resolve_lbm`）で `exe_dir` 探索と同じ LBM_AMBIGUOUS にする。
+
+    Returns: (選んだパス | None, 曖昧だったときの候補 | 空タプル)
     """
     for directory in (debug_dir / exe_tfm, debug_dir):
         found = find_lbm_files(directory)
         if found:
-            return found[0]
+            if len({p.name for p in found}) > 1:
+                return None, tuple(found)
+            return found[0], ()
 
     others: list[Path] = []
     try:
         entries = sorted(debug_dir.iterdir())
     except OSError:
-        return None
+        return None, ()
     for entry in entries:
         if entry.is_dir():
             others.extend(find_lbm_files(entry))
     if not others:
-        return None
-    return max(others, key=lambda p: p.stat().st_mtime)
+        return None, ()
+    return max(others, key=lambda p: p.stat().st_mtime), ()
 
 
-def find_build_tree_lbm(exe_path: str | None) -> Path | None:
+def find_build_tree_lbm(exe_path: str | None) -> tuple[Path | None, tuple[Path, ...]]:
     """Console exe を起点に MsdialWorkbench のビルド生成物内の .lbm2 を返す。
 
     exe フォルダから上へ辿り、`src/MSDIAL5/MsdialGuiApp/bin/Debug` を持つ階層を
-    リポジトリルートと見なす。見つからなければ None（＝ビルド運用ではない）。
+    リポジトリルートと見なす。見つからなければ (None, ())（＝ビルド運用ではない）。
+    第 2 要素が非空なら、選んだフォルダに名前の異なる `.lbm2` が複数あり
+    1 本に決められないことを示す（`_pick_build_lbm` 参照）。
     """
     if not exe_path:
-        return None
+        return None, ()
     exe_dir = Path(exe_path).expanduser().parent
     for ancestor in [exe_dir, *exe_dir.parents][:_BUILD_TREE_MAX_ANCESTORS + 1]:
         debug_dir = ancestor.joinpath(*_BUILD_LBM_RELATIVE)
         if debug_dir.is_dir():
             return _pick_build_lbm(debug_dir, exe_dir.name)
-    return None
+    return None, ()
 
 
 def resolve_lbm(
@@ -269,7 +289,17 @@ def resolve_lbm(
             message=(f"メソッドファイルが指す脂質ライブラリが見つかりません: {declared}  "
                      f"（{method_file} 基準で解決: {candidate}）"))
 
-    from_build = find_build_tree_lbm(exe_path)
+    from_build, build_ambiguous = find_build_tree_lbm(exe_path)
+    if build_ambiguous:
+        return LbmResolution(
+            path=None, source="build_tree", error_code="LBM_AMBIGUOUS",
+            message=(
+                f"ビルド生成物の脂質ライブラリ候補が {len(build_ambiguous)} 件あり、"
+                f"どれを使うか決められません: {build_ambiguous[0].parent}  "
+                "TFM ごとの複製（同名コピー）ではなく、名前の異なる .lbm2 が"
+                "同じフォルダに複数あります。MS-DIAL GUI も 1 件でなければ実行を"
+                "止めます。1 件だけ残すか、lbm_file 引数で明示してください。"),
+            candidates=tuple(str(p) for p in build_ambiguous))
     if from_build is not None:
         return LbmResolution(path=str(from_build), source="build_tree")
 
@@ -383,7 +413,17 @@ def past_run_method_files(dataset_root: Path) -> list[Path]:
             record = json.loads(job.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        declared = ((record.get("software") or {}).get("method_file") or "").strip()
+        # 有効な JSON でも object とは限らない（`[]` / `"x"` / `3` 等）。そのまま
+        # `.get()` すると AttributeError が MCP 境界まで漏れる。
+        if not isinstance(record, dict):
+            continue
+        software = record.get("software")
+        if not isinstance(software, dict):
+            software = {}
+        declared = software.get("method_file")
+        if not isinstance(declared, str):
+            declared = ""
+        declared = declared.strip()
         if not declared:
             continue
         path = Path(declared)
@@ -468,8 +508,10 @@ def discover_method_candidates(
     annotated: list[MethodCandidate] = []
     attach_params = len(selected) <= KEY_PARAMS_MAX_CANDIDATES
     for candidate in selected:
-        usable = ("direct" if polarity is None or candidate.ion_mode == polarity
-                  else "needs_polarity_conversion")
+        usable = None
+        if polarity is not None:
+            usable = ("direct" if candidate.ion_mode == polarity
+                      else "needs_polarity_conversion")
         key_params = (extract_key_params(read_method_keys(Path(candidate.path)))
                       if attach_params else None)
         annotated.append(replace(candidate, usable=usable, key_params=key_params))
