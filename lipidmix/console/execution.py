@@ -10,7 +10,7 @@ Task 4 で同じファイルへ `supervise()`（監視の実体）を足す予�
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from lipidmix.core.atomic_io import DomainError
 
@@ -33,11 +33,16 @@ def _fail(message: str, details: dict | None = None) -> None:
 
 
 def validate_exit_fields(data: dict) -> None:
-    """exit_codeの型とterminationとの整合を検査する。"""
-    rc = data["exit_code"]
+    """exit_codeの型とterminationとの整合を検査する。
+
+    exit_codeキー自体が無い入力も、値がnullの入力と同様に「未回収」として
+    扱い、辞書直接indexingでKeyErrorを送出しない（このモジュールの他の
+    フィールド検査はすべて`.get()`経由であり、契約はDomainErrorのみ）。
+    """
+    rc = data.get("exit_code")
     if rc is not None and type(rc) is not int:
         raise DomainError("EXECUTION_RECORD_INVALID", "終了コードが不正です")
-    if data["termination"] == "exited" and rc is None:
+    if data.get("termination") == "exited" and rc is None:
         raise DomainError("EXECUTION_RECORD_INVALID", "終了コードがありません")
 
 
@@ -49,9 +54,9 @@ def _parse_utc(value: object, field_name: str) -> datetime:
         dt = datetime.fromisoformat(text)
     except ValueError:
         _fail(f"{field_name} の日時形式が不正です", {field_name: value})
-    if dt.tzinfo is None:
-        _fail(f"{field_name} はUTCのタイムゾーンを持つ必要があります", {field_name: value})
-    return dt
+    if dt.tzinfo is None or dt.utcoffset() != timedelta(0):
+        _fail(f"{field_name} はUTC（オフセット+00:00）である必要があります", {field_name: value})
+    return dt.astimezone(timezone.utc)
 
 
 def _validate_pid_and_identity(data: dict) -> None:

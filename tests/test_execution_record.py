@@ -46,6 +46,21 @@ def test_exited_without_exit_code_is_rejected():
         validate_execution_record(execution_record(exit_code=None))
 
 
+def test_missing_exit_code_key_raises_domain_error_not_key_error():
+    """exit_codeキー自体が無い場合もKeyErrorではなくDomainErrorであるべき。"""
+    record = execution_record()
+    del record["exit_code"]
+    with pytest.raises(DomainError, match="EXECUTION_RECORD_INVALID"):
+        validate_execution_record(record)
+
+
+@pytest.mark.parametrize("field", ["started_at", "ended_at"])
+def test_tz_aware_non_utc_offset_is_rejected(field):
+    """tzを持っていてもUTC以外のオフセットは拒否する（spec 5.1: UTC日時）。"""
+    with pytest.raises(DomainError, match="EXECUTION_RECORD_INVALID"):
+        validate_execution_record(execution_record(**{field: "2026-09-05T09:00:00+09:00"}))
+
+
 def test_wrong_schema_is_rejected():
     with pytest.raises(DomainError, match="EXECUTION_RECORD_INVALID"):
         validate_execution_record(execution_record(schema="console-execution.v0"))
