@@ -170,6 +170,8 @@ def dataset_differential(
 
     from lipidmix.analysis.dataset_service import compare_dataset
 
+    from lipidmix.core.atomic_io import DomainError
+
     try:
         result = compare_dataset(
             ds,
@@ -183,6 +185,8 @@ def dataset_differential(
         )
     except PreconditionError as exc:
         return _from_precondition(exc)
+    except DomainError as exc:
+        return mztab_error(exc.code, exc.message, exc.details or None)
 
     payload = {k: v for k, v in result.items()
                if k not in ("results", "volcano", "provenance")}
@@ -225,6 +229,15 @@ def dataset_export_differential(output_path: str) -> str:
             "dataset_differential_result",
             "直近の差次的結果は現行エクスポート契約と互換性がありません。"
             "dataset_differential を再実行してください。")
+
+    if getattr(ds, "exploratory_only", False):
+        return mztab_error(
+            "EXPLORATORY_ONLY_DATASET",
+            "このデータセットは中断された解析の出力（探索専用）なので、"
+            "差次的エクスポートには使えません。Console 実行を完了させてから"
+            "読み込み直してください。",
+            {"job_path": ds.job_path,
+             "source_verification": getattr(ds, "source_verification", None)})
 
     from lipidmix.analysis.result_state import is_current
     if not is_current(ds, last):

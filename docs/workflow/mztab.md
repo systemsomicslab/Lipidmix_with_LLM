@@ -2,9 +2,14 @@
 
 ## dataset_load
 
+読み込みの実体は `lipidmix/mztab/loading.py`（session に依存しない層）。MCP ツールは
+戻ってきた DatasetState を成功時だけ `session.dataset` へ置く。pipeline のワーカーは
+同じ関数を呼び、自分が持つ DatasetState として使う。
+
 mztab_path 経路（直接指定）:
 1. lipidmix/tools/mztab_tools.py dataset_load()
-2. └─ lipidmix/mztab/reader.py parse_mztab()
+2. └─ lipidmix/mztab/loading.py load_dataset_state()
+3. └─ lipidmix/mztab/reader.py parse_mztab()
 3. └─ lipidmix/mztab/validator.py validate_mztab()
 4. └─ lipidmix/mztab/validator.py detect_quantification_measure()
 5. └─ lipidmix/mztab/dataset_state.py build_dataset_state()
@@ -23,9 +28,9 @@ mztab_path 経路（直接指定）:
 
 job_path 経路（analysis-job.json の宣言 polarity + measure で正準を選ぶ）:
 1. lipidmix/tools/mztab_tools.py dataset_load()
-2. └─ lipidmix/tools/mztab_tools.py _load_from_job()
+2. └─ lipidmix/mztab/loading.py load_dataset_state()
 3.    └─ lipidmix/handoff/schema.py AnalysisJob.load()
-4.    └─ lipidmix/tools/mztab_tools.py _select_primary_entry()
+4.    └─ lipidmix/mztab/loading.py select_primary_entry()
 5.    └─ lipidmix/mztab/reader.py parse_mztab()
 6.    └─ lipidmix/mztab/validator.py validate_mztab()
 7.    └─ lipidmix/mztab/validator.py detect_quantification_measure()
@@ -37,7 +42,19 @@ job_path 経路（analysis-job.json の宣言 polarity + measure で正準を選
 13.      └─ lipidmix/mztab/dataset_state.py _resolve_sample_names()
 14. └─ lipidmix/mztab/evidence.py attach_to_dataset()
 
-`_select_primary_entry()` は候補が一意に決まらなければ読まずに停止する
+読み込みは「読めたか」だけでなく「どれだけ信用してよいか」も返す。
+`source_verification` は終了証跡（exit code・identity）とファイル hash が揃って初めて
+`verified` になり、ジョブ経由でも証跡が無ければ `legacy_unverified`、直接読みは
+`direct_unverified`。**`status == "completed"` という文字列は根拠にしない**——旧経路の
+completed は「実行後にファイルが増えた」以上の意味を持たなかった。
+
+完了していない実行（partial / failed / running）の出力は既定で読まない
+（`INCOMPLETE_ANALYSIS_JOB`）。`allow_incomplete=True` で読んだ場合は
+`exploratory_only=True` になり、2 群比較（dataset_differential）と差次的エクスポートは
+`EXPLORATORY_ONLY_DATASET` で拒否する。欠けた検体は mzTab 上「その群に無い」ように
+しか見えず、比較はその欠落ごと結論にしてしまう。
+
+`select_primary_entry()` は候補が一意に決まらなければ読まずに停止する
 （`QUANTIFICATION_CONFLICT` / `POLARITY_MISMATCH` / `AMBIGUOUS_PRIMARY_MZTAB`）。
 どのファイルを読むかは解析結果そのものを変えるため、辞書順にも LLM にも決めさせない。
 

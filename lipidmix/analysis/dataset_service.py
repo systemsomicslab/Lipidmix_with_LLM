@@ -94,7 +94,12 @@ def compare_dataset(ds, group_a: list[str], group_b: list[str], *,
                     group_a_label: str = "group_a",
                     group_b_label: str = "group_b",
                     request_revision: int | None = None) -> dict:
-    """2 群比較を実行し、成功したときだけ `last_differential` を差し替える。"""
+    """2 群比較を実行し、成功したときだけ `last_differential` を差し替える。
+
+    探索専用のデータセット（中断された実行の出力）では拒否する。欠けた検体は
+    mzTab 上「その群に無い」ようにしか見えず、比較はその欠落ごと結論にする。
+    """
+    _refuse_exploratory(ds, "2 群比較")
     settings = {
         "group_a": list(group_a), "group_b": list(group_b),
         "q_threshold": q_threshold, "log2fc_threshold": log2fc_threshold,
@@ -115,6 +120,19 @@ def compare_dataset(ds, group_a: list[str], group_b: list[str], *,
         request_revision=request_revision)
     ds.last_differential = result
     return result_state.register_result(ds, result)
+
+
+def _refuse_exploratory(ds, what: str) -> None:
+    """探索専用のデータセットで結論を出す操作を止める。"""
+    from lipidmix.core.atomic_io import DomainError
+
+    if getattr(ds, "exploratory_only", False):
+        raise DomainError(
+            "EXPLORATORY_ONLY_DATASET",
+            f"このデータセットは中断された解析の出力（探索専用）なので、{what}には"
+            "使えません。Console 実行を完了させてから読み込み直してください。",
+            {"job_path": getattr(ds, "job_path", None),
+             "source_verification": getattr(ds, "source_verification", None)})
 
 
 # ---------- 内部ヘルパ ----------
