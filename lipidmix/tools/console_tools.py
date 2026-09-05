@@ -92,19 +92,38 @@ def console_plan(
 
     discovered_from: str | None = None
     if method_file is None:
-        candidates = method_file_mod.find_method_candidates([root], polarity=polarity)
-        if not candidates:
+        candidates, searched = method_file_mod.discover_method_candidates(
+            root, polarity=polarity, omics=omics)
+        direct = [c for c in candidates if c.usable == "direct"]
+        if direct:
+            discovered_from = direct[0].path
+            mf = Path(discovered_from)
+        elif candidates:
+            # 別極性を黙って採ると Ion mode と Searched adduct ions が違うまま走り、
+            # 別の解析になる。console_method_template を通して caveat を出させる。
+            return console_error(
+                "METHOD_FILE_CHOICE_REQUIRED",
+                f"極性 {polarity} に一致するパラメータファイルはありませんが、"
+                f"別極性の候補が {len(candidates)} 件あります。"
+                "console_method_template(based_on=<選んだ path>, polarity=...) で"
+                "その極性用に変換してから console_plan に渡してください。"
+                "検出・アライメント条件は元のまま引き継がれます。",
+                {"dataset_root": str(root), "polarity": polarity,
+                 "searched": searched,
+                 "candidates": [_candidate_payload(c) for c in candidates]},
+                required_tools=["console_method_template", "console_plan"])
+        else:
             return console_error(
                 "METHOD_FILE_NOT_GIVEN",
-                "method_file が省略され、データフォルダに使えるパラメータファイルも"
+                "method_file が省略され、使えるパラメータファイルも"
                 f"見つかりませんでした（極性 {polarity}）: {root}  "
                 "MS-DIAL GUI は解析のたびに `<project>_param_<終了時刻>.txt` を"
-                "プロジェクトフォルダへ自動保存します。その極性で一度も GUI 実行が"
-                "無い場合は、別極性のパラメータから Ion mode と Searched adduct ions を"
-                "差し替えたものを用意して method_file で渡してください。",
-                {"dataset_root": str(root), "polarity": polarity})
-        discovered_from = candidates[0].path
-        mf = Path(discovered_from)
+                "プロジェクトフォルダへ自動保存します。その極性でも別極性でも"
+                "GUI 実行が無い場合は、他のデータセットのパラメータを "
+                "console_method_template の based_on で明示してください。",
+                {"dataset_root": str(root), "polarity": polarity,
+                 "searched": searched},
+                required_tools=["console_method_template", "console_method_candidates"])
     else:
         mf = Path(method_file).expanduser()
     if not mf.is_file():

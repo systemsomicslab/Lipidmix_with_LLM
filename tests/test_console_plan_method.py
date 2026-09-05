@@ -26,6 +26,18 @@ def _plan_ready(tmp_path, monkeypatch, exe):
     (tmp_path / "a.wiff").touch()
 
 
+def _nested_root(tmp_path):
+    """dataset_root を 1 段ネストする。
+
+    tmp_path をそのまま dataset_root にすると、兄弟フォルダ探索が pytest の共有親
+    （pytest-<N>/）を走査して他テストの一時フォルダを拾う。
+    """
+    root = tmp_path / "dataset"
+    root.mkdir(exist_ok=True)
+    (root / "a.wiff").touch()
+    return root
+
+
 def test_console_plan_rejects_lipidomics_without_lbm(tmp_path, monkeypatch):
     """LBM 空のまま走らせると警告なしで同定 0 件になる（実測 60 サンプル 31 分）。"""
     exe = _fake_exe_with_lbm(tmp_path)  # .lbm2 を置かない
@@ -139,10 +151,11 @@ def test_console_plan_discovers_auto_saved_method_file(tmp_path, monkeypatch):
     """GUI は実行のたびに *_param_<ts>.txt を自動保存する。渡さなくても見つける。"""
     exe = _fake_exe_with_lbm(tmp_path, "x.lbm2")
     _plan_ready(tmp_path, monkeypatch, exe)
-    (tmp_path / "Dataset_2026_param_202605151055.txt").write_text(
+    root = _nested_root(tmp_path)
+    (root / "Dataset_2026_param_202605151055.txt").write_text(
         "Ion mode: Negative\nTarget omics: Lipidomics\nLbm file path: \n", encoding="ascii")
     from lipidmix.tools.console_tools import console_plan
-    parsed = _json.loads(console_plan(dataset_root=str(tmp_path),
+    parsed = _json.loads(console_plan(dataset_root=str(root),
                                       polarity="negative", measure="peak_height"))
     assert parsed["status"] == "planned"
     assert parsed["method_source"]["discovered_from"].endswith(
@@ -150,21 +163,74 @@ def test_console_plan_discovers_auto_saved_method_file(tmp_path, monkeypatch):
 
 
 def test_console_plan_discovery_ignores_other_polarity(tmp_path, monkeypatch):
-    """NEG の自動保存パラメータを POS の計画に流用してはいけない。"""
+    """NEG の自動保存パラメータを POS の計画に流用してはいけない。
+
+    候補として提示はするが、採用はしない（METHOD_FILE_CHOICE_REQUIRED）。
+    """
     exe = _fake_exe_with_lbm(tmp_path, "x.lbm2")
     _plan_ready(tmp_path, monkeypatch, exe)
-    (tmp_path / "Dataset_2026_param_202605151055.txt").write_text(
+    root = _nested_root(tmp_path)
+    (root / "Dataset_2026_param_202605151055.txt").write_text(
         "Ion mode: Negative\nTarget omics: Lipidomics\n", encoding="ascii")
     from lipidmix.tools.console_tools import console_plan
-    parsed = _json.loads(console_plan(dataset_root=str(tmp_path),
+    parsed = _json.loads(console_plan(dataset_root=str(root),
                                       polarity="positive", measure="peak_height"))
-    assert parsed["error"]["code"] == "METHOD_FILE_NOT_GIVEN"
+    assert parsed["error"]["code"] == "METHOD_FILE_CHOICE_REQUIRED"
+    assert parsed["error"]["details"]["candidates"][0]["usable"] == "needs_polarity_conversion"
 
 
 def test_console_plan_missing_method_file_reports_no_candidates(tmp_path, monkeypatch):
     exe = _fake_exe_with_lbm(tmp_path, "x.lbm2")
     _plan_ready(tmp_path, monkeypatch, exe)
+    root = _nested_root(tmp_path)
     from lipidmix.tools.console_tools import console_plan
-    parsed = _json.loads(console_plan(dataset_root=str(tmp_path),
+    parsed = _json.loads(console_plan(dataset_root=str(root),
                                       polarity="negative", measure="peak_height"))
     assert parsed["error"]["code"] == "METHOD_FILE_NOT_GIVEN"
+
+
+def test_console_plan_offers_a_sibling_folder_candidate(tmp_path, monkeypatch):
+    """実データの形（POS の隣に GUI 処理済みの NEG がある）。黙って採用せず提示する。"""
+    exe = _fake_exe_with_lbm(tmp_path, "x.lbm2")
+    _plan_ready(tmp_path, monkeypatch, exe)
+    root = _nested_root(tmp_path)
+    neg = tmp_path / "NEG"
+    neg.mkdir()
+    (neg / "Dataset_2026_param_202605151055.txt").write_text(
+        "Ion mode: Negative\nTarget omics: Lipidomics\n", encoding="ascii")
+
+    from lipidmix.tools.console_tools import console_plan
+    parsed = _json.loads(console_plan(dataset_root=str(root), polarity="positive"))
+    error = parsed["error"]
+    assert error["code"] == "METHOD_FILE_CHOICE_REQUIRED"
+    entry = error["details"]["candidates"][0]
+    assert entry["origin"] == "sibling"
+    assert entry["usable"] == "needs_polarity_conversion"
+    assert "console_method_template" in error["required_tools"]
+
+
+def test_console_plan_adopts_a_sibling_of_the_same_polarity(tmp_path, monkeypatch):
+    """極性が一致していれば兄弟フォルダのものでも採用してよい（変換が要らない）。"""
+    exe = _fake_exe_with_lbm(tmp_path, "x.lbm2")
+    _plan_ready(tmp_path, monkeypatch, exe)
+    root = _nested_root(tmp_path)
+    other = tmp_path / "OTHER"
+    other.mkdir()
+    (other / "Dataset_2026_param_202605151055.txt").write_text(
+        "Ion mode: Negative\nTarget omics: Lipidomics\nLbm file path: \n", encoding="ascii")
+
+    from lipidmix.tools.console_tools import console_plan
+    parsed = _json.loads(console_plan(dataset_root=str(root), polarity="negative"))
+    assert parsed["status"] == "planned"
+    assert parsed["method_source"]["discovered_from"].endswith(
+        "Dataset_2026_param_202605151055.txt")
+
+
+def test_console_plan_not_given_reports_where_it_looked(tmp_path, monkeypatch):
+    exe = _fake_exe_with_lbm(tmp_path, "x.lbm2")
+    _plan_ready(tmp_path, monkeypatch, exe)
+    root = _nested_root(tmp_path)
+    from lipidmix.tools.console_tools import console_plan
+    parsed = _json.loads(console_plan(dataset_root=str(root), polarity="positive"))
+    assert parsed["error"]["code"] == "METHOD_FILE_NOT_GIVEN"
+    assert str(root) in parsed["error"]["details"]["searched"]
