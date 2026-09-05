@@ -22,8 +22,10 @@ from lipidmix.analysis.dataset_analysis import (
     run_dataset_pca,
     run_dataset_preprocess,
 )
+from lipidmix.analysis.preprocess_policy import check_applied_policy, resolve_policy
+from lipidmix.analysis.sample_manifest import apply_metadata
 
-__all__ = ["compare_dataset", "pca_dataset", "preprocess_dataset"]
+__all__ = ["compare_dataset", "pca_dataset", "preprocess_auto", "preprocess_dataset"]
 
 
 def preprocess_dataset(ds, recipe: dict, *, request_revision: int | None = None) -> dict:
@@ -69,6 +71,35 @@ def preprocess_dataset(ds, recipe: dict, *, request_revision: int | None = None)
         request_revision=request_revision)
     ds.preprocess_id = result["provenance"]["result_id"]
     return result_state.register_result(ds, result)
+
+
+def preprocess_auto(ds, requested: dict, metadata: list[dict], *,
+                    request_revision: int | None = None) -> dict:
+    """conservative-v1でレシピを解決し、検査してから前処理をcommitする（spec §8）。
+
+    順序は「一時計算 → 検査 → commit」を守る:
+
+    1. `resolve_policy` でレシピを決める（``ds`` は書き換えない）。
+    2. 実験情報シートを確定する（`apply_metadata`。Task 9 の一括適用契約——
+       検証で1件でも落ちれば ``ds`` には触れない）。
+    3. `run_dataset_preprocess` で**一時的に**計算する（``ds.pp_matrix`` 等はまだ
+       書き換わらない）。
+    4. `check_applied_policy` でその結果を検査する。ここで例外なら ``ds`` の
+       前処理系フィールドは一切書き換わっていない（前段の metadata 確定だけが
+       残る——実験情報の確定自体は前処理の成否と独立に有効な情報のため）。
+    5. 検査を通ってはじめて Task 6 の `preprocess_dataset`（whole-or-nothingの
+       commitは再実装せずここへ委譲する）で本commitする。
+    """
+    plan = resolve_policy(ds, requested, metadata)
+    apply_metadata(ds, metadata)
+
+    _, _, _, _, _, report = run_dataset_preprocess(ds, plan["resolved_recipe"])
+    check_applied_policy(plan, report)
+
+    result = preprocess_dataset(ds, plan["resolved_recipe"], request_revision=request_revision)
+    plan["applied_steps"] = list(result.get("recipe_applied", []))
+    plan["result"] = result
+    return plan
 
 
 def pca_dataset(ds, n_components: int = 5, log_transform: bool = False, *,

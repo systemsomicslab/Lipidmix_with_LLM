@@ -101,7 +101,7 @@ def blank_filter(matrix, roles, sample_names, min_fold=3.0):
     samples = _rows_for_role(matrix, roles, sample_names, "sample")
     if blanks is None or samples is None:
         return np.ones(n_features, dtype=bool), {
-            "removed": 0,
+            "removed": 0, "status": "skipped",
             "caveat": "ブランクまたは生体試料が無いため背景除去は未実施。",
         }
     blank_mean = np.nanmean(blanks, axis=0)
@@ -306,7 +306,7 @@ def qc_rsd_filter(matrix, roles, sample_names, max_rsd=0.30):
     qc = _rows_for_role(matrix, roles, sample_names, "qc")
     if qc is None or qc.shape[0] < 2:
         return np.ones(n_features, dtype=bool), {
-            "removed": 0,
+            "removed": 0, "status": "skipped",
             "caveat": "QC が無い/不足のため RSD フィルタは未実施。",
         }
     mean = np.nanmean(qc, axis=0)
