@@ -409,7 +409,9 @@ def console_run(job_path: str | None = None, detach: bool = False) -> str:
                 "JOB_BUSY",
                 "このジョブは別のプロセスが実行中です。"
                 "console_status で進行を確認してください。",
-                {"job_path": str(resolved), "run_dir": job.run_dir})
+                {"job_path": str(resolved), "run_dir": job.run_dir,
+                 "owner": console_worker.owner_summary(run_dir)},
+                required_tools=["console_status"])
         _record_finalization_failure(resolved, repr(exc))
         return console_error("JOB_POST_RUN_FAILED", str(exc),
                              {"job_path": str(resolved)})
@@ -734,7 +736,7 @@ def console_cleanup(job_path: str | None = None, dry_run: bool = True) -> str:
     # 実行中のジョブの生成物を消すと、監視ワーカーが書いている最中のファイルを
     # 足元から抜くことになる。所有者が今も生きているかは process identity で見る
     # （pid だけでは pid 再利用を見分けられない）。
-    from lipidmix.console.worker import owner_is_active
+    from lipidmix.console.worker import owner_is_active, owner_summary
     owned = owner_is_active(Path(job.run_dir))
 
     if dry_run:
@@ -755,7 +757,8 @@ def console_cleanup(job_path: str | None = None, dry_run: bool = True) -> str:
             "このジョブは監視ワーカーが実行中です。生成物を消すと、書き込み中の"
             "ファイルを実行中のプロセスから奪うことになります。"
             "console_status で完了を確認してからやり直してください。",
-            {"job_id": job.job_id, "status": job.status, "run_dir": job.run_dir},
+            {"job_id": job.job_id, "status": job.status, "run_dir": job.run_dir,
+             "owner": owner_summary(Path(job.run_dir))},
             required_tools=["console_status"])
 
     deleted = absent = failed = 0

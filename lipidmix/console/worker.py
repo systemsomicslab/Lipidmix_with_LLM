@@ -50,7 +50,7 @@ from lipidmix.core.process_control import file_lock, launch_detached, same_proce
 
 __all__ = ["LOCK_FILENAME", "WORKER_LOG_FILENAME", "annotate_job",
            "clear_owner", "launch_console_worker", "lock_path", "owner_is_active",
-           "read_owner", "run_job", "write_owner"]
+           "owner_summary", "read_owner", "run_job", "write_owner"]
 
 #: job 単位の排他ロック。実体は OS が握る byte-range lock で、このファイルの
 #: 存在や中身ではない（消してもロックは解けないし、残っていても解けている）。
@@ -105,6 +105,21 @@ def clear_owner(run_dir: Path) -> None:
         return
     owner = {**owner, "status": "finished", "finished_at": _utc_now()}
     write_owner(run_dir, owner)
+
+
+def owner_summary(run_dir: Path) -> dict | None:
+    """所有者の要点（誰が・いつから・生きているか）を返す。無ければ None。
+
+    拒否の封筒へ入れるためのもの。「別の何かが使っています」だけでは、呼び出し側は
+    待てばよいのか手で直すのか判断できない。所有者の種別（単体実行か pipeline か）
+    まで返す。
+    """
+    owner = read_owner(run_dir)
+    if owner is None:
+        return None
+    return {"kind": owner.get("kind"), "pid": owner.get("pid"),
+            "since": owner.get("since"), "status": owner.get("status"),
+            "active": owner_is_active(run_dir)}
 
 
 def owner_is_active(run_dir: Path) -> bool:

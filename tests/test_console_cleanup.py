@@ -168,3 +168,17 @@ def test_deletes_when_the_recorded_owner_is_no_longer_running(tmp_path):
 
     assert parsed["deleted"] == 3
     assert load_job(job_path).status == "cleaned"
+
+
+@_WINDOWS_ONLY
+def test_refusal_names_the_owner_so_the_caller_can_act(tmp_path):
+    """「使用中」だけでは、待てばよいのか手で直すのか判断できない。"""
+    from lipidmix.tools.console_tools import console_cleanup
+    job_path = _job_with_outputs(tmp_path)
+    _own_job(job_path, alive=True)
+
+    owner = _json.loads(console_cleanup(str(job_path), dry_run=False))["error"]["details"]["owner"]
+
+    assert owner["kind"] == "console_worker"
+    assert owner["pid"] == os.getpid()
+    assert owner["active"] is True
