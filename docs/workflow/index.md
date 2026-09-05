@@ -45,11 +45,11 @@
 | [mztab.md](mztab.md) | mzTab-M — DatasetState への読み込み | 2 |
 | [dataset_analysis.md](dataset_analysis.md) | DatasetState — 前処理・PCA・差次的解析・エクスポート | 4 |
 
-合計 35 ツール。対象外は 19 ツール——文献探索・レポート記録系 12
+合計 35 ツール。対象外は 20 ツール——文献探索・レポート記録系 12
 （`record_objective` `knowledge_coverage` `paper_search` `ingest_*` `write_report` など）＋
-Console 実行層 7（`console_plan` `console_prepare_input` `console_method_template`
-`console_run` `console_status` `console_cleanup` `job_list`）。
-登録ツール総数は 54（35 + 19）。
+Console 実行層 8（`console_plan` `console_prepare_input` `console_method_template`
+`console_method_candidates` `console_run` `console_status` `console_cleanup` `job_list`）。
+登録ツール総数は 55（35 + 20）。
 
 ## 一気通貫の順序はここには無い
 

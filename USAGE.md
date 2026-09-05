@@ -1,4 +1,4 @@
-# USAGE — ms-data-parser MCP ツール一覧(全54ツール)
+# USAGE — ms-data-parser MCP ツール一覧(全55ツール)
 
 MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.dcl` / `.EIC.aef`)と mzTab-M を解析し、PCA・差次的解析・
 アノテーション検証・文献探索・レポート記録までを行う MCP サーバーのツール群です。
@@ -132,6 +132,7 @@ MS-DIAL 本体を CLI 実行して解析結果そのものを生成する経路�
 | `console_status` | ジョブの現在のステータスを返す(`job_path`, `include_artifacts`)。生成物は**既定では全文を返さない** — `artifact_count` と 役割別内訳 `artifacts_by_role` だけを返す(1 サンプルにつき 5 件出るため 60 サンプルの実走で 313 件になり、全文 TSV は後ろの `warnings`/`error` を埋没させた)。個々のパスが必要なときだけ `include_artifacts=True` で `path`/`role`/`format`/`root` の TSV(列名 1 回)を得る。`execution` に `save_project`/`timeout_s` が入る。 `server_version` に稼働中のサーバ版数(`<version>+<git SHA>`)が入る——更新後に MCP サーバを再起動し忘れると古いプロセスが黙って動き続けるため。`detach=True` の実行に対しては、プロセスの生死を見て、終了していればその場で生成物を収集してジョブを確定する(`detached.alive` / `detached.collected`)。 |
 | `console_prepare_input` | 計測フォーマットが 1 種類だけの入力フォルダを作る(`dataset_root`, `keep_extension`(既定 `wiff`), `out_dir`)。`MIXED_RAW_FORMATS` の解消手段。指定拡張子の計測ファイルと**その随伴ファイル**(`.wiff.scan` / `.timeseries.data` 等)だけを**ハードリンク**で集める(同一ボリュームでなければコピー)。元フォルダは一切変更しない。`out_dir` 省略時は `<元フォルダ>_<拡張子>` を兄弟として作る。 |
 | `console_method_template` | 既存パラメータから別極性用のメソッドファイルを作る(`out_path`, `polarity`, `based_on`, `dataset_root`, `omics`)。**まず `console_plan` の `method_file` 省略を試すこと** — その極性で一度でも GUI 実行があれば作る必要は無い。差し替えるのは `Ion mode` と `Searched adduct ions` だけで、検出・アライメント条件は元のまま引き継ぐ。空の `Lbm file path` も解決して埋める(解決順は `console_plan` と同じで、ビルド生成物が `MSDIAL_LBM` より優先)。 |
+| `console_method_candidates` | 使えるメソッドファイルの候補を列挙する(`dataset_root`, `polarity`, `omics`, `search_dirs`)。**`console_plan` が失敗する前に呼べる** — 手動実行 UI の「メソッドを選ぶ」画面はこれを叩く。探すのは `dataset_root` 直下 → 兄弟フォルダ直下 → `runs/*/analysis-job.json` の `software.method_file`(過去 run が実際に使ったメソッド)で、**再帰はしない**。各候補に `origin`(`same_dir`/`sibling`/`past_run`/`given`)、`usable`(`direct` / `needs_polarity_conversion`)、比較用の `key_params` が付く(候補 10 件超では `key_params` を付けない)。別極性の候補は自動採用せず `console_method_template` を経由させる。 |
 | `console_cleanup` | あるジョブが生成したファイルだけを一覧・削除する(`job_path`, `dry_run`(既定 True))。再実行のたびに生データフォルダへ別タイムスタンプの一式が積まれる問題への対処。**消すのは `analysis-job.json` が記録した生成物だけ**で、タイムスタンプの推測はしない(記録が無いジョブは `NO_JOB_OUTPUT` で拒否)。生データには触れない。削除後のジョブ status は `cleaned`。 |
 | `job_list` | `dataset_root/runs/` 以下のジョブ一覧を新しい順に返す。 |
 

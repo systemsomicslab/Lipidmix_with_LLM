@@ -15,7 +15,8 @@ from lipidmix.core.mcp_errors import console_error, mztab_error
 from lipidmix.core.serialization import json_payload
 
 __all__ = ["console_plan", "console_prepare_input", "console_method_template",
-           "console_run", "console_status", "console_cleanup", "job_list"]
+           "console_method_candidates", "console_run", "console_status",
+           "console_cleanup", "job_list"]
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False),
@@ -640,6 +641,53 @@ def console_method_template(
     })
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+          structured_output=False)
+def console_method_candidates(
+    dataset_root: str,
+    polarity: str | None = None,
+    omics: str | None = "lipidomics",
+    search_dirs: list[str] | None = None,
+) -> str:
+    """使えるメソッドファイルの候補を列挙します（console_plan が失敗する前に呼べます）。
+
+    MS-DIAL GUI は解析のたびに `<project>_param_<終了時刻>.txt` をプロジェクト
+    フォルダへ自動保存します。その極性で一度も GUI 実行が無いフォルダには存在
+    しないため、**兄弟フォルダ**（POS の隣の NEG 等）と**過去 run** まで探します。
+
+    dataset_root: 生データフォルダ。
+    polarity: "positive" / "negative"。省略すると極性で区別せず全件返します。
+        指定すると各候補に `usable` が付き、一致しないものは
+        `needs_polarity_conversion`（console_method_template を経由させる）。
+    omics: 既定 "lipidomics"。None で絞り込みません。
+    search_dirs: 追加で探すフォルダ。再帰はしません。
+
+    候補には比較用の `key_params`（検出・アライメント条件のうち結果を変える少数）が
+    付きます。候補が 10 件を超えるときは付きません（戻り値が肥大するため）。
+    """
+    root = Path(dataset_root).expanduser()
+    if not root.is_dir():
+        return console_error("DATASET_ROOT_NOT_FOUND",
+                             f"データフォルダが見つかりません: {dataset_root}",
+                             {"dataset_root": str(dataset_root)})
+
+    from lipidmix.console import method_file as method_file_mod
+
+    candidates, searched = method_file_mod.discover_method_candidates(
+        root, polarity=polarity, omics=omics, search_dirs=search_dirs)
+    return json_payload({
+        "dataset_root": str(root),
+        "polarity": polarity,
+        "omics": omics,
+        "searched": searched,
+        "n_candidates": len(candidates),
+        "candidates": [_candidate_payload(c) for c in candidates],
+        "next": ("usable=direct なら console_plan(method_file=...)、"
+                 "needs_polarity_conversion なら console_method_template("
+                 "based_on=..., polarity=...) を通してから console_plan"),
+    })
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True),
           structured_output=False)
 def console_cleanup(job_path: str | None = None, dry_run: bool = True) -> str:
@@ -857,6 +905,23 @@ def _artifacts_tsv(artifacts) -> str:
     lines = ["path\trole\tformat\troot"]
     lines.extend(f"{a.path}\t{a.role}\t{a.format}\t{a.root}" for a in artifacts)
     return "\n".join(lines)
+
+
+def _candidate_payload(candidate) -> dict:
+    """MethodCandidate を UI が読める辞書にする。mtime は ISO 文字列で返す。"""
+    from datetime import datetime
+    payload = {
+        "path": candidate.path,
+        "origin": candidate.origin,
+        "usable": candidate.usable,
+        "ion_mode": candidate.ion_mode,
+        "omics": candidate.omics,
+        "has_lbm": candidate.has_lbm,
+        "mtime": datetime.fromtimestamp(candidate.mtime).isoformat(timespec="seconds"),
+    }
+    if candidate.key_params is not None:
+        payload["key_params"] = candidate.key_params
+    return payload
 
 
 def _msdial_exe_setup_help() -> dict:

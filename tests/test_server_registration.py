@@ -45,6 +45,7 @@ EXPECTED_TOOLS = sorted([
     "log_search",
     "pai2_inspect_peak",
     "console_cleanup",
+    "console_method_candidates",
     "console_method_template",
     "console_plan",
     "console_prepare_input",

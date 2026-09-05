@@ -58,6 +58,8 @@ EXPECTED_ANNOTATIONS = {
     # 入力フォルダとメソッドファイルを作る。同じ引数なら同じ結果 → 冪等
     "console_prepare_input": LOCAL_WRITE,
     "console_method_template": LOCAL_WRITE,
+    # 読み取り専用だが、同じ入力なら結果は変わらない（idempotent）ことも明示している。
+    "console_method_candidates": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
     # ジョブが記録した生成物を消す。破壊的だが、二度目は何も残っていない → 冪等
     "console_cleanup": LOCAL_DELETE,
     "job_list": READ_ONLY,
