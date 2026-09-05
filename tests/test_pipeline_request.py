@@ -4,6 +4,7 @@ resolve_request/merge_updates/validate_request/request_fingerprint はすべて
 lipidmix.pipeline.request にある。実rawや既存成果物は使わない
 （tmp_path上に空のsource_rootを作るだけ）。
 """
+import copy
 import math
 
 import pytest
@@ -210,6 +211,33 @@ def test_merge_updates_preprocess_rejects_unknown_child_key(tmp_path):
         merge_updates(req, {"preprocess": {"unknown_field": 1}})
 
 
+def test_merge_updates_preprocess_invalid_update_checked_before_mutation(tmp_path):
+    """`.update()`呼出しより先に検証することを固定する（brief: 「上記update呼出し
+    より先に検証する」）。
+
+    ``merge_updates``自身の事前検査だけが使う文言「未知の更新キー」でmatchする
+    ことが肝——これは``_validate_preprocess``（``.update()``適用後の値を検査
+    するため、事前検査が後回しになっても最終的に同じDomainError/同じcodeで
+    捕まえてしまう）が使う文言「未知のキー」とは異なる。事前検査を``.update()``
+    より後ろへ移動すると、この一致は壊れて別の文言でDomainErrorが起きるため、
+    「例外型・codeが同じだから合格」という偽陽性を防ぐ。
+    あわせて、検証に失敗しても呼び出し側が渡した``request``自体（``out``へ
+    deepcopyする前の入力）は一切書き換わらないことも確認する。
+    """
+    root = tmp_path / "source"
+    root.mkdir()
+    req = resolve_request(root)
+    before = copy.deepcopy(req)
+
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        merge_updates(req, {"preprocess": "tic"})
+    assert req == before
+
+    with pytest.raises(DomainError, match="未知の更新キー"):
+        merge_updates(req, {"preprocess": {"unknown_field": 1}})
+    assert req == before
+
+
 # ---------- comparisons: 方向・重複ID・path脱出 ----------
 
 def test_comparison_reference_and_test_must_differ(tmp_path):
@@ -367,6 +395,22 @@ def test_blank_min_fold_explicit_null_is_disable_not_auto(tmp_path):
     assert req["value_sources"]["preprocess"]["blank_min_fold"] == "explicit"
 
 
+def test_max_qc_rsd_explicit_null_is_disable_not_auto(tmp_path):
+    """blank_min_foldと対になるもう一方の明示null無効化フィールド（spec l.419）。
+
+    request.pyの``_validate_preprocess``は``for field in ("blank_min_fold",
+    "max_qc_rsd")``という共有ループでこの2フィールドを対称に扱っている
+    ——blank_min_fold側にしかテストが無いと、max_qc_rsd側だけ壊れる回帰
+    （例えばループをblank_min_foldだけの専用分岐へ書き換えて片方だけ
+    handlingが漏れる）を拾えない。
+    """
+    root = tmp_path / "source"
+    root.mkdir()
+    req = resolve_request(root, {"preprocess": {"max_qc_rsd": None}})
+    assert req["preprocess"]["max_qc_rsd"] is None
+    assert req["value_sources"]["preprocess"]["max_qc_rsd"] == "explicit"
+
+
 # ---------- 個別フィールドのenum/型 ----------
 
 def test_polarity_rejects_unknown_value(tmp_path):
@@ -419,3 +463,63 @@ def test_timeout_s_rejects_non_positive(tmp_path):
     root.mkdir()
     with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
         resolve_request(root, {"timeout_s": 0})
+
+
+# ---------- 明示nullの許可範囲（controller裁定R13、spec l.246/421） ----------
+#
+# 明示nullが許されるのは sample_manifest・preprocess.blank_min_fold・
+# preprocess.max_qc_rsd の3つだけ（無効化を意味する設定）。それ以外のキーへ
+# 明示nullを渡すのは「未指定」の代用ではなく、常にエラーにする
+# （spec l.421「他の不許可なnullはエラーにする」/ l.246「nullが無効化を
+# 意味する設定だけで許可する」）。特に comparisons: null を空配列へ黙って
+# 変換するのは、spec l.417が戒める「差次的解析の要求を捏造」そのものになる
+# ため最も鋭い事例。
+
+@pytest.mark.parametrize("field", [
+    "method_file", "lbm_file", "polarity", "keep_extension", "output_root",
+])
+def test_explicit_null_is_rejected_for_non_disable_top_level_fields(tmp_path, field):
+    root = tmp_path / "source"
+    root.mkdir()
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve_request(root, {field: None})
+
+
+def test_explicit_null_comparisons_is_rejected_in_resolve_request(tmp_path):
+    """comparisons: null を既定の空配列へ黙って読み替えてはいけない。"""
+    root = tmp_path / "source"
+    root.mkdir()
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve_request(root, {"comparisons": None})
+
+
+def test_explicit_null_comparisons_is_rejected_in_merge_updates(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    req = resolve_request(root, {"comparisons": [
+        {"comparison_id": "a", "reference_group": "control", "test_group": "treated"},
+    ]})
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        merge_updates(req, {"comparisons": None})
+
+
+def test_permitted_explicit_nulls_still_work(tmp_path):
+    """R13の許可リスト3つ（sample_manifest・blank_min_fold・max_qc_rsd）は
+    引き続き明示nullで無効化できる。"""
+    root = tmp_path / "source"
+    root.mkdir()
+    req = resolve_request(root, {
+        "sample_manifest": None,
+        "preprocess": {"blank_min_fold": None, "max_qc_rsd": None},
+    })
+    assert req["sample_manifest"] is None
+    assert req["value_sources"]["sample_manifest"] == "explicit"
+    assert req["preprocess"]["blank_min_fold"] is None
+    assert req["preprocess"]["max_qc_rsd"] is None
+    assert req["value_sources"]["preprocess"]["blank_min_fold"] == "explicit"
+    assert req["value_sources"]["preprocess"]["max_qc_rsd"] == "explicit"
+
+    released = merge_updates(req, {"sample_manifest": "sheet.tsv"})
+    released_again = merge_updates(released, {"sample_manifest": None})
+    assert released_again["sample_manifest"] is None
+    assert released_again["value_sources"]["sample_manifest"] == "explicit_update"

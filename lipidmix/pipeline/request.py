@@ -106,9 +106,41 @@ _COMPARISON_DEFAULTS = {
 
 _DEFAULT_TIMEOUT_S = 21600  # 既存Consoleの既定（common-context.md）に合わせる
 
+#: 明示nullで「無効化」を表せるトップレベルの省略可フィールドはこの1つだけ
+#: （sample_manifest: 明示シートを解除し自動一覧生成へ切り替える）。
+#: preprocess.blank_min_fold/max_qc_rsdは``_validate_preprocess``側で別途許可する。
+#: （controller裁定R13、spec l.246「nullが無効化を意味する設定だけで許可する」/
+#: l.421「他の不許可なnullはエラーにする」）。
+_NULL_ALLOWED_TOP_LEVEL_KEYS = frozenset({"sample_manifest"})
+
+#: 省略（未指定）は既定値扱いだが、明示nullを渡すとエラーになるトップレベル
+#: フィールド。method_file等は「未確定」を``None``で表すが、それは省略時の
+#: 既定値であって、明示nullを同じ意味で受け付けてよい理由にはならない
+#: ——nullは「無効化」を意味する設定だけの特別な語彙（上のR13）。
+_NULL_REJECTED_TOP_LEVEL_KEYS = frozenset({
+    "method_file", "lbm_file", "polarity", "keep_extension", "output_root",
+    "comparisons",
+})
+
 
 def _fail(message: str, **details) -> None:
     raise DomainError("PIPELINE_REQUEST_INVALID", message, details)
+
+
+def _reject_disallowed_explicit_null(source: dict, keys) -> None:
+    """``keys``のうち``source``に存在し、値が明示的に``None``のものを拒否する。
+
+    キー自体が``source``に無い場合（＝未指定）は素通りする——未指定と明示null
+    の区別（spec l.246/421、controller裁定R13）そのものがこの関数の核心。
+    そのため呼び出し側は「キーが存在したかどうか」を保っている生の入力
+    （``resolve_request``の``explicit``辞書、``merge_updates``の``updates``
+    辞書）を渡す必要がある。既に全キーがそろっている検証済みdataを渡しても、
+    そこでは省略も明示nullも同じ``None``に潰れていて区別できない。
+    """
+    for key in keys:
+        if key in source and source[key] is None:
+            _fail(f"{key}に明示nullは許可されません（無効化を意味しない設定のため、"
+                  f"未指定にしてください）。", **{key: None})
 
 
 def _is_finite_number(value: object) -> bool:
@@ -402,6 +434,10 @@ def resolve_request(source_root: Path, explicit: dict | None = None) -> dict:
     if unknown:
         _fail(f"未知のキーがあります: {sorted(unknown)}", unknown_keys=sorted(unknown))
 
+    # 未指定(キー無し)と明示null(値がNone)の区別はここでしか付かない
+    # ——このあとdataを組み立てる時点で両者は同じNoneへ潰れる(R13)。
+    _reject_disallowed_explicit_null(explicit, _NULL_REJECTED_TOP_LEVEL_KEYS)
+
     data = {
         "schema": explicit.get("schema", SCHEMA),
         "target": explicit.get("target", "auto"),
@@ -442,6 +478,9 @@ def merge_updates(request: dict, updates: dict) -> dict:
     """
     if set(updates) - UPDATABLE:
         raise DomainError("NEW_PIPELINE_REQUIRED", "上流条件の変更には新しい解析が必要です")
+    # UPDATABLE個の中で明示nullが不許可なのはcomparisonsだけ(R13)——
+    # sample_manifestは無効化として許可、preprocessは子キー単位で別途扱う。
+    _reject_disallowed_explicit_null(updates, _NULL_REJECTED_TOP_LEVEL_KEYS & UPDATABLE)
     out = copy.deepcopy(request)
     for key, value in updates.items():
         if key == "preprocess":
