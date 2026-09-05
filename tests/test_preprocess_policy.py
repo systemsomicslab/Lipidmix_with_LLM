@@ -149,6 +149,57 @@ def test_two_qc_pools_disables_auto_and_rejects_explicit_pqn():
     assert exc.value.code == "PREPROCESS_PREREQUISITE_MISSING"
 
 
+def test_explicit_pqn_with_zero_qc_is_prerequisite_missing():
+    """参照に使える健全なQCが1件も無い明示PQNは実施不能として止める(spec §8.2)。
+
+    pool_ambiguous には触れない条件（QCが1件も無ければpoolも定義しようがない）
+    で、n_qc==0 だけを理由にPREPREQUISITE_MISSINGになることを確認する。
+    """
+    ds = make_dataset()
+    rows = metadata_rows(ds, n_qc=0)
+    with pytest.raises(DomainError) as exc:
+        resolve_policy(ds, {"normalize": "pqn"}, rows)
+    assert exc.value.code == "PREPROCESS_PREREQUISITE_MISSING"
+
+
+@pytest.mark.parametrize("n_qc", [1, 2])
+def test_explicit_pqn_with_insufficient_qc_proceeds_and_records_shortfall(n_qc):
+    """auto閾値(3件)未満のQCでも明示PQNは実施するが、不足を記録する(spec §8.1/8.2)。
+
+    「実施しない」ではなく「実施した上でQC補正済みと誤認させない」ことが論点
+    なので、raiseしないこと・resolved_recipeがpqnのままであること・assumptions
+    に不足件数と対象sample_idが載ることの3点を確認する。
+    """
+    ds = make_dataset()
+    rows = metadata_rows(ds, n_qc=n_qc)
+    plan = resolve_policy(ds, {"normalize": "pqn"}, rows)
+    assert plan["resolved_recipe"]["normalize"] == "pqn"
+    weak = plan["assumptions"]["normalize_weak_qc_reference"]
+    assert weak["n_qc"] == n_qc
+    assert weak["sample_ids"] == [f"S{i}" for i in range(n_qc)]
+    assert "normalize" in plan["reasons"]
+
+
+def test_explicit_pqn_with_failed_qc_proceeds_and_names_affected_samples():
+    """健全なQCが3件以上あっても、失敗疑いのQCを含んだままの明示PQNは記録する。
+
+    n_qc=4(auto閾値以上)なので「件数不足」ではなく「健全性」だけが理由になる
+    ケースを、既存test_failed_qc_disables_auto_qc_stepsと同じ壊し方(S0の総強度を
+    1/10以下に落とす)で作る。対象sample_id(S0)がassumptionsへ載ることを確認する
+    —— これが無いと品質レポートは「QC補正済み」と誤認させ得る(spec §8.2)。
+    """
+    ds = make_dataset()
+    ds.feature_matrix = ds.feature_matrix.copy()
+    ds.feature_matrix[:, 0] *= 0.01
+    rows = metadata_rows(ds)  # n_qc既定4 → 件数条件は満たす
+    plan = resolve_policy(ds, {"normalize": "pqn"}, rows)
+    assert plan["resolved_recipe"]["normalize"] == "pqn"
+    weak = plan["assumptions"]["normalize_weak_qc_reference"]
+    assert weak["n_qc"] == 4  # 件数自体はauto閾値を満たしている
+    assert "S0" in weak["failed_qc"]
+    assert "normalize" in plan["reasons"]
+
+
 def test_failed_qc_disables_auto_qc_steps():
     ds = make_dataset()
     # QC(S0)の総強度をQC中央値の1/10以下へ落とす(detect_failed_qcが失敗判定する)。

@@ -200,6 +200,7 @@ def resolve_policy(ds, requested: dict, metadata: list[dict]) -> dict:
         skipped_steps.append(step)
 
     resolved = dict(requested_recipe)
+    assumptions_normalize_weak: dict | None = None
 
     # ---------- normalize ----------
     normalize_req = requested_recipe["normalize"]
@@ -213,14 +214,52 @@ def resolve_policy(ds, requested: dict, metadata: list[dict]) -> dict:
                 batch_ok=batch_ok, same_pool=same_pool, pool_ambiguous=pool_ambiguous,
                 n_qc=n_qc, min_qc=_MIN_QC_FOR_NORMALIZE, failed_qc=failed_qc))
     elif normalize_req == "pqn":
-        # 明示PQNは可能——ただし複数poolを単一QC参照にする指定だけは拒否する
-        # （spec §8.1「異poolを単一QC参照にする要求は拒否する」）。
+        # 明示PQNは可能——拒否するのは次の2つだけ:
+        #   (1) 複数poolを単一QC参照にする指定（spec §8.1「異poolを単一QC参照に
+        #       する要求は拒否する」）。
+        #   (2) 参照に使えるQCがinclude対象に1件も無い（preprocessing.normalize()
+        #       の pqn 分岐は QC 行が0件だと全サンプル中央値へ無言でフォール
+        #       バックする——「PQN(QC参照)を要求したのに実際は全サンプル参照で
+        #       計算した」という乖離を防ぐため、これは実施不能として止める。
+        #       spec §8.2「明示的に要求した処理を実施できなければneeds_input」）。
+        # batch未確認・QC不健全・QC件数がauto閾値未満は拒否しない
+        # （spec §8.1本文は明示指定の拒否条件をpool曖昧性だけに絞っている。
+        # brief step3の「QC不足の明示補正はPREPREQUISITE_MISSING」という一般則は
+        # drift_correct/max_qc_rsd等の「補正」系に対する記述で、normalizeには
+        # 及ばないとcontroller裁定R14で確認済み——docs/task-11-report.md参照）。
         if pool_ambiguous:
             _prerequisite_missing(
                 "normalize",
                 "複数のQC poolを単一のQC参照として扱うPQN正規化は要求できません。",
                 qc_pools=sorted(qc_pool_values))
+        if n_qc == 0:
+            _prerequisite_missing(
+                "normalize",
+                "PQN正規化の参照に使える健全なQCがinclude対象に1件もありません。",
+                n_qc=n_qc)
         resolved["normalize"] = "pqn"
+        # auto方針が要求する健全QC件数(3件以上)未満、または失敗疑いのQCを含んだ
+        # ままの明示PQNは、実施はするが「QC補正済み」という誤った含意を避けるため
+        # 対象を記録する（spec §8.1「失敗疑いのQCがある場合…対象sample_idを報告
+        # する」、spec §8.2「『QC補正済み』等の誤った表現をしない」）。
+        if n_qc < _MIN_QC_FOR_NORMALIZE or failed_qc:
+            qc_sample_ids = [name for name, row in included if row.get("role") == "qc"]
+            weak_parts = []
+            if n_qc < _MIN_QC_FOR_NORMALIZE:
+                weak_parts.append(f"健全なQCが{_MIN_QC_FOR_NORMALIZE}件未満です(n_qc={n_qc})")
+            if failed_qc:
+                weak_parts.append(f"失敗疑いのQCを含んだまま続行します: {', '.join(failed_qc)}")
+            reasons["normalize"] = (
+                "明示PQN正規化は条件不足のまま続行しました（"
+                + "、".join(weak_parts)
+                + "）。QC補正済みとはみなせません。"
+            )
+            assumptions_normalize_weak = {
+                "n_qc": n_qc,
+                "min_qc_for_auto": _MIN_QC_FOR_NORMALIZE,
+                "failed_qc": list(failed_qc),
+                "sample_ids": qc_sample_ids,
+            }
     else:
         # tic/median/none の明示はQC前提を問わずそのまま反映する。
         resolved["normalize"] = normalize_req
@@ -317,6 +356,11 @@ def resolve_policy(ds, requested: dict, metadata: list[dict]) -> dict:
         "order_confirmed_all": order_confirmed_all,
         "all_samples_enclosed": all_samples_enclosed,
     }
+    if assumptions_normalize_weak is not None:
+        # 明示PQNがauto閾値未満のQC件数・失敗疑いQCを抱えたまま続行した記録
+        # （spec §8.1「失敗疑いのQCがある場合…対象sample_idを報告する」、
+        # spec §8.2「『QC補正済み』等の誤った表現をしない」）。
+        assumptions["normalize_weak_qc_reference"] = assumptions_normalize_weak
 
     return {
         "requested_recipe": requested_recipe,
