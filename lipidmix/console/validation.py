@@ -103,13 +103,18 @@ def _artifact_abs_path(job: AnalysisJob, root: str, rel: str) -> Path:
 
 
 def _envelope(errors: list[str], warnings: list[str], primary_path: str | None,
-              sample_map: dict[str, str]) -> dict:
+              sample_map: dict[str, str], structure_errors: list[str] | None = None) -> dict:
     return {
         "ok": len(errors) == 0,
         "errors": errors,
         "warnings": warnings,
         "primary_path": primary_path,
         "sample_map": sample_map,
+        # validate_mztabが返す日本語の人間可読な構造エラー文。errorsには
+        # MZTAB_STRUCTURE_INVALID という安定コードしか積まないため、生の文面は
+        # ここで読める（lipidmix.tools.mztab_tools._validate_or_errorのdetailsと
+        # 同じ「コードは安定、詳細は別枠」という方針）。
+        "structure_errors": structure_errors or [],
     }
 
 
@@ -118,12 +123,17 @@ def validate_outputs(job: AnalysisJob, receipt: dict, expected_sources: list[str
 
     以下のいずれかでも該当すれば `ok=False`:
       - 主mzTab候補が0件または複数件（一意に選べない）
-      - mzTab-Mの構造検証（validate_mztab）が失敗
+      - mzTab-Mの構造検証（validate_mztab）が失敗（`MZTAB_STRUCTURE_INVALID`）
       - 定量行列が空、または有限値が1件もない
       - ファイル名/MTDから読める定量種別がjob宣言と致命的に矛盾する
       - アダクト多数決の極性がjob宣言と矛盾する
       - 予定した準備済みraw(`expected_sources`)とassayの対応が1対1でない
         （欠落・重複・予期しない追加）
+
+    `errors`は常にSCREAMING_SNAKE_CASEの安定コードのみを持つ（Task 4の
+    `supervise()`/Task 7の`load_dataset_state`が`"CODE" in result["errors"]`で
+    機械的に分岐する契約）。`validate_mztab`が返す日本語の人間可読な構造エラー文は
+    `errors`へ生で混ぜず、戻り値の`structure_errors`で読める。
 
     `receipt`は現状exit_code/terminationを直接は使わない（`completion_status`が
     別途扱う）。実行証跡由来の追加検査を将来足す余地として引数に残す。
@@ -145,7 +155,15 @@ def validate_outputs(job: AnalysisJob, receipt: dict, expected_sources: list[str
     primary_path = str(abs_path)
     parsed = parse_mztab(abs_path)
     structure = validate_mztab(parsed)
-    errors.extend(structure["errors"])
+    structure_errors = structure["errors"]
+    # validate_mztabの戻り値は日本語の人間可読な文（例:「SMF セクションが
+    # 存在しないか行が0件です」）で、SCREAMING_SNAKE_CASEのコードではない。
+    # これをそのままerrorsへ混ぜると、Task 4のsupervise()/Task 7の
+    # load_dataset_stateが"CODE" in errorsで機械的に分岐できなくなる
+    # （mztab_tools._validate_or_errorのMZTAB_STRUCTURE_INVALIDと同じ方針で
+    # 一つの安定コードに畳み、生の文面はstructure_errorsへ逃がす）。
+    if structure_errors:
+        errors.append("MZTAB_STRUCTURE_INVALID")
     warnings.extend(structure["warnings"])
 
     matrix, _sample_names, _feature_ids = extract_abundance_matrix(parsed)
@@ -176,7 +194,7 @@ def validate_outputs(job: AnalysisJob, receipt: dict, expected_sources: list[str
     if duplicated:
         errors.append("SAMPLE_MAPPING_DUPLICATE")
 
-    return _envelope(errors, warnings, primary_path, sample_map)
+    return _envelope(errors, warnings, primary_path, sample_map, structure_errors)
 
 
 def completion_status(receipt: dict, validation: dict, has_artifacts: bool) -> str:

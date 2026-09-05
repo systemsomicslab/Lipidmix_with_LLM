@@ -316,6 +316,42 @@ def test_validate_outputs_fails_on_empty_numeric_matrix(tmp_path):
     assert "EMPTY_ABUNDANCE_MATRIX" in result["errors"]
 
 
+def test_validate_outputs_structure_errors_are_stable_codes_not_raw_prose(tmp_path):
+    """validate_mztabの日本語エラー文をerrorsへ生で混ぜない。
+
+    Task 4のsupervise()やTask 7のload_dataset_stateはerrorsを文字列比較で分岐する
+    契約なので、errorsはSCREAMING_SNAKE_CASEの安定コードのみを持つ必要がある
+    （PRIMARY_MZTAB_MISSING等と同じ形）。validate_mztabの人間可読な日本語文は
+    捨てずに`structure_errors`で読める。
+    """
+    import re
+    from lipidmix.console.validation import validate_outputs
+
+    raw = tmp_path / "raw" / "S1.raw"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_bytes(b"\x00")
+    job = _job(tmp_path)
+    mztab_path = Path(job.run_dir) / "AlignResult-1.mzTab"
+    uri = raw.resolve().as_uri()
+    # SMF行が1件も無い＝validate_mztabが構造エラー（日本語の人間可読文）を返す
+    content = textwrap.dedent(f"""\
+        MTD\tmzTab-version\t2.0.0-M
+        MTD\tms_run[1]-location\t{uri}
+        MTD\tassay[1]-ms_run_ref\tms_run[1]
+        SFH\tSMF_ID\tabundance_assay[1]
+    """)
+    mztab_path.write_text(content, encoding="utf-8")
+
+    result = validate_outputs(job, execution_record(), [str(raw)])
+
+    assert result["ok"] is False
+    assert "MZTAB_STRUCTURE_INVALID" in result["errors"]
+    for code in result["errors"]:
+        assert re.match(r"^[A-Z][A-Z0-9_]*$", code), f"raw prose leaked into errors: {code!r}"
+    # 日本語の人間可読文は破棄されず structure_errors から読める
+    assert any("SMF" in e for e in result["structure_errors"])
+
+
 def test_validate_outputs_fails_on_all_nan_matrix(tmp_path):
     """特徴量はあるが全欠損（有限値なし）はok=false。"""
     from lipidmix.console.validation import validate_outputs
