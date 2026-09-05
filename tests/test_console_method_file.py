@@ -19,6 +19,8 @@ import pytest
 
 from lipidmix.console.method_file import (
     LbmResolution,
+    MethodCandidate,
+    extract_key_params,
     find_lbm_files,
     find_method_candidates,
     read_method_keys,
@@ -368,3 +370,42 @@ def test_resolve_lbm_method_file_declaration_still_beats_the_build_tree(tmp_path
                       omics="lipidomics", exe_path=str(exe), env={})
     assert res.source == "method_file"
     assert Path(res.path) == declared
+
+
+# ---------- key_params ----------
+
+def test_extract_key_params_keeps_only_the_decision_relevant_keys():
+    keys = {"ion mode": "Positive", "target omics": "Lipidomics",
+            "minimum peak height": "1000", "smoothing level": "3",
+            "ms1 tolerance for centroid": "0.01"}
+    out = extract_key_params(keys)
+    assert out == {"Ion mode": "Positive", "Target omics": "Lipidomics",
+                   "Minimum peak height": "1000",
+                   "MS1 tolerance for centroid": "0.01"}
+
+
+def test_extract_key_params_uses_the_spelling_from_the_real_param_file():
+    """実ファイルの綴りは `MS1 mass range begin`。`Mass range begin` ではない。"""
+    keys = {"ms1 mass range begin": "0", "ms1 mass range end": "2000",
+            "retention time tolerance for alignment": "0.1",
+            "ms1 tolerance for alignment": "0.015"}
+    assert set(extract_key_params(keys)) == {
+        "MS1 mass range begin", "MS1 mass range end",
+        "Retention time tolerance for alignment", "MS1 tolerance for alignment"}
+
+
+def test_extract_key_params_summarises_the_adduct_list():
+    """POS の実値は 37 種・約 700 文字。候補 10 件で 7 KB になるので要約する。"""
+    adducts = ",".join(["[M+H]+", "[M+NH4]+", "[M+Na]+"] + [f"[M+X{i}]+" for i in range(34)])
+    out = extract_key_params({"searched adduct ions": adducts})
+    assert out["Searched adduct ions"] == "37 種（先頭: [M+H]+, [M+NH4]+, [M+Na]+）"
+
+
+def test_extract_key_params_omits_absent_keys():
+    assert extract_key_params({"ion mode": "Negative"}) == {"Ion mode": "Negative"}
+
+
+def test_method_candidate_defaults_keep_existing_callers_working():
+    c = MethodCandidate(path="p", ion_mode="positive", omics="lipidomics",
+                        has_lbm=False, mtime=0.0)
+    assert (c.origin, c.usable, c.key_params) == ("same_dir", "direct", None)

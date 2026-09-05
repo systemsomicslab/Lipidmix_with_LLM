@@ -89,6 +89,53 @@ class MethodCandidate:
     omics: str | None
     has_lbm: bool
     mtime: float
+    # どこで見つかったか。UI のグルーピングと、同じパスが二重に出たときの優先に使う。
+    origin: str = "same_dir"          # same_dir | sibling | past_run | given
+    # 求める極性に対してそのまま使えるか。別極性は console_method_template を経由させる。
+    usable: str = "direct"            # direct | needs_polarity_conversion
+    key_params: dict[str, str] | None = None
+
+
+# 候補どうしの差を読むのに要る少数キー。全キー（実測 287 行 / 11.7 KB）を候補ごとに
+# 返すと戻り値が肥大する。綴りは実ファイル（param_POS_generated.txt）準拠。
+KEY_PARAM_KEYS: tuple[str, ...] = (
+    "Ion mode",
+    "Target omics",
+    "Minimum peak height",
+    "Retention time begin",
+    "Retention time end",
+    "MS1 mass range begin",
+    "MS1 mass range end",
+    "MS1 tolerance for centroid",
+    "Retention time tolerance for alignment",
+    "MS1 tolerance for alignment",
+    "Searched adduct ions",
+)
+
+# これを超える候補数では key_params を付けない。比較表は絞ってから引き直す。
+KEY_PARAMS_MAX_CANDIDATES = 10
+
+_ADDUCT_PREVIEW = 3
+
+
+def extract_key_params(method_keys: dict[str, str]) -> dict[str, str]:
+    """判断に効くキーだけを、実ファイルの綴りで取り出す。
+
+    `Searched adduct ions` は POS の実値が 37 種・約 700 文字あるので要約する。
+    極性の違いは先頭 3 種で判別できる。
+    """
+    out: dict[str, str] = {}
+    for key in KEY_PARAM_KEYS:
+        value = method_keys.get(key.lower())
+        if value is None or value == "":
+            continue
+        if key == ADDUCT_KEY:
+            items = [t.strip() for t in value.split(",") if t.strip()]
+            head = ", ".join(items[:_ADDUCT_PREVIEW])
+            out[key] = f"{len(items)} 種（先頭: {head}）"
+        else:
+            out[key] = value
+    return out
 
 
 def read_method_keys(path: Path) -> dict[str, str]:
