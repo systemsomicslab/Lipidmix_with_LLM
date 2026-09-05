@@ -124,3 +124,38 @@ def test_template_output_then_plans_cleanly(tmp_path, monkeypatch):
     parsed = _json.loads(console_plan(dataset_root=str(data), method_file=str(out),
                                       polarity="positive", measure="peak_height"))
     assert parsed["status"] == "planned"
+
+
+def test_template_finds_a_sibling_folder_when_based_on_is_omitted(tmp_path, monkeypatch):
+    """実データの形。POS のフォルダには何も無く、隣の NEG に GUI 由来のものがある。"""
+    from lipidmix.tools.console_tools import console_method_template
+    _ready(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    data.mkdir()
+    neg = tmp_path / "NEG"
+    neg.mkdir()
+    _neg_param(neg / "Dataset_2026_param_202605151055.txt")
+
+    parsed = _json.loads(console_method_template(
+        out_path=str(tmp_path / "param_POS.txt"), polarity="positive",
+        dataset_root=str(data)))
+    assert parsed["status"] == "written"
+    assert Path(parsed["based_on"]).name == "Dataset_2026_param_202605151055.txt"
+
+
+def test_template_asks_which_base_when_several_exist(tmp_path, monkeypatch):
+    """土台の選択は解析条件そのもの。mtime 順の最新を黙って採らない。"""
+    from lipidmix.tools.console_tools import console_method_template
+    _ready(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    data.mkdir()
+    neg = tmp_path / "NEG"
+    neg.mkdir()
+    _neg_param(neg / "a_param_1.txt")
+    _neg_param(neg / "b_param_2.txt")
+
+    parsed = _json.loads(console_method_template(
+        out_path=str(tmp_path / "param_POS.txt"), polarity="positive",
+        dataset_root=str(data)))
+    assert parsed["error"]["code"] == "METHOD_FILE_CHOICE_REQUIRED"
+    assert len(parsed["error"]["details"]["candidates"]) == 2

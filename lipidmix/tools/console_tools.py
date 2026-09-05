@@ -603,14 +603,27 @@ def console_method_template(
     if based_on:
         src = Path(based_on).expanduser()
     elif dataset_root:
-        candidates = method_file_mod.find_method_candidates([Path(dataset_root).expanduser()])
+        # 極性で絞らない。「別極性から作る」のがこのツールの用途なので、
+        # polarity=None のまま候補を集める。
+        candidates, searched = method_file_mod.discover_method_candidates(
+            Path(dataset_root).expanduser(), polarity=None, omics=omics)
         if not candidates:
             return console_error(
                 "METHOD_FILE_NOT_GIVEN",
                 "元にできるパラメータファイル（`*_param_<ts>.txt`）が見つかりません: "
-                f"{dataset_root}  MS-DIAL GUI で一度も解析していないフォルダには存在しません。"
+                f"{dataset_root}  MS-DIAL GUI で一度も解析していないフォルダには"
+                "存在しません（兄弟フォルダと過去 run も探しました）。"
                 "他のデータセットのパラメータを based_on で明示してください。",
-                {"dataset_root": dataset_root})
+                {"dataset_root": dataset_root, "searched": searched})
+        if len(candidates) > 1:
+            return console_error(
+                "METHOD_FILE_CHOICE_REQUIRED",
+                f"元にできる候補が {len(candidates)} 件あります。based_on で 1 つ"
+                "選んでください。検出・アライメント条件は選んだファイルのものが"
+                "そのまま引き継がれるため、どれを土台にするかは解析条件の選択です。",
+                {"dataset_root": dataset_root, "searched": searched,
+                 "candidates": [_candidate_payload(c) for c in candidates]},
+                required_tools=["console_method_template"])
         src = Path(candidates[0].path)
     else:
         return console_error("METHOD_FILE_NOT_GIVEN",

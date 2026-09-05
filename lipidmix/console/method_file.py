@@ -21,11 +21,6 @@ MS-DIAL 5 の GUI と Console は、脂質ライブラリ（LBM）の持ち方�
 この層は GUI と同じ規則を再現して段差を埋める。**GUI が拒否する状況でだけ拒否する**
 （アプリフォルダの `*.lbm?` がちょうど 1 件でなければ GUI も MessageBox で止める。
 `DatasetParameterSettingModel.Prepare`）。
-
-もう一方の `find_method_candidates` は、GUI が実行のたびに自動保存する
-`<project>_param_<endtimestamp>.txt`（`MethodModelBase.AutoParametersSave`。
-ASCII の `key: value`＝Console が読める形式）を探す。ユーザーは手動エクスポートを
-しなくてよい。
 """
 from __future__ import annotations
 
@@ -342,31 +337,6 @@ def scan_dir_for_method_files(directory: Path, origin: str) -> list[MethodCandid
             mtime=p.stat().st_mtime,
             origin=origin,
         ))
-    return out
-
-
-def find_method_candidates(
-    directories, polarity: str | None = None, omics: str | None = None,
-) -> list[MethodCandidate]:
-    """既存の自動保存パラメータ（`*_param_<ts>.txt`）を新しい順に返す。
-
-    GUI は解析のたびに `MethodModelBase.AutoParametersSave` でこれを
-    プロジェクトフォルダへ書く。ASCII の `key: value` なので Console がそのまま読める。
-    """
-    seen: set[Path] = set()
-    out: list[MethodCandidate] = []
-    for directory in directories:
-        for candidate in scan_dir_for_method_files(Path(directory), "same_dir"):
-            resolved = Path(candidate.path).resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            if polarity is not None and candidate.ion_mode != polarity:
-                continue
-            if omics is not None and candidate.omics != omics:
-                continue
-            out.append(candidate)
-    out.sort(key=lambda c: c.mtime, reverse=True)
     return out
 
 

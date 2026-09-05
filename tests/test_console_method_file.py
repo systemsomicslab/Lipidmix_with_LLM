@@ -24,7 +24,6 @@ from lipidmix.console.method_file import (
     discover_method_candidates,
     extract_key_params,
     find_lbm_files,
-    find_method_candidates,
     method_search_dirs,
     past_run_method_files,
     read_method_keys,
@@ -188,7 +187,12 @@ def test_resolve_lbm_not_required_for_metabolomics(tmp_path):
     assert res.path is None
 
 
-# ---------- find_method_candidates ----------
+# ---------- find_method_candidates の behavior 移行先 ----------
+# find_method_candidates は極性不一致を「落とす」挙動を持っていたが、それは
+# discover_method_candidates が意図的に変えた点そのもの（needs_polarity_conversion
+# として提示する）。ここでは find_method_candidates 固有だった他の挙動
+# （自動保存パラメータの発見・mtime 順・has_lbm・重複排除・バイナリのスキップ）を
+# discover_method_candidates / scan_dir_for_method_files に対して migrate する。
 
 def _param(dir_: Path, name: str, ion_mode: str, *, lbm: str = "", omics: str = "Lipidomics"):
     p = dir_ / name
@@ -198,49 +202,49 @@ def _param(dir_: Path, name: str, ion_mode: str, *, lbm: str = "", omics: str = 
     return p
 
 
-def test_find_method_candidates_finds_auto_saved_param_files(tmp_path):
+def test_discover_finds_auto_saved_param_files(tmp_path):
     """GUI は実行のたびに `<project>_param_<endtimestamp>.txt` を自動保存する。"""
-    _param(tmp_path, "Dataset_2026_05_15_param_202605151055.txt", "Negative")
-    (tmp_path / "unrelated.txt").write_text("hello\n", encoding="ascii")
-    found = find_method_candidates([tmp_path])
+    root = tmp_path / "POS"
+    root.mkdir()
+    _param(root, "Dataset_2026_05_15_param_202605151055.txt", "Negative")
+    (root / "unrelated.txt").write_text("hello\n", encoding="ascii")
+    found, _searched = discover_method_candidates(root, polarity=None)
     assert [Path(c.path).name for c in found] == ["Dataset_2026_05_15_param_202605151055.txt"]
     assert found[0].ion_mode == "negative"
 
 
-def test_find_method_candidates_filters_by_polarity(tmp_path):
-    _param(tmp_path, "a_param_1.txt", "Negative")
-    _param(tmp_path, "b_param_2.txt", "Positive")
-    found = find_method_candidates([tmp_path], polarity="positive")
-    assert [Path(c.path).name for c in found] == ["b_param_2.txt"]
-
-
-def test_find_method_candidates_sorts_newest_first(tmp_path):
-    old = _param(tmp_path, "old_param_1.txt", "Positive")
-    new = _param(tmp_path, "new_param_2.txt", "Positive")
+def test_discover_sorts_newest_first_within_the_same_usable_group(tmp_path):
+    """usable が揃う候補どうしは mtime の新しい順。"""
+    root = tmp_path / "POS"
+    root.mkdir()
+    old = _param(root, "old_param_1.txt", "Positive")
+    new = _param(root, "new_param_2.txt", "Positive")
     import os
     os.utime(old, (time.time() - 5000, time.time() - 5000))
-    found = find_method_candidates([tmp_path], polarity="positive")
+    found, _searched = discover_method_candidates(root, polarity="positive")
     assert [Path(c.path).name for c in found] == [new.name, old.name]
 
 
-def test_find_method_candidates_reports_missing_lbm(tmp_path):
+def test_scan_dir_for_method_files_reports_missing_lbm(tmp_path):
     _param(tmp_path, "a_param_1.txt", "Positive", lbm="")
     _param(tmp_path, "b_param_2.txt", "Positive", lbm="C:\\x.lbm2")
-    by_name = {Path(c.path).name: c for c in find_method_candidates([tmp_path])}
+    by_name = {Path(c.path).name: c for c in scan_dir_for_method_files(tmp_path, "same_dir")}
     assert by_name["a_param_1.txt"].has_lbm is False
     assert by_name["b_param_2.txt"].has_lbm is True
 
 
-def test_find_method_candidates_deduplicates_overlapping_dirs(tmp_path):
-    _param(tmp_path, "a_param_1.txt", "Positive")
-    found = find_method_candidates([tmp_path, tmp_path])
+def test_discover_deduplicates_overlapping_dirs(tmp_path):
+    root = tmp_path / "POS"
+    root.mkdir()
+    _param(root, "a_param_1.txt", "Positive")
+    found, _searched = discover_method_candidates(root, polarity="positive", search_dirs=[root])
     assert len(found) == 1
 
 
-def test_find_method_candidates_skips_unreadable_binary(tmp_path):
+def test_scan_dir_for_method_files_skips_unreadable_binary(tmp_path):
     p = tmp_path / "bad_param_1.txt"
     p.write_bytes(b"\x00\x01\x02binary")
-    assert find_method_candidates([tmp_path]) == []
+    assert scan_dir_for_method_files(tmp_path, "same_dir") == []
 
 
 # ---------- write_effective_method_file ----------
