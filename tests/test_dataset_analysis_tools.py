@@ -234,3 +234,51 @@ def test_dataset_preprocess_reports_detection_when_available():
     ds.feature_qc = {"source": "arf"}
     payload = json.loads(dataset_preprocess(impute="none"))
     assert payload["detection"]["gap_filled_rate"] == 0.375
+
+
+# ---------- 結果 ID と無効化（Task 6） ----------
+# 前処理をやり直したのに古い差次的結果が残っていると、TSV と図が別々の前処理から
+# 出た数字を並べる。ツール層でもその境界が効いていることを確かめる。
+
+def test_tools_report_the_result_id_of_each_computation():
+    from lipidmix.tools.dataset_analysis_tools import (
+        dataset_differential, dataset_pca, dataset_preprocess)
+    ds = _load_ds()
+    pp = json.loads(dataset_preprocess())
+    a, b = _groups(ds)
+    pca = json.loads(dataset_pca(n_components=2))
+    diff = json.loads(dataset_differential(a, b))
+    assert pp["result_id"].startswith("res_")
+    assert len({pp["result_id"], pca["result_id"], diff["result_id"]}) == 3
+
+
+def test_repreprocessing_makes_the_previous_comparison_unavailable(tmp_path):
+    """古い結果を「直近の結果」として書き出させない。"""
+    from lipidmix.tools.dataset_analysis_tools import (
+        dataset_differential, dataset_export_differential, dataset_preprocess)
+    ds = _load_ds()
+    dataset_preprocess()
+    a, b = _groups(ds)
+    dataset_differential(a, b)
+    dataset_preprocess(normalize="tic")
+
+    parsed = json.loads(dataset_export_differential(str(tmp_path / "out.tsv")))
+
+    assert parsed["error"]["code"] == MISSING_STATE
+    assert parsed["error"]["required_tools"] == ["dataset_differential"]
+    assert not (tmp_path / "out.tsv").exists()
+
+
+def test_export_records_which_result_it_came_from(tmp_path):
+    from lipidmix.tools.dataset_analysis_tools import (
+        dataset_differential, dataset_export_differential, dataset_preprocess)
+    ds = _load_ds()
+    dataset_preprocess()
+    a, b = _groups(ds)
+    diff = json.loads(dataset_differential(a, b))
+    dataset_export_differential(str(tmp_path / "out.tsv"))
+
+    meta = [l for l in (tmp_path / "out.tsv").read_text(encoding="utf-8").splitlines()
+            if l.startswith("#")]
+    assert any(f"result_id = {diff['result_id']}" in l for l in meta)
+    assert any(l.startswith("# preprocess_id = res_") for l in meta)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -91,6 +92,23 @@ class DatasetState:
         # DatasetState 経路には未対応（次フェーズ）。
         self.last_pca = None
         self.last_differential = None
+
+        # --- 同一性と来歴（lipidmix/analysis/result_state.py が読み書きする） ---
+        # dataset_id: この DatasetState 実体の ID。結果の provenance が指す先で、
+        # 「別のデータセットで計算した結果」を持ち込ませないための鍵になる。
+        self.dataset_id: str = f"ds_{uuid.uuid4().hex}"
+        # metadata_revision: 実験情報（サンプルメタデータ）を適用するたびに増える。
+        self.metadata_revision: int = 0
+        # sample_metadata_rows: 明示的に与えられた実験情報シートの行（Task 9）。
+        # 無いうちは None で、役割・バッチはサンプル名からの推定に頼る。
+        self.sample_metadata_rows = None
+        # preprocess_id / preprocess_metadata_hash: 現在の前処理済み行列がどの計算から
+        # 出たか。派生結果（PCA・差次的解析）はこの ID を parent_ids に持つ。
+        self.preprocess_id: str | None = None
+        self.preprocess_metadata_hash: str | None = None
+        # results: result_id -> 結果全量。図・エクスポートが「どの結果か」を
+        # 名指しで選べるようにする（last_* は現在の既定を指すだけの別名）。
+        self.results: dict = {}
 
 
 def _sha256(path: str | Path) -> str:

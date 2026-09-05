@@ -73,7 +73,7 @@ def dataset_preprocess(
     if ds is None:
         return _missing("dataset", "DatasetState がありません。先に dataset_load を実行してください。")
 
-    from lipidmix.analysis.dataset_analysis import run_dataset_preprocess
+    from lipidmix.analysis.dataset_service import preprocess_dataset
 
     recipe = {
         "normalize": normalize,
@@ -84,27 +84,23 @@ def dataset_preprocess(
         "min_detection_rate": min_detection_rate,
     }
     try:
-        (pp_matrix, pp_sample_names, pp_feature_names,
-         roles, sample_meta, report) = run_dataset_preprocess(ds, recipe)
+        # 状態の差し替え（成功時のみの反映・派生結果の無効化・来歴の付与）は
+        # サービス側が持つ。ツールはそれを呼んで要約を返すだけにする——
+        # ここで直接 ds を書き換えると、pipeline ワーカー経由の実行と規則がずれる。
+        report = preprocess_dataset(ds, recipe)
     except PreconditionError as exc:
         return _from_precondition(exc)
 
-    ds.pp_matrix = pp_matrix
-    ds.pp_sample_names = pp_sample_names
-    ds.pp_feature_names = pp_feature_names
-    ds.roles = roles
-    ds.sample_meta = sample_meta
-    ds.preprocessing_recipe = recipe
-
     return json_payload({
         "status": "success",
-        "n_samples": len(pp_sample_names),
-        "n_features": len(pp_feature_names),
+        "result_id": report["provenance"]["result_id"],
+        "n_samples": len(ds.pp_sample_names),
+        "n_features": len(ds.pp_feature_names),
         "features_before": report.get("features_before"),
         "features_removed_total": report.get("features_removed_total"),
         "recipe_applied": report.get("recipe_applied", []),
         "excluded_from_matrix": report.get("excluded_from_matrix", {}),
-        "role_counts": _count_roles(roles, pp_sample_names),
+        "role_counts": _count_roles(ds.roles, ds.pp_sample_names),
         "steps": report.get("steps", {}),
         "caveats": report.get("caveats", []),
         "next": "dataset_pca または dataset_differential を実行してください",
@@ -128,16 +124,17 @@ def dataset_pca(n_components: int = 5, log_transform: bool = False) -> str:
     if ds is None:
         return _missing("dataset", "DatasetState がありません。先に dataset_load を実行してください。")
 
-    from lipidmix.analysis.dataset_analysis import run_dataset_pca
+    from lipidmix.analysis.dataset_service import pca_dataset
 
     try:
-        result = run_dataset_pca(ds, n_components=n_components, log_transform=log_transform)
+        result = pca_dataset(ds, n_components=n_components, log_transform=log_transform)
     except PreconditionError as exc:
         return _from_precondition(exc)
 
-    ds.last_pca = result
-    payload = {k: v for k, v in result.items() if k != "loadings"}
+    payload = {k: v for k, v in result.items()
+               if k not in ("loadings", "provenance")}
     payload["status"] = "success"
+    payload["result_id"] = result["provenance"]["result_id"]
     payload["loadings_note"] = (
         "ローディング全量（特徴量数 × 主成分数）は本要約に非同梱。"
         "セッションに保持しており、寄与特徴量が必要になったら別途取得します。")
@@ -171,13 +168,13 @@ def dataset_differential(
     if ds is None:
         return _missing("dataset", "DatasetState がありません。先に dataset_load を実行してください。")
 
-    from lipidmix.analysis.dataset_analysis import run_dataset_differential
+    from lipidmix.analysis.dataset_service import compare_dataset
 
     try:
-        result = run_dataset_differential(
+        result = compare_dataset(
             ds,
-            group_a_samples=group_a,
-            group_b_samples=group_b,
+            group_a,
+            group_b,
             q_threshold=q_threshold,
             log2fc_threshold=log2fc_threshold,
             log_transform=log_transform,
@@ -187,10 +184,10 @@ def dataset_differential(
     except PreconditionError as exc:
         return _from_precondition(exc)
 
-    ds.last_differential = result
-
-    payload = {k: v for k, v in result.items() if k not in ("results", "volcano")}
+    payload = {k: v for k, v in result.items()
+               if k not in ("results", "volcano", "provenance")}
     payload["status"] = "success"
+    payload["result_id"] = result["provenance"]["result_id"]
     payload["differential_contract_version"] = result["contract_version"]
     payload["results_note"] = (
         "全特徴の結果と volcano 点列は本要約に非同梱（セッション保持）。"
@@ -227,6 +224,15 @@ def dataset_export_differential(output_path: str) -> str:
         return _missing(
             "dataset_differential_result",
             "直近の差次的結果は現行エクスポート契約と互換性がありません。"
+            "dataset_differential を再実行してください。")
+
+    from lipidmix.analysis.result_state import is_current
+    if not is_current(ds, last):
+        # 前処理をやり直した後の古い結果。書き出すと、TSV の数字と現在の
+        # 前処理済み行列が別物になる（読み手には見分けがつかない）。
+        return _missing(
+            "dataset_differential_result",
+            "直近の差次的結果は現在の前処理から出たものではありません。"
             "dataset_differential を再実行してください。")
 
     q_threshold = last["q_threshold"]
@@ -286,6 +292,8 @@ def dataset_export_differential(output_path: str) -> str:
             f"# source_mztab = {'; '.join(ds.source_files) or ''}",
             f"# source_job = {ds.job_path or ''}",
             "# id_space = mztab_smf_id",
+            f"# result_id = {(last.get('provenance') or {}).get('result_id', '')}",
+            f"# preprocess_id = {ds.preprocess_id or ''}",
         ],
         preprocess_line=f"# preprocess = {ds.preprocessing_recipe}",
     )

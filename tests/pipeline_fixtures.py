@@ -146,3 +146,29 @@ def mztab_text(tmp_path: Path, sources) -> str:
     text = write_mztab(scratch, list(sources)).read_text(encoding="utf-8")
     scratch.unlink()
     return text
+
+
+# ---------- DatasetState ----------
+
+def make_dataset():
+    """解析サービスのテスト用に、8 検体 × 6 特徴の DatasetState を作る。
+
+    実 mzTab を読まずに済ませる（実データ・既存成果物を fixture にしない方針）。
+    値は固定 seed の一様乱数で、前処理・PCA・2 群比較が実際に走る規模にしてある。
+    """
+    import numpy as np
+
+    from lipidmix.mztab.dataset_state import DatasetState
+    ds = DatasetState()
+    ds.feature_matrix = np.random.default_rng(7).uniform(100, 200, (6, 8))
+    ds.sample_names = [f"S{i}" for i in range(8)]
+    ds.sample_assay_ids = [f"assay[{i + 1}]" for i in range(8)]
+    ds.feature_ids = [f"F{i}" for i in range(6)]
+    ds.quantification_measure = "peak_height"
+    ds.validation_result = {"ok": True, "errors": [], "warnings": []}
+    ds.feature_metadata = {f"F{i}": {"name": f"Lipid {i}", "mz": 500 + i,
+                                     "rt": 2.0,
+                                     "inchikey": "IPCSVZSSVZVIGE-UHFFFAOYSA-N",
+                                     "inchikey_source": "database_identifier"}
+                           for i in range(6)}
+    return ds
