@@ -26,7 +26,13 @@ from lipidmix.handoff.schema import Artifact, MztabEntry, sha256_file
 # ジョブ運用のためにランディレクトリへ書かれるファイル。MS-DIAL の生成物ではない。
 # msdial.log は run_msdial が必ず作るため、除外しないと「出力ゼロ」を検出できない。
 # analysis-job.json は実行中に status 遷移で書き換わるため、差分に混入する。
-_OPERATIONAL_FILES = frozenset({"msdial.log", "analysis-job.json"})
+# execution-result.json / worker.json / control.json は監視ワーカー（Task 2/4）が
+# 書く終了証跡・監視状態・排他制御用のファイルで、これも MS-DIAL の生成物ではない。
+# 除外しないと completion 判定前の control ファイルが「出力」として誤収集される。
+_OPERATIONAL_FILES = frozenset({
+    "msdial.log", "analysis-job.json",
+    "execution-result.json", "worker.json", "control.json",
+})
 
 # dataset_root を撮るときに降りないディレクトリ名。job_manager の RUNS_SUBDIR と
 # 同じ値だが、収集層はジョブ管理を知らないままにしておくため定数を複製する。
