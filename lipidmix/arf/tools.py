@@ -945,7 +945,16 @@ def arf_differential(
         # （リテラルで複製すると CONTRACT_VERSION を上げたときここが追随せず、
         # arf_export_differential の互換性チェックに永遠に落ち続ける再現ループになる。
         # dataset_analysis.run_dataset_differential と同じ理由・同じ直し方）。
-        session_state.session.arf.last_differential = {"kind": "two_group", "a": group_a, "b": group_b,
+        from lipidmix.analysis.result_state import array_fingerprint, new_provenance
+        _arf = session_state.session.arf
+        _provenance = new_provenance(
+            _arf, kind="differential",
+            input_fingerprint=array_fingerprint(getattr(_arf, "feature_matrix", None)),
+            effective_parameters={"group_a": group_a, "group_b": group_b,
+                                  "q_threshold": q_threshold,
+                                  "log2fc_threshold": log2fc_threshold})
+        session_state.session.arf.last_differential = {"provenance": _provenance,
+                                       "kind": "two_group", "a": group_a, "b": group_b,
                                      "n_a": n_a, "n_b": n_b,
                                      "q_threshold": q_threshold,
                                      "log2fc_threshold": log2fc_threshold,

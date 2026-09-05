@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from pathlib import Path
@@ -379,20 +380,36 @@ class DatasetFigureFallbackTests(unittest.TestCase):
         self.assertIn("figures/ds-2_volcano.png", msg)
         self.assertIn("mztab", msg)
 
-    def test_arf_wins_when_both_paths_have_results(self):
-        """両方載っている場合は ARF を使い、その旨を明示する。"""
+    def _both_paths_have_pca(self):
         session_state.session.arf.last_pca_plot = {
             "title": "ARF", "x_label": "PC1", "y_label": "PC2",
             "points": [{"x": 0.0, "y": 0.0, "label": "arf-sample"}],
         }
         session_state.session.dataset.last_pca = {
-            "explained_variance_ratio": [0.9],
+            "explained_variance_ratio": [0.9, 0.05],
             "scores": [{"name": "ds-sample", "role": "sample", "PC1": 5.0, "PC2": 5.0}],
             "n_samples": 1, "n_features": 3, "log_transform": False,
         }
-        msg = server.save_pca_figure("both-1")
-        self.assertIn("arf", msg)
-        self.assertNotIn("mztab", msg)
+
+    def test_two_valid_results_stop_instead_of_picking_one(self):
+        """両方載っているときに黙って ARF を採ると、前のデータの図が保存される。
+
+        どちらを描くかは図の数字そのものを変える。優先順位を決め打ちすると、
+        それが暗黙の既定になって「なぜこの図なのか」を誰も説明できなくなる。
+        """
+        self._both_paths_have_pca()
+        parsed = json.loads(server.save_pca_figure("both-1"))
+        self.assertEqual(parsed["error"]["code"], "AMBIGUOUS_RESULT_SOURCE")
+        self.assertEqual(
+            sorted(c["source"] for c in parsed["error"]["details"]["candidates"]),
+            ["arf", "mztab"])
+        self.assertFalse((self.tmp / "reports" / "figures" / "both-1_pca.png").exists())
+
+    def test_an_explicit_source_resolves_the_ambiguity(self):
+        self._both_paths_have_pca()
+        msg = server.save_pca_figure("both-2", source="mztab")
+        self.assertIn("source=mztab", msg)
+        self.assertTrue((self.tmp / "reports" / "figures" / "both-2_pca.png").is_file())
 
     def test_guidance_mentions_dataset_tools_when_nothing_available(self):
         session_state.session.dataset = None

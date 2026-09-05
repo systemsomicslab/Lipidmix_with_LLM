@@ -39,7 +39,20 @@ gap-fill だけの特徴を実測として数えた行列が黙って下流に�
 
 ## dataset_export_differential
 
+書き出す前に 2 つ確かめる。**その結果が今の前処理から出たものか**（手順 3。前処理を
+やり直した後の古い結果を書くと、TSV の数字と現在の前処理条件が並んだファイルができ、
+どちらも正しく見えてずれが分からない）と、**探索専用のデータセットでないか**
+（中断された実行の出力では、欠けた検体が「その群には無い」ようにしか見えない）。
+メタ行の前処理条件は `ds.preprocessing_recipe`（今の状態）ではなく、その結果が親に
+持つ前処理の `provenance.effective_parameters` から取る。出力は一時ファイルへ書いてから
+置換するので、途中で落ちた出力が「新しい完成品」として残らない。
+
 1. lipidmix/tools/dataset_analysis_tools.py  dataset_export_differential()
-2. └─ lipidmix/analysis/export_contract.py  is_significant()
-3. └─ lipidmix/analysis/export_contract.py  build_meta()
-4. └─ lipidmix/analysis/export_contract.py  format_row()
+2. └─ lipidmix/analysis/dataset_export.py  export_dataset_result()
+3. │  └─ lipidmix/analysis/result_state.py  assert_current()
+4. │  └─ lipidmix/analysis/export_contract.py  is_significant()
+5. │  └─ lipidmix/analysis/dataset_export.py  _meta_lines()
+6. │  │  └─ lipidmix/analysis/dataset_export.py  _preprocess_parameters()
+7. │  │  └─ lipidmix/analysis/export_contract.py  build_meta()
+8. │  └─ lipidmix/analysis/export_contract.py  format_row()
+9. │  └─ lipidmix/analysis/dataset_export.py  _atomic_write_text()

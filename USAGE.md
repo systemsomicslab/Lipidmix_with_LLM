@@ -112,8 +112,8 @@ console_plan → console_run → dataset_load → dataset_preprocess
 | ツール | 機能 |
 |--------|------|
 | `arf_plot_volcano` | 直近の2群差次的解析を volcano 図として返す。**既定はPNG画像＋件数入りキャプション**(`output="image"`、全特徴を描画)。点列(`lipidmix.volcano.v1`)が要るクライアントは `output="payload"` または env `LIPIDMIX_PLOT_OUTPUT=payload` —— その場合 `up`/`down` は全件、`ns` は `max_points`(既定800)まで等間隔で間引き、件数は `selection` に出る。ファイル保存はしない。 |
-| `save_pca_figure` | ユーザーがPNGを明示的に希望した場合だけ、直近セッションの PCA 結果を `reports/figures/` に保存。通常の描画はクライアントUIに任せる。 |
-| `save_volcano_figure` | ユーザーが**ファイルとしての**PNGを希望した場合だけ、直近の差次的解析(2群)を volcano PNG として保存(レポート埋め込み用)。画面で見るだけなら `arf_plot_volcano` が画像を直接返す。描画関数は共通なので同じ図。 |
+| `save_pca_figure` | ユーザーがPNGを明示的に希望した場合だけ、指定した PCA 結果を `reports/figures/` に保存。通常の描画はクライアントUIに任せる。入力元は ARF 経路と mzTab-M 経路の 2 つあり、**どちらも優先しない** — 有効な結果が 2 つ以上あると `AMBIGUOUS_RESULT_SOURCE` で止まるので `source`(`arf`/`mztab`)か `result_id` を指定する(どちらを描くかは図の数字そのものを変えるため)。前処理をやり直して古くなった結果は選べない。探索専用データセットから描いた図には、図の中に但し書きが入る。 |
+| `save_volcano_figure` | ユーザーが**ファイルとしての**PNGを希望した場合だけ、指定した差次的解析(2群)を volcano PNG として保存(レポート埋め込み用)。画面で見るだけなら `arf_plot_volcano` が画像を直接返す。描画関数は共通なので同じ図。入力元の決め方(`source`/`result_id`、曖昧なら停止)は `save_pca_figure` と同じ。 |
 | `save_eic_figure` | ユーザーが明示的に保存を希望した場合だけ、直近のEICプロット情報を PNG 化し `reports/figures/<analysis_id>_eic.png` に保存。Use-LLLMではローカル書き込みとして承認が必要。 |
 | `write_report` | 解析・解釈レポートを `reports/<analysis_id>.md` に上書き保存。 |
 | `read_report` | 過去レポートを読み戻す(最新更新のものを返す。セッション継続用)。 |
@@ -149,7 +149,7 @@ ARF 経路の状態を壊さない。
 | `dataset_preprocess` | 定量行列に前処理レシピを適用(引数は `arf_preprocess` と同一: `normalize` / `blank_min_fold` / `drift_correct` / `max_qc_rsd` / `impute` / `min_detection_rate`)。`min_detection_rate` は gap-fill を除いた実検出率での足切りで、`dataset_load` が検出状態を取り込めた場合にだけ使える(無い状態で 0 より大きい値を渡すと引数エラー。黙って未検出 0 件として通さない)。フィルタは正規化・補完より**前**に掛ける。注入順とバッチは mzTab-M の `MTD assay[N]-custom[...]`(`MS:4000089` injection sequence label / `MS:4000088` batch label)から読むので **`drift_correct` は実際に適用される**。注入順が無いファイルでは従来どおり未実施の caveat が出る。バッチラベルは 2 値以上あるときだけ採用し(MS-DIAL の既定は全件 `1` で情報を持たないため)、無ければファイル名の日付推定に戻す。採用元は `sample_meta` の `batch_source` / `run_order_source` に入る。 |
 | `dataset_pca` | 前処理済み `DatasetState` で PCA(`n_components` 既定 5、`log_transform` 既定 False)。ローディング全量は戻り値に載せず `session.dataset.last_pca` に保持する。 |
 | `dataset_differential` | 前処理済み行列で 2 群比較(Welch t 検定＋BH-FDR)。`group_a`/`group_b` は**サンプル名のリスト**(`dataset_status` の `samples` で確認)。**log2FC は正なら `group_b` が高い**(`group_a` が基準)。全特徴量の結果と volcano 点列は `session.dataset.last_differential` に保持する。 |
-| `dataset_export_differential` | 直近の差次的結果を InChIKey 付きの 1 ファイルへ書き出す。**`arf_export_differential` と同一の契約**(15 列 + `contract_version` メタ行)なので下流のパスウェイ解析にそのまま渡せる。InChIKey は mzTab-M 由来(`.arf2` との結合は不要)。`ontology` と `msi_level` は mzTab-M に対応物が無く空欄で、その旨をメタ行に書く。 |
+| `dataset_export_differential` | 指定した差次的結果(`result_id` 省略時は直近)を InChIKey 付きの 1 ファイルへ書き出す。**前処理をやり直した後の古い結果は書き出さない**(古い数字に現在の前処理条件のラベルが付いた TSV は、どちらも正しく見えてずれが分からない)。メタ行に `result_id` / `preprocess_id` / `source_verification` が入り、前処理条件は結果自身の来歴から書く。出力は一時ファイルから置換して確定する。**`arf_export_differential` と同一の契約**(15 列 + `contract_version` メタ行)なので下流のパスウェイ解析にそのまま渡せる。InChIKey は mzTab-M 由来(`.arf2` との結合は不要)。`ontology` と `msi_level` は mzTab-M に対応物が無く空欄で、その旨をメタ行に書く。 |
 
 ## 12. Class ID に無い因子で絞る・比べる
 

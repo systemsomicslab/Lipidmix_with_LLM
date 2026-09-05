@@ -167,8 +167,16 @@ def register_result(ds, result: dict) -> dict:
 
 
 def is_current(ds, result: dict) -> bool:
-    """その結果が、今のデータセットの状態から出たものとして通用するか。"""
-    prov = (result or {}).get("provenance") or {}
+    """その結果が、今のデータセットの状態から出たものとして通用するか。
+
+    **来歴を持たない結果は True**（古いと判定しない）。来歴が無いのは「古い」の
+    証拠ではなく「調べる材料が無い」ということで、そこを False にすると、来歴を
+    付ける前から動いていた経路（ARF の旧結果・手で組んだ結果）の図が一律に
+    描けなくなる。来歴があるなら厳密に照合する。
+    """
+    if not (result or {}).get("provenance"):
+        return True
+    prov = result["provenance"]
     if prov.get("dataset_id") != getattr(ds, "dataset_id", None):
         return False
     parents = prov.get("parent_ids") or []

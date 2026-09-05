@@ -202,130 +202,54 @@ def dataset_differential(
 @mcp.tool(annotations=ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=True),
     structured_output=False)
-def dataset_export_differential(output_path: str) -> str:
-    """直近の差次的結果を InChIKey 付きの 1 ファイルへ書き出す。
+def dataset_export_differential(output_path: str,
+                                result_id: str | None = None) -> str:
+    """指定した差次的結果を InChIKey 付きの 1 ファイルへ書き出す。
 
     先に dataset_preprocess → dataset_differential を実行しておくこと。
     出力は arf_export_differential と**同一の契約**（15 列 + contract_version
     メタ行）なので、下流のパスウェイ解析にそのまま渡せる。
 
+    result_id: 書き出す結果を名指しする（省略時は直近の差次的結果）。
+        **前処理をやり直した後の古い結果は書き出しません**（`RESULT_STALE`）。
+        古い数字に現在の前処理条件のラベルが付いた TSV は、どちらも正しく見えて
+        ずれが分からなくなります。
+
     InChIKey は DatasetState.feature_metadata から取る（mzTab-M の
     database_identifier / InChI / SMILES 由来。.arf2 との結合は不要）。
     濃縮解析の背景を保つため、有意な行だけでなく InChIKey が付いた全行を出す。
     ontology と msi_level は mzTab-M に対応物が無いため空欄で、その旨をメタ行に
-    書く（空欄を「該当なし」と読み違えさせない）。
+    書く（空欄を「該当なし」と読み違えさせない）。メタ行には result_id と
+    preprocess_id も入るので、あとから「どの計算の出力か」を辿れる。
     """
     ds = session_state.session.dataset
     if ds is None:
         return _missing("dataset", "DatasetState がありません。先に dataset_load を実行してください。")
+
     last = ds.last_differential
+    if result_id is not None:
+        last = (ds.results or {}).get(result_id)
     if not last or last.get("kind") != "two_group":
         return _missing(
             "dataset_differential_result",
-            "先に dataset_preprocess → dataset_differential（2群）を実行してください。")
-    if (last.get("contract_version") != export_contract.CONTRACT_VERSION
-            or last.get("log2fc_sign") != export_contract.LOG2FC_SIGN):
-        return _missing(
-            "dataset_differential_result",
-            "直近の差次的結果は現行エクスポート契約と互換性がありません。"
-            "dataset_differential を再実行してください。")
+            "先に dataset_preprocess → dataset_differential（2群）を実行してください。"
+            if result_id is None else
+            f"result_id={result_id} の 2 群比較の結果がありません。")
 
-    if getattr(ds, "exploratory_only", False):
-        return mztab_error(
-            "EXPLORATORY_ONLY_DATASET",
-            "このデータセットは中断された解析の出力（探索専用）なので、"
-            "差次的エクスポートには使えません。Console 実行を完了させてから"
-            "読み込み直してください。",
-            {"job_path": ds.job_path,
-             "source_verification": getattr(ds, "source_verification", None)})
+    from lipidmix.analysis.dataset_export import export_dataset_result
+    from lipidmix.core.atomic_io import DomainError
 
-    from lipidmix.analysis.result_state import is_current
-    if not is_current(ds, last):
-        # 前処理をやり直した後の古い結果。書き出すと、TSV の数字と現在の
-        # 前処理済み行列が別物になる（読み手には見分けがつかない）。
-        return _missing(
-            "dataset_differential_result",
-            "直近の差次的結果は現在の前処理から出たものではありません。"
-            "dataset_differential を再実行してください。")
-
-    q_threshold = last["q_threshold"]
-    log2fc_threshold = last["log2fc_threshold"]
-
-    rows: list[dict] = []
-    n_unannotated = 0
-    for result in last["results"]:
-        fid = result["feature"]
-        meta = ds.feature_metadata.get(fid, {})
-        inchikey = str(meta.get("inchikey") or "").strip()
-        if not inchikey:
-            n_unannotated += 1
-            continue
-        rows.append({
-            "spot_id": fid,                     # mzTab-M の SMF_ID（メタ行で id_space を宣言）
-            "name": (meta.get("name") or "").strip(),
-            "name_source": "mztab_smf",
-            "ontology": "",                     # mzTab-M に対応物なし
-            "inchikey": inchikey,
-            "inchikey_source": meta.get("inchikey_source") or "",
-            "msi_level": None,                  # 同上（.arf2 由来の注釈確度が無い）
-            "mz": meta.get("mz"),
-            "rt": meta.get("rt"),
-            "log2fc": result.get("log2fc"),
-            "p_value": result.get("p"),
-            "q_value": result.get("q"),
-            "mean_a": result.get("mean_a"),
-            "mean_b": result.get("mean_b"),
-            "significant": export_contract.is_significant(
-                q=result.get("q"), log2fc=result.get("log2fc"),
-                q_threshold=q_threshold, log2fc_threshold=log2fc_threshold),
-        })
-
-    n_total = len(last["results"])
-    if not rows:
-        return json_payload({
-            "status": "error",
-            "message": ("InChIKey が付いた特徴が 0 件のため書き出しません。"
-                        "下流のパスウェイ解析に使える背景集合がありません。"),
-            "n_features_total": n_total,
-            "n_with_inchikey": 0,
-            "n_unannotated": n_unannotated,
-        })
-
-    meta_lines = export_contract.build_meta(
-        group_a=last["a"], n_a=last["n_a"],
-        group_b=last["b"], n_b=last["n_b"],
-        q_threshold=q_threshold, log2fc_threshold=log2fc_threshold,
-        log_transform=last.get("log_transform"),
-        n_features_total=n_total, n_with_inchikey=len(rows),
-        n_unannotated=n_unannotated,
-        # mzTab-M に .arf2 由来の注釈確度が無いことを、空欄の意味とあわせて宣言する。
-        msi_note=("# ontology / msi_level は mzTab-M に対応物が無いため空欄"
-                  "（『該当なし』ではなく『この経路では取得していない』）"),
-        source_lines=[
-            f"# source_mztab = {'; '.join(ds.source_files) or ''}",
-            f"# source_job = {ds.job_path or ''}",
-            "# id_space = mztab_smf_id",
-            f"# result_id = {(last.get('provenance') or {}).get('result_id', '')}",
-            f"# preprocess_id = {ds.preprocess_id or ''}",
-        ],
-        preprocess_line=f"# preprocess = {ds.preprocessing_recipe}",
-    )
-    lines = [*meta_lines, "\t".join(export_contract.EXPORT_COLUMNS)]
-    lines += [export_contract.format_row(r) for r in rows]
-
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        info = export_dataset_result(ds, last, Path(output_path))
+    except DomainError as exc:
+        if exc.code in ("RESULT_STALE", "ANALYSIS_RESULT_NOT_FOUND"):
+            # 再計算すれば直る。どのツールを呼べばよいかを機械可読に返す。
+            return _missing("dataset_differential_result", exc.message)
+        return mztab_error(exc.code, exc.message, exc.details or None)
 
     return json_payload({
         "status": "success",
-        "output_path": str(out),
-        "contract_version": export_contract.CONTRACT_VERSION,
-        "group_a": last["a"],
-        "group_b": last["b"],
-        "n_features_total": n_total,
-        "n_with_inchikey": len(rows),
-        "n_unannotated": n_unannotated,
+        **info,
         "log2fc_sign": "log2fc は正なら group_b が高い（上昇）。",
         "note": ("n_unannotated は InChIKey が付かず書き出さなかった行数です。"
                  "「変化が無かった」ではなく「調べていない」行です。"),

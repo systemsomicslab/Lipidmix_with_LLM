@@ -21,6 +21,7 @@ import しない（循環回避）。`arf_reader` は module オブジェクト�
 テストの `patch.object(server.arf_reader, ...)` が共有 module 経由でここにも効く。
 """
 import io
+import uuid
 import os
 import re
 
@@ -89,6 +90,11 @@ def _build_sample_meta(sample_names, class_index):
     return meta
 
 
+def _new_dataset_id() -> str:
+    """ARF データセットの同一性 ID を発行する。"""
+    return f"arf_{uuid.uuid4().hex}"
+
+
 class ArfState:
     """ARF（1スポット×1サンプル）解析の状態。多変量解析の基盤はここだけが持つ。
 
@@ -120,6 +126,12 @@ class ArfState:
         self.excluded_samples = set()   # 除外する file_name（サンプル）
         self.excluded_spots = set()     # 除外する MasterAlignmentID（スポット）
 
+        # --- 同一性（図・出力が「どの結果か」を名指しできるようにする） ---
+        # dataset_id: 今読んでいる ARF データセットの ID。ファイルを切り替えるたびに
+        # 発行し直す（reset_analysis）。DatasetState 側の dataset_id と同じ役割で、
+        # 「前のデータの結果を今のデータの図として保存する」取り違えを機械的に防ぐ。
+        self.dataset_id = _new_dataset_id()
+
     def reset_analysis(self):
         """別 ARF データセットへ切り替える際に、前データ由来の解析成果を一括で破棄する。
 
@@ -143,6 +155,9 @@ class ArfState:
         # 手動除外（別データに持ち越さない）
         self.excluded_samples = set()
         self.excluded_spots = set()
+        # 別データセットになったので同一性も作り直す。ID を据え置くと、前データの
+        # 結果 ID を指定した図の保存が「有効」に見えてしまう。
+        self.dataset_id = _new_dataset_id()
 
     def load_data(self, file_path: str, tag_directory: str | None = None):
         """ファイルパスが前回と異なる場合のみデシリアライズを実行する"""

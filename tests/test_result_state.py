@@ -310,3 +310,11 @@ def test_compare_dataset_updates_the_state_only_on_success():
         compare_dataset(ds, ["missing_a"], ["missing_b"])
 
     assert ds.last_differential["provenance"]["result_id"] == good["provenance"]["result_id"]
+
+
+def test_a_result_without_provenance_is_not_called_stale():
+    """来歴が無いのは「古い」の証拠ではない。旧経路の結果を一律に殺さない。"""
+    from lipidmix.analysis.result_state import is_current
+    ds = make_dataset()
+    assert is_current(ds, {"scores": []}) is True
+    assert_current(ds, {"scores": []})

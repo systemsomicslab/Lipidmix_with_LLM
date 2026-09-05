@@ -193,7 +193,9 @@ def test_dataset_export_refuses_without_inchikey(tmp_path):
     dataset_differential(group_a=a, group_b=b)
     out = tmp_path / "diff.tsv"
     parsed = json.loads(dataset_export_differential(str(out)))
-    assert parsed["status"] == "error"
+    # 機械可読なコードで返す（"status": "error" だけでは分岐できない）。
+    assert parsed["error"]["code"] == "NO_ANNOTATED_FEATURES"
+    assert parsed["error"]["details"]["n_with_inchikey"] == 0
     assert not out.exists()
 
 
