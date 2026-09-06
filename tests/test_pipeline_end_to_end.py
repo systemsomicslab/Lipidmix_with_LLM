@@ -6,14 +6,17 @@ metadata・preprocessing・differential・export・renderはすべて本物を�
 from __future__ import annotations
 
 import json
+import threading
 import warnings
 from pathlib import Path
 
 import pytest
 
 from lipidmix.analysis.export_contract import CONTRACT_VERSION, EXPORT_COLUMNS, LOG2FC_SIGN
-from lipidmix.pipeline import store
-from tests.pipeline_fixtures import DEFAULT_COMPARISON, PipelineHarness, read_contract_tsv
+from lipidmix.pipeline import recovery, store
+from tests.pipeline_fixtures import (
+    DEFAULT_COMPARISON, PipelineHarness, WAIT_TIMEOUT_S, read_contract_tsv,
+)
 
 #: 逆向きの比較（reference=treated, test=control）。同じデータで log2FC の符号が
 #: 反転することを見て、「向き」のassertが定数を写しただけでないことを保証する。
@@ -387,6 +390,156 @@ def test_identical_request_resend_reuses_the_run_and_starts_console_once(pipelin
         record["identity"]["pipeline_id"]
     runs_parent = Path(record["identity"]["pipeline_root"]).parent
     assert len(list(runs_parent.iterdir())) == 1
+
+
+def test_two_concurrent_starts_of_the_same_request_launch_console_once(pipeline_harness):
+    """spec D04 同時送信: 同一requestの`start_pipeline`が本当に同時に来ても、
+    runは1つ・Consoleは1回だけ。
+
+    直前のテストは完了**後**の再送——順次実行なので、D04の「同時」を検証して
+    いない（brief追加ケース「同一request同時送信」、spec §13 D04「同時resume」の
+    対）。`find_or_create_run`はsource_root単位の`file_lock`で受付そのものを
+    直列化するので、同じ`pipeline_path`が返ること自体は`tests/test_pipeline_
+    store.py::test_two_processes_accept_concurrently_return_same_run`が既に
+    実プロセスで検証済み。ここで検証したいのはその**先**——`start_pipeline`が
+    「読み出したstatusがplannedだから起動する」と判断する箇所は`file_lock`の
+    **外**にあり、2つの呼び出しがどちらも新規作成直後の`planned`を読めば
+    どちらも起動しうる（`lipidmix/pipeline/service.py`の`start_pipeline`docstring
+    が名指す「レビュー指摘1」の対象コードそのもの）。実際に二重起動を止めて
+    いるのはworker側のowner lock（`engine.run_engine`のworker.lock）である
+    ことを、その場しのぎでなく実際の競合で確かめる。
+
+    `store.find_or_create_run`の直後に`threading.Barrier(2)`を挟み、2つの
+    `start_pipeline`呼び出しが**どちらも受付を終えてから**起動判定へ進む
+    瞬間を強制する。バリアは2者そろわない限り解放されない（各回`timeout`
+    超過で`BrokenBarrierError`）——つまりこのテストが例外なく通ること自体が
+    「2つの呼び出しが同じ瞬間に起動判定の入口に立っていた」ことの証明になる。
+    """
+    barrier = threading.Barrier(2, timeout=WAIT_TIMEOUT_S)
+    real_find_or_create_run = store.find_or_create_run
+
+    def _synced_find_or_create_run(*args, **kwargs):
+        result = real_find_or_create_run(*args, **kwargs)
+        # 両方の呼び出しがここへ揃うまで、どちらも起動判定（load_run→status
+        # 確認→launch）へ進めない。揃わなければBrokenBarrierErrorで例外送出。
+        barrier.wait()
+        return result
+
+    pipeline_harness.monkeypatch.setattr(
+        store, "find_or_create_run", _synced_find_or_create_run)
+
+    results: list = []
+    errors: list = []
+
+    def _call():
+        try:
+            results.append(
+                pipeline_harness.start(target="exploratory", request_id="req-simul"))
+        except Exception as exc:  # pragma: no cover - 失敗時の診断用
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_call) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=WAIT_TIMEOUT_S)
+
+    assert not errors, f"同時起動でエラー（バリアが揃わなかった可能性）: {errors}"
+    assert len(results) == 2
+    first, second = results
+    assert first == second, "2つのstart_pipeline呼び出しが別のrunを指しました"
+
+    # 起動判定そのものが競合したこと（＝どちらも起動を試みたこと）を先に見る。
+    workers = pipeline_harness.worker_processes(first)
+    assert len(workers) == 2, \
+        "2つのstart_pipeline呼び出しが2つのworker起動を試みていません（レースが起きていない）"
+
+    record = pipeline_harness.wait(first, expected="completed")
+    assert pipeline_harness.console_start_count(first) == 1
+    runs_parent = Path(record["identity"]["pipeline_root"]).parent
+    assert len(list(runs_parent.iterdir())) == 1
+
+    # owner lockが片方を`PIPELINE_ALREADY_RUNNING`で拒否するか、遅れて着いた
+    # 側がstageを何もせず合流するか（先着が既に全stageを終えていた場合）は
+    # 実プロセスの起動・import待ち時間の実測値次第でどちらもありうる——
+    # どちらであっても異常終了ではない（returncodeは0か1のいずれかに限る）。
+    # ここで縛るべき不変条件は「Console起動が合計1回」であって、2つのworker
+    # 間でどちらが実際に停止させられたかではない。
+    returncodes = {w.returncode for w in workers}
+    assert returncodes <= {0, 1}, f"想定外の終了コード: {returncodes}"
+
+
+def test_two_concurrent_resumes_of_the_same_run_launch_console_once(pipeline_harness):
+    """spec D04 同時resume: 中断済みrunへの`resume_pipeline`が同時に来ても、
+    Consoleは合計1回のまま増えない。
+
+    `recovery.prepare_resume`は`state_revision`の楽観排他で**書込みだけ**を
+    直列化する（衝突した側は最新を読み直して自分のiterationをやり直す）。
+    しかし「statusがplannedになったから起動する」という判断は
+    `service.resume_pipeline`側が各呼び出しで独立に行っており、`start_pipeline`
+    と全く同じ形の隙間になる——つまりこの2つは**同じ保護機構（worker側の
+    owner lock）に帰着する**、独立な仕組みではない。上のテストと対にして
+    ここでも実際に確かめる。
+
+    合成: `target=differential`・比較未指定で`needs_input`にした後、シートを
+    置いて2つの`resume_pipeline`を同時に投げる（`request_id`は与えない——
+    冪等性キャッシュに頼らず、`prepare_resume`のCASそのものを競合させる）。
+    `recovery.prepare_resume`の直後にバリアを挟み、上のテストと同じ論法で
+    「両方が受付処理を終えてから起動判定に入る」瞬間を強制する。
+    """
+    cid = DEFAULT_COMPARISON["comparison_id"]
+    run = pipeline_harness.start(target="differential", comparisons=[])
+    pipeline_harness.wait(run, expected="needs_input")
+    assert pipeline_harness.console_start_count(run) == 1
+    manifest = pipeline_harness.write_manifest()
+
+    barrier = threading.Barrier(2, timeout=WAIT_TIMEOUT_S)
+    real_prepare_resume = recovery.prepare_resume
+
+    def _synced_prepare_resume(*args, **kwargs):
+        result = real_prepare_resume(*args, **kwargs)
+        barrier.wait()
+        return result
+
+    pipeline_harness.monkeypatch.setattr(
+        recovery, "prepare_resume", _synced_prepare_resume)
+
+    pipeline_root = pipeline_harness.pipeline_root(run)
+    updates = {"sample_manifest": manifest.name, "comparisons": [DEFAULT_COMPARISON]}
+    results: list = []
+    errors: list = []
+
+    def _call():
+        from lipidmix.pipeline import service
+        try:
+            results.append(service.resume_pipeline(pipeline_root, updates=updates))
+        except Exception as exc:  # pragma: no cover - 失敗時の診断用
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_call) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=WAIT_TIMEOUT_S)
+
+    assert not errors, f"同時resumeでエラー（バリアが揃わなかった可能性）: {errors}"
+    assert len(results) == 2
+
+    workers = pipeline_harness.worker_processes(run)
+    assert len(workers) == 3, "初回の起動1つ＋同時resumeが起こす2つのはず"
+    resume_workers = workers[1:]
+
+    record = pipeline_harness.wait(run, expected="completed")
+    # upstreamはこのpassでskipされる（stage_inputs_unchanged）ので、resumeの
+    # 競合があってもConsole起動は初回の1回のまま増えない。
+    assert pipeline_harness.console_start_count(run) == 1
+    tsv = pipeline_harness.output_path(record, f"tsv:{cid}")
+    assert Path(tsv).is_file()
+
+    # 上のstart版と同じ理由で、どちらのworkerが実際に拒否されたかは実測時間
+    # 次第——縛るのは「異常終了していない」ことと「Console起動が増えない」こと。
+    returncodes = {w.returncode for w in resume_workers}
+    assert returncodes <= {0, 1}, f"想定外の終了コード: {returncodes}"
 
 
 # ---------- D05: 入力・メソッドの変化 ----------
