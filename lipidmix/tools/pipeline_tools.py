@@ -79,6 +79,13 @@ def pipeline_run(dataset_root: str, request: dict | None = None,
     起動handshakeを確認した後に返すが、応答待ちには短い上限があり、上限に
     達しても起動失敗と決め付けず再起動もしない（`launch.handshake` が
     `"not_confirmed"` になるだけで、`pipeline_status` で追跡できる）。
+
+    `launch` キーは実際にworkerを起動した（`launched=true`）ときだけ含まれる。
+    不正なsample_manifest等を検出した場合や、`find_or_create_run` が既存run
+    （活動中／completed／失敗・取消・部分完了済み）を再利用した場合は
+    `launched=false` のみを返し、`launch` キー自体を持たない（起動していない
+    以上、handshake結果も存在しない）。既存runを本当に進めたい場合は
+    `pipeline_resume` を使う。
     """
     from lipidmix.pipeline.service import start_pipeline
     try:
@@ -120,7 +127,8 @@ def pipeline_resume(pipeline_path: str, updates: dict | None = None,
     Parameters
     ----------
     pipeline_path:
-        対象runの `pipeline_path`。
+        対象runの `pipeline_path`（`pipeline_status` と同じく、`pipeline-run.json`
+        そのもの、またはその親ディレクトリ＝pipeline_rootのどちらでもよい）。
     updates:
         変更したい項目のみ（`target` / `sample_manifest` / `preprocess` /
         `comparisons` に限定。spec §10.1「resumeで変更可能なのは...に限定する」）。

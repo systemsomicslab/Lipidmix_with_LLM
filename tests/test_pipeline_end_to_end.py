@@ -428,6 +428,15 @@ def test_two_concurrent_starts_of_the_same_request_launch_console_once(pipeline_
     pipeline_harness.monkeypatch.setattr(
         store, "find_or_create_run", _synced_find_or_create_run)
 
+    # `PipelineHarness.source()`は`self._sources`への無防備なcheck-then-act。
+    # 入力identityはSTATフィンガープリント（サイズ/mtime、内容ではない）なので、
+    # 2つのスレッドが初回呼出しとして同時に`start()`（内部で`source("source")`を
+    # 呼ぶ）へ入ると、生成競合で2つの実行ディレクトリを割り当てて本テストの
+    # 前提（同一入力での同時送信）を偽陽性に壊しうる。事前にメインスレッドから
+    # 1回呼び、実質的な生成をスレッド生成前に済ませておく（隣接する同時resume
+    # テストが`start()`を先に順次呼んで同じ効果を得ているのと同じ発想）。
+    pipeline_harness.source("source")
+
     results: list = []
     errors: list = []
 

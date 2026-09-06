@@ -346,6 +346,15 @@ autoでskipした処理があっても、計画上必須でない処理なら探
 | results | result_id、kind、相対パス、hash、親ID、request revision |
 | needs_input | code、対象工程、必要フィールド、理由、候補、許可する更新 |
 | warnings | 機械可読code、対象工程、説明 |
+| worker | identity（pidと生成時刻。owner lock取得直後に刻む）、started_at |
+
+【2026-09-07追記・Task20文書整合】`worker`行は実装（Task16 `lipidmix/pipeline/store.py
+create_run()`の`"worker": {"identity": None, "started_at": None}`初期値、`engine.py
+_record_worker_identity()`が起動直後に書く値）に本specを追随させたもの。§9.3の
+「ロックにはowner identityを記録し」「`same_process`でこのworkerがまだ生きているかを
+判定する」はこの1行を前提にしており、Task16レビューが本行の欠落を指摘、Task20で
+反映した。状態は引き続きDraftのまま——本追記は実装との不一致の是正であり、再承認を
+経ていない。
 
 stageの状態は`pending / running / succeeded / skipped / needs_input / failed / cancelled`。revision変更で再計算が必要な工程は新revisionにpendingとして作り、旧revisionの記録を書き換えない。
 
@@ -500,7 +509,7 @@ completedは「要求された必須工程と出力が、その契約を満た�
 |---|---|---|
 | A01 | 中間PAI2のみ残して異常終了 | completedにならず、exit codeと成果物が残る |
 | A02 | exit 0だがmzTab不正・空・一意でない | 完了検証で停止 |
-| A03 | 予定入力の一部が出力assayから欠落 | SAMPLE_MAPPING_MISMATCH、下流自動進行なし |
+| A03 | 予定入力の一部が出力assayから欠落 | SAMPLE_MAPPING_MISSING、下流自動進行なし |
 | A04 | 非同期でtimeout到達、子プロセスあり | 対象プロセス群が停止し、timeout証跡が残る |
 | A05 | MCP接続を切断、statusを一度も呼ばない | workerが終了・成果物確定・下流進行を行う |
 | A06 | workerが落ち、PIDが再利用される | 別プロセスを停止せず、完了も再起動も捏造しない |

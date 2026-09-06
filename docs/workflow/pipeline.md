@@ -10,21 +10,40 @@ MCP層は薄い(`lipidmix/tools/pipeline_tools.py`)。実体は `lipidmix/pipeli
 
 1. lipidmix/tools/pipeline_tools.py  pipeline_run()
 2. └─ lipidmix/pipeline/service.py  start_pipeline()
-3.    └─ lipidmix/pipeline/service.py  _prepare_run()
-4.    │  └─ lipidmix/pipeline/request.py  resolve_request()
-5.    │  └─ lipidmix/pipeline/inputs.py  inspect_inputs()
-6.    │  └─ lipidmix/pipeline/service.py  _precheck_manifest()
+3.    ├─ lipidmix/pipeline/service.py  _prepare_run()
+4.    │  ├─ lipidmix/pipeline/request.py  resolve_request()
+5.    │  ├─ lipidmix/pipeline/inputs.py  inspect_inputs()
+6.    │  ├─ lipidmix/pipeline/service.py  _precheck_manifest()
 7.    │  │  └─ lipidmix/analysis/sample_manifest.py  parse_manifest()
-8.    │  └─ lipidmix/pipeline/store.py  find_or_create_run()
-9.    └─ lipidmix/pipeline/service.py  launch_pipeline_worker()
-10.   │  └─ lipidmix/core/process_control.py  launch_detached()
-11.   └─ lipidmix/pipeline/service.py  _await_launch_handshake()
+8.    │  ├─ lipidmix/pipeline/store.py  find_or_create_run()
+9.    │  └─ [manifest不正を検出した場合] lipidmix/pipeline/service.py  _mark_needs_input_without_launch()
+10.   ├─ [manifest不正が無かった場合のみ] lipidmix/pipeline/store.py  load_run()
+11.   ├─ [manifest不正あり、または既存run(活動中/completed/失敗/取消/部分完了)を再利用した場合] lipidmix/pipeline/service.py  _dispatch_receipt()
+12.   ├─ [新規作成直後の`planned` runのときだけ] lipidmix/pipeline/service.py  _launch_and_await()
+13.   │  ├─ lipidmix/pipeline/service.py  launch_pipeline_worker()
+14.   │  │  └─ lipidmix/core/process_control.py  launch_detached()
+15.   │  └─ lipidmix/pipeline/service.py  _await_launch_handshake()
+16.   └─ lipidmix/pipeline/service.py  _dispatch_receipt()
 
 事前検査(手順6-7)で壊れた実験情報シート等の既知の不正入力を検出した場合、
-`find_or_create_run` でrunは作るがworkerは起動しない(`needs_input`のまま保存。
-手順9以降を実行しない)。差次的解析で `comparisons` を指定し忘れた場合はここでは
-検出しない——それは唯一、実際にworkerを起動したうえで下流の
-`resolve_comparisons` 工程が検出する(brief「下流の群不足だけはworkerを起動できる」)。
+`find_or_create_run` でrunは作るがworkerは起動しない(手順9で`needs_input`のまま
+保存し、手順10のstatus読み直し自体を行わず手順11の発送receiptへ直行する)。
+差次的解析で `comparisons` を指定し忘れた場合はここでは検出しない——それは唯一、
+実際にworkerを起動したうえで下流の `resolve_comparisons` 工程が検出する
+(brief「下流の群不足だけはworkerを起動できる」)。
+
+**起動しないもう1つの経路（レビュー指摘1）**: manifestが正常でも、
+`find_or_create_run`(手順8)が既存run——活動中／completed／失敗・取消・部分完了
+済みのいずれか——を再利用した場合、手順10で読み直したstatusが`planned`で
+ないので手順11で起動せず終える。新規に作られたrunだけが`status="planned"`の
+まま返るので、それだけを起動条件にする。既存runを本当に進めたい場合は
+`pipeline_resume`を使う。
+
+手順12の `_launch_and_await` は「launch直前に読んだ`baseline_record`」を引数に
+取る中間関数で、`launch_pipeline_worker`(起動)と`_await_launch_handshake`
+(handshake待ち)を1つにまとめている——resumeで前回workerの残骸identityが
+既に記録されているケースでも、両呼び出しが同じ基準時点の記録を共有できるように
+するため(`pipeline_resume`と共有する実装)。
 
 `launch_pipeline_worker` は `sys.executable` で `python -m lipidmix.pipeline.worker`
 を起動し、cwdは呼び出し元のcwdや別checkoutではなくこのcheckout自身(`_REPO_ROOT`)へ
@@ -58,16 +77,22 @@ MCP層は薄い(`lipidmix/tools/pipeline_tools.py`)。実体は `lipidmix/pipeli
 
 1. lipidmix/tools/pipeline_tools.py  pipeline_resume()
 2. └─ lipidmix/pipeline/service.py  resume_pipeline()
-3.    └─ lipidmix/pipeline/recovery.py  prepare_resume()
+3.    ├─ lipidmix/pipeline/recovery.py  prepare_resume()
 4.    │  └─ lipidmix/pipeline/request.py  merge_updates()
-5.    ├─ [status=="planned"のときだけ] lipidmix/pipeline/service.py  launch_pipeline_worker()
-6.    └─ lipidmix/pipeline/service.py  _await_launch_handshake()
+5.    ├─ [status=="planned"のときだけ] lipidmix/pipeline/store.py  load_run()
+6.    └─ [status=="planned"のときだけ] lipidmix/pipeline/service.py  _launch_and_await()
+7.       ├─ lipidmix/pipeline/service.py  launch_pipeline_worker()
+8.       │  └─ lipidmix/core/process_control.py  launch_detached()
+9.       └─ lipidmix/pipeline/service.py  _await_launch_handshake()
 
 `prepare_resume`は新しいattempt/revisionを用意し、どのstageを`pending`へ戻すかを
 決めて保存するだけで、それ自体はworkerを起動しない(no-op resumeで無駄な起動を
 避ける)。`resume_pipeline`は`prepare_resume`の戻り値`status`が`"planned"`の
-ときだけ`launch_pipeline_worker`を呼ぶ。`rerun_upstream=True`を明示しない限り
-Console実行はやり直さない。
+ときだけ、改めて`load_run`でlaunch直前の記録(前回workerの残骸identityを含みうる)を
+読み直し、それを基準として`pipeline_run`と共有する`_launch_and_await`を呼ぶ
+(`launch_pipeline_worker`と`_await_launch_handshake`を1つにまとめた中間関数。
+基準を「launch直前」に揃えないと、前回workerの残骸identityを新規launchの
+証拠と誤認しうる)。`rerun_upstream=True`を明示しない限りConsole実行はやり直さない。
 
 ## pipeline_cancel
 

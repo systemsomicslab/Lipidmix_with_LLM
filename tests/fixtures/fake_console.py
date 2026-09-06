@@ -94,7 +94,7 @@ def _raw_sources(input_dir: Path) -> list[Path]:
     監視側が固定した input inventory（`write_supervision_inputs` の
     `raw_inventory`）は `job_manager.list_raw_inputs` で作られる。ここでも
     **同じ関数**を使う——別の規則で列挙すると、ms_run location と予定入力が
-    「テスト側の列挙差」で食い違い、意図しない SAMPLE_MAPPING_MISMATCH を
+    「テスト側の列挙差」で食い違い、意図しない SAMPLE_MAPPING_MISSING を
     生む。ディレクトリ形式 raw（Agilent `.d` 等）が 1 測定単位として
     そのまま 1 assay になるのも、この共有によって自動的に揃う。
     """

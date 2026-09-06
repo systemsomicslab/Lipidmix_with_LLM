@@ -1,0 +1,116 @@
+# 生データフォルダ起点pipeline: 実環境検証記録（Task 20）
+
+作成日: 2026-09-07
+対象plan: `.superpowers/sdd/2026-09-05-raw-folder-pipeline-integrity-and-metadata/`
+対象spec: `docs/superpowers/specs/2026-09-05-raw-folder-pipeline-integrity-and-metadata-design.md`
+
+## 実環境・コード版
+
+| 項目 | 値 |
+|---|---|
+| 実行環境 | Windows 11 (`Windows-11-10.0.26200-SP0`) |
+| Python | `C:/Python314/python.exe` — CPython 3.14.4 (tags/v3.14.4:23116f9) |
+| リポジトリ | `C:\Users\yuu18\Lipidmix_with_LLM\.worktrees\raw-folder-pipeline`（隔離worktree、ブランチ `codex/raw-folder-pipeline`） |
+| コード版（git SHA） | `229c35c9be1893fdc27eaf13607d2d645cf39010`（本記録作成直前のHEAD。本記録および付随する文書整合修正はこのSHAの後にコミットする） |
+| MS-DIAL Console版 | **未確認**（`MSDIAL_EXE` 環境変数は本セッションで未設定。実Console実行は本タスクで許可されていない — 下記R3参照） |
+
+過去のplan文書に記載された「.venvは無い」やテスト件数はここへ転記していない。すべて本セッションで実測した値のみを記録する。
+
+## 実行範囲の制約（controller ruling R3）
+
+本planのGlobal Constraints「実MS-DIALを使う検証は、隔離入力と明示的に許可された実行に限定する。plan承認を実データ実行許可と読み替えない」に基づき、**実MS-DIAL Consoleの起動、および`ms-data-parser` MCPツールを実データへ適用する検証は、本タスクでは許可されていない**。したがって受入表の3行（実Console探索・実Console比較と再開・実Console取消/timeout）は**未実施**のまま記録する。実施したのはfake Console（合成子プロセス）とプロセスライフサイクルの2行のみ。
+
+## 検証記録
+
+| ケースID | 環境・入力形式 | 許可された実行範囲 | コードまたはMCP引数 | 観測結果・成果物 | 判定 |
+|---|---|---|---|---|---|
+| fake全受入 | 隔離checkout・合成fixture（`tests/pipeline_fixtures.py::make_source` が作る合成raw、`tests/fixtures/fake_console.py` が模擬するConsole子プロセス）。実rawは一切使用しない | 単体・fake統合テストの実行（制限なし・本リポジトリ内で完結） | `C:/Python314/python.exe -m pytest tests/test_pipeline_end_to_end.py -q`（18件、spec A01〜A08・D01〜D10・E04相当のシナリオを含む） | `18 passed in 49.75s`。前段でTask 20が修正した同時起動テスト（`test_two_concurrent_starts_of_the_same_request_launch_console_once`）を含め全件成功。成果物は各テストのtmp_path配下（pipeline-run.json・console job・TSV・PNG）で、テスト終了時に破棄される一時ファイル | **PASS**（fake環境での完走を実際に観測） |
+| Windows親切断 | 実Python子/孫プロセス（`Bystander`ヘルパで起こす孫プロセスと、切り離し起動されたworkerプロセス自身）。実MS-DIALではなくfake Console | 実プロセスのライフサイクル試験（Job Object・切り離し起動の実挙動を実プロセスで確認。本リポジトリ内で完結） | `C:/Python314/python.exe -m pytest tests/test_pipeline_process_lifecycle.py -k test_run_completes_after_the_launcher_process_exits_without_any_status_call -v` | `1 passed in 4.21s`。起動元プロセス（launcher）が`pipeline_status`を一度も呼ばずに終了しても、切り離されたworkerプロセスが単独でrunを`completed`まで進めることを実プロセスで確認（`observed_health`ではなく実際のプロセス終了とrun状態を見ている） | **PASS**（実プロセスで観測） |
+| 実Console探索 | 許可された隔離入力（未提供） | **未許可** | `mcp__ms-data-parser__pipeline_run` 等 | — | **未実施**（実データ実行の許可が未取得） |
+| 実Console比較と再開 | 同じ上流と明示manifest（未提供） | **未許可** | `mcp__ms-data-parser__pipeline_resume` 等 | — | **未実施**（実データ実行の許可が未取得） |
+| 実Console取消/timeout | 許可された試験run（未提供） | **未許可** | `mcp__ms-data-parser__pipeline_cancel` 等 | — | **未実施**（実データ実行の許可が未取得） |
+
+補足: 上記2行の「観測結果」は本タスク実行中に実際にコマンドを流して得た出力であり、過去のplan/reviewドキュメントからの転記ではない。実行ログの全文は本セッションのツール呼び出し履歴に残る（標準出力の要約のみここに記載）。
+
+## コード・登録・文書の最終検証（brief手順2）
+
+すべて本タスク実行時に実測。
+
+### 2-1. 腐敗防止テスト（登録・README・workflow文書・パッケージ構成）
+
+```
+C:/Python314/python.exe -m pytest tests/test_server_registration.py tests/test_readme_links.py tests/test_workflow_docs.py tests/test_package_layout.py -q
+```
+
+実測出力:
+
+```
+..........................          [100%]
+26 passed, 973 subtests passed in 1.78s
+```
+
+下記「文書整合の修正」を適用した**後**の状態での実測。`docs/workflow/pipeline.md`の呼び出し連鎖を書き換えた結果、`test_workflow_docs.py`のsubtest件数が変化している（連鎖行が増えた分、1行=1 subtestの検証対象が増えた）。
+
+### 2-2. 全体テストスイート
+
+```
+C:/Python314/python.exe -m pytest tests -q
+```
+
+実測出力（末尾）:
+
+```
+============================== warnings summary ===============================
+tests/test_preprocessing.py::TestImpute::test_all_nan_column_fills_zero
+  ...\lipidmix\analysis\preprocessing.py:369: RuntimeWarning: Mean of empty slice
+    col_mean = np.nanmean(out, axis=0)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1567 passed, 1 warning, 1026 subtests passed in 131.56s (0:02:11)
+```
+
+`1567 passed`はタスク開始時点で報告されていた件数と一致し、xfailed/skippedは0件。`Mean of empty slice`警告は既知の既存警告（本タスクの変更と無関係）。subtest数（1010→1026）は本タスクで`docs/workflow/pipeline.md`に呼び出し連鎖の行を追加したことによる増分（AST検証が1行ごとにsubtestを生成するため）で、失敗の兆候ではない。
+
+### 2-3. 差分・状態確認
+
+```
+git diff --check
+```
+→ 出力なし（終了コード0。空白関連の壊れた差分なし）。
+
+```
+git status --short
+```
+→ 実測（本記録作成前の時点）:
+```
+ M docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md
+ M docs/superpowers/specs/2026-09-05-raw-folder-pipeline-integrity-and-metadata-design.md
+ M docs/workflow/index.md
+ M docs/workflow/pipeline.md
+ M lipidmix/tools/pipeline_tools.py
+ M tests/fixtures/fake_console.py
+ M tests/test_pipeline_end_to_end.py
+```
+（本記録ファイル自体は新規のため`git status`には`??`として別途現れる。コミット時にbriefが指定する対象ファイルのみをstageする。）
+
+## 実データ実行未実施の範囲（brief手順4: 未実施範囲の分離）
+
+- **実装・fake検証済み**: pipeline層の5 MCPツール（`pipeline_plan`/`pipeline_run`/`pipeline_status`/`pipeline_resume`/`pipeline_cancel`）、worker経路（`prepare_input`〜`report`の全stage handler）、Windows Job Objectによるプロセス管理、切り離し起動、owner lock・state更新lockによる排他、pipeline-run.v1の永続化・楽観的並行制御・再開/取消契約。これらはすべて合成fixtureとfake Console（実子プロセスだが本物のMS-DIALではない）、および実プロセスのライフサイクル試験によって検証済み。
+- **実機完走確認済み**: なし。実MS-DIAL Consoleを起動した実行、実raw（`.wiff`/`.raw`/`.d`/`.mzML`等）を入力とした実行は、本タスクを含めこのplanの実装期間中に一度も許可・実施されていない。
+- したがって**spec全体の完成は宣言しない**。実装は目標状態（spec）が要求する契約を満たすようfake環境で検証済みだが、実MS-DIAL・実rawでの完走は別途の許可と実行が必要な、独立した未検証事項として残る。
+
+## 文書整合（累積したレビュー指摘の解消）
+
+Task 20で解消した6件の文書ドリフトは、`.superpowers/sdd/2026-09-05-raw-folder-pipeline-integrity-and-metadata/task-20-report.md`に詳細を記録する。要約:
+
+1. spec §9.1（`docs/superpowers/specs/2026-09-05-raw-folder-pipeline-integrity-and-metadata-design.md`）の`pipeline-run.v1`フィールド表に`worker`行を追加。**承認済み文書への変更**であり、本記録とTask 20報告で明示している（黙って追記していない）。
+2. `docs/workflow/index.md`の一気通貫の順序の案内先を、超過した2026-09-03 specから`docs/workflow/pipeline.md`へ更新。2026-09-03 specの§9にも現状を追記。
+3. `docs/workflow/pipeline.md`の`pipeline_run`/`pipeline_resume`呼び出し連鎖を、`_prepare_run`内の`_mark_needs_input_without_launch`分岐・再利用run時の無起動分岐・`_launch_and_await`中間関数を反映するよう書き直し。
+4. `lipidmix/tools/pipeline_tools.py`の`pipeline_resume`/`pipeline_run`docstringを実装に合わせて補足。
+5. `SAMPLE_MAPPING_MISMATCH`→`SAMPLE_MAPPING_MISSING`へ、spec §13 A03と`tests/fixtures/fake_console.py`のdocstringを本番コード（`lipidmix/console/validation.py`）に合わせて統一。
+6. plan Task 19のシナリオ表が言う`partial`は誤りで、spec §9.1の状態機械と実装は`failed`（有効な解析出力なしのケース）で一致している。これはplan文書側の誤りとしてここに記録するのみで、実装は変更していない（`tests/test_pipeline_end_to_end.py`に既にこの食い違いを明記するコメントがある）。
+
+## 参照
+
+- 検証コマンドの実行者: 本タスク（Task 20）自身。実MS-DIAL・実データの実行は行っていない。
+- 詳細な報告: `.superpowers/sdd/2026-09-05-raw-folder-pipeline-integrity-and-metadata/task-20-report.md`

@@ -52,10 +52,16 @@ Console 実行層 8（`console_plan` `console_prepare_input` `console_method_tem
 `console_method_candidates` `console_run` `console_status` `console_cleanup` `job_list`）。
 登録ツール総数は 61（41 + 20）。
 
-## 一気通貫の順序はここには無い
+## 一気通貫の順序
 
-本文書群は**ツール 1 つずつの内部呼び出し順**を記録する。生データから Console を経て
-mzTab-M・差次的解析・別リポジトリのパスウェイ濃縮まで、**どの順に何を行うか**と
-各関数の引数・戻り値は
+生データフォルダから Console・mzTab-M・前処理・PCA・比較・レポートまでを自動で
+進める**現行の一気通貫入口**は `pipeline_run`（[pipeline.md](pipeline.md)）。
+workerが1回分を進める経路（`prepare_input → upstream → validate_outputs →
+load_dataset → resolve_metadata → preprocess → pca → resolve_comparisons →
+differential → export → report`）が、まさにその「どの順に何を行うか」を記録する。
+
+各関数の引数・戻り値のシグネチャ表（`console_plan`/`console_run` など個々のツールを
+手動で順に呼ぶ経路の設計根拠）は
 [../superpowers/specs/2026-09-03-end-to-end-pipeline-design.md](../superpowers/specs/2026-09-03-end-to-end-pipeline-design.md)
-にある（Console 実行層 4 ツールを含む。実装完了後に `Lipidmix/` へ昇格する予定）。
+にある。同文書は目標状態の設計記録として残すが、**現行の一気通貫の順序そのものの
+正準は `pipeline.md` に移った**（同文書 §9 に実装状況の注記あり）。
