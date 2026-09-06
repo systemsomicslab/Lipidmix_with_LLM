@@ -29,6 +29,14 @@
       内容が変わっていなければ新しいrequest revisionを作らない。
    e. Task 6の依存区分に倣い、更新内容からどのstageを`pending`へ戻すかを決める
       （`_stages_to_reset`）。
+   f. `planned`へ戻したなら、協調取消フラグ（`control/cancel-request.json`）を
+      取り下げる（`_clear_cancel_request`）。消し忘れると、再開したworkerが
+      最初のstage境界で`cancel_requested()`を見て即座に止まる。生きている
+      workerを観測できたときは消さない——出された取消を黙って無効にしない。
+
+   永続statusが`running`のまま固まったrun（worker喪失）も、そのworkerが
+   もう存在しないと観測できたときだけ`planned`へ戻す（`_RESUMABLE_RUNNING_HEALTH`。
+   `read_status`が`PIPELINE_INTERRUPTED`で案内する再開経路の実体）。
 
    `request_id`を指定した再送は、直前と同じ`updates`/`rerun_upstream`なら
    新しいrevision/attemptを作らず直前の結果を返す（`resume_log`。source_root単位の
@@ -66,6 +74,20 @@ _RESUME_RETRY_MAX_ATTEMPTS = 5
 #: 中断由来の終端状態。`completed`と違い、何も変えなくてもresumeが呼ばれた
 #: 時点で常に`planned`へ戻してよい（D09「取消後・timeout後のresume」）。
 _INTERRUPTED_STATUSES = frozenset({"partial", "failed", "cancelled", "needs_input"})
+
+#: 永続statusが`running`のまま残ったrunを「中断」と見なしてよい観測結果。
+#:
+#: workerを失うと（強制終了・OSごと落ちる）statusは`running`のまま固まる。
+#: `read_status`はこれを`observed_health="worker_missing"`＋
+#: `PIPELINE_INTERRUPTED`（「prepare_resumeで再開してください」）として報告する
+#: のだから、`prepare_resume`はその案内どおりに`planned`へ戻せなければならない
+#: （spec A06/§9.3）。
+#:
+#: **`"unknown"`は入れない。** identityが記録されていない・生存確認そのものが
+#: 失敗した、のいずれも「死んでいる証拠」ではない（brief「liveness probeの失敗を
+#: deadと解釈しない」）。生きているworkerのrunを`planned`へ戻して別workerを
+#: 起こしにいくのは、記録の書き換えと二重実行の両方を招く。
+_RESUMABLE_RUNNING_HEALTH = frozenset({"worker_missing"})
 
 
 def _now_iso() -> str:
@@ -110,6 +132,24 @@ def _stage_statuses(record: dict) -> dict:
     return {sid: stage.get("status") for sid, stage in record.get("stages", {}).items()}
 
 
+def _worker_health(record: dict) -> str:
+    """記録済みworker identityの生死を`same_process`で観測する（読取専用）。
+
+    `"ok"`（生きている）/ `"worker_missing"`（記録されたidentityはもう存在
+    しない）/ `"unknown"`（identityが無い、または生存確認自体が失敗した）。
+    probeがどう転んでもファイルには一切触れない——`read_status`（表示）と
+    `prepare_resume`（再開判断）が同じ観測を共有するためだけの純関数。
+    """
+    identity = (record.get("worker") or {}).get("identity")
+    if not identity:
+        return "unknown"
+    try:
+        alive = same_process(identity)
+    except Exception:  # noqa: BLE001 - probe自体の失敗をdeadと解釈しない
+        return "unknown"
+    return "ok" if alive else "worker_missing"
+
+
 def read_status(path: Path, *, include_details: bool = False) -> dict:
     """pipeline状態を読むだけで、一切書き換えない（brief「read-onlyとする」）。
 
@@ -122,18 +162,7 @@ def read_status(path: Path, *, include_details: bool = False) -> dict:
     record = store.load_run(pipeline_root)  # 読取専用。ここでは一切保存しない。
 
     status = record.get("status")
-    observed_health = "ok"
-    if status == "running":
-        identity = (record.get("worker") or {}).get("identity")
-        if not identity:
-            observed_health = "unknown"
-        else:
-            try:
-                alive = same_process(identity)
-            except Exception:  # noqa: BLE001 - probe自体の失敗をdeadと解釈しない
-                observed_health = "unknown"
-            else:
-                observed_health = "ok" if alive else "worker_missing"
+    observed_health = _worker_health(record) if status == "running" else "ok"
 
     result = {
         "pipeline_id": record.get("identity", {}).get("pipeline_id"),
@@ -377,6 +406,29 @@ def _reset_stage_for_resume(stage: dict) -> dict:
     return reset
 
 
+def _clear_cancel_request(pipeline_root: Path, *, prior_status: str,
+                          worker_health: str) -> None:
+    """協調取消フラグ（`control/cancel-request.json`）を取り下げる。
+
+    これを消さないと、`planned`へ戻して新しいworkerを起こしても
+    `engine._run_stage_loop`が最初のstage境界で`cancel_requested()`を見て即座に
+    `finish_cancelled`するため、**取消したrunは二度と再開できない**（D09
+    「取消後・timeout後のresumeは何も変えなくても続行できて当然」）。
+
+    ただし**停止処理がまだ進行中かもしれない取消は握り潰さない**。
+    `prior_status`が`running`/`planned`（＝workerが今このrunを進めている最中で
+    ありうる状態）で、しかもそのworkerの生存を確認できた場合だけは消さずに残す
+    ——そこで消すと、利用者が出した取消がworkerに届く前に黙って無効になる。
+
+    逆に`cancelled`（`engine.finish_cancelled`が停止完了を確定させた）や
+    その他の終端状態から再開するときは、識別子として記録されているworkerが
+    まだ生きていても（終了処理中・pid再利用）取消はもう完了しているので消す。
+    """
+    if prior_status in {"running", "planned"} and worker_health == "ok":
+        return
+    engine.cancel_request_path(pipeline_root).unlink(missing_ok=True)
+
+
 def _resume_receipt(record: dict, *, reused: bool, reset_stage_ids: list | None = None) -> dict:
     return {
         "pipeline_id": record["identity"]["pipeline_id"],
@@ -469,11 +521,21 @@ def prepare_resume(path: Path, *, updates: dict | None = None,
         # 何も変えなくても続行できて当然（D09）。一方`completed`は、実際に何か
         # 変わった場合（request内容・stageのpending化・上流再実行の明示）だけ
         # `planned`へ戻す——変化の無いno-op resumeでcompletedを崩さない。
+        #
+        # `running`のまま固まったrun（worker喪失）は、**そのworkerがもう居ない
+        # ことを観測できたときだけ**同じ扱いにする（A06/§9.3。`read_status`が
+        # `PIPELINE_INTERRUPTED`で案内する再開経路の実体）。判定不能
+        # （`observed_health="unknown"`）は「死んでいる」ではないので動かさない。
         made_changes = request_changed or bool(reset_ids) or rerun_upstream
-        if record["status"] in _INTERRUPTED_STATUSES:
+        worker_health = _worker_health(record)
+        prior_status = record["status"]
+        interrupted = (prior_status in _INTERRUPTED_STATUSES
+                       or (prior_status == "running"
+                           and worker_health in _RESUMABLE_RUNNING_HEALTH))
+        if interrupted:
             record["status"] = "planned"
             record["needs_input"] = None
-        elif record["status"] == "completed" and made_changes:
+        elif prior_status == "completed" and made_changes:
             record["status"] = "planned"
 
         if request_id is not None:
@@ -490,6 +552,9 @@ def prepare_resume(path: Path, *, updates: dict | None = None,
             if exc.code == "STATE_REVISION_CONFLICT":
                 continue  # 他アクターが進めた最新を読み直して再試行
             raise
+        if record["status"] == "planned":
+            _clear_cancel_request(pipeline_root, prior_status=prior_status,
+                                  worker_health=worker_health)
         saved = store.load_run(pipeline_root)
         return _resume_receipt(saved, reused=False, reset_stage_ids=reset_ids)
 

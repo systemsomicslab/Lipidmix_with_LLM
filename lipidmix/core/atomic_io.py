@@ -15,7 +15,28 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
+
+#: 共有違反を吸収する有界リトライの上限（秒）と待ち時間。
+#:
+#: **Windowsでは、誰かがそのファイルを読むために開いているだけで`os.replace`が
+#: `PermissionError`（WinError 5）になる。** 読み手側に`FILE_SHARE_DELETE`を
+#: 付けても`MoveFileExW(REPLACE_EXISTING)`は通らないので、読み手側の書き方では
+#: 直せない（Task19が実測）。つまり`pipeline-run.json`をポーリングして眺めるだけで
+#: **動いているworkerの保存を失敗させられる**。監視のために解析を落とすのは
+#: 本末転倒なので、置換する側が短時間だけ譲って待つ。
+#:
+#: 逆向き（置換の最中に読もうとして開けない）も同じ性質で起こるため、
+#: `read_text_stable`が読み手側にも同じ有界リトライを与える。
+#:
+#: 「有界」であることが要点——待つのはOSレベルの一瞬の共有違反だけで、
+#: 権限不足のような恒久的な失敗はこの窓を超えた時点で元の例外のまま送出する
+#: （握り潰して静かに書けていないことにしない）。実測では最悪10回程度の
+#: 再試行（≒0.3秒）で通る。
+_SHARING_RETRY_DEADLINE_S = 2.0
+_SHARING_RETRY_FIRST_S = 0.001
+_SHARING_RETRY_MAX_S = 0.05
 
 
 class DomainError(Exception):
@@ -46,6 +67,36 @@ def canonical_hash(value: object) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _retry_on_sharing_violation(operation):
+    """共有違反（`PermissionError`）だけを有界に再試行する。
+
+    `operation`は1回分の試行。成功したらその戻り値を返す。期限を過ぎたら
+    **元の例外をそのまま**送出する（別のcodeに包み直さない——呼び出し側の
+    既存のエラー処理を変えないため）。
+    """
+    deadline = time.monotonic() + _SHARING_RETRY_DEADLINE_S
+    delay = _SHARING_RETRY_FIRST_S
+    while True:
+        try:
+            return operation()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, _SHARING_RETRY_MAX_S)
+
+
+def read_text_stable(path: Path, *, encoding: str = "utf-8") -> str:
+    """`atomic_write_json`で置換されうるファイルを読む（共有違反だけ有界に再試行）。
+
+    置換の瞬間に開こうとすると`PermissionError`になりうる。ここで吸収しないと、
+    読取専用のはずの監視（`pipeline_status`）が書き込み中にランダムで失敗する。
+    `FileNotFoundError`はそのまま送出する——「まだ無い」は競合ではなく事実。
+    """
+    path = Path(path)
+    return _retry_on_sharing_violation(lambda: path.read_text(encoding=encoding))
+
+
 def atomic_write_json(path: Path, data: dict) -> None:
     """JSONを原子的に保存する。
 
@@ -53,6 +104,11 @@ def atomic_write_json(path: Path, data: dict) -> None:
     直列化し、flush・os.fsync してから os.replace で置換する。この順序を
     崩すと、置換直前にプロセスが落ちた際に中途半端な内容を確定状態として
     読ませてしまう。
+
+    置換は`_retry_on_sharing_violation`越しに行う。Windowsでは**誰かがそのファイルを
+    読むために開いているだけで`os.replace`が失敗する**ため、これが無いと
+    `pipeline_status`のポーリングが動いているworkerの保存を落とせてしまう
+    （Task19実測。読み手側の共有モードでは直せない）。
 
     失敗時は未確定の一時ファイルだけを片付け、既存の path には一切触れない
     （path.unlink はしない）。
@@ -71,7 +127,7 @@ def atomic_write_json(path: Path, data: dict) -> None:
                      separators=(",", ":"), allow_nan=False)
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
-        os.replace(tmp_path, path)
+        _retry_on_sharing_violation(lambda: os.replace(tmp_path, path))
     except Exception:
         if tmp_path is not None and tmp_path.exists():
             os.unlink(tmp_path)

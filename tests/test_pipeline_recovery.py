@@ -222,6 +222,82 @@ def test_request_cancel_then_engine_stops_between_stages(tmp_path):
     assert "pca" not in calls
 
 
+# ---------- prepare_resume: 取消フラグの取り下げ / running のまま残ったrun ----------
+
+def _completed_then(tmp_path: Path, status: str, *, identity=None):
+    """一度完走させてから、`status`（と必要ならworker identity）を上書きしたrun。
+
+    上流をsucceededにしておかないと`prepare_resume`が
+    `UPSTREAM_RERUN_REQUIRED`で先に止まり、取消フラグの扱いまで到達しない。
+    """
+    pipeline_path, handlers, _calls = _build_pipeline(tmp_path, target="exploratory")
+    assert run_engine(pipeline_path, handlers)["status"] == "completed"
+    record = load_run(pipeline_path)
+    record["status"] = status
+    if identity is not None:
+        record["worker"] = {"identity": identity, "started_at": "2026-09-05T00:00:00+00:00"}
+    save_run(pipeline_path, record, expected_revision=record["state_revision"])
+    return pipeline_path
+
+
+def test_resume_after_cancel_withdraws_the_cancel_flag(tmp_path):
+    """D09: 取消フラグを消さないと、再開したworkerが最初のstage境界で即止まる。"""
+    pipeline_path = _completed_then(tmp_path, "cancelled")
+    request_cancel(pipeline_path)
+    assert cancel_request_path(pipeline_path).is_file()
+
+    receipt = prepare_resume(pipeline_path)
+
+    assert receipt["status"] == "planned"
+    assert not cancel_request_path(pipeline_path).exists()
+
+
+def test_resume_of_a_lost_running_run_returns_to_planned(tmp_path, monkeypatch):
+    """A06/§9.3: `read_status`が案内するとおり、worker喪失runはresumeで動く。"""
+    pipeline_path = _completed_then(tmp_path, "running", identity=process_identity_of_self())
+    monkeypatch.setattr(recovery_module, "same_process", lambda identity: False)
+    assert read_status(pipeline_path)["recovery_hint"]["code"] == "PIPELINE_INTERRUPTED"
+
+    receipt = prepare_resume(pipeline_path)
+
+    assert receipt["status"] == "planned"
+
+
+def test_resume_never_disturbs_a_running_run_whose_worker_is_alive(tmp_path):
+    """生きているworkerのrunは`planned`へ戻さず、その取消要求も握り潰さない。
+
+    identityは**このpytestプロセス自身**（確実に生きている）。`same_process`は
+    モックしない——pidと生成時刻の両方を見る本物の判定を通す。
+    """
+    pipeline_path = _completed_then(tmp_path, "running", identity=process_identity_of_self())
+    request_cancel(pipeline_path)
+    assert read_status(pipeline_path)["observed_health"] == "ok"
+
+    receipt = prepare_resume(pipeline_path)
+
+    assert receipt["status"] == "running", "生きているworkerのrunを再開扱いにした"
+    assert cancel_request_path(pipeline_path).is_file(), "出された取消を握り潰した"
+    assert load_run(pipeline_path)["status"] == "running"
+
+
+def test_resume_of_a_running_run_with_an_unresolvable_worker_does_nothing(tmp_path,
+                                                                          monkeypatch):
+    """判定不能（probe失敗）は「死んでいる」ではない——runにも取消にも触れない。"""
+    pipeline_path = _completed_then(tmp_path, "running", identity=process_identity_of_self())
+    request_cancel(pipeline_path)
+
+    def _probe_fails(identity):
+        raise OSError("probeそのものが失敗した")
+
+    monkeypatch.setattr(recovery_module, "same_process", _probe_fails)
+    assert read_status(pipeline_path)["observed_health"] == "unknown"
+
+    receipt = prepare_resume(pipeline_path)
+
+    assert receipt["status"] == "running"
+    assert cancel_request_path(pipeline_path).is_file()
+
+
 # ---------- prepare_resume: EXECUTION_UNRESOLVED / UPSTREAM_RERUN_REQUIRED ----------
 
 def test_upstream_not_succeeded_requires_explicit_rerun_upstream(tmp_path):

@@ -245,6 +245,61 @@ def test_save_run_failure_leaves_record_unchanged_and_releases_lock(tmp_path, mo
     assert load_run(pipeline_root)["status"] == "running"
 
 
+def test_a_concurrent_reader_cannot_break_the_writer(tmp_path):
+    """`pipeline_status`のポーリングが**動いているworkerを殺せてはいけない**。
+
+    Windowsでは、誰かが`pipeline-run.json`を読むために開いている間、
+    `atomic_write_json`の`os.replace`が`PermissionError`（WinError 5）になる。
+    Task19の受入検証では50msポーリングで実際にworkerが落ちた。ここでは
+    **本物の競合**（読み手スレッドが休みなく`load_run`、書き手が`save_run`）を
+    起こして、書き手が1回も落ちないこと、そして読み手側も落ちないことを見る
+    ——監視のために解析を落とすのも、監視が勝手に落ちるのも受け入れない。
+
+    シミュレーションではない: モックは一切使わず、実ファイル・実スレッドで
+    OSの共有違反そのものを起こす（この構成は修正前だと必ず赤になる）。
+    """
+    import threading
+
+    from lipidmix.pipeline.store import create_run, load_run, save_run
+
+    root = tmp_path / "source"
+    root.mkdir()
+    req = resolve_request(root)
+    pipeline_root = create_run(root, req, _minimal_inputs(root))
+
+    stop = threading.Event()
+    read_errors: list[str] = []
+    reads = [0]
+
+    def poll():
+        while not stop.is_set():
+            try:
+                load_run(pipeline_root)
+                reads[0] += 1
+            except Exception as exc:  # noqa: BLE001 - 読み手の失敗も記録して落とす
+                read_errors.append(repr(exc))
+
+    reader = threading.Thread(target=poll, daemon=True)
+    reader.start()
+    write_errors: list[str] = []
+    try:
+        for revision in range(40):
+            record = load_run(pipeline_root)
+            record["status"] = "running"
+            try:
+                save_run(pipeline_root, record, expected_revision=record["state_revision"])
+            except Exception as exc:  # noqa: BLE001
+                write_errors.append(repr(exc))
+    finally:
+        stop.set()
+        reader.join(timeout=30)
+
+    assert reads[0] > 100, f"読み手が競合していません（reads={reads[0]}）"
+    assert write_errors == [], f"読み手がworkerの保存を壊しました: {write_errors[:3]}"
+    assert read_errors == [], f"書き込み中の読取が失敗しました: {read_errors[:3]}"
+    assert load_run(pipeline_root)["state_revision"] == 40
+
+
 # ---------- 相対化 ----------
 
 def test_create_run_relativizes_paths_actually_under_pipeline_root(tmp_path):

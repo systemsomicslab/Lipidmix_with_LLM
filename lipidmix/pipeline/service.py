@@ -544,6 +544,15 @@ def _handle_resolve_metadata(context: dict) -> dict:
 
 
 # ---------- preprocess（Task11） ----------
+#
+# **計算結果のrefは`provenance.result_id`そのもので登録する**（spec §6.1/§9.1）。
+# 合成id（`res_preprocess_<fingerprint>`等）で登録すると、下流のrefが
+# `parent_ids`へ入れる**計算側の実ID**（`result_state.new_provenance`が発行する
+# UUID）と別の名前空間になり、`record["results"]`の中で親を解決できなくなる。
+# 図やTSVのような「成果物ファイル」だけは、どの必須出力かで引ける合成id
+# （`res_pca_figure_*` / `res_volcano_<cid>` / `res_tsv_<cid>`）のまま——
+# これらは計算結果ではなく、`parent_ids`で親の計算結果を名指しする側なので、
+# 誰かの`parent_ids`に現れることがない。
 
 def _handle_preprocess(context: dict) -> dict:
     ds = context["runtime"]["dataset"]
@@ -553,12 +562,13 @@ def _handle_preprocess(context: dict) -> dict:
 
     plan = dataset_service.preprocess_auto(ds, requested, metadata, request_revision=request_revision)
 
-    fingerprint = plan["result"]["provenance"]["input_fingerprint"]
+    provenance = plan["result"]["provenance"]
     data = {k: v for k, v in plan.items() if k != "result"}
     data["result"] = {k: v for k, v in plan["result"].items() if k != "provenance"}
     ref = report_mod.persist_result(context["pipeline_root"], {
         "output_name": "preprocess", "kind": "preprocess",
-        "result_id": f"res_preprocess_{fingerprint[:24]}",
+        "result_id": provenance["result_id"],
+        "parent_ids": list(provenance.get("parent_ids") or []),
         "data": data, "request_revision": request_revision,
     })
     warnings = [{"code": "PREPROCESS_CAVEAT", "message": w}
@@ -589,9 +599,13 @@ def _handle_pca(context: dict) -> dict:
                          "details": dict(exc.details)}}
 
     fingerprint = result["provenance"]["input_fingerprint"]
-    summary = {k: v for k, v in result.items() if k not in ("provenance", "loadings", "scores")}
+    # `scores`（検体ごとのPC座標）は残す——これが図の中身そのもので、これを落とすと
+    # 永続化されたPCA結果から図を描き直せない（`result_output._render`は
+    # `points`が無ければ`scores`から射影する）。`loadings`だけは特徴量×成分の
+    # 大きな行列なので落とす。
+    summary = {k: v for k, v in result.items() if k not in ("provenance", "loadings")}
     data_ref = report_mod.persist_result(pipeline_root, {
-        "output_name": "pca", "kind": "pca", "result_id": f"res_pca_{fingerprint[:24]}",
+        "output_name": "pca", "kind": "pca", "result_id": result["provenance"]["result_id"],
         "data": summary, "parent_ids": list(result["provenance"].get("parent_ids") or []),
         "request_revision": request_revision,
     })
@@ -652,6 +666,23 @@ def _find_comparison(request: dict, comparison_id: str) -> dict:
 
 # ---------- differential（Task12） ----------
 
+def _persist_differential(context: dict, cid: str, result: dict) -> dict:
+    """差次的結果を永続化し、同じworker内の`export`が読めるようruntimeへ残す。
+
+    refのresult_idは`provenance.result_id`そのもの——volcano/TSVの`parent_ids`と
+    TSVメタ行の`# result_id`が名指しするのはこのIDで、`record["results"]`の中で
+    解決できなければ出所を辿れない（spec §6.1/§9.1）。
+    """
+    ref = report_mod.persist_result(context["pipeline_root"], {
+        "output_name": f"differential:{cid}", "kind": "differential",
+        "result_id": result["provenance"]["result_id"], "data": result,
+        "parent_ids": list(result["provenance"].get("parent_ids") or []),
+        "request_revision": context["request_meta"].get("revision"),
+    })
+    context["runtime"].setdefault("differential", {})[cid] = result
+    return ref
+
+
 def _handle_differential(context: dict) -> dict:
     ds = context["runtime"]["dataset"]
     metadata = context["runtime"]["metadata"]
@@ -659,12 +690,7 @@ def _handle_differential(context: dict) -> dict:
     comparison = _find_comparison(context["request"], cid)
 
     result = dataset_service.run_comparison(ds, comparison, metadata)
-    ref = report_mod.persist_result(context["pipeline_root"], {
-        "output_name": f"differential:{cid}", "kind": "differential",
-        "result_id": result["provenance"]["result_id"], "data": result,
-        "parent_ids": list(result["provenance"].get("parent_ids") or []),
-        "request_revision": context["request_meta"].get("revision"),
-    })
+    ref = _persist_differential(context, cid, result)
     warnings = [{"code": "DIFFERENTIAL_CAVEAT", "message": w}
                for w in result.get("caveats", [])]
     return {"status": "succeeded", "result_refs": [ref], "warnings": warnings, "error": None}
@@ -673,13 +699,22 @@ def _handle_differential(context: dict) -> dict:
 # ---------- export（Task8） ----------
 
 def _handle_export(context: dict) -> dict:
-    """volcano図とcontract TSVを書く。`differential` handlerが既に永続化した
-    refを読み戻さず、`run_comparison`を独立にもう一度呼ぶ——`ds`は
-    `_ALWAYS_RECONSTRUCT_STAGE_IDS`により同一worker呼出し内で必ず新しく
-    構築済みなので、統計計算自体は安価かつ`differential`と同じ`ds`から
-    同じ数値が出る。worker再起動をまたいで`differential`が既にsucceededで
-    skipされ、`export`だけがこのpassで動く場合でも、この独立再計算により
-    `assert_current`（`ds.preprocess_id`一致検査）を満たしたまま完結できる。
+    """volcano図とcontract TSVを書く。
+
+    使う差次的結果は、**同じworker passで`differential` handlerが計算し永続化
+    したそのもの**（`runtime["differential"][cid]`）。`run_comparison`を独立に
+    呼び直すと`result_state.new_provenance`が新しいUUIDを発行するため、
+    volcano/TSVの`parent_ids`とTSVメタ行の`# result_id`が
+    `record["results"]`に載っていない2つ目の結果を指してしまい、出所の連結が
+    切れる（spec §6.1/§9.1、E02「result_idの整合」）。
+
+    worker再起動をまたいで`differential`が既にsucceededでskipされ、`export`
+    だけがこのpassで動く場合はruntimeに結果が無い。永続化済みJSONは前回の
+    `ds.preprocess_id`を親に持ち`assert_current`を通らない（`ds`は
+    `_ALWAYS_RECONSTRUCT_STAGE_IDS`により作り直され、preprocessのIDも新しい）
+    ので、その場合だけ再計算する——ただし**再計算した結果も
+    `differential:<cid>`として永続化する**（append-only）。そうしないと、
+    今書くvolcano/TSVが名指しするIDだけがrecordに存在しない状態に戻る。
     """
     ds = context["runtime"]["dataset"]
     metadata = context["runtime"]["metadata"]
@@ -688,7 +723,11 @@ def _handle_export(context: dict) -> dict:
     pipeline_root = context["pipeline_root"]
     request_revision = context["request_meta"].get("revision")
 
-    result = dataset_service.run_comparison(ds, comparison, metadata)
+    result_refs: list[dict] = []
+    result = (context["runtime"].get("differential") or {}).get(cid)
+    if result is None:
+        result = dataset_service.run_comparison(ds, comparison, metadata)
+        result_refs.append(_persist_differential(context, cid, result))
 
     volcano_path = pipeline_root / _RESULTS_SUBDIR / f"volcano_{cid}.png"
     result_output.save_result_figure(ds, result, volcano_path, kind="volcano")
@@ -698,7 +737,7 @@ def _handle_export(context: dict) -> dict:
         "parent_ids": [result["provenance"]["result_id"]], "request_revision": request_revision,
     })
 
-    result_refs = [volcano_ref]
+    result_refs.append(volcano_ref)
     warnings: list[dict] = []
     tsv_path = pipeline_root / _RESULTS_SUBDIR / f"differential_{cid}.tsv"
     try:

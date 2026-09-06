@@ -18,7 +18,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 from lipidmix.core.atomic_io import DomainError
-from lipidmix.core.tool_helpers import _pca_scatter_arrays
+from lipidmix.core.tool_helpers import _pca_scatter_arrays, dataset_pca_plot
 from lipidmix.plots.volcano import render_volcano_plot
 
 __all__ = ["figure_annotations", "save_result_figure", "select_result"]
@@ -112,9 +112,36 @@ def save_result_figure(ds, result: dict, path: Path, *, kind: str,
 
 # ---------- 内部 ----------
 
+def _pca_plot_payload(result: dict) -> dict:
+    """PCA 結果を、描画が食う散布図 dict（`points` を持つ形）へ揃える。
+
+    PCA の結果は経路によって**形が違う**。ARF 経路（`session.arf.last_pca_plot`）は
+    最初から `points` を持つが、DatasetState 経路
+    （`analysis.dataset_service.pca_dataset` → `dataset_analysis.run_dataset_pca`）は
+    `scores`（name / role / PC1..PCn）しか持たない。ここで揃えずに `points` だけを
+    読むと、DatasetState 経路では点が 0 件のまま**枠だけの図**が保存され、しかも
+    ファイルは生成されて hash も通るので「必須出力は達成」と数えられてしまう
+    （pipeline の `results/pca.png` が実際にそうなっていた）。
+
+    どちらの形でも点が取れなければ描かずに止める。空の散布図は「点が無いデータ」
+    ではなく「入力の形が想定と違う」の症状で、図として出せば必ず誤読される。
+    """
+    if (result or {}).get("points"):
+        return result
+    projected = dataset_pca_plot(result) if result else None
+    if projected is None:
+        raise DomainError(
+            "PCA_FIGURE_EMPTY",
+            "PCA 図に描ける点がありません（points も PC1/PC2 を持つ scores も"
+            "見つかりません）。空の散布図は保存しません。",
+            {"keys": sorted(result or {})})
+    return projected
+
+
 def _render(result: dict, *, kind: str, title: str | None):
     if kind == "pca":
-        xs, ys, labels, x_label, y_label, plot_title = _pca_scatter_arrays(result)
+        xs, ys, labels, x_label, y_label, plot_title = _pca_scatter_arrays(
+            _pca_plot_payload(result))
         fig, ax = plt.subplots(figsize=(8, 6))
         ax.scatter(xs, ys, alpha=0.6)
         for x, y, label in zip(xs, ys, labels):

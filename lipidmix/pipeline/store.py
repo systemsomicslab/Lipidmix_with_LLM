@@ -36,7 +36,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lipidmix.console import job_manager
-from lipidmix.core.atomic_io import DomainError, atomic_write_json, canonical_hash
+from lipidmix.core.atomic_io import (
+    DomainError,
+    atomic_write_json,
+    canonical_hash,
+    read_text_stable,
+)
 from lipidmix.core.process_control import file_lock, process_identity
 from lipidmix.pipeline.request import request_fingerprint
 
@@ -311,11 +316,17 @@ def create_run(source_root: Path, request: dict, inputs: dict, *,
 
 def load_run(path: Path) -> dict:
     """pipeline_root（`create_run`/`find_or_create_run`の戻り値）を受け取り、
-    その配下の`pipeline-run.json`を読んで返す。"""
+    その配下の`pipeline-run.json`を読んで返す。
+
+    読取りは`read_text_stable`——この1ファイルだけは、workerが`save_run`で
+    置換している最中に監視（`pipeline_status`）が読みにくる。Windowsでは
+    その一瞬に`PermissionError`（共有違反）が出るので、有界に再試行して
+    吸収する（恒久的な権限エラーは窓を過ぎればそのまま伝わる）。
+    """
     pipeline_root = Path(path)
     run_path = pipeline_root / RUN_FILENAME
     try:
-        raw = run_path.read_text(encoding="utf-8")
+        raw = read_text_stable(run_path)
     except FileNotFoundError as exc:
         raise DomainError("PIPELINE_RUN_NOT_FOUND",
                           f"pipeline-run.jsonが見つかりません: {run_path}",

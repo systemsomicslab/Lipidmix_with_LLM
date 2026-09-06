@@ -93,6 +93,36 @@ def test_save_result_figure_writes_a_pca_png(tmp_path):
     assert out.read_bytes()[:4] == b"\x89PNG"
 
 
+def test_save_result_figure_accepts_the_dataset_state_pca_shape(tmp_path):
+    """DatasetState 経路の PCA 結果（`points` ではなく `scores`）でも点を描く。
+
+    ここを揃えないと、pipeline が必須出力として保存する `results/pca.png` が
+    枠だけの空の散布図になる（ファイルは生成され hash も通るので気付けない）。
+    """
+    import matplotlib.image as mpimg
+
+    dataset_pca = {
+        "scores": [{"name": "s1", "role": "sample", "PC1": 1.0, "PC2": 2.0},
+                   {"name": "s2", "role": "sample", "PC1": -1.0, "PC2": 0.5}],
+        "explained_variance_ratio": [0.31, 0.22],
+    }
+
+    out = save_result_figure(None, dataset_pca, tmp_path / "scores.png", kind="pca")
+
+    image = mpimg.imread(str(out))
+    # 点の色（既定 C0＝青系）の画素があること。軸枠・文字は黒/灰なので0にはならない。
+    assert int(((image[..., 2] - image[..., 0]) > 0.1).sum()) > 100
+
+
+def test_save_result_figure_refuses_a_pca_result_with_no_points(tmp_path):
+    """描ける点が無いなら、空の散布図を保存せずに止める。"""
+    out = tmp_path / "empty.png"
+    with pytest.raises(DomainError) as exc:
+        save_result_figure(None, {"explained_variance_ratio": [0.3]}, out, kind="pca")
+    assert exc.value.code == "PCA_FIGURE_EMPTY"
+    assert not out.exists()
+
+
 def test_save_result_figure_writes_a_volcano_png(tmp_path):
     out = save_result_figure(None, _VOLCANO, tmp_path / "v.png", kind="volcano")
     assert out.is_file()

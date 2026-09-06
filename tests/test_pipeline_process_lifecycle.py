@@ -186,13 +186,6 @@ def test_cancel_at_a_stage_boundary_keeps_earlier_results(pipeline_harness):
     assert engine.cancel_requested(pipeline_harness.pipeline_root(run)) is True
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "既知の欠陥（Task19が発見。Task16由来）: `recovery.prepare_resume` が協調取消フラグ "
-    "`control/cancel-request.json` を消さないため、取消したrunは**二度と再開できない**。"
-    "statusはplannedへ戻り新しいworkerも起動するが、`engine._run_stage_loop` が最初の"
-    "stage境界で`cancel_requested()`を見て即座に`finish_cancelled`する。"
-    "`prepare_resume`自身のコメントはD09『取消後・timeout後のresumeは何も変えなくても"
-    "続行できて当然』を引いており、意図と実装が食い違っている。"))
 def test_cancelled_run_can_be_resumed(pipeline_harness):
     """spec D09: 取消後のresumeは、過去attemptを保持したまま続きから進められること。"""
     run = pipeline_harness.start(target="exploratory",
@@ -285,14 +278,6 @@ def test_lost_worker_is_reported_and_never_fabricated(pipeline_harness):
     assert "quality_report" not in {ref["output_name"] for ref in record["results"]}
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "既知の欠陥（Task19が発見。Task16由来）: workerを失ったrunは永続statusが`running`の"
-    "ままだが、`recovery.prepare_resume`の`_INTERRUPTED_STATUSES`は"
-    "partial/failed/cancelled/needs_inputしか`planned`へ戻さない。`running`は"
-    "「変化なし」と判定されてstatusが動かず、`service.resume_pipeline`は"
-    "`status != 'planned'`なのでworkerを起動しない。`read_status`は"
-    "`PIPELINE_INTERRUPTED`＋『prepare_resumeで再開してください』と案内するのに、"
-    "その案内どおりに呼んでも何も起きない（spec A06/§9.3）。"))
 def test_lost_run_can_be_resumed_as_read_status_advertises(pipeline_harness):
     """spec A06: 中断したrunは、案内どおりのresumeで最後まで進められること。"""
     from lipidmix.pipeline import service
@@ -307,6 +292,45 @@ def test_lost_run_can_be_resumed_as_read_status_advertises(pipeline_harness):
     assert pipeline_harness.console_start_count(run) == 1  # 上流は再実行しない
     assert {"preprocess", "pca", "pca_figure", "quality_report"} <= \
         {ref["output_name"] for ref in resumed["results"]}
+
+
+def test_resumed_export_alone_still_names_a_recorded_differential_result(pipeline_harness):
+    """spec §6.1/§9.1: `export`だけが動く再開passでも、出所の連結が切れないこと。
+
+    `export`の途中でworkerを失うと、`differential:<cid>`はsucceededのまま残る。
+    再開したworkerはそれをskipするので、`export`は差次的結果を持たないまま
+    走り出す——ここで結果を計算し直すだけで永続化を忘れると、TSVの
+    `# result_id`とvolcanoの`parent_ids`が`record["results"]`に存在しない
+    結果を指す（Task19が見つけた欠陥の、再開経路側の顔）。
+    """
+    from lipidmix.pipeline import service
+
+    cid = DEFAULT_COMPARISON["comparison_id"]
+    pipeline_harness.write_manifest()
+    run = pipeline_harness.start(
+        target="differential", comparisons=[DEFAULT_COMPARISON],
+        extra_request={"sample_manifest": "sample-manifest.tsv"},
+        sleep_stage=f"export:{cid}", sleep_seconds=60)
+    pipeline_harness.wait_for_stage(run, f"export:{cid}")
+    worker = pipeline_harness.worker_processes(run)[0]
+    _kill_process_tree(worker)
+    interrupted = pipeline_harness.record(run)
+    assert interrupted["stages"][f"differential:{cid}"]["status"] == "succeeded"
+
+    pipeline_harness.set_launch_options(run, sleep_stage=None)
+    service.resume_pipeline(pipeline_harness.pipeline_root(run))
+    resumed = pipeline_harness.wait(run, expected="completed")
+
+    # differentialは再実行されず（skip）、exportだけがこのpassで動いた。
+    assert pipeline_harness.console_start_count(run) == 1
+    known_ids = {ref["result_id"] for ref in resumed["results"]}
+    dangling = {ref["output_name"]: [pid for pid in ref.get("parent_ids") or []
+                                     if pid not in known_ids]
+                for ref in resumed["results"]}
+    assert {name: ids for name, ids in dangling.items() if ids} == {}
+    meta, _rows, _fields = read_contract_tsv(
+        pipeline_harness.output_path(resumed, f"tsv:{cid}"))
+    assert meta["result_id"] in known_ids
 
 
 def test_second_worker_on_the_same_run_refuses_instead_of_running_twice(pipeline_harness):

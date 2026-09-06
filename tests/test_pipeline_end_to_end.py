@@ -227,33 +227,76 @@ def test_saved_figures_come_from_the_named_results(pipeline_harness):
     assert redrawn.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "既知の欠陥（Task19が発見。Task8/18由来）: pipelineが必須出力として保存する "
-    "results/pca.png が**点のない空の散布図**になる。"
-    "`plots.result_output._render(kind='pca')` は `core.tool_helpers._pca_scatter_arrays` "
-    "経由で `result['points']` を読むが、これはARF経路の描画payload"
-    "（session.arf.last_pca_plot）の形であって、`analysis.dataset_service.pca_dataset` が"
-    "返すDatasetState経路の結果は `scores`（name/role/PC1..PCn）しか持たず "
-    "`points` キーが存在しない。ファイルは生成され hash も通るので "
-    "evaluate_target は達成と数え、runはcompletedになる。"
-    "spec E03『指定データ・群が一致』を満たさない。"))
+def _scatter_ink(png_path) -> int:
+    """PNGの中で「散布図のマーカー色」を持つ画素数を数える。
+
+    matplotlibの既定の点の色はC0（青系 #1f77b4）で、軸枠・目盛・文字・注記は
+    黒/灰/赤系しか使わない。したがって**青が赤より明確に強い画素**の数は、
+    実際に点が描かれたかどうかだけを見る指標になる（枠だけの空図なら0）。
+    その「空図なら0」自体もテスト内で実測して確かめる（下記の参照図）。
+    """
+    import matplotlib.image as mpimg
+
+    image = mpimg.imread(str(png_path))
+    return int(((image[..., 2] - image[..., 0]) > 0.1).sum())
+
+
+def _blank_reference_png(path) -> int:
+    """点を一つも描かないPCA図（軸・ラベル・題だけ）の散布図インク量。"""
+    import matplotlib.pyplot as plt
+
+    figure, axes = plt.subplots(figsize=(8, 6))
+    try:
+        axes.set_xlabel("PC1")
+        axes.set_ylabel("PC2")
+        axes.set_title("PCA")
+        figure.savefig(str(path), format="png", dpi=120, bbox_inches="tight")
+    finally:
+        plt.close(figure)
+    return _scatter_ink(path)
+
+
 def test_saved_pca_figure_plots_the_run_samples(pipeline_harness):
     """spec E03: PCA図はこのrunの検体を実際に描いていること。
 
-    ここでassertする`_pca_scatter_arrays(pca_result)`は、`save_result_figure`が
-    `kind="pca"`で描くときに通る**まさにその経路**なので、これが空である＝保存
-    されたPNGが空であることと同義。
+    「PNGが在る・hashが合う」だけでは空の散布図を見逃す（Task19が見つけた欠陥は
+    まさにそれで、`results/pca.png`は枠だけの図なのにrunはcompletedになっていた）。
+    ここでは (1) 永続化されたPCA結果自身が検体の座標を持つこと、(2) 保存された
+    PNGに**点の画素が実在する**こと、(3) その結果から本番の保存経路で描き直しても
+    点が描かれ、警告（豆腐＝`Glyph missing`）が1件も出ないことまで見る。
     """
-    from lipidmix.core.tool_helpers import _pca_scatter_arrays
+    from lipidmix.core.tool_helpers import _pca_scatter_arrays, dataset_pca_plot
+    from lipidmix.plots.result_output import save_result_figure
 
     run = pipeline_harness.start(target="exploratory")
     record = pipeline_harness.wait(run, expected="completed")
+    pipeline_root = Path(record["identity"]["pipeline_root"])
 
+    # (1) 保存されたPCA結果が、この8検体の座標を持っている。
     pca_result = pipeline_harness.result_data(record, "pca")
-    xs, _ys, labels, _xl, _yl, _title = _pca_scatter_arrays(pca_result)
-
-    assert len(xs) == 8, f"PCA図に検体が1つも描かれていません: {pca_result.keys()}"
+    xs, ys, labels, x_label, _y_label, _title = _pca_scatter_arrays(
+        dataset_pca_plot(pca_result))
+    assert len(xs) == 8, f"PCA結果に検体の座標がありません: {sorted(pca_result)}"
+    assert len(ys) == 8
     assert labels == [f"S{i}" for i in range(1, 9)]
+    assert x_label.startswith("PC1 ("), x_label   # 寄与率つきの軸ラベル
+
+    # (2) 実際に保存されたPNGに点が描かれている（空の枠ではない）。
+    figure_ref = pipeline_harness.output_ref(record, "pca_figure")
+    assert store.verify_result_refs(pipeline_root, [figure_ref]) == []
+    blank_ink = _blank_reference_png(pipeline_harness.tmp_path / "blank-pca.png")
+    assert blank_ink == 0, "指標そのものが壊れています（空図でも点の色を数えている）"
+    saved_ink = _scatter_ink(pipeline_root / figure_ref["relative_path"])
+    assert saved_ink > 100, f"results/pca.pngが空の散布図です（点の画素数={saved_ink}）"
+
+    # (3) 永続化された結果から本番の保存経路で描き直しても同じ図になる。
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        redrawn = save_result_figure(None, pca_result,
+                                     pipeline_harness.tmp_path / "redraw-pca.png", kind="pca")
+    assert caught == [], [str(w.message) for w in caught]
+    assert redrawn.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert _scatter_ink(redrawn) > 100
 
 
 # ---------- E01: InChIKey 0件 ----------
@@ -385,16 +428,6 @@ def test_changed_effective_method_is_detected_on_resume(pipeline_harness):
     assert excinfo.value.code == "STAGED_INPUT_MISMATCH"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "既知の欠陥（Task19が発見。Task17/18由来）: 永続refのresult_id空間と"
-    "parent_ids空間が別物で、依存グラフが辿れない。(1) _handle_preprocess/"
-    "_handle_pca/_handle_export は合成id（res_pca_<fingerprint>・"
-    "res_volcano_<cid>等）でrefを登録するのに、parent_idsには計算側の実UUID"
-    "（provenance.result_id）を入れる。(2) _handle_export が run_comparison を"
-    "独立に呼び直すため、TSVメタ行の `# result_id` と volcano/tsv の parent_ids は"
-    "record['results'] に載っていない**2つ目の**差次的結果を指す。数値は同じだが"
-    "出所の連結が切れており、spec §6.1・§9.1（results: result_id/親ID）・"
-    "E02『result_idの整合』・E03『出所が一致』を満たさない。"))
 def test_persisted_result_graph_is_joinable_by_result_id(pipeline_harness):
     """spec §6.1/§9.1: `parent_ids`は`record["results"]`の`result_id`で解決できること。
 
