@@ -110,6 +110,40 @@ Task 20で解消した6件の文書ドリフトは、`.superpowers/sdd/2026-09-0
 5. `SAMPLE_MAPPING_MISMATCH`→`SAMPLE_MAPPING_MISSING`へ、spec §13 A03と`tests/fixtures/fake_console.py`のdocstringを本番コード（`lipidmix/console/validation.py`）に合わせて統一。
 6. plan Task 19のシナリオ表が言う`partial`は誤りで、spec §9.1の状態機械と実装は`failed`（有効な解析出力なしのケース）で一致している。これはplan文書側の誤りとしてここに記録するのみで、実装は変更していない（`tests/test_pipeline_end_to_end.py`に既にこの食い違いを明記するコメントがある）。
 
+## 既知の制限（最終スコープ再レビューで判明。controller裁定により修正せず出荷）
+
+以下は「動作未確認」ではなく「現状の挙動を確認したうえで、このまま出荷する」と
+裁定された既知の制限。将来直す場合の見立ても添えるが、本タスクではコードを
+変更していない。
+
+- **resume中のrequest/planが古いまま進む（mid-run resume staleness）。**
+  `engine._run_stage_loop`は`request`と`plan`をloop開始時に一度だけ読み、以降
+  読み直さない。`recovery.prepare_resume`はworkerが生きている（status
+  `running`・healthが`ok`）resumeを拒否しない——statusは`running`のままなので
+  二重起動はしないが、request revisionは上げられ、stageはリセットされる。
+  conflictリトライ導入前は、生きているworkerの次の`save_run`が
+  `STATE_REVISION_CONFLICT`で落ちてworkerが死に、`worker_missing → planned`が
+  正しい全面再実行を生んでいた。今はそのリトライがconflictを吸収するため、
+  workerはresume前のrequestのまま完走できてしまう。具体的には、`preprocess`
+  実行中に`pipeline_resume(updates={"preprocess": {...}})`が届くと、
+  revision 2のrunがrevision 1の数値のまま`completed`になり得て、`warnings`
+  には何も残らない。このフローにはresume前後を問わずテストが無い。直すなら
+  最も安く効くのは、loopの各反復の先頭でrevisionを照合し、古ければ完走させず
+  中断する仕組み。
+- **リトライ経路でresult_refsが重複しうる（duplicate result refs）。**
+  `engine.commit_stage_outcome`の再適用は、読み直したstageから
+  `previous_result_refs`を導出する。並行して書き込んだのが同じstageを
+  リセットする`prepare_resume`（`result_refs = []`にする）だった場合、
+  再適用側は`previous == []`と見て同じrefsを`record["results"]`へもう一度
+  追記してしまう。`store._assert_results_append_only`はこれを拒否しない
+  （追記であることに変わりはないため）し、`report._achieved_ref`は一致する
+  最後の要素を採るため現時点で実害は出ていない——が、履歴には重複が残る。
+- **`engine.py`の`save_run`直呼び出し箇所**（`_save_with_retry`を経由しない
+  もの）は`STATE_REVISION_CONFLICT`をそのまま呼び出し元へ伝播させる。各箇所は
+  loadしてすぐsaveするだけの短い区間で、間にハンドラを挟まないため、
+  伝播した先はworkerが死んで次のresumeが状態を作り直すことで自己修復する
+  （上記のmid-run resume stalenessが同じ自己修復経路を悪化させている点に注意）。
+
 ## 参照
 
 - 検証コマンドの実行者: 本タスク（Task 20）自身。実MS-DIAL・実データの実行は行っていない。

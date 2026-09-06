@@ -583,10 +583,19 @@ def _handle_resolve_metadata(context: dict) -> dict:
     時点で消える。`record["inputs"]["manifest"]`は品質レポートのサンプル来歴
     セクション（`lipidmix.pipeline.report._section_sample_provenance`、spec §11
     が要求し §7.3 が出所の記録を義務付ける）が読む場所そのもので、
-    `store._relativize_inputs_paths`（保存時に`source_file`を相対化）と
-    `recovery._absolutize_inputs_paths`（再開時に絶対化）も既にこのキーを
-    前提にしている——**読む側が3つあるのに書く側が居なかった**。
-    明示シートでも自動生成でも同じ形の行が出るので、両方ここで記録する。
+    `recovery._absolutize_inputs_paths`（再開時に絶対化。既に絶対なら何もしない
+    no-op）も既にこのキーを前提にしている——**読む側が2つあるのに書く側が
+    居なかった**。明示シートでも自動生成でも同じ形の行が出るので、両方ここで
+    記録する。
+    **`store._relativize_inputs_paths`はここでは効かない**——`create_run`
+    （このstageより前）でしか呼ばれず、`save_run`自身は`record`を
+    deepcopyしてそのまま書くだけ（相対化を挟まない）。つまりこの`manifest`が
+    ここで初めて記録される`source_file`は保存後も絶対パスのまま残る。
+    結果としてrun recordはpipeline_rootを移設しても`source_file`が指す実体と
+    ずれ、品質レポートの来歴テーブルにホスト側の絶対パスがそのまま出る
+    （最終レビューで判明・controller裁定によりそのまま出荷、
+    `docs/superpowers/notes/2026-09-05-raw-folder-pipeline-validation.md`
+    「既知の制限」参照）。
     """
     ds = context["runtime"]["dataset"]
     request = context["request"]

@@ -108,8 +108,14 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
     そのときは新しい attempt ディレクトリを作る（前回の終了証跡・ログを上書きしない）。
   - 工程の実行順の正準は `engine.build_stages` の計画順（`record["stages"]` の挿入順ではない）。
     report は必ず最後。
-  - 状態を保存する側は `STATE_REVISION_CONFLICT` を有限回まで読み直して再適用する
-    （`store` / `recovery` / `engine` すべて）。競合で worker を殺さない。
+  - `store`（`_patch_request_id_with_retry`）と `recovery`（`prepare_resume`）は
+    それぞれ自分の保存経路を `STATE_REVISION_CONFLICT` の有限回リトライで覆う。
+    `engine` は長い区間を跨ぐ保存（`mark_stage_running` /
+    `commit_stage_outcome`、`_save_with_retry`）だけをリトライで覆い、
+    それ以外の `save_run` 直呼び出しは読み直しを挟まずコンフリクトを
+    そのまま伝播する——ただしいずれも load してすぐ save するだけの
+    短い区間なので、伝播した先は worker が死に、次の resume が状態を
+    作り直すことで自己修復する。
 
 ## ドキュメントの地図（用途別に読み分ける）
 

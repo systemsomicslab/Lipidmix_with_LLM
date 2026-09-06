@@ -173,8 +173,13 @@ resume時に「recordに無いstage_id」を末尾へ追記するので、比較
 `_handle_resolve_metadata`は解決した行(role/group/batch/injection_order/qc_pool)を
 `record_updates`で`record["inputs"]["manifest"]`へ残す。ここが唯一の書き手で、
 読み手は品質レポートのサンプル来歴セクション(`report._section_sample_provenance`)・
-保存時の相対化(`store._relativize_inputs_paths`)・再開時の絶対化
-(`recovery._absolutize_inputs_paths`)の3つ。明示シートでも自動生成でも同じ形の行を書く。
+再開時の絶対化(`recovery._absolutize_inputs_paths`、既に絶対ならno-op)の2つ。
+明示シートでも自動生成でも同じ形の行を書く。
+**`store._relativize_inputs_paths`はこの`manifest`には効かない**——
+`create_run`(このstageより前)でしか呼ばれず、以降の`save_run`は`record`を
+deepcopyしてそのまま書くだけなので、ここで書く`source_file`は保存後も
+絶対パスのまま残る(既知の制限。
+`docs/superpowers/notes/2026-09-05-raw-folder-pipeline-validation.md`参照)。
 
 `_handle_pca`はPCA不成立を検出した`PreconditionError`（`lipidmix.analysis.
 dataset_analysis.run_dataset_pca`が送出。`DomainError`の派生ではないため
