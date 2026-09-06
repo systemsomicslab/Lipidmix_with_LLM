@@ -353,7 +353,11 @@ def test_completed_run_with_broken_artifact_raises_integrity_mismatch(tmp_path):
 def test_completed_run_with_broken_artifact_and_no_request_id_creates_new_run(tmp_path):
     """明示request_idが無い場合は、壊れたcompleted runを黙って再利用しない代わりに
     RESULT_INTEGRITY_MISMATCHでも止めず、新しいrunを作る（brief該当なし、
-    店の解釈をreportに記載）。"""
+    店の解釈をreportに記載）。ただし黙って上書きはせず、破損の事実（旧runの
+    パスとどの成果物が壊れていたか）を新runのwarningsへ記録する
+    （レビュー finding 2 / controller ruling R17）。"""
+    from lipidmix.pipeline.store import load_run
+
     root = tmp_path / "source"
     root.mkdir()
     req = resolve_request(root)
@@ -363,6 +367,12 @@ def test_completed_run_with_broken_artifact_and_no_request_id_creates_new_run(tm
 
     second = find_or_create_run(root, req, inputs)
     assert second != first
+
+    new_record = load_run(second)
+    assert new_record["warnings"], "破損した既存runの警告が新runへ記録されていない"
+    warning = new_record["warnings"][0]
+    assert str(first) in warning["message"]
+    assert "results/r1.json" in warning["message"]
 
 
 def test_index_entry_with_vanished_run_self_heals(tmp_path):
@@ -422,6 +432,63 @@ def test_uuid_collision_is_retried(tmp_path, monkeypatch):
     pipeline_root = store_mod.create_run(root, req, _minimal_inputs(root))
     assert pipeline_root.name != f"pipeline_{fixed}"
     assert calls["n"] >= 2
+
+
+# ---------- 受付冪等性: request_id patchの状態競合を退ける（レビュー finding 1） ----------
+
+def test_find_or_create_run_request_id_patch_survives_concurrent_state_bump(tmp_path, monkeypatch):
+    """既存run（request_id未指定で作成済み）へrequest_idを書き足す最中に、
+    別アクター（例: Consoleワーカーのstage更新save_run）がそのrunの
+    state_revisionを進めても、受付自体（find_or_create_run）は失敗せず、
+    同じrunを返し続けること。
+
+    index.lockはsource_root単位の受付排他であって、runごとのcontrol/pipeline.lock
+    ではない——find_or_create_runがrequest_idをpatchする際のload_run→save_runの
+    間には、その一瞬を保護するロックが無い。ここではload_runを1回だけ横取りし、
+    「読取った直後・自分のsave_runより先に」本物のsave_runで別アクターの更新を
+    割り込ませることで、この隙間を確定的に突く（スレッドやプロセスに頼らず、
+    フックで狙った位置に割り込みを固定する）。
+    """
+    from lipidmix.pipeline import store as store_mod
+    from lipidmix.pipeline.store import load_run
+
+    root = tmp_path / "source"
+    root.mkdir()
+    req = resolve_request(root)
+    inputs = _minimal_inputs(root)
+
+    # request_id無しでrunを作る（request.request_idはNoneのまま、state_revision=0）。
+    first = find_or_create_run(root, req, inputs)
+
+    real_load_run = store_mod.load_run
+    calls = {"n": 0}
+
+    def flaky_load_run(path):
+        record = real_load_run(path)
+        calls["n"] += 1
+        # 1回目の呼出しは_lookup_request（再利用判定のための下見読み）——
+        # この時点ではまだrequest_id patchの読取りではないので割り込まない。
+        # 2回目こそがrequest_id patch自体の読取り（find_or_create_run/
+        # _patch_request_id_with_retryの最初の試行）であり、ここでの読取り
+        # 直後・その読取り結果に基づくsave_runより先に、別アクターの更新を
+        # 割り込ませることで「load_runとsave_runの間」の隙間を確定的に突く。
+        if calls["n"] == 2:
+            concurrent = real_load_run(path)
+            concurrent["status"] = "running"
+            store_mod.save_run(path, concurrent, expected_revision=concurrent["state_revision"])
+        return record
+
+    monkeypatch.setattr(store_mod, "load_run", flaky_load_run)
+
+    # request_idを指定して再受付。既存runを再利用しつつrequest.request_idを
+    # 書き足す必要がある（state_revisionが0→1に進むはずの操作）。
+    second = find_or_create_run(root, req, inputs, request_id="race-1")
+
+    assert second == first
+    assert calls["n"] >= 3, "2回目の割り込みで状態競合が起きレビュー後の読み直しが無ければこのテストは無意味"
+    record = load_run(first)
+    assert record["request"]["request_id"] == "race-1"
+    assert record["status"] == "running"  # 割り込んだ側の更新も消えていない
 
 
 # ---------- 読取専用importが索引dirを作らない ----------

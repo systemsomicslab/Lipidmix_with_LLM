@@ -87,6 +87,28 @@ _RELATIVIZABLE_INPUT_PATHS = (("method", "source_path"), ("lbm", "path"), ("exe"
 
 _VANISHED = object()  # 索引entryはあるがpipeline_root/pipeline-run.jsonが読めない標識
 
+#: find_or_create_runがrequest_idを既存runへ書き足す際、他アクター（Consoleワーカー
+#: のstage更新save_run等）による状態競合(STATE_REVISION_CONFLICT)を有限回まで
+#: 読み直して吸収する上限（レビュー finding 1）。
+_REQUEST_ID_PATCH_MAX_ATTEMPTS = 5
+
+
+class _CorruptedReuse:
+    """明示request_id無し（explicit_request_id=False）で見つかった、成果物hashの
+    検証に失敗したcompleted run（レビュー finding 2 / controller ruling R17）。
+
+    spec §9.3は「成果物hashの一致する同一要求のcompleted runも再利用する」と
+    書くが、明示的な同一性の主張（request_id）が無い状態で壊れたrunを見つけた
+    場合にエラーで止めるのは、呼び出し側に手動クリーンアップ以外の道を残さない。
+    そこで新runは作るが、この情報を新runのwarningsへ記録して破損を可視化する。
+    """
+
+    __slots__ = ("pipeline_root", "failures")
+
+    def __init__(self, pipeline_root: Path, failures: list[dict]) -> None:
+        self.pipeline_root = pipeline_root
+        self.failures = failures
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -187,7 +209,8 @@ def _relativize_inputs_paths(inputs: dict, pipeline_root: Path) -> dict:
 
 # ---------- create_run / load_run / save_run ----------
 
-def create_run(source_root: Path, request: dict, inputs: dict) -> Path:
+def create_run(source_root: Path, request: dict, inputs: dict, *,
+               warnings: list[dict] | None = None) -> Path:
     """新規pipeline_rootを採番して作成し、初期pipeline-run.jsonを書く。
 
     書込先は既定で`<source_root>/runs/pipeline_<UUID>/`、要求に`output_root`が
@@ -195,6 +218,11 @@ def create_run(source_root: Path, request: dict, inputs: dict) -> Path:
     できる」）。pipeline_idはUUID4（秒精度の時刻だけに頼らない、spec §9.3）。
     ディレクトリ作成が衝突した場合（極めて起こりにくいが同一秒UUIDの理論上の
     再採番要求に備える）は新しいUUIDで採番し直す。
+
+    `warnings`はbrief記載の5関数のシグネチャに無いキーワード専用の追加引数
+    （既定Noneで後方互換）。`find_or_create_run`が、破損したcompleted runを
+    黙って上書きした事実を新runへ最初から記録するために使う
+    （レビュー finding 2 / controller ruling R17）。
     """
     source_root = Path(source_root).expanduser()
     if not source_root.is_dir():
@@ -255,7 +283,7 @@ def create_run(source_root: Path, request: dict, inputs: dict) -> Path:
         "inputs": relativized_inputs,
         "results": [],
         "needs_input": None,
-        "warnings": [],
+        "warnings": list(warnings) if warnings else [],
     }
     atomic_write_json(pipeline_root / RUN_FILENAME, record)
     return pipeline_root
@@ -409,12 +437,14 @@ def _write_index_entry(index_dir: Path, *, pipeline_root: Path,
     _write_index(index_dir, {"entries": entries})
 
 
-def _artifacts_verify(record: dict, pipeline_root: Path) -> bool:
-    """record["results"]の各成果物hashが実ファイルと一致するかを確認する。
+def _artifacts_verify(record: dict, pipeline_root: Path) -> list[dict]:
+    """record["results"]の各成果物hashを実ファイルと照合し、不一致だけを返す。
 
-    resultsが空（探索・比較のいずれもまだ結果を持たないcompleted、通常は
-    起こらないが安全側で許す）なら空虚に真とする。
+    戻り値は不一致（またはファイル自体を読めない）entryのリスト。空リストは
+    全件一致（resultsが空——探索・比較のいずれもまだ結果を持たないcompleted、
+    通常は起こらないが安全側で許す——場合も同様に空虚に真とする）。
     """
+    failures: list[dict] = []
     for result in record.get("results", []):
         rel = result.get("relative_path")
         expected = result.get("hash")
@@ -424,21 +454,25 @@ def _artifacts_verify(record: dict, pipeline_root: Path) -> bool:
         try:
             actual = _sha256_file(target)
         except OSError:
-            return False
+            actual = None
         if actual != expected:
-            return False
-    return True
+            failures.append({"relative_path": rel, "expected_hash": expected, "actual_hash": actual})
+    return failures
 
 
 def _resolve_reusable(pipeline_root_str: str, *, explicit_request_id: bool):
     """索引entryが指すpipeline_rootを、そのまま返してよいか判定する。
 
     戻り値:
-        Path      そのまま返してよい（活動中／completedで成果物検証OK／
-                  失敗・取消・部分完了などそのままの状態で返してよい終端状態）。
-        _VANISHED pipeline_root自体（pipeline-run.json）が読めない
-                  （索引はあるがrunが消失している）。呼び出し側はこの索引entryを
-                  無視して次の候補・新規作成へフォールバックしてよい。
+        Path             そのまま返してよい（活動中／completedで成果物検証OK／
+                         失敗・取消・部分完了などそのままの状態で返してよい終端状態）。
+        _VANISHED        pipeline_root自体（pipeline-run.json）が読めない
+                         （索引はあるがrunが消失している）。呼び出し側はこの索引
+                         entryを無視して次の候補・新規作成へフォールバックしてよい。
+        _CorruptedReuse  明示request_id無しで見つかったcompletedだが成果物hashが
+                         壊れているrun。呼び出し側は消失と同様フォールバックする
+                         が、破損の事実を新runの警告として残さなければならない
+                         （controller ruling R17）。
 
     例外:
         DomainError("RESULT_INTEGRITY_MISMATCH")
@@ -451,19 +485,31 @@ def _resolve_reusable(pipeline_root_str: str, *, explicit_request_id: bool):
     except DomainError:
         return _VANISHED
     status = record.get("status")
-    if status == "completed" and not _artifacts_verify(record, pipeline_root):
-        if explicit_request_id:
-            raise DomainError(
-                "RESULT_INTEGRITY_MISMATCH",
-                f"request_idに一致する既存runの成果物を検証できませんでした: {pipeline_root}",
-                {"pipeline_root": str(pipeline_root)})
-        return _VANISHED  # 内容一致だけのフォールバックでは、使えないので消失と同じ扱い
+    if status == "completed":
+        failures = _artifacts_verify(record, pipeline_root)
+        if failures:
+            if explicit_request_id:
+                raise DomainError(
+                    "RESULT_INTEGRITY_MISMATCH",
+                    f"request_idに一致する既存runの成果物を検証できませんでした: {pipeline_root}",
+                    {"pipeline_root": str(pipeline_root), "failures": failures})
+            # 内容一致だけのフォールバックでは黙って再利用しない。ただし静かに
+            # 上書きもしない——呼び出し側（find_or_create_run）が新runの
+            # warningsへ書き足せるよう、破損情報を運ぶ。
+            return _CorruptedReuse(pipeline_root, failures)
     return pipeline_root
 
 
 def _lookup_request(index_dir: Path, *, request_id: str | None,
-                    request_hash: str, input_hash: str) -> Path | None:
-    """索引から再利用可能なpipeline_pathを探す。無ければNone（create_runへ進む）。"""
+                    request_hash: str, input_hash: str,
+                    corrupted: list) -> Path | None:
+    """索引から再利用可能なpipeline_pathを探す。無ければNone（create_runへ進む）。
+
+    `corrupted`は呼び出し側（find_or_create_run）が用意する出力用リスト。
+    明示request_id無しのフォールバック探索中に見つかった破損completed run
+    （`_CorruptedReuse`）をここへ積む——新runを作ることになった場合、
+    呼び出し側がこれを警告として書き足す。
+    """
     data = _read_index(index_dir)
     entries = data.get("entries", [])
 
@@ -479,6 +525,7 @@ def _lookup_request(index_dir: Path, *, request_id: str | None,
             resolved = _resolve_reusable(entry["pipeline_root"], explicit_request_id=True)
             if resolved is _VANISHED:
                 break  # このrequest_idの記録は消失。素通りしてcontentフォールバックへ
+            # explicit_request_id=Trueは_CorruptedReuseを返さない（例外で止まる）。
             return resolved
 
     for entry in entries:
@@ -487,8 +534,66 @@ def _lookup_request(index_dir: Path, *, request_id: str | None,
         resolved = _resolve_reusable(entry["pipeline_root"], explicit_request_id=False)
         if resolved is _VANISHED:
             continue
+        if isinstance(resolved, _CorruptedReuse):
+            corrupted.append(resolved)
+            continue
         return resolved
     return None
+
+
+def _corruption_warning(corrupted: _CorruptedReuse) -> dict:
+    """R17: 破損した既存completed runを黙って上書きした事実を新runの
+    warningsへ記録する（spec §9.1「warnings: 機械可読code、対象工程、説明」）。
+    stage非依存の事象なので対象工程はNone。
+    """
+    broken = ", ".join(f["relative_path"] for f in corrupted.failures)
+    return {
+        "code": "STALE_RUN_ARTIFACT_CORRUPTED",
+        "stage_id": None,
+        "message": (
+            f"既存run {corrupted.pipeline_root} は成果物ハッシュの検証に失敗した"
+            f"ため再利用せず、新しいrunを作成しました。破損した成果物: {broken}"
+        ),
+    }
+
+
+def _patch_request_id_with_retry(pipeline_path: Path, request_id: str) -> None:
+    """既存run（新規作成直後含む）の`request.request_id`を書き足す。
+
+    ここは`source_root`単位の`index.lock`では保護されるが、その run自身の
+    `control/pipeline.lock`では保護されない一瞬の読取り（`load_run`）を挟む。
+    その間にConsoleワーカーなど別アクターがこのrunの`state_revision`を進める
+    （例えばstages更新の`save_run`）と、続く`save_run`の楽観チェックが
+    `STATE_REVISION_CONFLICT`を投げる——受付自体は正当（runは既に存在し
+    再利用してよい）のに、無関係な同時更新のせいで受付全体を失敗させては
+    いけない（レビュー finding 1）。
+
+    pipeline自身のlockを先に取ってから読み書きする案は採らなかった:
+    `save_run`が内部で同じ`control/pipeline.lock`を取るため、同一プロセスから
+    二重に取得することになり、`file_lock`は同一ファイルへの新しい`os.open`ごとに
+    別のロック要求として扱われる（POSIXの`flock`もWindowsの`msvcrt.locking`も
+    ファイル記述子単位）——自己デッドロックの危険がある。`save_run`を
+    「ロック取得済み」モード対応に改修する手もあるが、ロック解放漏れの経路を
+    増やすだけの割に、有限回のリトライで十分安全に吸収できる。
+    """
+    for _ in range(_REQUEST_ID_PATCH_MAX_ATTEMPTS):
+        record = load_run(pipeline_path)
+        if record["request"].get("request_id") == request_id:
+            return
+        record["request"]["request_id"] = request_id
+        try:
+            save_run(pipeline_path, record, expected_revision=record["state_revision"])
+        except DomainError as exc:
+            if exc.code == "STATE_REVISION_CONFLICT":
+                continue  # 他アクターが進めた最新を読み直して再試行
+            raise
+        else:
+            return
+    raise DomainError(
+        "STATE_REVISION_CONFLICT",
+        f"request_idの記録が状態競合の再試行上限（{_REQUEST_ID_PATCH_MAX_ATTEMPTS}回）"
+        f"に達しました: {pipeline_path}",
+        {"pipeline_root": str(pipeline_path), "request_id": request_id})
 
 
 def find_or_create_run(source_root: Path, request: dict, inputs: dict, *,
@@ -513,16 +618,16 @@ def find_or_create_run(source_root: Path, request: dict, inputs: dict, *,
     index_dir = _index_dir_for_source(source_root)
     lock_path = index_dir / _INDEX_LOCK_FILENAME
     with file_lock(lock_path):
+        corrupted: list[_CorruptedReuse] = []
         pipeline_path = _lookup_request(index_dir, request_id=request_id,
-                                        request_hash=request_hash, input_hash=input_hash)
+                                        request_hash=request_hash, input_hash=input_hash,
+                                        corrupted=corrupted)
         if pipeline_path is None:
-            pipeline_path = create_run(source_root, request, inputs)
+            seed_warnings = [_corruption_warning(c) for c in corrupted]
+            pipeline_path = create_run(source_root, request, inputs, warnings=seed_warnings)
 
         if request_id is not None:
-            record = load_run(pipeline_path)
-            if record["request"].get("request_id") != request_id:
-                record["request"]["request_id"] = request_id
-                save_run(pipeline_path, record, expected_revision=record["state_revision"])
+            _patch_request_id_with_retry(pipeline_path, request_id)
 
         _write_index_entry(index_dir, pipeline_root=pipeline_path, request_id=request_id,
                            request_hash=request_hash, input_hash=input_hash)
