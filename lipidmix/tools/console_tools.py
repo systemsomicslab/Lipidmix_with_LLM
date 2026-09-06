@@ -297,6 +297,16 @@ def console_run(job_path: str | None = None, detach: bool = False) -> str:
     except ValueError as exc:
         return console_error("JOB_NOT_FOUND", str(exc))
 
+    pipeline_block = _pipeline_owner_block(Path(job.run_dir))
+    if pipeline_block is not None:
+        return console_error(
+            "JOB_OWNED_BY_PIPELINE",
+            "このジョブは pipeline が所有しています。単体 console_run では"
+            "実行できません。取消・再実行は所有 pipeline 側の操作から行って"
+            f"ください（pipeline_root={pipeline_block.get('pipeline_path')}）。",
+            {"job_id": job.job_id, **pipeline_block},
+        )
+
     if job.status != "planned":
         return console_error(
             "JOB_NOT_PLANNED",
@@ -738,16 +748,25 @@ def console_cleanup(job_path: str | None = None, dry_run: bool = True) -> str:
     # （pid だけでは pid 再利用を見分けられない）。
     from lipidmix.console.worker import owner_is_active, owner_summary
     owned = owner_is_active(Path(job.run_dir))
+    pipeline_block = _pipeline_owner_block(Path(job.run_dir))
 
     if dry_run:
+        warnings: list[str] = []
+        if owned:
+            warnings.append("このジョブは監視ワーカー（worker）が実行中です。"
+                            "実行が終わるまで削除は拒否されます。")
+        if pipeline_block is not None:
+            warnings.append(
+                "このジョブは pipeline が所有しています "
+                f"（pipeline_root={pipeline_block.get('pipeline_path')}）。"
+                "所有 pipeline が活動中である限り削除は拒否されます。")
         return json_payload({
             "status": "dry_run",
             "dry_run": True,
             "job_id": job.job_id,
             "count": len(targets),
             "files": [str(p) for p in targets],
-            "warnings": (["このジョブは監視ワーカー（worker）が実行中です。"
-                          "実行が終わるまで削除は拒否されます。"] if owned else []),
+            "warnings": warnings,
             "next": "実際に削除するには dry_run=False を指定してください",
         })
 
@@ -760,6 +779,16 @@ def console_cleanup(job_path: str | None = None, dry_run: bool = True) -> str:
             {"job_id": job.job_id, "status": job.status, "run_dir": job.run_dir,
              "owner": owner_summary(Path(job.run_dir))},
             required_tools=["console_status"])
+
+    if pipeline_block is not None:
+        return console_error(
+            "JOB_OWNED_BY_PIPELINE",
+            "このジョブは pipeline が所有しています。所有 pipeline が活動中、"
+            "または状態を確認できない間は削除できません"
+            f"（pipeline_root={pipeline_block.get('pipeline_path')}）。"
+            "取消・再開は所有 pipeline 側の操作から行ってください。",
+            {"job_id": job.job_id, "status": job.status, "run_dir": job.run_dir,
+             **pipeline_block})
 
     deleted = absent = failed = 0
     errors: list[str] = []
@@ -821,6 +850,17 @@ def job_list(dataset_root: str) -> str:
 
 
 # ---------- 内部ヘルパ ----------
+
+def _pipeline_owner_block(run_dir: Path) -> dict | None:
+    """このrun_dirを所有するpipelineが活動中／判定不能なら拒否理由を返す。
+
+    None なら単体 console_run / console_cleanup を続行してよい。判定は
+    lipidmix.pipeline.store（Task 14）へ委譲する——所有権sidecarの読み書き・
+    pipeline-run.json の状態解釈はそちらが正準。
+    """
+    from lipidmix.pipeline import store as pipeline_store
+    return pipeline_store.pipeline_owner_block_reason(run_dir)
+
 
 def _file_sha256_or_none(path: Path) -> str | None:
     """読めれば SHA-256、読めなければ None（証跡側が読めなかった標識を置く）。"""

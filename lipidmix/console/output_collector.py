@@ -28,13 +28,15 @@ from lipidmix.handoff.schema import Artifact, MztabEntry, sha256_file
 # analysis-job.json は実行中に status 遷移で書き換わるため、差分に混入する。
 # execution-result.json / worker.json / control.json は監視ワーカーが書く終了証跡・
 # 監視状態・排他制御用のファイル。worker.log は切り離しワーカー自身の出力、
-# job.lock は job 単位の排他ロックの実体ファイル。いずれも MS-DIAL の生成物では
-# ないので、除外しないと「実行の結果できたファイル」として誤収集され、
-# 生成物ゼロの実行が partial に化ける。
+# job.lock は job 単位の排他ロックの実体ファイル。pipeline-owner.json は
+# Task 14（pipeline/store.py）が Console 起動前に書く所有権 sidecar
+# （このジョブをどの pipeline が所有しているかの参照だけを持つ）。
+# いずれも MS-DIAL の生成物ではないので、除外しないと「実行の結果できたファイル」
+# として誤収集され、生成物ゼロの実行が partial に化ける。
 _OPERATIONAL_FILES = frozenset({
     "msdial.log", "analysis-job.json",
     "execution-result.json", "worker.json", "control.json",
-    "worker.log", "job.lock",
+    "worker.log", "job.lock", "pipeline-owner.json",
 })
 
 # dataset_root を撮るときに降りないディレクトリ名。job_manager の RUNS_SUBDIR と

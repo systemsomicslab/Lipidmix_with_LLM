@@ -182,3 +182,118 @@ def test_refusal_names_the_owner_so_the_caller_can_act(tmp_path):
     assert owner["kind"] == "console_worker"
     assert owner["pid"] == os.getpid()
     assert owner["active"] is True
+
+
+# ---------- pipelineが所有するjobは単体console_run/console_cleanupから守る ----------
+# Task 14 (lipidmix.pipeline.store)。register_job_ownerでrun_dirへ所有記録を
+# 作った後、その所有pipelineが活動中／判定不能なら、単体console_run・
+# console_cleanupのどちらも拒否する。terminal状態に達したら拒否しない。
+
+def _make_pipeline_root(tmp_path, *, status: str):
+    """所有権判定だけに要る最小のpipeline-run.jsonを作る。"""
+    from lipidmix.pipeline.request import resolve_request
+    from lipidmix.pipeline.store import create_run, load_run, save_run
+
+    source = tmp_path / f"pipeline_source_{status}"
+    source.mkdir()
+    req = resolve_request(source)
+    pipeline_root = create_run(source, req, {"source_root": str(source), "fingerprint": "a" * 64})
+    if status != "planned":
+        record = load_run(pipeline_root)
+        record["status"] = status
+        save_run(pipeline_root, record, expected_revision=0)
+    return pipeline_root
+
+
+def test_standalone_console_run_refuses_when_owned_by_an_active_pipeline(tmp_path):
+    from lipidmix.console.job_manager import load_job
+    from lipidmix.pipeline.store import register_job_owner
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _job_with_outputs(tmp_path, record=False)
+    # console_runが実行に進むには status=planned が要る。_job_with_outputsは
+    # create_jobで既にplannedのジョブを作っている。
+    pipeline_root = _make_pipeline_root(tmp_path, status="running")
+    register_job_owner(job_path, pipeline_root)
+
+    parsed = _json.loads(console_run(str(job_path)))
+
+    assert parsed["error"]["code"] == "JOB_OWNED_BY_PIPELINE"
+    assert parsed["error"]["details"]["pipeline_path"] == str(pipeline_root.resolve())
+    assert load_job(job_path).status == "planned"  # 手つかずのまま
+
+
+def test_standalone_console_run_proceeds_when_owning_pipeline_is_terminal(tmp_path, monkeypatch):
+    """所有pipelineが終端状態なら、単体console_runの以降のガード（MSDIAL_EXE等）まで進む。"""
+    from lipidmix.pipeline.store import register_job_owner
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _job_with_outputs(tmp_path, record=False)
+    pipeline_root = _make_pipeline_root(tmp_path, status="cancelled")
+    register_job_owner(job_path, pipeline_root)
+    monkeypatch.delenv("MSDIAL_EXE", raising=False)
+
+    parsed = _json.loads(console_run(str(job_path)))
+
+    # 所有チェックは通過しているので、次に落ちるのは実行体未設定（別のエラー）。
+    assert parsed["error"]["code"] != "JOB_OWNED_BY_PIPELINE"
+
+
+def test_dry_run_cleanup_warns_but_lists_when_owned_by_pipeline(tmp_path):
+    from lipidmix.pipeline.store import register_job_owner
+    from lipidmix.tools.console_tools import console_cleanup
+
+    job_path = _job_with_outputs(tmp_path)
+    pipeline_root = _make_pipeline_root(tmp_path, status="needs_input")
+    register_job_owner(job_path, pipeline_root)
+
+    parsed = _json.loads(console_cleanup(str(job_path)))
+
+    assert parsed["dry_run"] is True
+    assert any("pipeline" in w for w in parsed["warnings"])
+    assert (tmp_path / "s1_1.pai2").exists()
+
+
+def test_cleanup_refuses_to_delete_while_owned_by_an_active_pipeline(tmp_path):
+    from lipidmix.pipeline.store import register_job_owner
+    from lipidmix.tools.console_tools import console_cleanup
+
+    job_path = _job_with_outputs(tmp_path)
+    pipeline_root = _make_pipeline_root(tmp_path, status="planned")
+    register_job_owner(job_path, pipeline_root)
+
+    parsed = _json.loads(console_cleanup(str(job_path), dry_run=False))
+
+    assert parsed["error"]["code"] == "JOB_OWNED_BY_PIPELINE"
+    assert (tmp_path / "s1_1.pai2").exists()
+    assert load_job(job_path).status == "completed"
+
+
+def test_cleanup_proceeds_when_owning_pipeline_is_terminal(tmp_path):
+    from lipidmix.pipeline.store import register_job_owner
+    from lipidmix.tools.console_tools import console_cleanup
+
+    job_path = _job_with_outputs(tmp_path)
+    pipeline_root = _make_pipeline_root(tmp_path, status="failed")
+    register_job_owner(job_path, pipeline_root)
+
+    parsed = _json.loads(console_cleanup(str(job_path), dry_run=False))
+
+    assert parsed["deleted"] == 3
+    assert load_job(job_path).status == "cleaned"
+
+
+def test_cleanup_refuses_when_owner_pipeline_is_undeterminable(tmp_path):
+    """所有記録はあるが、そのpipeline-run.jsonが読めない（判定不能）場合も拒否する。"""
+    from lipidmix.pipeline.store import register_job_owner
+    from lipidmix.tools.console_tools import console_cleanup
+
+    job_path = _job_with_outputs(tmp_path)
+    vanished_pipeline_root = tmp_path / "vanished_pipeline_root"
+    register_job_owner(job_path, vanished_pipeline_root)
+
+    parsed = _json.loads(console_cleanup(str(job_path), dry_run=False))
+
+    assert parsed["error"]["code"] == "JOB_OWNED_BY_PIPELINE"
+    assert parsed["error"]["details"]["reason"] == "undeterminable"
+    assert (tmp_path / "s1_1.pai2").exists()
