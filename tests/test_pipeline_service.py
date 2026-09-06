@@ -13,13 +13,16 @@ engine自体（stage順序・owner lock・冪等性）を検証しており、`b
 """
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 
 import pytest
 
 from lipidmix.analysis.dataset_analysis import PreconditionError
-from lipidmix.pipeline import service
+from lipidmix.pipeline import engine, service
+from lipidmix.pipeline.request import resolve_request
+from lipidmix.pipeline.store import create_run, load_run, save_run
 
 
 def _pca_context(pipeline_root: Path) -> dict:
@@ -135,3 +138,407 @@ def test_launch_pipeline_worker_uses_sys_executable_and_repo_root_cwd(tmp_path, 
     assert captured["command"][1:4] == ["-m", "lipidmix.pipeline.worker", "--pipeline"]
     assert captured["command"][4] == str(pipeline_path)
     assert captured["cwd"] == service._REPO_ROOT
+
+
+# ---------- レビュー指摘5: CONFOUNDED_COMPARISONはneeds_input（failedにしない）----------
+
+def test_confounded_comparison_becomes_needs_input_not_failed(monkeypatch):
+    """群とバッチが完全交絡した比較は、allow_confounded=trueという利用者入力を
+    待つneeds_inputであって、failedではない（spec §7.4「入力を待つ」、R18と同じ
+    defect class）。`_handle_resolve_comparisons`自身はDomainErrorを投げるだけで、
+    needs_inputへの変換はengineの`_invoke_handler`が`_NEEDS_INPUT_CODES`経由で行う
+    ——両方を実際に呼んで確認する。
+    """
+    comparisons = [{"comparison_id": "treated_vs_control",
+                   "reference_group": "control", "test_group": "treated"}]
+
+    def fake_resolve_comparison(ds, comparison, metadata):
+        return {"reference_group": comparison["reference_group"],
+                "test_group": comparison["test_group"],
+                "confounding": {"confounded": True}, "allow_confounded": False}
+
+    monkeypatch.setattr(service.dataset_service, "resolve_comparison", fake_resolve_comparison)
+    context = {"runtime": {"dataset": object(), "metadata": []},
+              "request": {"comparisons": comparisons}}
+
+    outcome = engine._invoke_handler(service._handle_resolve_comparisons, context)
+
+    assert outcome["status"] == "needs_input"
+    assert outcome["error"]["code"] == "CONFOUNDED_COMPARISON"
+
+
+# ---------- レビュー指摘4: quality_report自身の未生成を理由にした偽陽性警告 ----------
+
+def _minimal_inputs_for(root: Path) -> dict:
+    return {"source_root": str(root), "fingerprint": "f" * 64, "raw_inventory": []}
+
+
+def _build_exploratory_run(tmp_path: Path) -> Path:
+    """探索目標のrunを作り、upstream検証済み・preprocess/pca/pca_figureの3件を
+    実ref（`persist_result`が返す実file・実hash付き）で先に達成させておく。
+    quality_report以外は既に揃っている状態を作るのが目的。
+    """
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    request = resolve_request(source_root, {"target": "exploratory", "save_project": False})
+    pipeline_root = create_run(source_root, request, _minimal_inputs_for(source_root))
+
+    record = load_run(pipeline_root)
+    record = copy.deepcopy(record)
+    record["upstream"] = {"console_job_path": None, "execution_id": "exec-1",
+                          "verification": {"status": "completed"}}
+    refs = [service.report_mod.persist_result(pipeline_root, {
+        "output_name": name, "kind": "synthetic", "result_id": f"res_{name}",
+        "data": {"synthetic": True, "name": name},
+    }) for name in ("preprocess", "pca", "pca_figure")]
+    record["results"] = refs
+    save_run(pipeline_root, record, expected_revision=record["state_revision"])
+    return pipeline_root
+
+
+def test_report_handler_does_not_warn_when_only_its_own_ref_was_missing(tmp_path):
+    """`quality_report`以外はすべて達成済みのrunでは、reportハンドラの警告
+    `REPORT_INCOMPLETE_AT_WRITE_TIME`は出ない——quality_report自身がまだ
+    `results`に無い時点の一度きりのevaluate_targetだけを見ると常にTrueになって
+    しまう（レビュー指摘4）。
+    """
+    pipeline_root = _build_exploratory_run(tmp_path)
+    record = load_run(pipeline_root)
+    context = {"pipeline_root": pipeline_root,
+              "identity": {"pipeline_id": record["identity"]["pipeline_id"]}}
+
+    outcome = service._handle_report(context)
+
+    assert outcome["warnings"] == []
+
+
+def test_report_handler_still_warns_when_something_else_is_genuinely_missing(tmp_path):
+    """quality_report以外にも本当に未達成の出力が残っている場合は、引き続き
+    警告が出る（Finding4の修正が「常にFalse」へ倒れていないことの反証）。
+    """
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    request = resolve_request(source_root, {"target": "exploratory", "save_project": False})
+    pipeline_root = create_run(source_root, request, _minimal_inputs_for(source_root))
+    record = load_run(pipeline_root)
+    record = copy.deepcopy(record)
+    record["upstream"] = {"console_job_path": None, "execution_id": "exec-1",
+                          "verification": {"status": "completed"}}
+    # pcaを欠いたまま(preprocessだけ達成)。
+    ref = service.report_mod.persist_result(pipeline_root, {
+        "output_name": "preprocess", "kind": "synthetic", "result_id": "res_preprocess",
+        "data": {"synthetic": True},
+    })
+    record["results"] = [ref]
+    save_run(pipeline_root, record, expected_revision=record["state_revision"])
+    context = {"pipeline_root": pipeline_root,
+              "identity": {"pipeline_id": record["identity"]["pipeline_id"]}}
+
+    outcome = service._handle_report(context)
+
+    codes = {w["code"] for w in outcome["warnings"]}
+    assert "REPORT_INCOMPLETE_AT_WRITE_TIME" in codes
+
+
+# ---------- レビュー指摘3: resume_pipelineはpipeline-run.json自身も受け付ける ----------
+
+def test_resume_pipeline_normalizes_the_run_json_path_before_launching(tmp_path, monkeypatch):
+    """`pipeline_status`/`pipeline_cancel`と同じく、`resume_pipeline`も
+    `pipeline-run.json`そのものへのパスを受け付ける（`pipeline_tools.py`が
+    アドバタイズする形）。`prepare_resume`は内部で正規化するが、`resume_pipeline`
+    自身がその後の`launch_pipeline_worker`/receiptで生のパスを使うと、
+    二重に`pipeline-run.json`を連結した不正なパスへ`--pipeline`を渡し、
+    `_await_launch_handshake`の`store.load_run`が`PIPELINE_RUN_NOT_FOUND`で
+    落ちる（レビュー指摘3）。
+    """
+    from lipidmix.pipeline import store as store_mod
+
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    request = resolve_request(source_root, {"target": "exploratory", "save_project": False})
+    pipeline_root = store_mod.create_run(source_root, request, _minimal_inputs_for(source_root))
+    run_json_path = pipeline_root / store_mod.RUN_FILENAME
+
+    # 上流は既に検証済みという前提にする(D05と同じ流儀)——本テストの対象は
+    # 「パス正規化」だけで、UPSTREAM_RERUN_REQUIREDの判定は無関係。
+    record = load_run(pipeline_root)
+    record = copy.deepcopy(record)
+    record["stages"]["upstream"]["status"] = "succeeded"
+    save_run(pipeline_root, record, expected_revision=record["state_revision"])
+
+    captured = {}
+
+    def fake_launch_detached(command, *, cwd, log_path):
+        captured["command"] = command
+        captured["log_path"] = log_path
+        return {"launched": True, "pid": 555}
+
+    monkeypatch.setattr(service, "launch_detached", fake_launch_detached)
+    monkeypatch.setattr(service, "_HANDSHAKE_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(service, "_HANDSHAKE_POLL_S", 0.02)
+
+    receipt = service.resume_pipeline(run_json_path)
+
+    assert receipt["pipeline_path"] == str(pipeline_root)
+    assert captured["command"][-1] == str(pipeline_root)
+    assert captured["log_path"] == pipeline_root / store_mod.CONTROL_SUBDIR / "worker-launch.log"
+
+
+# ---------- レビュー指摘1: 再利用した活動中/終端runの上に二重起動しない ----------
+
+def _prepare_source(tmp_path, monkeypatch):
+    """`start_pipeline`の実処理(受付冪等性込み)を通すための実生データフォルダ。
+
+    `MSDIAL_EXE`環境変数と`is_console_exe`だけを差し替え、他はすべて
+    `inspect_inputs`/`find_or_create_run`本体を実際に通す
+    （`tests/test_pipeline_recovery.py::_build_pipeline_with_real_inputs`と
+    同じ流儀）。
+    """
+    from tests.pipeline_fixtures import make_source
+    source = make_source(tmp_path / "source")
+    monkeypatch.setenv("MSDIAL_EXE", str(source["exe"]))
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    monkeypatch.setenv("LIPIDMIX_PIPELINE_INDEX_DIR", str(tmp_path / "_pipeline_index_base"))
+    return source
+
+
+def test_start_pipeline_does_not_relaunch_over_an_active_reused_run(tmp_path, monkeypatch):
+    """`find_or_create_run`が同一fingerprint/要求の既存runを再利用したとき、
+    そのrunが既に活動中(running)なら二度目のworkerを起動しない
+    （レビュー指摘1: 二重起動は片方が`PIPELINE_ALREADY_RUNNING`で無駄死にし、
+    ログとプロセスが1つずつ漏れる）。
+    """
+    source = _prepare_source(tmp_path, monkeypatch)
+    launch_calls: list = []
+
+    def fake_launch_detached(command, *, cwd, log_path):
+        launch_calls.append(command)
+        return {"launched": True, "pid": 1000 + len(launch_calls)}
+
+    monkeypatch.setattr(service, "launch_detached", fake_launch_detached)
+    monkeypatch.setattr(service, "_HANDSHAKE_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(service, "_HANDSHAKE_POLL_S", 0.02)
+
+    first = service.start_pipeline(source["root"])
+    assert first["launched"] is True
+    assert len(launch_calls) == 1
+
+    # 実際に別workerがこのrunを引き受けた状態を模す(statusをrunningへ進める)。
+    pipeline_path = Path(first["pipeline_path"])
+    record = load_run(pipeline_path)
+    record = copy.deepcopy(record)
+    record["status"] = "running"
+    record["worker"] = {"identity": {"pid": 424242, "creation_time": 1},
+                        "started_at": "2026-09-06T00:00:00+00:00"}
+    save_run(pipeline_path, record, expected_revision=record["state_revision"])
+
+    second = service.start_pipeline(source["root"])
+
+    assert second["pipeline_path"] == first["pipeline_path"]
+    assert second["launched"] is False
+    assert len(launch_calls) == 1  # 再launchしていない
+
+
+def test_start_pipeline_does_not_relaunch_over_a_reused_completed_run(tmp_path, monkeypatch):
+    """completed runの再利用でも同様に起動しない(`_ALWAYS_RECONSTRUCT_STAGE_IDS`
+    の無条件再計算・figureの上書きを避ける)。"""
+    source = _prepare_source(tmp_path, monkeypatch)
+    launch_calls: list = []
+
+    def fake_launch_detached(command, *, cwd, log_path):
+        launch_calls.append(command)
+        return {"launched": True, "pid": 2000 + len(launch_calls)}
+
+    monkeypatch.setattr(service, "launch_detached", fake_launch_detached)
+    monkeypatch.setattr(service, "_HANDSHAKE_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(service, "_HANDSHAKE_POLL_S", 0.02)
+
+    first = service.start_pipeline(source["root"])
+    pipeline_path = Path(first["pipeline_path"])
+    record = load_run(pipeline_path)
+    record = copy.deepcopy(record)
+    record["status"] = "completed"
+    save_run(pipeline_path, record, expected_revision=record["state_revision"])
+
+    second = service.start_pipeline(source["root"])
+
+    assert second["launched"] is False
+    assert len(launch_calls) == 1
+
+
+# ---------- レビュー指摘2: handshakeは「新しいidentity」だけをconfirmedとする ----------
+
+def test_resume_handshake_is_not_confirmed_when_worker_identity_is_unchanged(tmp_path, monkeypatch):
+    """resumeで前回workerの残骸identityが既に記録されている場合、今回のlaunchが
+    新しいidentityを書かない(=実質何も起動していない)限りconfirmedにならない
+    ——`identity is not None`だけを見ると即座にconfirmedへ誤判定する
+    （レビュー指摘2）。
+    """
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    request = resolve_request(source_root, {"target": "exploratory", "save_project": False})
+    pipeline_root = create_run(source_root, request, _minimal_inputs_for(source_root))
+
+    stale_identity = {"pid": 111111, "creation_time": 1}
+    record = load_run(pipeline_root)
+    record = copy.deepcopy(record)
+    record["stages"]["upstream"]["status"] = "succeeded"
+    record["worker"] = {"identity": stale_identity, "started_at": "2026-09-05T00:00:00+00:00"}
+    save_run(pipeline_root, record, expected_revision=record["state_revision"])
+
+    # launchは起きるが、新しいidentityは一切書かない(=起動が実質失敗した状況を模す)。
+    monkeypatch.setattr(service, "launch_detached",
+                        lambda command, *, cwd, log_path: {"launched": True, "pid": 999})
+    monkeypatch.setattr(service, "_HANDSHAKE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(service, "_HANDSHAKE_POLL_S", 0.02)
+
+    receipt = service.resume_pipeline(pipeline_root)
+
+    assert receipt["launch"]["handshake"] == "not_confirmed"
+
+
+def test_resume_handshake_confirms_on_a_genuinely_new_identity(tmp_path, monkeypatch):
+    """対照: 新しいidentityが実際に書かれればconfirmedになる(過剰検出でないこと)。"""
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    request = resolve_request(source_root, {"target": "exploratory", "save_project": False})
+    pipeline_root = create_run(source_root, request, _minimal_inputs_for(source_root))
+
+    stale_identity = {"pid": 111111, "creation_time": 1}
+    record = load_run(pipeline_root)
+    record = copy.deepcopy(record)
+    record["stages"]["upstream"]["status"] = "succeeded"
+    record["worker"] = {"identity": stale_identity, "started_at": "2026-09-05T00:00:00+00:00"}
+    save_run(pipeline_root, record, expected_revision=record["state_revision"])
+
+    def fake_launch_detached(command, *, cwd, log_path):
+        current = load_run(pipeline_root)
+        current = copy.deepcopy(current)
+        current["worker"] = {"identity": {"pid": 222222, "creation_time": 2},
+                             "started_at": "2026-09-06T00:00:00+00:00"}
+        save_run(pipeline_root, current, expected_revision=current["state_revision"])
+        return {"launched": True, "pid": 222222}
+
+    monkeypatch.setattr(service, "launch_detached", fake_launch_detached)
+    monkeypatch.setattr(service, "_HANDSHAKE_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(service, "_HANDSHAKE_POLL_S", 0.02)
+
+    receipt = service.resume_pipeline(pipeline_root)
+
+    assert receipt["launch"]["handshake"] == "confirmed"
+
+
+# ---------- レビュー指摘6: 受付層のさらなる被覆 ----------
+
+def test_plan_pipeline_never_launches_a_worker(tmp_path, monkeypatch):
+    """`plan_pipeline`は検査・保存のみ——`launch_detached`を一切呼ばない。"""
+    source = _prepare_source(tmp_path, monkeypatch)
+
+    def poison(*a, **kw):
+        raise AssertionError("plan_pipelineがworkerを起動した")
+
+    monkeypatch.setattr(service, "launch_detached", poison)
+
+    receipt = service.plan_pipeline(source["root"])
+
+    assert receipt["launched"] is False
+    assert receipt["status"] == "planned"
+    record = load_run(Path(receipt["pipeline_path"]))
+    assert record["status"] == "planned"
+
+
+def test_start_pipeline_saves_needs_input_without_launching_on_bad_manifest(tmp_path, monkeypatch):
+    """`_mark_needs_input_without_launch`の実経路: 壊れたsample_manifestは
+    Console起動前に検出され、runは`needs_input`のまま保存されるが
+    workerは一切起動されない(spec §9.2)。
+    """
+    source = _prepare_source(tmp_path, monkeypatch)
+    (source["root"] / "sample-manifest.tsv").write_text(
+        "not-a-valid-manifest-header\n", encoding="utf-8")
+
+    def poison(*a, **kw):
+        raise AssertionError("不正な入力を検出したのにworkerを起動した")
+
+    monkeypatch.setattr(service, "launch_detached", poison)
+
+    receipt = service.start_pipeline(source["root"])
+
+    assert receipt["launched"] is False
+    assert receipt["status"] == "needs_input"
+    assert receipt["needs_input"]["code"] == "SAMPLE_MANIFEST_INVALID"
+    record = load_run(Path(receipt["pipeline_path"]))
+    assert record["status"] == "needs_input"
+
+
+def test_start_pipeline_handshake_timeout_does_not_relaunch(tmp_path, monkeypatch):
+    """handshakeが上限まで確認できなくても、再launchはしない(brief拘束)。"""
+    source = _prepare_source(tmp_path, monkeypatch)
+    launch_calls: list = []
+
+    def fake_launch_detached(command, *, cwd, log_path):
+        # 現実のworkerが実際に起動する場合と違い、ここではrecordに一切触れない
+        # (=identityが書かれない)——起動が実質確認できない状況を模す。
+        launch_calls.append(command)
+        return {"launched": True, "pid": 777}
+
+    monkeypatch.setattr(service, "launch_detached", fake_launch_detached)
+    monkeypatch.setattr(service, "_HANDSHAKE_TIMEOUT_S", 0.15)
+    monkeypatch.setattr(service, "_HANDSHAKE_POLL_S", 0.02)
+
+    receipt = service.start_pipeline(source["root"])
+
+    assert receipt["launch"]["handshake"] == "not_confirmed"
+    assert len(launch_calls) == 1  # timeoutしても再launchしない
+    assert receipt["status"] == "planned"  # 起動失敗と決め付けてstatusを書き換えない
+
+
+# ---------- レビュー指摘6: handler一式が本物として連鎖すること ----------
+
+def test_worker_run_worker_completes_a_real_exploratory_pipeline(tmp_path, monkeypatch):
+    """`build_handlers()`を`run_engine`へ通す経路を、モックした本体ではなく
+    `worker.run_worker`を実際に呼んで検証する（レビュー指摘6）。
+
+    Consoleの実バイナリだけは起動不可能なので、`console_runner.build_msdial_cmd`
+    （既存のConsole層テストが使う唯一の注入口。`_handle_upstream`自体や
+    `build_handlers`はモックしない）を実データを書く偽コマンドへ差し替える。
+    それ以外——`prepare_input`の実配置、`upstream`の実`supervise`監視、
+    `validate_outputs`、実mzTabからの`load_dataset`、`resolve_metadata`の
+    自動推定、実`preprocess_auto`、実`pca_dataset`、`report`の
+    `evaluate_target`——はすべて本物を通す。
+    """
+    from lipidmix.pipeline import worker
+    from tests.pipeline_fixtures import fake_console_command, make_source, mztab_text, use_fake_console
+
+    source = _prepare_source(tmp_path, monkeypatch)
+    assert source is not None
+
+    plan_receipt = service.plan_pipeline(
+        source["root"], {"target": "exploratory", "save_project": False})
+    pipeline_path = Path(plan_receipt["pipeline_path"])
+
+    # stage_inputsが配置する先(pipeline_root/input)のファイル名は元名を保つ
+    # (lipidmix.pipeline.inputs.stage_inputs)。まだ配置されていない時点でも、
+    # この規約からpost-stage時点の絶対パスを先に計算できる。
+    staged_sources = [pipeline_path / "input" / f"S{i}.wiff" for i in range(8)]
+    mztab_content = mztab_text(tmp_path, staged_sources)
+
+    run_dir = pipeline_path / "console"
+    mztab_out = run_dir / "msdial" / "Height_AlignmentResult_1.mzTab"
+    use_fake_console(monkeypatch, fake_console_command({mztab_out: mztab_content}))
+
+    result = worker.run_worker(pipeline_path)
+
+    assert result["status"] == "completed"
+    stage_statuses = {sid: s["status"] for sid, s in result["stages"].items()}
+    assert stage_statuses["prepare_input"] == "succeeded"
+    assert stage_statuses["upstream"] == "succeeded"
+    assert stage_statuses["validate_outputs"] == "succeeded"
+    assert stage_statuses["load_dataset"] == "succeeded"
+    assert stage_statuses["resolve_metadata"] == "succeeded"
+    assert stage_statuses["preprocess"] == "succeeded"
+    assert stage_statuses["pca"] == "succeeded"
+    assert stage_statuses["report"] == "succeeded"
+    # Finding4の回帰確認: 本物の完走でもREPORT_INCOMPLETE_AT_WRITE_TIMEの
+    # 偽陽性警告が出ない。
+    codes = {w["code"] for w in result.get("warnings") or []}
+    assert "REPORT_INCOMPLETE_AT_WRITE_TIME" not in codes

@@ -92,8 +92,9 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 
-#: brief記載の4コード。共通context「Task11/Task12」で名指しされた、入力を
-#: 与え直せば先へ進める（＝ユーザー操作で解消しうる）DomainErrorだけをここに置く。
+#: brief記載の4コード＋レビュー指摘5の1コード。共通context「Task11/Task12」で
+#: 名指しされた、入力を与え直せば先へ進める（＝ユーザー操作で解消しうる）
+#: DomainErrorだけをここに置く。
 #: PCA不成立（"an uncomputable PCA"）はbrief/spec文言上は同格に挙げられているが、
 #: 現行実装（`lipidmix/analysis/dataset_analysis.py::run_dataset_pca`）は
 #: `DomainError` ではなく別クラスの `PreconditionError` を送出しており、この
@@ -106,6 +107,14 @@ _NEEDS_INPUT_CODES = frozenset({
     "NORMALIZATION_DEGENERATE",          # Task11: 正規化係数が0/非有限の試料が残る
     "PREPROCESS_FEATURES_EXHAUSTED",     # Task11: 前処理後に特徴量が0件
     "COMPARISON_REQUIRED",               # Task12: 比較の対照群/比較群が未指定
+    "CONFOUNDED_COMPARISON",             # Task12/レビュー指摘5: 群とバッチが完全交絡
+                                         # （spec §7.4「探索結果を残してneeds_inputで
+                                         # 入力を待つ」。allow_confounded=trueは
+                                         # pipeline_resumeで与える利用者入力そのもの
+                                         # ——R18がPCA不成立に適用したのと同じ理由で、
+                                         # `resolve_comparisons`handlerと
+                                         # `dataset_service.run_comparison`の両方の
+                                         # 送出元をここ1箇所で救う）。
 })
 
 #: owner lockの取得タイムアウト（秒）。長時間待つ理由がない——待っても取れない

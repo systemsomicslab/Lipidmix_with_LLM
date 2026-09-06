@@ -235,13 +235,27 @@ def start_pipeline(dataset_root: Path, request: dict | None = None,
     起動受理は、workerのidentity保存と起動handshakeを確認した後に返す
     （`_await_launch_handshake`）。応答待ちには短い上限を設け、上限時は
     起動失敗と決め付けず再起動もしない——`pipeline_path`とlaunch状態を返す。
+
+    `find_or_create_run`が既存run（活動中／completed／失敗・取消・部分完了
+    済みの終端状態）を再利用した場合は起動しない（レビュー指摘1）。新規に
+    作られたrunだけが`status="planned"`のまま返るので、それだけを起動条件と
+    する——さもないと、resendが活動中runの上で`PIPELINE_ALREADY_RUNNING`を
+    抱えたworkerを1個ずつ増やしたり、completed runの`_ALWAYS_RECONSTRUCT_
+    STAGE_IDS`（load_dataset/resolve_metadata/preprocess/pca）を無条件に
+    再計算したりする。既存runを本当に進めたい利用者は`pipeline_resume`を使う。
     """
     pipeline_path, manifest_error = _prepare_run(dataset_root, request, request_id)
     if manifest_error is not None:
         return _dispatch_receipt(pipeline_path, launched=False)
 
-    launch_info = launch_pipeline_worker(pipeline_path)
-    launch_info["handshake"] = _await_launch_handshake(pipeline_path)
+    baseline_record = store.load_run(pipeline_path)
+    if baseline_record["status"] != "planned":
+        # 新規作成直後のrunは常にplanned。それ以外なら`find_or_create_run`が
+        # 既存runを再利用したということ——ここでは起動せず、見つかった状態を
+        # そのまま発送receiptで伝える。
+        return _dispatch_receipt(pipeline_path, launched=False)
+
+    launch_info = _launch_and_await(pipeline_path, baseline_record=baseline_record)
     return _dispatch_receipt(pipeline_path, launched=True, launch=launch_info)
 
 
@@ -249,16 +263,27 @@ def resume_pipeline(path: Path, updates: dict | None = None,
                     request_id: str | None = None, rerun_upstream: bool = False) -> dict:
     """入力訂正・下流revision作成・停止工程からの再開。`prepare_resume`の後、
     結果が`planned`のときだけworkerを起動する（no-op resumeでは起動しない）。
+
+    `path`は`pipeline_status`/`pipeline_cancel`と同じく、`pipeline-run.json`
+    そのものでもその親（pipeline_root）でもよい（レビュー指摘3）。
+    `recovery.prepare_resume`は内部でも正規化するが、ここで先に正規化した
+    `pipeline_path`をreceipt・`launch_pipeline_worker`・handshakeの全経路で
+    使い回す——正規化前の生パスをどこかに残すと、`--pipeline`引数やlogの
+    置き場所が二重に`pipeline-run.json`を連結した不正なパスになる。
     """
-    pipeline_path = Path(path)
+    pipeline_path = recovery.normalize_pipeline_root(path)
     result = recovery.prepare_resume(
         pipeline_path, updates=updates, request_id=request_id, rerun_upstream=rerun_upstream)
 
     receipt = dict(result)
     receipt["pipeline_path"] = str(pipeline_path)
     if result["status"] == "planned":
-        launch_info = launch_pipeline_worker(pipeline_path)
-        launch_info["handshake"] = _await_launch_handshake(pipeline_path)
+        # handshakeの基準（レビュー指摘2）は「launch直前」の状態でなければ
+        # ならない——`prepare_resume`の戻り値はworker識別子を持たないため、
+        # ここで改めて読み直す（前回workerの残骸identityが既に残っている
+        # ケースを正しく基準にするため）。
+        baseline_record = store.load_run(pipeline_path)
+        launch_info = _launch_and_await(pipeline_path, baseline_record=baseline_record)
         receipt["launch"] = launch_info
     else:
         receipt["launch"] = {"launched": False}
@@ -288,14 +313,38 @@ def launch_pipeline_worker(path: Path) -> dict:
     return launch_detached(command, cwd=_REPO_ROOT, log_path=log_path)
 
 
-def _await_launch_handshake(pipeline_path: Path) -> str:
-    """workerのidentity保存を短時間だけ待つ。超えても失敗と決め付けない。"""
+def _launch_and_await(pipeline_path: Path, *, baseline_record: dict) -> dict:
+    """launch直前の状態を基準にworkerを起動し、handshakeを待つ。
+
+    呼び出し前提: `baseline_record`は`launch_pipeline_worker`を呼ぶ**直前**に
+    読んだrecordであること（`start_pipeline`/`resume_pipeline`とも、launch
+    条件を判定するために既にrecordを読んでいるので、それをそのまま渡す）。
+    """
+    launch_info = launch_pipeline_worker(pipeline_path)
+    baseline_identity = (baseline_record.get("worker") or {}).get("identity")
+    baseline_status = baseline_record["status"]
+    launch_info["handshake"] = _await_launch_handshake(
+        pipeline_path, baseline_identity=baseline_identity, baseline_status=baseline_status)
+    return launch_info
+
+
+def _await_launch_handshake(pipeline_path: Path, *, baseline_identity, baseline_status: str) -> str:
+    """workerのidentity保存を短時間だけ待つ。超えても失敗と決め付けない。
+
+    `baseline_identity`/`baseline_status`はlaunch直前の状態（レビュー指摘2）。
+    resumeでは前回workerの残骸identityが既に記録されていることがあり、
+    `identity is not None`だけを見ると「何も起きていない」のに即
+    `"confirmed"`を返してしまう——今回のlaunchで**新しい**identityが書かれた
+    (baselineと異なる)か、statusがbaselineから動いた場合だけを「本当に
+    workerが起動した」証拠として扱う。
+    """
     deadline = time.monotonic() + _HANDSHAKE_TIMEOUT_S
     while time.monotonic() < deadline:
         record = store.load_run(pipeline_path)
-        if (record.get("worker") or {}).get("identity") is not None:
+        identity = (record.get("worker") or {}).get("identity")
+        if identity is not None and identity != baseline_identity:
             return "confirmed"
-        if record.get("status") != "planned":
+        if record.get("status") != baseline_status:
             return "confirmed"
         time.sleep(_HANDSHAKE_POLL_S)
     return "not_confirmed"
@@ -685,10 +734,23 @@ def _handle_report(context: dict) -> dict:
         "result_id": f"res_quality_report_{context['identity']['pipeline_id']}",
         "path": str(report_path),
     })
+
+    # `summary["status"]`は`write_pipeline_report`内部の`evaluate_target`が
+    # このrefをまだ`record["results"]`へ追記する前に呼んだ判定であり、
+    # quality_report自身は必ず未達成として出る（意図通り。markdownの
+    # `status_at_report_time`はこの生成時点のstatusを正直に書くための場所）。
+    # ここでの`REPORT_INCOMPLETE_AT_WRITE_TIME`警告は「quality_report自身が
+    # まだ無い」以外の理由で本当に不完全な場合だけ意味を持つ——refを積んだ
+    # 仮想recordでもう一度evaluate_targetを呼び直し、quality_report自身の
+    # 未生成を理由にした偽陽性（レビュー指摘4）を除く。
+    record_with_report = copy.deepcopy(record)
+    record_with_report["results"] = list(record_with_report.get("results") or []) + [ref]
+    final_evaluation = report_mod.evaluate_target(record_with_report)
+
     warnings: list[dict] = []
-    if summary["status"] != "completed":
+    if final_evaluation["status"] != "completed":
         warnings.append({
             "code": "REPORT_INCOMPLETE_AT_WRITE_TIME",
-            "message": f"レポート生成時点でstatus={summary['status']}でした。",
+            "message": f"レポート生成時点でstatus={final_evaluation['status']}でした。",
         })
     return {"status": "succeeded", "result_refs": [ref], "warnings": warnings, "error": None}

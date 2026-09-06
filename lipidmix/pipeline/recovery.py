@@ -56,7 +56,7 @@ from lipidmix.pipeline import inputs as inputs_mod
 from lipidmix.pipeline import request as request_mod
 from lipidmix.pipeline import store
 
-__all__ = ["prepare_resume", "read_status", "request_cancel"]
+__all__ = ["normalize_pipeline_root", "prepare_resume", "read_status", "request_cancel"]
 
 #: prepare_resumeの状態競合吸収リトライ上限（store.pyの
 #: _REQUEST_ID_PATCH_MAX_ATTEMPTSと同じ考え方——有限回の読み直しで十分安全に
@@ -80,7 +80,7 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _normalize_pipeline_root(path: Path) -> Path:
+def normalize_pipeline_root(path: Path) -> Path:
     """`path`がpipeline-run.jsonそのものでも、その親（pipeline_root）でも
     受け付ける。
 
@@ -90,6 +90,13 @@ def _normalize_pipeline_root(path: Path) -> Path:
     呼び出し側（このファイルの`.read_bytes()`で「一切書き換えていない」ことを
     直接証明できる）にも応えられるよう、run.jsonファイルのパスを渡された
     場合はその親を使う。
+
+    公開関数にしているのは、`pipeline_status`/`pipeline_cancel`が既に
+    アドバタイズしているこの2形式受け入れを、`lipidmix.pipeline.service`の
+    `resume_pipeline`でも同じ規則で揃えるため（レビュー指摘3: 正規化を
+    `prepare_resume`の内側だけで完結させると、呼び出し元がその後の
+    `launch_pipeline_worker`/receiptで生のパスを使ってしまい、二重に
+    `pipeline-run.json`を連結した不正なパスを作ってしまう）。
     """
     p = Path(path)
     if p.is_file():
@@ -111,7 +118,7 @@ def read_status(path: Path, *, include_details: bool = False) -> dict:
     `observed_health="unknown"`として呼び出し側に復旧判断を委ねる——
     「liveness probeの失敗をdeadと解釈しない」というbriefの制約そのもの。
     """
-    pipeline_root = _normalize_pipeline_root(path)
+    pipeline_root = normalize_pipeline_root(path)
     record = store.load_run(pipeline_root)  # 読取専用。ここでは一切保存しない。
 
     status = record.get("status")
@@ -160,7 +167,7 @@ def request_cancel(path: Path) -> dict:
     Job Objectのowner processが不明な状況でこの関数が別PIDを終了させることは
     無い——それ自体をしないという設計でその要件を満たす。
     """
-    pipeline_root = _normalize_pipeline_root(path)
+    pipeline_root = normalize_pipeline_root(path)
     record = store.load_run(pipeline_root)  # 存在・schema確認（読取専用）。
 
     requested_at = _now_iso()
@@ -391,7 +398,7 @@ def prepare_resume(path: Path, *, updates: dict | None = None,
     （他アクターがこのrunを同時に更新した）は有限回まで読み直して吸収する
     （`store._patch_request_id_with_retry`と同じ考え方）。
     """
-    pipeline_root = _normalize_pipeline_root(path)
+    pipeline_root = normalize_pipeline_root(path)
     updates = dict(updates) if updates else {}
     updates_hash = canonical_hash({"updates": updates, "rerun_upstream": rerun_upstream})
 
