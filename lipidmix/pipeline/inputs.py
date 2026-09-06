@@ -381,8 +381,21 @@ def inspect_inputs(source_root: Path, request: dict, *, exe_path: Path) -> dict:
         unverified.append("polarity_from_method_declaration_not_verified_from_raw")
 
     overrides: dict[str, str] = {}
-    if lbm_info["path"] and lbm_info["source"] not in ("method_file", "not_required"):
-        overrides[method_file_mod.LBM_KEY] = lbm_info["path"]
+    if lbm_info["path"] and lbm_info["source"] != "not_required":
+        if lbm_info["source"] == "method_file":
+            # 原本メソッドが `Lbm file path` を宣言していた場合。宣言値が相対
+            # 参照だと、実効コピー（別ディレクトリ）へ verbatim コピーした
+            # 瞬間に意味が変わる（コピー先基準で解決されてしまう）。
+            # spec §4.3「コピー後に相対参照の意味を変えない」を守るため、
+            # 宣言が相対のときだけ、原本基準で解決済みの絶対パスへ書き換える
+            # （絶対解決は既存どおりresolve_lbmが原本ディレクトリ基準で行う）。
+            declared_lbm = (method_keys.get(method_file_mod.LBM_KEY.lower()) or "").strip()
+            if declared_lbm and not Path(declared_lbm).is_absolute():
+                overrides[method_file_mod.LBM_KEY] = lbm_info["path"]
+        else:
+            # 原本に宣言が無く、build_tree/env/exe_dirへフォールバックした場合は
+            # 元々そのキーの行自体が無いので、そのまま新規追加する。
+            overrides[method_file_mod.LBM_KEY] = lbm_info["path"]
 
     return {
         "source_root": str(source_root.resolve()),

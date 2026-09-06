@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lipidmix.console import method_file as method_file_mod
 from lipidmix.core.atomic_io import DomainError
 from lipidmix.pipeline.inputs import inspect_inputs, select_method, stage_inputs, verify_inputs
 from lipidmix.pipeline.request import resolve_request
@@ -88,8 +89,11 @@ def test_inspect_and_stage_the_default_source(tmp_path, monkeypatch):
     assert plan["polarity"] == {"value": "negative", "source": "method_declaration"}
     assert "polarity_from_method_declaration_not_verified_from_raw" in plan["unverified"]
     assert plan["method"]["source_path"] == str(src["method"].resolve())
-    # Lbm file path は元メソッドが既に宣言しているので、上書きは要らない。
-    assert plan["method"]["overrides"] == {}
+    # 元メソッドの `Lbm file path: fake.lbm2` は相対参照（原本フォルダ基準で解決可能）。
+    # 実効コピーは原本と別ディレクトリに置かれるため、コピー後も相対参照の意味を
+    # 変えない（spec §4.3）よう、絶対パスへ書き換える上書きが必要になる
+    # （空dictにはならない）。
+    assert plan["method"]["overrides"] == {method_file_mod.LBM_KEY: str(src["lbm"].resolve())}
 
     pipeline_root = tmp_path / "pipeline_run"
     snapshot = stage_inputs(plan, pipeline_root)
@@ -103,6 +107,38 @@ def test_inspect_and_stage_the_default_source(tmp_path, monkeypatch):
     assert snapshot["method"]["effective_sha256"]
 
     verify_inputs(snapshot)  # 直後の再検査は何も検出しない
+
+
+def test_effective_method_lbm_reference_resolves_from_its_own_directory(tmp_path, monkeypatch):
+    """相対 `Lbm file path` を実効コピーへ verbatim コピーすると、コピー先の
+    別ディレクトリでは解決できない（spec §4.3 違反）。この後退を検出するのは
+    `overrides` dict のアサートだけでは不十分——TDDでこのバグを見逃した原因が
+    まさにそれ（overrideの有無しか見ておらず、実効ファイルの中身を読み戻して
+    いなかった）。ここでは実際に書き出された `effective-method.txt` を読み戻し、
+    MS-DIAL Console と同じ規則（method_file.py:284 のコメント: 参照はメソッド
+    ファイル**自身**の位置基準で解決する）で `Lbm file path` を解決できることを
+    検証する。
+    """
+    _allow_fake_exe(monkeypatch)
+    src = make_source(tmp_path / "raw")
+    request = resolve_request(src["root"])
+    plan = inspect_inputs(src["root"], request, exe_path=src["exe"])
+
+    pipeline_root = tmp_path / "pipeline_run"
+    stage_inputs(plan, pipeline_root)
+
+    effective = pipeline_root / "inputs" / "effective-method.txt"
+    keys = method_file_mod.read_method_keys(effective)
+    declared = keys.get(method_file_mod.LBM_KEY.lower())
+    assert declared, "実効メソッドに Lbm file path が書かれていない"
+
+    candidate = Path(declared)
+    if not candidate.is_absolute():
+        # Console は実効メソッド自身のディレクトリ基準で解決する。
+        candidate = effective.parent / candidate
+    assert candidate.is_file(), (
+        f"実効コピーの Lbm file path が解決できません: 宣言値={declared!r} "
+        f"実効コピーのディレクトリ={effective.parent} 解決先={candidate}")
 
 
 def test_source_is_byte_and_stat_identical_after_staging(tmp_path, monkeypatch):
@@ -473,5 +509,33 @@ def test_non_ascii_override_value_is_rejected_not_substituted(tmp_path, monkeypa
 
     request = resolve_request(root, {"lbm_file": str(lbm)})
     plan = inspect_inputs(root, request, exe_path=exe)
+    with pytest.raises(DomainError, match="METHOD_ENCODING_UNSUPPORTED"):
+        stage_inputs(plan, tmp_path / "pipeline_run")
+
+
+def test_relative_lbm_reference_resolving_to_non_ascii_path_is_rejected(tmp_path, monkeypatch):
+    """相対 `Lbm file path` を絶対化した結果が非ASCIIパスになる場合も、
+    `?`置換ではなくMETHOD_ENCODING_UNSUPPORTEDで止まる（宣言済み参照を絶対化
+    する今回の修正が新しく通す書き込み経路であり、既存の非ASCIIガードが
+    ここにも及ぶことを確認する）。
+    """
+    _allow_fake_exe(monkeypatch)
+    root = tmp_path / "ライブラリ" / "raw"  # 原本フォルダ自体が非ASCIIパス配下
+    root.mkdir(parents=True)
+    (root / "S0.wiff").write_text("raw-0", encoding="ascii")
+    lbm = root / "fake.lbm2"
+    lbm.write_bytes(b"fake-lbm-library")
+    method = root / "lab_param_202609100008.txt"
+    # 宣言自体はASCII（相対パス）だが、原本ディレクトリが非ASCIIのため
+    # 絶対解決した結果は非ASCIIパスになる。
+    method.write_text(
+        "Ion mode: negative\nTarget omics: Lipidomics\nLbm file path: fake.lbm2\n",
+        encoding="ascii", newline="\n")
+    exe = root / "fake.exe"
+    exe.write_text("fake console executable placeholder", encoding="ascii")
+
+    request = resolve_request(root)
+    plan = inspect_inputs(root, request, exe_path=exe)
+    assert plan["method"]["overrides"]  # 相対宣言なので絶対パスへの上書きが発生する
     with pytest.raises(DomainError, match="METHOD_ENCODING_UNSUPPORTED"):
         stage_inputs(plan, tmp_path / "pipeline_run")
