@@ -14,8 +14,9 @@
     中間ファイルだけを `-o` へ残して 1 で終了。**終了コードが非ゼロでも成果物は残る**
     という現実を再現するためのもので、収集を飛ばさないことの検証に使う。
 ``hang``
-    孫プロセス（実 Python）を起こしてから自分も待ち続ける。timeout・取消で
-    Job Object が一族ごと停止することを本物のプロセスで確かめる。
+    中間ファイル（`intermediate.pai2`）を `-o` へ出してから孫プロセス（実 Python）を
+    起こし、自分も待ち続ける。timeout・取消で Job Object が一族ごと停止すること、
+    その時点までの成果物が収集されることを本物のプロセスで確かめる。
 ``invalid``
     parse は通るが構造検証に落ちる mzTab を書いて 0 で終了。
 ``missing_sample``
@@ -25,6 +26,11 @@
 から解決する。`--counter` に渡したファイルへは 1 回の起動につき 1 行だけ
 TSV（scenario / 自 pid / 孫 pid）を追記する。**起動回数はこの行数で数える**
 （「起動したつもり」ではなく実際の起動を数えるため）。
+
+`--no-inchikey` は `success` の mzTab を全行未識別（`database_identifier = null`）に
+する。E01「InChIKey 0 件で必須 TSV を作れない」を、壊れたファイルではなく
+**構造としては完全に妥当な mzTab** で再現するためのもの（scenario を増やさない
+のは、受入表の scenario 列を spec/brief のままに保つため）。
 """
 from __future__ import annotations
 
@@ -40,10 +46,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from lipidmix.console.job_manager import list_raw_inputs  # noqa: E402
 from tests.pipeline_fixtures import write_mztab  # noqa: E402
-
-#: 合成 raw の拡張子。MS-DIAL の SupportMsRawDataExtension に含まれる実在の形式。
-RAW_SUFFIX = ".abf"
 
 #: `success` が書く主 mzTab のファイル名。MS-DIAL GUI の `Height_` prefix を
 #: 持たせ、定量種別が実物と同じ経路（ファイル名信号）で決まるようにする。
@@ -63,6 +67,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("-m", dest="method_file")
     parser.add_argument("--job", dest="job_path")
     parser.add_argument("--counter", dest="counter")
+    parser.add_argument("--no-inchikey", dest="no_inchikey", action="store_true")
     args, _unknown = parser.parse_known_args(argv)
     return args
 
@@ -86,14 +91,14 @@ def _resolve_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
 def _raw_sources(input_dir: Path) -> list[Path]:
     """`-i` 直下の合成 raw を安定順で返す。
 
-    監視側が固定した input inventory と同じディレクトリを同じ規則で読むので、
-    ms_run location と予定入力が食い違うのは「意図的に食い違わせたとき」だけになる。
+    監視側が固定した input inventory（`write_supervision_inputs` の
+    `raw_inventory`）は `job_manager.list_raw_inputs` で作られる。ここでも
+    **同じ関数**を使う——別の規則で列挙すると、ms_run location と予定入力が
+    「テスト側の列挙差」で食い違い、意図しない SAMPLE_MAPPING_MISMATCH を
+    生む。ディレクトリ形式 raw（Agilent `.d` 等）が 1 測定単位として
+    そのまま 1 assay になるのも、この共有によって自動的に揃う。
     """
-    return sorted(
-        (p.resolve() for p in input_dir.iterdir()
-         if p.is_file() and p.suffix.lower() == RAW_SUFFIX),
-        key=lambda p: str(p).lower(),
-    )
+    return [p.resolve() for p in list_raw_inputs(input_dir)]
 
 
 def _write_invalid_mztab(path: Path, sources: list[Path]) -> None:
@@ -150,17 +155,23 @@ def main(argv: list[str]) -> int:
     scenario = args.scenario
     input_dir, output_dir = _resolve_dirs(args)
 
-    grandchild_pid = _spawn_grandchild() if scenario == "hang" else None
-    _append_counter(args.counter, scenario, grandchild_pid)
-
     if scenario == "hang":
+        # 中間ファイルを先に置いてから孫を起こす。timeout・取消のあとで
+        # 「その時点までの成果物が収集されているか」を確かめられるようにする
+        # ——「止めた＝何も残らない」ではないのが現実のConsoleの振る舞い。
+        (output_dir / "intermediate.pai2").write_bytes(b"fake intermediate peak file")
+        grandchild_pid = _spawn_grandchild()
+        _append_counter(args.counter, scenario, grandchild_pid)
         print(f"fake_console: hanging with grandchild {grandchild_pid}", flush=True)
         time.sleep(GRANDCHILD_LIFETIME)
         return 0
 
+    _append_counter(args.counter, scenario, None)
+
     sources = _raw_sources(input_dir)
     if scenario == "success":
-        write_mztab(output_dir / PRIMARY_MZTAB_NAME, sources)
+        write_mztab(output_dir / PRIMARY_MZTAB_NAME, sources,
+                    with_inchikey=not args.no_inchikey)
         return 0
     if scenario == "missing_sample":
         if len(sources) < 2:

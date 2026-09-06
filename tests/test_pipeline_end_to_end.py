@@ -1,0 +1,424 @@
+"""fake Consoleによる一気通貫の受入検証（spec §13 D01〜D08・E01〜E03）。
+
+ここでの偽物は**workerが起動するConsoleのコマンドだけ**。engine・loading・
+metadata・preprocessing・differential・export・renderはすべて本物を通す。
+"""
+from __future__ import annotations
+
+import json
+import warnings
+from pathlib import Path
+
+import pytest
+
+from lipidmix.analysis.export_contract import CONTRACT_VERSION, EXPORT_COLUMNS, LOG2FC_SIGN
+from lipidmix.pipeline import store
+from tests.pipeline_fixtures import DEFAULT_COMPARISON, PipelineHarness, read_contract_tsv
+
+#: 逆向きの比較（reference=treated, test=control）。同じデータで log2FC の符号が
+#: 反転することを見て、「向き」のassertが定数を写しただけでないことを保証する。
+_REVERSED_COMPARISON = {
+    "comparison_id": "control_vs_treated",
+    "reference_group": "treated",
+    "test_group": "control",
+}
+
+#: `tests.pipeline_fixtures._FEATURES` が書く3特徴のInChIKey（全件が背景に残る）。
+_EXPECTED_INCHIKEYS = {
+    "IPCSVZSSVZVIGE-UHFFFAOYSA-N",
+    "XKMRRTOUMJRJIA-UHFFFAOYSA-N",
+    "DGGXCMYPQAOAJC-UHFFFAOYSA-N",
+}
+
+
+@pytest.fixture
+def pipeline_harness(tmp_path, monkeypatch):
+    harness = PipelineHarness(tmp_path, monkeypatch)
+    try:
+        yield harness
+    finally:
+        harness.close()
+
+
+def test_resume_reuses_console_and_completes_exports(pipeline_harness):
+    """spec D02/D03: 群未指定なら探索まで進んでneeds_input、シートと比較を足して
+    再開したらConsoleを**再実行せず**比較・出力まで完了する。"""
+    run = pipeline_harness.start(target="differential", comparisons=[])
+    waiting = pipeline_harness.wait(run, expected="needs_input")
+    assert waiting["request"]["effective_target"] == "differential"
+    assert pipeline_harness.console_start_count(run) == 1
+    pipeline_harness.resume_with_groups(run)
+    completed = pipeline_harness.wait(run, expected="completed")
+    assert pipeline_harness.console_start_count(run) == 1
+    tsv = pipeline_harness.output_path(completed, "tsv:treated_vs_control")
+    assert Path(tsv).is_file()
+    assert json.loads(Path(run).read_text(encoding="utf-8"))["status"] == "completed"
+
+
+# briefの受入表は5シナリオすべての期待値をpartialとしているが、実装とspec §9.1の
+# 状態機械はここで一致して`failed`を出す——「running --> partial: 有効な出力を残して
+# 回復不能な失敗 / running --> failed: 有効な解析出力なし」であり、上流が完了検証を
+# 通らなかった時点で`record["results"]`は空（prepare_inputは成果物refを持たない）。
+# Consoleが残した中間ファイルは`record["results"]`ではなくConsole jobのartifactsで、
+# 「有効な解析出力」ではない。**briefとspecの食い違いはreportへ明記**し、ここでは
+# 「ファイルがあるから成功」と読み替えない側（spec §9.1）を採る。
+# partialが本当に出る経路は`test_zero_inchikey_*`（有効な探索結果を残したまま
+# 必須TSVだけ作れない）で別途検証する。
+@pytest.mark.parametrize("scenario, expected, termination, exit_code, error_codes, retained", [
+    ("success", "completed", "exited", 0, [], None),
+    ("nonzero", "failed", "exited", 1, [], "intermediate.pai2"),
+    ("invalid", "failed", "exited", 0, ["MZTAB_STRUCTURE_INVALID"], None),
+    ("missing_sample", "failed", "exited", 0, ["SAMPLE_MAPPING_MISSING"], None),
+    ("hang", "failed", "timeout", None, [], "intermediate.pai2"),
+])
+def test_execution_scenarios(pipeline_harness, scenario, expected, termination,
+                             exit_code, error_codes, retained):
+    """spec A01〜A04: 異常終了・不正mzTab・assay欠落・timeoutの終端状態と証跡。"""
+    run = pipeline_harness.start_scenario(scenario, timeout_s=3)
+    record = pipeline_harness.wait(run, expected=expected)
+    assert record["status"] == expected
+
+    receipt = pipeline_harness.console_receipt(run)
+    assert receipt["termination"] == termination
+    if exit_code is None:
+        assert receipt["exit_code"] != 0, "timeoutを0で補完してはいけない"
+    else:
+        assert receipt["exit_code"] == exit_code
+    for code in error_codes:
+        assert code in receipt["validation"]["errors"], receipt["validation"]
+
+    if expected == "completed":
+        assert record["stages"]["upstream"]["status"] == "succeeded"
+        assert record["upstream"]["verification"]["status"] == "completed"
+        return
+
+    # 「終了検証が失敗し、成果物は保持された」——ファイルの有無を成功と読み替えない。
+    assert record["stages"]["upstream"]["status"] == "failed"
+    assert record["stages"]["upstream"]["error"]["code"] == "MSDIAL_EXECUTION_FAILED"
+    assert record["upstream"]["verification"]["status"] != "completed"
+    # 下流は自動進行しない（spec A03）。
+    assert record["stages"]["load_dataset"]["status"] == "pending"
+    assert record["stages"]["report"]["status"] == "pending"
+    # 収集は飛ばさない。中間ファイルはjobのartifactsとして残っている。
+    assert receipt["collection"]["status"] == "succeeded"
+    if retained:
+        artifacts = pipeline_harness.console_job(run).artifacts
+        assert [a for a in artifacts if a.path.endswith(retained)], \
+            f"{retained} が保持されていません: {[a.path for a in artifacts]}"
+    # `failed`（`partial`ではない）である根拠: 有効な解析出力が1件も無い。
+    assert record["results"] == []
+
+
+# ---------- E02: 出力TSVをパースして照合する ----------
+
+def test_exported_tsv_matches_the_contract_in_both_directions(pipeline_harness):
+    """spec E02: 全背景行・有限値/空欄・15列・方向・result_idの整合。
+
+    向きは定数の写しでは確かめられないので、**同じデータの逆向き比較**を同時に
+    走らせ、log2FCが符号だけ反転し絶対値が一致することまで見る
+    （`export_contract.LOG2FC_SIGN` = 正ならtest群が高い）。
+    """
+    pipeline_harness.write_manifest()
+    run = pipeline_harness.start(
+        target="differential", comparisons=[DEFAULT_COMPARISON, _REVERSED_COMPARISON],
+        extra_request={"sample_manifest": "sample-manifest.tsv"})
+    record = pipeline_harness.wait(run, expected="completed")
+
+    forward_meta, forward_rows, fieldnames = read_contract_tsv(
+        pipeline_harness.output_path(record, "tsv:treated_vs_control"))
+    reverse_meta, reverse_rows, reverse_fields = read_contract_tsv(
+        pipeline_harness.output_path(record, "tsv:control_vs_treated"))
+
+    # 15列・列順そのもの（別リポジトリ massbank-context との契約）。
+    assert fieldnames == EXPORT_COLUMNS
+    assert reverse_fields == EXPORT_COLUMNS
+    assert forward_meta["contract_version"] == str(CONTRACT_VERSION)
+    assert forward_meta["log2fc_sign"] == LOG2FC_SIGN
+
+    # 全背景行が残る（有意なものだけに絞らない）。
+    assert len(forward_rows) == 3
+    assert {row["inchikey"] for row in forward_rows} == _EXPECTED_INCHIKEYS
+    assert forward_meta["n_features_total"] == "3"
+    assert forward_meta["n_with_inchikey"] == "3"
+    assert forward_meta["n_unannotated"] == "0"
+
+    # 群とその件数。`group_b`（=test_group）が高い方向が正。
+    assert (forward_meta["group_a"], forward_meta["n_a"]) == ("control", "4")
+    assert (forward_meta["group_b"], forward_meta["n_b"]) == ("treated", "4")
+    assert (reverse_meta["group_a"], reverse_meta["n_a"]) == ("treated", "4")
+    assert (reverse_meta["group_b"], reverse_meta["n_b"]) == ("control", "4")
+
+    # 合成強度はassay番号とともに単調増加する＝treatedが必ず高い。
+    forward_by_key = {row["inchikey"]: float(row["log2fc"]) for row in forward_rows}
+    reverse_by_key = {row["inchikey"]: float(row["log2fc"]) for row in reverse_rows}
+    assert all(value > 0 for value in forward_by_key.values()), forward_by_key
+    assert all(value < 0 for value in reverse_by_key.values()), reverse_by_key
+    for key, value in forward_by_key.items():
+        assert value == pytest.approx(-reverse_by_key[key], rel=1e-9)
+
+    # 空欄は空欄のまま（「該当なし」ではなく「この経路では取得していない」）。
+    for row in forward_rows:
+        assert row["ontology"] == ""
+        assert row["msi_level"] == ""
+        assert row["inchikey_source"] == "database_identifier"
+        assert row["name_source"] == "mztab_smf"
+        assert row["significant"] in ("true", "false")
+        assert float(row["mz"]) > 0 and float(row["rt"]) > 0
+        assert float(row["mean_b"]) > float(row["mean_a"])
+
+    # 2つの比較のTSVが互いに取り違えられていない（result_idも数値も別物）。
+    assert forward_meta["result_id"] != reverse_meta["result_id"]
+    assert forward_meta["preprocess_id"] == reverse_meta["preprocess_id"]
+
+
+# ---------- E03: PCA/volcano PNGを描画・確認 ----------
+
+def test_saved_figures_come_from_the_named_results(pipeline_harness):
+    """spec E03: 図が「指定データ・群・出所」と一致し、実PNGとして残ること。"""
+    from lipidmix.plots.result_output import save_result_figure
+    from lipidmix.plots.volcano import render_volcano_plot
+
+    pipeline_harness.write_manifest()
+    run = pipeline_harness.start(
+        target="differential", comparisons=[DEFAULT_COMPARISON],
+        extra_request={"sample_manifest": "sample-manifest.tsv"})
+    record = pipeline_harness.wait(run, expected="completed")
+    pipeline_root = Path(record["identity"]["pipeline_root"])
+
+    volcano_ref = pipeline_harness.output_ref(record, "volcano:treated_vs_control")
+    pca_figure_ref = pipeline_harness.output_ref(record, "pca_figure")
+    pca_ref = pipeline_harness.output_ref(record, "pca")
+
+    # 出所: 図refは「どの結果から描いたか」を親IDで名指ししている。その親IDが
+    # record["results"]の中で解決できるかは
+    # `test_persisted_result_graph_is_joinable_by_result_id`（既知の欠陥）が見る。
+    assert pca_figure_ref["parent_ids"] and volcano_ref["parent_ids"]
+    assert pca_figure_ref["result_id"].startswith("res_pca_figure_")
+    assert volcano_ref["result_id"] == "res_volcano_treated_vs_control"
+    assert pca_ref["kind"] == "pca" and volcano_ref["kind"] == "volcano"
+
+    # 実PNGとして残り、記録済みhashと一致する（改竄・破損していない）。
+    for ref in (volcano_ref, pca_figure_ref):
+        data = (pipeline_root / ref["relative_path"]).read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"
+        assert len(data) > 1000
+    assert store.verify_result_refs(pipeline_root, [volcano_ref, pca_figure_ref]) == []
+
+    # 群ラベルと点: 保存された差次的結果そのものを描き直し、図が名指しする群と
+    # 実際に描かれる点数を見る（3特徴＝3点）。
+    result = pipeline_harness.result_data(record, "differential:treated_vs_control")
+    assert (result["a"], result["b"]) == ("control", "treated")
+    figure = render_volcano_plot(result)
+    try:
+        assert figure.axes[0].get_title() == "Volcano (control vs treated)"
+        assert figure.axes[0].get_xlabel() == "log2 fold change"
+        drawn = sum(len(collection.get_offsets()) for collection in figure.axes[0].collections)
+        assert drawn == 3, "volcanoの点が描かれていません"
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(figure)
+
+    # 描き直しても警告が1件も出ない（豆腐＝`Glyph missing`を含む）。
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        redrawn = save_result_figure(None, result, pipeline_harness.tmp_path / "redraw.png",
+                                     kind="volcano")
+    assert caught == [], [str(w.message) for w in caught]
+    assert redrawn.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "既知の欠陥（Task19が発見。Task8/18由来）: pipelineが必須出力として保存する "
+    "results/pca.png が**点のない空の散布図**になる。"
+    "`plots.result_output._render(kind='pca')` は `core.tool_helpers._pca_scatter_arrays` "
+    "経由で `result['points']` を読むが、これはARF経路の描画payload"
+    "（session.arf.last_pca_plot）の形であって、`analysis.dataset_service.pca_dataset` が"
+    "返すDatasetState経路の結果は `scores`（name/role/PC1..PCn）しか持たず "
+    "`points` キーが存在しない。ファイルは生成され hash も通るので "
+    "evaluate_target は達成と数え、runはcompletedになる。"
+    "spec E03『指定データ・群が一致』を満たさない。"))
+def test_saved_pca_figure_plots_the_run_samples(pipeline_harness):
+    """spec E03: PCA図はこのrunの検体を実際に描いていること。
+
+    ここでassertする`_pca_scatter_arrays(pca_result)`は、`save_result_figure`が
+    `kind="pca"`で描くときに通る**まさにその経路**なので、これが空である＝保存
+    されたPNGが空であることと同義。
+    """
+    from lipidmix.core.tool_helpers import _pca_scatter_arrays
+
+    run = pipeline_harness.start(target="exploratory")
+    record = pipeline_harness.wait(run, expected="completed")
+
+    pca_result = pipeline_harness.result_data(record, "pca")
+    xs, _ys, labels, _xl, _yl, _title = _pca_scatter_arrays(pca_result)
+
+    assert len(xs) == 8, f"PCA図に検体が1つも描かれていません: {pca_result.keys()}"
+    assert labels == [f"S{i}" for i in range(1, 9)]
+
+
+# ---------- E01: InChIKey 0件 ----------
+
+def test_zero_inchikey_stays_partial_with_export_background_empty(pipeline_harness):
+    """spec E01: 必須TSVを作れないならpartial。有効な探索・比較結果は保持する。"""
+    pipeline_harness.write_manifest()
+    run = pipeline_harness.start(
+        target="differential", comparisons=[DEFAULT_COMPARISON],
+        extra_request={"sample_manifest": "sample-manifest.tsv"},
+        no_inchikey=True)
+    record = pipeline_harness.wait(run, expected="partial")
+
+    codes = {w["code"] for w in record["warnings"]}
+    assert "EXPORT_BACKGROUND_EMPTY" in codes
+    # 完了へ格下げしない。TSVだけが欠け、他は達成済み。
+    assert record["status"] == "partial"
+    names = {ref["output_name"] for ref in record["results"]}
+    assert "tsv:treated_vs_control" not in names
+    assert {"preprocess", "pca", "pca_figure", "differential:treated_vs_control",
+            "volcano:treated_vs_control", "quality_report"} <= names
+    # InChIKey無しの行を内部の差次的結果から消していない（3特徴すべて残る）。
+    result = pipeline_harness.result_data(record, "differential:treated_vs_control")
+    assert len(result["results"]) == 3
+    # stage自体は成功（成果物の欠落は最終判定＝evaluate_targetが捉える）。
+    assert record["stages"]["export:treated_vs_control"]["status"] == "succeeded"
+
+
+# ---------- GUI project未達 ----------
+
+def test_missing_gui_project_warns_and_blocks_completed(pipeline_harness):
+    """save_project=trueなのに.mdprojectが無ければ、必須出力欠落でcompletedにしない。"""
+    run = pipeline_harness.start(target="exploratory", save_project=True)
+    record = pipeline_harness.wait(run, expected="partial")
+
+    codes = {w["code"] for w in record["warnings"]}
+    assert "GUI_PROJECT_UNAVAILABLE" in codes
+    names = {ref["output_name"] for ref in record["results"]}
+    assert "gui_project" not in names
+    assert {"preprocess", "pca", "pca_figure"} <= names
+    # 上流自体は検証済み完了（GUI projectだけが欠けている）。
+    assert record["stages"]["upstream"]["status"] == "succeeded"
+    assert record["stages"]["validate_outputs"]["status"] == "succeeded"
+
+
+# ---------- D08: ディレクトリ形式raw ----------
+
+def test_directory_style_raw_runs_end_to_end_without_touching_the_source(pipeline_harness):
+    """spec D08: 1測定単位がフォルダ（Agilent `.d` 等）でも規定どおり準備して進む。"""
+    source = pipeline_harness.source("dirsource", extension=".d", kind="dir")
+
+    def snapshot() -> dict:
+        # `runs/`（pipelineの書込先）は元データではないので除く。
+        return {str(path.relative_to(source["root"])): path.stat().st_mtime_ns
+                for path in sorted(Path(source["root"]).rglob("*"))
+                if "runs" not in path.relative_to(source["root"]).parts}
+
+    before = snapshot()
+
+    run = pipeline_harness.start(target="exploratory", source_name="dirsource")
+    record = pipeline_harness.wait(run, expected="completed")
+
+    # 1フォルダ＝1測定単位として配置され、mzTabのassayも8件になる。
+    entries = [e for e in record["inputs"]["entries"] if e["role"] == "primary"]
+    assert [e["kind"] for e in entries] == ["dir"] * 8
+    staged = Path(record["identity"]["pipeline_root"]) / "input"
+    assert sorted(p.name for p in staged.iterdir()) == [f"S{i}.d" for i in range(8)]
+    assert all((staged / f"S{i}.d" / "AcqData.bin").is_file() for i in range(8))
+    # 元データは読むだけ（移動・上書き・削除をしない）。
+    assert snapshot() == before
+
+
+# ---------- D04: 同一要求の同時送信 ----------
+
+def test_identical_request_resend_reuses_the_run_and_starts_console_once(pipeline_harness):
+    """spec D04: 同一request再送でConsoleは1回だけ、runも増えない。"""
+    first = pipeline_harness.start(target="exploratory", request_id="req-1")
+    record = pipeline_harness.wait(first, expected="completed")
+
+    second = pipeline_harness.start(target="exploratory", request_id="req-1")
+    third = pipeline_harness.start(target="exploratory")  # request_id無しの再送
+
+    assert second == first and third == first
+    assert pipeline_harness.console_start_count(first) == 1
+    # 再利用したrunの上に2つ目のworkerを起こさない（＝completedのまま）。
+    assert pipeline_harness.record(first)["status"] == "completed"
+    assert pipeline_harness.record(first)["identity"]["pipeline_id"] == \
+        record["identity"]["pipeline_id"]
+    runs_parent = Path(record["identity"]["pipeline_root"]).parent
+    assert len(list(runs_parent.iterdir())) == 1
+
+
+# ---------- D05: 入力・メソッドの変化 ----------
+
+def test_changed_raw_is_detected_on_resume(pipeline_harness):
+    """spec D05: 元rawが変わっていたら、無条件に再利用せずINPUT_CHANGEDで止める。"""
+    from lipidmix.core.atomic_io import DomainError
+    from lipidmix.pipeline import service
+
+    run = pipeline_harness.start(target="exploratory")
+    pipeline_harness.wait(run, expected="completed")
+
+    source_root = Path(pipeline_harness.source("source")["root"])
+    (source_root / "S3.wiff").write_text("tampered-raw-content", encoding="ascii")
+
+    with pytest.raises(DomainError) as excinfo:
+        service.resume_pipeline(pipeline_harness.pipeline_root(run),
+                                updates={"target": "exploratory"})
+    assert excinfo.value.code == "INPUT_CHANGED"
+    assert "S3.wiff" in excinfo.value.details["changed"]
+
+
+def test_changed_effective_method_is_detected_on_resume(pipeline_harness):
+    """spec D05: Consoleが実際に読む実効メソッドの改変も再開時に検出する。"""
+    from lipidmix.core.atomic_io import DomainError
+    from lipidmix.pipeline import service
+
+    run = pipeline_harness.start(target="exploratory")
+    record = pipeline_harness.wait(run, expected="completed")
+
+    effective = (Path(record["identity"]["pipeline_root"])
+                 / record["inputs"]["method"]["effective_relative_path"])
+    effective.write_text(effective.read_text(encoding="ascii") + "Extra: 1\n",
+                         encoding="ascii")
+
+    with pytest.raises(DomainError) as excinfo:
+        service.resume_pipeline(pipeline_harness.pipeline_root(run),
+                                updates={"target": "exploratory"})
+    assert excinfo.value.code == "STAGED_INPUT_MISMATCH"
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "既知の欠陥（Task19が発見。Task17/18由来）: 永続refのresult_id空間と"
+    "parent_ids空間が別物で、依存グラフが辿れない。(1) _handle_preprocess/"
+    "_handle_pca/_handle_export は合成id（res_pca_<fingerprint>・"
+    "res_volcano_<cid>等）でrefを登録するのに、parent_idsには計算側の実UUID"
+    "（provenance.result_id）を入れる。(2) _handle_export が run_comparison を"
+    "独立に呼び直すため、TSVメタ行の `# result_id` と volcano/tsv の parent_ids は"
+    "record['results'] に載っていない**2つ目の**差次的結果を指す。数値は同じだが"
+    "出所の連結が切れており、spec §6.1・§9.1（results: result_id/親ID）・"
+    "E02『result_idの整合』・E03『出所が一致』を満たさない。"))
+def test_persisted_result_graph_is_joinable_by_result_id(pipeline_harness):
+    """spec §6.1/§9.1: `parent_ids`は`record["results"]`の`result_id`で解決できること。
+
+    `result_state.make_provenance` は呼ばれるたびに新しいUUIDを発行するので、
+    「同じ数値だから同じ結果」にはならない。下流（別リポジトリ massbank-context）は
+    TSVメタ行のresult_idでpipelineの記録と突き合わせるため、ここが切れていると
+    「どの解析から出たTSVか」を機械的に辿れない。
+    """
+    pipeline_harness.write_manifest()
+    run = pipeline_harness.start(
+        target="differential", comparisons=[DEFAULT_COMPARISON],
+        extra_request={"sample_manifest": "sample-manifest.tsv"})
+    record = pipeline_harness.wait(run, expected="completed")
+
+    known_ids = {ref["result_id"] for ref in record["results"]}
+    dangling = {
+        ref["output_name"]: [pid for pid in ref.get("parent_ids") or [] if pid not in known_ids]
+        for ref in record["results"]
+    }
+    dangling = {name: ids for name, ids in dangling.items() if ids}
+
+    differential_ref = pipeline_harness.output_ref(record, "differential:treated_vs_control")
+    meta, _rows, _fields = read_contract_tsv(
+        pipeline_harness.output_path(record, "tsv:treated_vs_control"))
+
+    assert dangling == {}, f"record['results']で解決できない親ID: {dangling}"
+    assert meta["result_id"] == differential_ref["result_id"]
