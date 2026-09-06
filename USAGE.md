@@ -1,4 +1,4 @@
-# USAGE — ms-data-parser MCP ツール一覧(全56ツール)
+# USAGE — ms-data-parser MCP ツール一覧(全61ツール)
 
 MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.dcl` / `.EIC.aef`)と mzTab-M を解析し、PCA・差次的解析・
 アノテーション検証・文献探索・レポート記録までを行う MCP サーバーのツール群です。
@@ -9,9 +9,12 @@ list_data_files → load_dataset → arf_list_classes / arf_preprocess
    → arf_pca_preprocessed / arf_differential → save_*_figure
    → record_objective → knowledge_coverage → paper_search → ingest_* → write_report
 
-生データから始める場合(別経路):
+生データから始める場合(別経路。手動で繋ぐなら):
 console_plan → console_run → dataset_load → dataset_preprocess
    → dataset_pca / dataset_differential → dataset_export_differential
+
+生データから始める場合(自動で一括統括するなら):
+pipeline_run → pipeline_status(確認) → pipeline_resume(訂正・再開が必要な場合)
 ```
 
 この文書は各ツールの**外形**（引数と用途）を扱います。内部でどのファイルのどの関数を
@@ -174,3 +177,21 @@ QC/blank の扱いはツールごとに異なる。`arf_parser` の `class_ids` 
 比較対象から除外し、オーバーライドはできない。PCA の色分けは `group_levels`/`group_factors`
 で軸を指定した場合に `"qc"`/`"blank"` ラベルとして残る(前処理品質の判断材料になるため。
 軸を指定しない場合は生の Class ID でラベルされる)。
+
+## 13. 生データフォルダからの統括(pipeline、生データ → 上流検証 → 前処理 → PCA → 差次的解析 → レポート)
+
+生データフォルダ1つを渡すだけで、上流(MS-DIAL Console)の実行・検証、`dataset_load`
+相当の読込、メタデータ解決、前処理、PCA、指定した2群比較の差次的解析、TSV/volcano
+書き出し、品質レポート作成までを1本の永続 run(`pipeline-run.json`)として自動で進める
+経路。個々のツール(`console_plan`/`console_run`/`dataset_preprocess` 等)を手動で繋ぐ
+代わりにこちらを使う。中断・再送・訂正をまたいでも同じ入力からは同じ結果になる
+(fingerprint と request_id による冪等性)。詳しい内部の呼び出し順は
+[docs/workflow/pipeline.md](docs/workflow/pipeline.md) を参照。
+
+| ツール | 機能 |
+|--------|------|
+| `pipeline_run` | 生データフォルダ(`dataset_root`)を渡すだけの通常入口。入力検査・計画保存・workerの起動までを一括で行い、短時間で `pipeline_path` を返す(工程自体は非同期に進む)。`request`(省略可)で `target`/`polarity`/`method_file`/`sample_manifest`/`preprocess`/`comparisons` 等を指定できる。省略項目は既定値で埋まる(measure=peak_height、preprocess=conservative-v1、comparisons=空 等)。`request_id` は冪等性キーで、同一内容の再送は同じ結果を返し別内容は `IDEMPOTENCY_CONFLICT`。壊れた実験情報シート等の既知の不正入力は、Console を起動せず `needs_input` を保存する。差次的解析で `comparisons` を指定し忘れた場合だけは、workerを起動したうえで `resolve_comparisons` 工程が `COMPARISON_REQUIRED` の `needs_input` として検出する。 |
+| `pipeline_plan` | `pipeline_run` と同じ入力検査・計画保存だけを行い、workerは起動しない。実行前に条件(解決された method/lbm/polarity、不足情報)を確認したいときに使う。 |
+| `pipeline_status` | 実行中の run の状態を読む(`pipeline_path`, `include_details=False`)。**読み取り専用** — 監視や成果物の確定はこの呼び出しに依存しない(呼ばなくても裏の worker が最後まで進める)。`status`/`stage_statuses`/`needs_input`/`warnings` の要約を返し、`include_details=True` で永続レコード全体を追加取得できる。`status="running"` のとき、workerの生存確認 `observed_health`(`ok`/`worker_missing`/`unknown`)を添える。`worker_missing` なら `recovery_hint` で `pipeline_resume` を促す。 |
+| `pipeline_resume` | 入力訂正(`updates`: `target`/`sample_manifest`/`preprocess`/`comparisons` に限定)、下流の再計算、または中断した工程からの再開を行う。`rerun_upstream=True` を明示しない限り Console 実行はやり直さない(自動再試行はしない)。`request_id` を指定した再送は、直前と同じ内容なら新しい revision を作らず直前の結果を返す。 |
+| `pipeline_cancel` | 取消要求を保存する(`pipeline_path`)。**生データを削除しない** — 保存するのは協調的な取消フラグだけで、実際に停止したかどうかは `pipeline_status` で確認する。二重に呼んでも同じ状態に落ち着く(冪等)。 |

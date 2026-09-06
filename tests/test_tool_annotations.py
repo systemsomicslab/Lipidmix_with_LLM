@@ -67,6 +67,13 @@ EXPECTED_ANNOTATIONS = {
     # ジョブが記録した生成物を消す。破壊的だが、二度目は何も残っていない → 冪等
     "console_cleanup": LOCAL_DELETE,
     "job_list": READ_ONLY,
+    # --- pipeline系（生データフォルダ起点、Task18）。statusだけ読取専用。
+    # 他4件は同一request_idの再送・二重cancelが同じ結果に落ち着くためidempotent。
+    "pipeline_plan": LOCAL_WRITE,
+    "pipeline_run": LOCAL_WRITE,
+    "pipeline_status": READ_ONLY,
+    "pipeline_resume": LOCAL_WRITE,
+    "pipeline_cancel": LOCAL_WRITE,
     # --- DCL / PAI2 / EIC ---
     "dcl_parser": READ_ONLY,
     "dcl_find_msms": READ_ONLY,

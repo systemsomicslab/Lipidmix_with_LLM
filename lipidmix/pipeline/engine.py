@@ -73,6 +73,7 @@ from typing import Callable
 
 from lipidmix.core.atomic_io import DomainError
 from lipidmix.core.process_control import file_lock, process_identity
+from lipidmix.pipeline import report as report_mod
 from lipidmix.pipeline import store
 
 __all__ = [
@@ -96,7 +97,10 @@ _logger = logging.getLogger(__name__)
 #: PCA不成立（"an uncomputable PCA"）はbrief/spec文言上は同格に挙げられているが、
 #: 現行実装（`lipidmix/analysis/dataset_analysis.py::run_dataset_pca`）は
 #: `DomainError` ではなく別クラスの `PreconditionError` を送出しており、この
-#: whitelistでは検出できない——report「懸念」節に記載。
+#: whitelistでは検出できない。**Task18のR18でこのwhitelistは変更していない**
+#: ——`lipidmix.pipeline.service`の`pca` handler自身が`PreconditionError`を
+#: 捕らえ、`needs_input`のStageResultを直接返すことで解決する（`_invoke_handler`
+#: の汎用`except Exception`分岐に落ちて`failed`になるのを handler境界で防ぐ）。
 _NEEDS_INPUT_CODES = frozenset({
     "PREPROCESS_PREREQUISITE_MISSING",  # Task11: 前提を欠く明示的な前処理要求
     "NORMALIZATION_DEGENERATE",          # Task11: 正規化係数が0/非有限の試料が残る
@@ -316,6 +320,16 @@ def commit_stage_outcome(pipeline_path: Path, record: dict, stage: dict, outcome
     返すと、何もしなければ`results`が無限に重複して膨らむ。「旧結果を書き換え
     ない」はここでは満たしたまま——新しい内容の追記だけが対象で、既存要素は
     一切触らない）。
+
+    `outcome["record_updates"]`（Task18追加、既定なしで後方互換）は
+    `record`のトップレベルキーを丸ごと置き換える唯一の経路。`prepare_input`
+    handlerが`record["inputs"]`を実配置後のsnapshotへ、`upstream` handlerが
+    `record["upstream"]`をConsole終了証跡の参照へ更新するのに使う。handlerが
+    自分で`store.save_run`を呼ばないのは、ここでの1回の保存と競合し
+    `STATE_REVISION_CONFLICT`になるため（`record`は`mark_stage_running`が
+    返した、handler呼出し**前**のスナップショット）——`record_updates`は
+    handlerの戻り値として運び、ここで初めて`record`へ反映してから1回だけ
+    保存する。
     """
     record = copy.deepcopy(record)
     stage_id = stage["stage_id"]
@@ -336,6 +350,11 @@ def commit_stage_outcome(pipeline_path: Path, record: dict, stage: dict, outcome
         entry.setdefault("stage_id", stage_id)
         record.setdefault("warnings", [])
         record["warnings"].append(entry)
+
+    record_updates = outcome.get("record_updates")
+    if record_updates:
+        for key, value in record_updates.items():
+            record[key] = copy.deepcopy(value)
 
     store.save_run(pipeline_path, record, expected_revision=record["state_revision"])
     return store.load_run(pipeline_path)
@@ -363,30 +382,45 @@ def _mark_out_of_scope(pipeline_path: Path, record: dict, stage_id: str) -> dict
     return store.load_run(pipeline_path)
 
 
-#: 全stageがsucceeded/skippedでも「completed」を名乗らせない、既知の非致命的
-#: warningコード（spec §9.2/§11: InChIKey 0件でTSVを作れない・save_project=true
-#: でGUI projectが無い、等）。これらは該当stage自身は失敗させず（Consoleを
-#: 再実行させない・有効な出力は残す）succeededのまま進むが、run全体としては
-#: 「要求された契約を満たしていない」ので、この既知codeがrecord["warnings"]に
-#: 1件でも記録されていればpartialへ格下げする。
-#:
-#: `lipidmix.pipeline.report.evaluate_target`が持つ、成果物のhash照合まで含む
-#: 厳密な必須出力判定とは意図的に切り離してある——evaluate_targetは
-#: `results`の各refが`output_name`キーを持つ前提で組んであり、本モジュールの
-#: 単体テスト（`tests/test_pipeline_engine.py`）が使う簡易なresult_refs
-#: （文字列や空リスト）とは噛み合わない。両者の統合は実handler一式を作る
-#: Task18まで持ち越す（report「懸念」節）。
-_PARTIAL_ON_WARNING_CODES = frozenset({
-    "EXPORT_BACKGROUND_EMPTY",     # spec §9.2: InChIKey 0件でTSVを作れない
-    "GUI_PROJECT_UNAVAILABLE",     # spec §11: save_project=trueでGUI projectがない
-})
-
-
 def finish_success(pipeline_path: Path, record: dict) -> dict:
+    """全stageがsucceeded/skippedで止まらずに終えた時点の最終判定（Task18）。
+
+    Task17時点はここを`record["warnings"]`の既知codeだけで`partial`へ
+    格下げする狭い判定（`_PARTIAL_ON_WARNING_CODES`、消去済み）に留めていた。
+    `lipidmix.pipeline.report.evaluate_target`が持つ、目標別必須出力の
+    hash/ID照合まで含む厳密な判定と統合していなかったため、「全stageが
+    succeededでも必須出力が足りない」ケース（例: exportがwarningだけ残して
+    result_refsを空で返した場合）を狭い判定でしか捉えられなかった。
+
+    build_handlersが各stageの`result_refs`へ`output_name`付きの正しいrefを
+    積むようになった（Task18）ので、ここで`evaluate_target(record)`を1回
+    呼び、その`status`をそのまま採用する——`_PARTIAL_ON_WARNING_CODES`が
+    捉えていた「EXPORT_BACKGROUND_EMPTY（tsv:<cid>が無い）」
+    「GUI_PROJECT_UNAVAILABLE（gui_projectが無い）」は、どちらも
+    `evaluate_target`の`missing_outputs`判定に自然に含まれるため、狭い
+    判定を残す必要が無くなった。
+
+    `evaluate_target`が"needs_input"を返すのは`target=differential`かつ
+    comparisonsが空の場合だけだが、その組合せは実handler
+    （`resolve_comparisons`）がCOMPARISON_REQUIREDを`_NEEDS_INPUT_CODES`経由で
+    先に検出し`finish_interrupted`へ抜けるため、正常経路ではここへ到達しない
+    ——防御的に残すだけの分岐。
+    """
     record = copy.deepcopy(record)
-    downgrade = any(w.get("code") in _PARTIAL_ON_WARNING_CODES
-                   for w in record.get("warnings") or [])
-    record["status"] = "partial" if downgrade else "completed"
+    evaluation = report_mod.evaluate_target(record)
+    if evaluation["status"] == "completed":
+        record["status"] = "completed"
+    elif evaluation["status"] == "needs_input":
+        record["status"] = "needs_input"
+        record["needs_input"] = {
+            "code": evaluation["reason_codes"][0] if evaluation["reason_codes"]
+                    else "REQUIRED_OUTPUT_MISSING",
+            "stage_id": None,
+            "message": "必須出力の最終判定でneeds_inputが検出されました。",
+            "details": {"missing_outputs": evaluation["missing_outputs"]},
+        }
+    else:
+        record["status"] = "partial" if evaluation["achieved_outputs"] else "failed"
     store.save_run(pipeline_path, record, expected_revision=record["state_revision"])
     return store.load_run(pipeline_path)
 

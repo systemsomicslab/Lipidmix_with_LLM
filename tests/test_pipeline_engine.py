@@ -29,12 +29,62 @@ def _minimal_inputs(root: Path) -> dict:
     return {"source_root": str(root), "fingerprint": "f" * 64, "raw_inventory": []}
 
 
+def _persist(pipeline_root, name: str):
+    """`lipidmix.pipeline.report.persist_result`を使い、`output_name=name`の
+    実ファイル付きrefを作る（Task18: `evaluate_target`はhash照合まで行うため、
+    文字列のダミーrefでは`achieved_outputs`に数えられない）。データ内容は
+    固定なので、`_ALWAYS_RECONSTRUCT_STAGE_IDS`（preprocess/pca）が再実行時にも
+    同じhashのrefを返し、`commit_stage_outcome`の重複追記防止が効く。
+    """
+    from lipidmix.pipeline import report as report_mod
+    return report_mod.persist_result(pipeline_root, {
+        "output_name": name, "kind": "synthetic",
+        "result_id": f"{name.replace(':', '_')}-result",
+        "data": {"synthetic": True, "name": name},
+    })
+
+
 def _recorder(calls: list[str], *, status: str = "succeeded",
-              result_refs: list | None = None, error: dict | None = None):
+              output_names: list[str] | None = None, error: dict | None = None):
     def handler(context: dict) -> dict:
         calls.append(context["stage_id"])
-        return {"status": status, "result_refs": list(result_refs or []),
-                "warnings": [], "error": error}
+        refs = [_persist(context["pipeline_root"], name) for name in (output_names or [])]
+        return {"status": status, "result_refs": refs, "warnings": [], "error": error}
+    return handler
+
+
+def _upstream_recorder(calls: list[str]):
+    """`record["upstream"]["verification"]`をcompletedへ書く合成upstream。
+
+    `evaluate_target`は`record["upstream"]["verification"]["status"]`が
+    `"completed"`でない限りどのoutputも`achieved`と認めないため、これが無いと
+    合成pipelineは（result_refsを積んでいても）常にfailed/partialになる。
+    """
+    def handler(context: dict) -> dict:
+        calls.append(context["stage_id"])
+        return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None,
+                "record_updates": {"upstream": {
+                    "console_job_path": None, "execution_id": "exec-fake",
+                    "verification": {"status": "completed"}}}}
+    return handler
+
+
+def _differential_recorder(calls: list[str]):
+    def handler(context: dict) -> dict:
+        calls.append(context["stage_id"])
+        cid = context["comparison_id"]
+        ref = _persist(context["pipeline_root"], f"differential:{cid}")
+        return {"status": "succeeded", "result_refs": [ref], "warnings": [], "error": None}
+    return handler
+
+
+def _export_recorder(calls: list[str]):
+    def handler(context: dict) -> dict:
+        calls.append(context["stage_id"])
+        cid = context["comparison_id"]
+        refs = [_persist(context["pipeline_root"], f"volcano:{cid}"),
+                _persist(context["pipeline_root"], f"tsv:{cid}")]
+        return {"status": "succeeded", "result_refs": refs, "warnings": [], "error": None}
     return handler
 
 
@@ -46,17 +96,29 @@ _HANDLER_KEYS = (
 
 
 def _build_pipeline(tmp_path: Path, *, target: str, comparisons: list | None = None):
-    """target/comparisonsからpipelineを1本作り、全stage成功のfake handlersを返す。"""
+    """target/comparisonsからpipelineを1本作り、全stage成功のfake handlersを返す。
+
+    `save_project=False`を明示する——既定Trueのままだと`evaluate_target`が
+    `gui_project`refも必須にするが、この合成fixtureはvalidate_outputsで
+    GUI projectを作らない（Task18: `build_handlers`のvalidate_outputs handlerが
+    実際に登録する対象で、ここでは検証しない）。
+    """
     source_root = tmp_path / "source"
     source_root.mkdir()
-    request = resolve_request(source_root, {"target": target, "comparisons": comparisons or []})
+    request = resolve_request(source_root, {"target": target, "comparisons": comparisons or [],
+                                            "save_project": False})
     inputs = _minimal_inputs(source_root)
     pipeline_path = create_run(source_root, request, inputs)
 
     calls: list[str] = []
     handlers = {key: _recorder(calls) for key in _HANDLER_KEYS}
-    # PCAは常に何かresult_refsを残す合成版にする（partial/failed判定の材料）。
-    handlers["pca"] = _recorder(calls, result_refs=["pca-result"])
+    handlers["upstream"] = _upstream_recorder(calls)
+    handlers["preprocess"] = _recorder(calls, output_names=["preprocess"])
+    # PCAは常にpca/pca_figureのrefsを残す合成版にする（partial/failed判定の材料）。
+    handlers["pca"] = _recorder(calls, output_names=["pca", "pca_figure"])
+    handlers["differential"] = _differential_recorder(calls)
+    handlers["export"] = _export_recorder(calls)
+    handlers["report"] = _recorder(calls, output_names=["quality_report"])
     return pipeline_path, handlers, calls
 
 
@@ -238,7 +300,10 @@ def test_second_engine_start_is_refused(tmp_path):
         with pytest.raises(DomainError) as excinfo:
             run_engine(path, handlers)
         assert excinfo.value.code == "PIPELINE_ALREADY_RUNNING"
-        return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None}
+        return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None,
+                "record_updates": {"upstream": {
+                    "console_job_path": None, "execution_id": "exec-fake",
+                    "verification": {"status": "completed"}}}}
 
     handlers["upstream"] = upstream_with_reentrant_attempt
 

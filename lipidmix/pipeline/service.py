@@ -1,0 +1,694 @@
+"""生データフォルダpipelineの公開サービス層（Task18: 5件のMCPツールの実体）。
+
+このモジュールが解く問題は2つ。
+
+1. **受付**（`plan_pipeline` / `start_pipeline`）: `resolve_request` →
+   `inspect_inputs`（読取専用の入力計画）→ `sample_manifest` の事前検査 →
+   `find_or_create_run` → （`start_pipeline`だけ）workerの起動、という順で
+   進める。`plan_pipeline`は検査・保存のみで起動しない。壊れたシート等の
+   既知の不正入力は、Console起動前に検出し、runは作るがworkerは起動せず
+   `needs_input`のまま保存する（spec §9.2「既知の不正入力はConsole起動前に
+   拒否する」）。target=differential・comparisons未指定はここでは特別扱いしない
+   ——`resolve_comparisons` stage（`build_handlers`）がworker内で
+   `COMPARISON_REQUIRED`のneeds_inputとして検出する（「下流の群不足だけは
+   workerを起動できる」）。
+2. **工程handler一式**（`build_handlers`）: Task 3/4/6/7/8/9/11/12/13/17が
+   実装した純関数を、`lipidmix.pipeline.engine`が要求するstage契約
+   （`context: dict -> StageResult`）へ薄く配線する。ワーカー
+   （`lipidmix.pipeline.worker`）だけがこれを呼ぶ——MCP接続やグローバル
+   sessionへは一切触れない（`lipidmix.core.session_state` /
+   `lipidmix.core.mcp_core` / `lipidmix.tools.*` をimportしない。
+   `tests/test_pipeline_engine.py`のASTテストと同じ制約を本モジュールにも課す）。
+
+**Console用workerを二重起動しない**: `upstream` handlerは
+`lipidmix.console.worker.run_job`/`launch_console_worker`を一切呼ばず、
+共通監視経路`lipidmix.console.execution.supervise`を直接呼ぶ——pipeline用
+workerが既に「起動して見張る」役を担っているため。
+
+**launchはsys.executableで、cwdは常にこのcheckout自身**（`_REPO_ROOT`）。
+利用者のcwdや別checkoutを暗黙に使わない。起動時のstdout/stderrは
+`process_control.launch_detached`がログファイルへ結ぶため、launcher（この
+プロセス）がworkerのstdoutパイプを継承して`communicate()`相当が詰まる
+経路は無い。
+"""
+from __future__ import annotations
+
+import copy
+import os
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from lipidmix.analysis import dataset_export, dataset_service
+from lipidmix.analysis.dataset_analysis import PreconditionError
+from lipidmix.analysis.sample_manifest import parse_manifest
+from lipidmix.analysis.sample_manifest import resolve_metadata as resolve_sample_metadata
+from lipidmix.console import execution as console_execution
+from lipidmix.console import job_manager
+from lipidmix.core.atomic_io import DomainError, canonical_hash
+from lipidmix.core.process_control import launch_detached
+from lipidmix.handoff.schema import SCHEMA_VERSION, AnalysisJob
+from lipidmix.mztab import loading as mztab_loading
+from lipidmix.pipeline import engine
+from lipidmix.pipeline import inputs as inputs_mod
+from lipidmix.pipeline import recovery
+from lipidmix.pipeline import report as report_mod
+from lipidmix.pipeline import request as request_mod
+from lipidmix.pipeline import store
+from lipidmix.plots import result_output
+
+__all__ = [
+    "build_handlers",
+    "launch_pipeline_worker",
+    "plan_pipeline",
+    "resume_pipeline",
+    "start_pipeline",
+]
+
+#: このcheckoutのルート（`lipidmix/pipeline/`の2階層上）。launchのcwdを
+#: 呼び出し元のcwdや別checkoutへ暗黙に依存させないため、ここで固定する
+#: （`lipidmix/console/worker.py::_repo_root`と同じ流儀）。
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: request.sample_manifest省略時に探す既定ファイル名（spec §10.1「既定名を
+#: 探索。存在しなければ自動一覧生成」）。`start_pipeline`の事前検査と
+#: `resolve_metadata` handlerの両方がこの1つの定数を共有する。
+_DEFAULT_MANIFEST_NAME = "sample-manifest.tsv"
+
+#: pipeline_root配下の各種書込み先。
+_CONSOLE_RUN_SUBDIR = "console"
+_INPUT_SUBDIR = "input"  # lipidmix.pipeline.inputs._INPUT_SUBDIRと同じ値
+_RESULTS_SUBDIR = "results"
+
+#: 起動受理を待つ上限（秒）。「短い上限」——超えても失敗と決め付けず、
+#: pipeline_pathと（未確認の）launch状態を返す（brief拘束）。
+_HANDSHAKE_TIMEOUT_S = 3.0
+_HANDSHAKE_POLL_S = 0.05
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+# ---------------------------------------------------------------------------
+# 受付: plan_pipeline / start_pipeline
+# ---------------------------------------------------------------------------
+
+def _resolve_exe_path() -> Path:
+    from lipidmix.console import runner as console_runner
+    try:
+        exe = console_runner.get_exe_path()
+    except EnvironmentError as exc:
+        raise DomainError("MSDIAL_EXE_NOT_FOUND", str(exc), {}) from exc
+    return Path(exe)
+
+
+def _plan_fingerprint(plan: dict) -> str:
+    """入力計画の内容hash（受付冪等性の根拠。spec §9.3）。
+
+    採用する形式・raw stat・メソッド/LBM/実行体のhash・極性だけを対象にする
+    ——`overrides`（絶対パスを含みうる）や`unverified`（判断の説明文）は
+    「同一入力」の判定に無関係なので混ぜない。
+    """
+    return canonical_hash({
+        "raw_stat": plan["raw_stat"],
+        "selected_format": plan["selected_format"],
+        "method_sha256": plan["method"]["sha256"],
+        "lbm_sha256": plan["lbm"]["sha256"],
+        "exe_sha256": plan["exe"]["sha256"],
+        "polarity": plan["polarity"]["value"],
+    })
+
+
+def _resolve_manifest_path(source_root: Path, request: dict) -> Path | None:
+    """`request["sample_manifest"]`を解決する。相対はsource_root基準（spec §10.1）。
+
+    省略時は既定名を探し、無ければNone（自動一覧生成へ回す——`resolve_metadata`
+    へ`rows=None`として伝わる）。
+    """
+    manifest_arg = request.get("sample_manifest")
+    if manifest_arg is not None:
+        candidate = Path(manifest_arg)
+        return candidate if candidate.is_absolute() else source_root / candidate
+    default_candidate = source_root / _DEFAULT_MANIFEST_NAME
+    return default_candidate if default_candidate.is_file() else None
+
+
+def _precheck_manifest(source_root: Path, request: dict, plan: dict) -> DomainError | None:
+    """既知の不正入力（壊れたシート等）をConsole起動前に検出する（spec §9.2）。
+
+    `expected_sources`は`plan["entries"]`のトップレベル名（primaryのみ）——
+    ディレクトリ形式raw（`.d`等）でも1測定単位=1entryになるのはここだけで、
+    `raw_stat`は内部ファイルへ展開済みのため代用できない。
+    """
+    manifest_path = _resolve_manifest_path(source_root, request)
+    if manifest_path is None:
+        return None
+    if not manifest_path.is_file():
+        return DomainError(
+            "SAMPLE_MANIFEST_NOT_FOUND",
+            f"sample_manifestが指すファイルが見つかりません: {manifest_path}",
+            {"path": str(manifest_path)})
+    expected_sources = [e["name"] for e in plan["entries"] if e.get("role") == "primary"]
+    try:
+        parse_manifest(manifest_path, source_root=source_root, expected_sources=expected_sources)
+    except DomainError as exc:
+        return exc
+    return None
+
+
+def _mark_needs_input_without_launch(pipeline_path: Path, exc: DomainError, *, stage_id: str) -> None:
+    """事前検査で見つかった不正入力を、workerを起動せずneeds_inputとして保存する。
+
+    既に処理済み（find_or_create_runの再利用等でplanned以外）のrunは書き換えない
+    ——同一fingerprintの活動中/completed runを再利用した場合に、その状態を
+    ここで壊してはいけない。
+    """
+    record = store.load_run(pipeline_path)
+    if record["status"] != "planned":
+        return
+    record = copy.deepcopy(record)
+    record["status"] = "needs_input"
+    record["needs_input"] = {
+        "code": exc.code, "stage_id": stage_id, "message": exc.message,
+        "details": dict(exc.details),
+    }
+    store.save_run(pipeline_path, record, expected_revision=record["state_revision"])
+
+
+def _dispatch_receipt(pipeline_path: Path, *, launched: bool, launch: dict | None = None) -> dict:
+    """コンパクトな発送receipt（CLAUDE.md「戻り値を肥大させない」）。
+
+    行列・スコア・volcano点列は一切含めない。status・pipeline_id/path・
+    effective_target・needs_input（あれば）・launch状態だけを返す。
+    """
+    record = store.load_run(pipeline_path)
+    receipt: dict = {
+        "status": record["status"],
+        "pipeline_id": record["identity"]["pipeline_id"],
+        "pipeline_path": str(pipeline_path),
+        "effective_target": record["request"].get("effective_target"),
+        "launched": launched,
+    }
+    if record.get("needs_input"):
+        receipt["needs_input"] = record["needs_input"]
+    if launch is not None:
+        receipt["launch"] = launch
+    return receipt
+
+
+def _prepare_run(dataset_root: Path, request: dict | None,
+                 request_id: str | None) -> tuple[Path, DomainError | None]:
+    """resolve_request→inspect_inputs→manifest事前検査→find_or_create_run。
+
+    `plan_pipeline`/`start_pipeline`の共通前半。戻り値は
+    `(pipeline_path, manifest_error)`——`manifest_error`が非Noneなら
+    workerを起動してはいけない。
+    """
+    source_root = Path(dataset_root).expanduser()
+    request_resolved = request_mod.resolve_request(source_root, request)
+    exe_path = _resolve_exe_path()
+    plan = inputs_mod.inspect_inputs(source_root, request_resolved, exe_path=exe_path)
+    plan["fingerprint"] = _plan_fingerprint(plan)
+
+    manifest_error = _precheck_manifest(source_root, request_resolved, plan)
+    pipeline_path = store.find_or_create_run(
+        source_root, request_resolved, plan, request_id=request_id)
+
+    if manifest_error is not None:
+        _mark_needs_input_without_launch(pipeline_path, manifest_error, stage_id="resolve_metadata")
+    return pipeline_path, manifest_error
+
+
+def plan_pipeline(dataset_root: Path, request: dict | None = None,
+                  request_id: str | None = None) -> dict:
+    """入力検査・不足情報・固定要求の保存のみを行う。Consoleは起動しない。"""
+    pipeline_path, _manifest_error = _prepare_run(dataset_root, request, request_id)
+    return _dispatch_receipt(pipeline_path, launched=False)
+
+
+def start_pipeline(dataset_root: Path, request: dict | None = None,
+                   request_id: str | None = None) -> dict:
+    """計画と起動を一括実行する。フォルダだけの通常入口。
+
+    起動受理は、workerのidentity保存と起動handshakeを確認した後に返す
+    （`_await_launch_handshake`）。応答待ちには短い上限を設け、上限時は
+    起動失敗と決め付けず再起動もしない——`pipeline_path`とlaunch状態を返す。
+    """
+    pipeline_path, manifest_error = _prepare_run(dataset_root, request, request_id)
+    if manifest_error is not None:
+        return _dispatch_receipt(pipeline_path, launched=False)
+
+    launch_info = launch_pipeline_worker(pipeline_path)
+    launch_info["handshake"] = _await_launch_handshake(pipeline_path)
+    return _dispatch_receipt(pipeline_path, launched=True, launch=launch_info)
+
+
+def resume_pipeline(path: Path, updates: dict | None = None,
+                    request_id: str | None = None, rerun_upstream: bool = False) -> dict:
+    """入力訂正・下流revision作成・停止工程からの再開。`prepare_resume`の後、
+    結果が`planned`のときだけworkerを起動する（no-op resumeでは起動しない）。
+    """
+    pipeline_path = Path(path)
+    result = recovery.prepare_resume(
+        pipeline_path, updates=updates, request_id=request_id, rerun_upstream=rerun_upstream)
+
+    receipt = dict(result)
+    receipt["pipeline_path"] = str(pipeline_path)
+    if result["status"] == "planned":
+        launch_info = launch_pipeline_worker(pipeline_path)
+        launch_info["handshake"] = _await_launch_handshake(pipeline_path)
+        receipt["launch"] = launch_info
+    else:
+        receipt["launch"] = {"launched": False}
+    return receipt
+
+
+# ---------------------------------------------------------------------------
+# worker起動
+# ---------------------------------------------------------------------------
+
+def launch_pipeline_worker(path: Path) -> dict:
+    """`lipidmix.pipeline.worker`を切り離して起動する（待たない）。
+
+    `sys.executable`で起動し、cwdは`_REPO_ROOT`（このcheckout自身）へ固定する
+    ——呼び出し元のcwdや別checkoutを暗黙に使わない。本番workerは試験専用の
+    環境変数・任意import名を一切受け付けない（`lipidmix/pipeline/worker.py`の
+    引数は`--pipeline`のみ）。
+
+    stdout/stderrは`launch_detached`がログファイルへ結ぶ——launcher（この
+    プロセス）がworkerのstdoutパイプを継承して詰まる経路（bInheritHandles=TRUE
+    かつハンドル指定無し）を作らない。
+    """
+    pipeline_path = Path(path)
+    command = [sys.executable, "-m", "lipidmix.pipeline.worker",
+              "--pipeline", str(pipeline_path)]
+    log_path = pipeline_path / store.CONTROL_SUBDIR / "worker-launch.log"
+    return launch_detached(command, cwd=_REPO_ROOT, log_path=log_path)
+
+
+def _await_launch_handshake(pipeline_path: Path) -> str:
+    """workerのidentity保存を短時間だけ待つ。超えても失敗と決め付けない。"""
+    deadline = time.monotonic() + _HANDSHAKE_TIMEOUT_S
+    while time.monotonic() < deadline:
+        record = store.load_run(pipeline_path)
+        if (record.get("worker") or {}).get("identity") is not None:
+            return "confirmed"
+        if record.get("status") != "planned":
+            return "confirmed"
+        time.sleep(_HANDSHAKE_POLL_S)
+    return "not_confirmed"
+
+
+# ---------------------------------------------------------------------------
+# build_handlers: 工程handler一式
+# ---------------------------------------------------------------------------
+
+def build_handlers() -> dict:
+    """`lipidmix.pipeline.engine.run_engine`へ渡すhandler一式を組み立てる。
+
+    キーはhandlerキー（stage_idではない。`differential`/`export`は
+    `comparison_id`ごとの複数stageで1つのhandlerキーを共有する）。
+    """
+    return {
+        "prepare_input": _handle_prepare_input,
+        "upstream": _handle_upstream,
+        "validate_outputs": _handle_validate_outputs,
+        "load_dataset": _handle_load_dataset,
+        "resolve_metadata": _handle_resolve_metadata,
+        "preprocess": _handle_preprocess,
+        "pca": _handle_pca,
+        "resolve_comparisons": _handle_resolve_comparisons,
+        "differential": _handle_differential,
+        "export": _handle_export,
+        "report": _handle_report,
+    }
+
+
+# ---------- prepare_input（Task13） ----------
+
+def _handle_prepare_input(context: dict) -> dict:
+    """入力計画（`context["inputs"]`＝`inspect_inputs`の出力）を実配置する。
+
+    `_TRUST_PERSISTED_STAGE_IDS`に属するため、通常は初回の1回しか呼ばれない
+    （2回目以降はengineが永続statusを信頼してskipする）。`rerun_upstream=True`が
+    このstageをpendingへ戻した場合は、既存の配置済みファイルと突き合わせて
+    再配置する（`stage_inputs`自身の冪等性）。
+    """
+    plan = context["inputs"]
+    pipeline_root = context["pipeline_root"]
+    snapshot = inputs_mod.stage_inputs(plan, pipeline_root)
+    warnings = [{"code": "INPUT_UNVERIFIED", "message": note}
+               for note in plan.get("unverified", [])]
+    return {"status": "succeeded", "result_refs": [], "warnings": warnings, "error": None,
+            "record_updates": {"inputs": snapshot}}
+
+
+# ---------- upstream（Task4） ----------
+
+def _handle_upstream(context: dict) -> dict:
+    """`execution.supervise`を直接呼ぶ（Console用workerを二重起動しない）。
+
+    `console_job_path`は`analysis-job.json`そのものへのパスとして記録する
+    （`run_dir = Path(job_path).parent`という、コードベース全体の規約——
+    `lipidmix.pipeline.store.register_job_owner`・`lipidmix.console.job_manager`と
+    同じ。`lipidmix.pipeline.recovery._console_supervision_state`もこの規約を
+    前提にしている）。
+    """
+    pipeline_root = context["pipeline_root"]
+    request = context["request"]
+    inputs_snapshot = context["inputs"]
+    run_dir = pipeline_root / _CONSOLE_RUN_SUBDIR
+    run_dir.mkdir(parents=True, exist_ok=True)
+    job_path = run_dir / job_manager.JOB_FILENAME
+    dataset_root = pipeline_root / _INPUT_SUBDIR
+
+    if not job_path.is_file():
+        method_rel = inputs_snapshot["method"].get("effective_relative_path")
+        method_abs = ((pipeline_root / method_rel) if method_rel
+                     else Path(inputs_snapshot["method"]["source_path"]))
+        now = _now_iso()
+        job = AnalysisJob(
+            schema=SCHEMA_VERSION, job_id=f"pipeline_{context['pipeline_id']}",
+            status="planned", created_at=now, updated_at=now,
+            dataset_root=str(dataset_root),
+            input_count=job_manager.count_raw_inputs(dataset_root),
+            software_name="MS-DIAL", software_version="", execution_mode="console",
+            method_file=str(method_abs), omics="lipidomics",
+            polarity=inputs_snapshot["polarity"]["value"], measure=request["measure"],
+            run_dir=str(run_dir), save_project=request["save_project"],
+            timeout_s=request["timeout_s"],
+        )
+        job.save(job_path)
+        store.register_job_owner(job_path, pipeline_root)
+        raw_inventory = [str(p.resolve()) for p in job_manager.list_raw_inputs(dataset_root)]
+        console_execution.write_supervision_inputs(run_dir, {
+            "raw_inventory": raw_inventory,
+            "method_sha256": inputs_snapshot["method"].get("effective_sha256"),
+            "exe_path": inputs_snapshot["exe"]["path"],
+            "exe_sha256": inputs_snapshot["exe"].get("sha256"),
+        })
+
+    receipt = console_execution.supervise(
+        job_path, cancel_path=engine.cancel_request_path(pipeline_root))
+    job = job_manager.load_job(job_path)
+
+    upstream_update = {
+        "console_job_path": str(job_path),
+        "execution_id": receipt.get("execution_id"),
+        "verification": {"status": job.status, "termination": receipt.get("termination"),
+                        "exit_code": receipt.get("exit_code")},
+    }
+    warnings = [{"code": "CONSOLE_WARNING", "message": w} for w in job.warnings[:5]]
+
+    if job.status == "completed":
+        return {"status": "succeeded", "result_refs": [], "warnings": warnings, "error": None,
+                "record_updates": {"upstream": upstream_update}}
+
+    message = job.error or (
+        f"MS-DIAL Consoleの実行が完了しませんでした"
+        f"（termination={receipt.get('termination')}）。")
+    return {"status": "failed", "result_refs": [], "warnings": warnings,
+            "error": {"code": "MSDIAL_EXECUTION_FAILED", "message": message,
+                     "details": {"termination": receipt.get("termination"),
+                                 "exit_code": receipt.get("exit_code")}},
+            "record_updates": {"upstream": upstream_update}}
+
+
+# ---------- validate_outputs（Task3） ----------
+
+def _find_gui_project(run_dir: Path) -> Path | None:
+    candidates = sorted(run_dir.rglob("*.mdproject"))
+    return candidates[0] if candidates else None
+
+
+def _handle_validate_outputs(context: dict) -> dict:
+    """`upstream`が既に完了判定を確定させているので、ここでは`save_project`要求
+    に対するGUI project(`*.mdproject`)の有無だけを追加確認する。
+
+    `upstream` stageが失敗した場合、engineはこのstageを呼ばずに止まる
+    （`_run_stage_loop`は`needs_input`/`failed`直後に`finish_interrupted`へ
+    抜ける）ため、ここに到達する時点でjob.status=="completed"は保証済み。
+    """
+    request = context["request"]
+    if not request.get("save_project"):
+        return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None}
+
+    job_path = Path(context["upstream"]["console_job_path"])
+    job = job_manager.load_job(job_path)
+    project_path = _find_gui_project(Path(job.run_dir))
+    if project_path is None:
+        return {"status": "succeeded", "result_refs": [], "warnings": [
+            {"code": "GUI_PROJECT_UNAVAILABLE",
+             "message": "save_project=trueですがGUIプロジェクト(.mdproject)が見つかりません。"}],
+            "error": None}
+
+    ref = report_mod.persist_result(context["pipeline_root"], {
+        "output_name": "gui_project", "kind": "gui_project",
+        "result_id": f"res_gui_project_{context['pipeline_id']}", "path": str(project_path),
+    })
+    return {"status": "succeeded", "result_refs": [ref], "warnings": [], "error": None}
+
+
+# ---------- load_dataset（Task7） ----------
+
+def _handle_load_dataset(context: dict) -> dict:
+    job_path = Path(context["upstream"]["console_job_path"])
+    ds = mztab_loading.load_dataset_state(job_path=job_path)
+    context["runtime"]["dataset"] = ds
+    return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None}
+
+
+# ---------- resolve_metadata（Task9） ----------
+
+def _raw_manifest_layout(ds) -> tuple[Path, list[str]]:
+    """`ds.assay_sources`（実行時に予定したrawの絶対パス）から、
+    sample-manifest.v1検証に使う`source_root`/相対パス一覧を逆算する。
+
+    `lipidmix.analysis.dataset_service._raw_manifest_layout`と同じ規則
+    （private関数を跨いで参照しない、既存コードベースの複製方針にならう）。
+    """
+    paths = [Path(p) for p in (getattr(ds, "assay_sources", None) or {}).values() if p]
+    if not paths:
+        raise DomainError(
+            "SAMPLE_MANIFEST_INVALID",
+            "raw参照(assay_sources)が無いため実験情報シートを検証できません。", {})
+    root = paths[0].parent if len(paths) == 1 else Path(os.path.commonpath([str(p) for p in paths]))
+    expected = [str(p.relative_to(root)) for p in paths]
+    return root, expected
+
+
+def _handle_resolve_metadata(context: dict) -> dict:
+    ds = context["runtime"]["dataset"]
+    request = context["request"]
+    source_root = Path(context["identity"]["source_root"])
+    manifest_path = _resolve_manifest_path(source_root, request)
+
+    rows = None
+    if manifest_path is not None:
+        raw_root, expected_sources = _raw_manifest_layout(ds)
+        rows = parse_manifest(manifest_path, source_root=raw_root, expected_sources=expected_sources)
+    metadata = resolve_sample_metadata(ds, rows)
+    context["runtime"]["metadata"] = metadata
+    return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None}
+
+
+# ---------- preprocess（Task11） ----------
+
+def _handle_preprocess(context: dict) -> dict:
+    ds = context["runtime"]["dataset"]
+    metadata = context["runtime"]["metadata"]
+    requested = context["request"].get("preprocess") or {}
+    request_revision = context["request_meta"].get("revision")
+
+    plan = dataset_service.preprocess_auto(ds, requested, metadata, request_revision=request_revision)
+
+    fingerprint = plan["result"]["provenance"]["input_fingerprint"]
+    data = {k: v for k, v in plan.items() if k != "result"}
+    data["result"] = {k: v for k, v in plan["result"].items() if k != "provenance"}
+    ref = report_mod.persist_result(context["pipeline_root"], {
+        "output_name": "preprocess", "kind": "preprocess",
+        "result_id": f"res_preprocess_{fingerprint[:24]}",
+        "data": data, "request_revision": request_revision,
+    })
+    warnings = [{"code": "PREPROCESS_CAVEAT", "message": w}
+               for w in plan["result"].get("caveats", [])]
+    return {"status": "succeeded", "result_refs": [ref], "warnings": warnings, "error": None}
+
+
+# ---------- pca（Task6/Task8, R18） ----------
+
+def _handle_pca(context: dict) -> dict:
+    """PreconditionError（PCA不成立）は例外のままengineへ渡さず、ここで
+    直接needs_inputのStageResultへ変換する（R18）。
+
+    engineの`_invoke_handler`は`DomainError`のうち`_NEEDS_INPUT_CODES`
+    しかneeds_inputへ変換しない——`PreconditionError`は別クラスなので、
+    捕らえずに投げると汎用`except Exception`分岐に落ちて`failed`になる。
+    ここでhandlerが直接dictを返すことで、その分岐を経由させない。
+    """
+    ds = context["runtime"]["dataset"]
+    pipeline_root = context["pipeline_root"]
+    request_revision = context["request_meta"].get("revision")
+
+    try:
+        result = dataset_service.pca_dataset(ds, request_revision=request_revision)
+    except PreconditionError as exc:
+        return {"status": "needs_input", "result_refs": [], "warnings": [],
+                "error": {"code": "PCA_PRECONDITION_MISSING", "message": exc.message,
+                         "details": dict(exc.details)}}
+
+    fingerprint = result["provenance"]["input_fingerprint"]
+    summary = {k: v for k, v in result.items() if k not in ("provenance", "loadings", "scores")}
+    data_ref = report_mod.persist_result(pipeline_root, {
+        "output_name": "pca", "kind": "pca", "result_id": f"res_pca_{fingerprint[:24]}",
+        "data": summary, "parent_ids": list(result["provenance"].get("parent_ids") or []),
+        "request_revision": request_revision,
+    })
+
+    figure_path = pipeline_root / _RESULTS_SUBDIR / "pca.png"
+    result_output.save_result_figure(ds, result, figure_path, kind="pca")
+    figure_ref = report_mod.persist_result(pipeline_root, {
+        "output_name": "pca_figure", "kind": "pca_figure",
+        "result_id": f"res_pca_figure_{fingerprint[:24]}", "path": str(figure_path),
+        "parent_ids": [result["provenance"]["result_id"]], "request_revision": request_revision,
+    })
+
+    warnings = [{"code": "PCA_CAVEAT", "message": w}
+               for w in result["provenance"].get("warnings", [])]
+    return {"status": "succeeded", "result_refs": [data_ref, figure_ref],
+            "warnings": warnings, "error": None}
+
+
+# ---------- resolve_comparisons（Task12ゲート） ----------
+
+def _handle_resolve_comparisons(context: dict) -> dict:
+    """空配列を`COMPARISON_REQUIRED`とし、各比較の方向・群・交絡を検証してから
+    比較別stageへ進む（`_NEEDS_INPUT_CODES`が`COMPARISON_REQUIRED`をneeds_input
+    へ変換する）。実際の統計計算（`compare_dataset`）はここでは行わない
+    ——`differential`/`export` handlerがそれぞれ独立に`run_comparison`を
+    呼ぶため、ここでの検証は「先に全件止めるためのゲート」に留める。
+    """
+    ds = context["runtime"]["dataset"]
+    metadata = context["runtime"]["metadata"]
+    comparisons = context["request"].get("comparisons") or []
+    if not comparisons:
+        raise DomainError(
+            "COMPARISON_REQUIRED",
+            "comparisonsが指定されていません。差次的解析には最低1件の比較定義が必要です。", {})
+
+    for comparison in comparisons:
+        resolved = dataset_service.resolve_comparison(ds, comparison, metadata)
+        confounding = resolved["confounding"]
+        if confounding["confounded"] and not resolved["allow_confounded"]:
+            raise DomainError(
+                "CONFOUNDED_COMPARISON",
+                f"{resolved['reference_group']!r}と{resolved['test_group']!r}は"
+                "群とバッチが完全に交絡しています。allow_confounded=trueを"
+                "明示しない限り差次的解析は実行しません。",
+                {"comparison_id": comparison["comparison_id"]})
+    return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None}
+
+
+def _find_comparison(request: dict, comparison_id: str) -> dict:
+    for comparison in request.get("comparisons") or []:
+        if comparison["comparison_id"] == comparison_id:
+            return comparison
+    raise DomainError(
+        "COMPARISON_REQUIRED",
+        f"comparison_id={comparison_id!r}が要求のcomparisonsに見つかりません。",
+        {"comparison_id": comparison_id})
+
+
+# ---------- differential（Task12） ----------
+
+def _handle_differential(context: dict) -> dict:
+    ds = context["runtime"]["dataset"]
+    metadata = context["runtime"]["metadata"]
+    cid = context["comparison_id"]
+    comparison = _find_comparison(context["request"], cid)
+
+    result = dataset_service.run_comparison(ds, comparison, metadata)
+    ref = report_mod.persist_result(context["pipeline_root"], {
+        "output_name": f"differential:{cid}", "kind": "differential",
+        "result_id": result["provenance"]["result_id"], "data": result,
+        "parent_ids": list(result["provenance"].get("parent_ids") or []),
+        "request_revision": context["request_meta"].get("revision"),
+    })
+    warnings = [{"code": "DIFFERENTIAL_CAVEAT", "message": w}
+               for w in result.get("caveats", [])]
+    return {"status": "succeeded", "result_refs": [ref], "warnings": warnings, "error": None}
+
+
+# ---------- export（Task8） ----------
+
+def _handle_export(context: dict) -> dict:
+    """volcano図とcontract TSVを書く。`differential` handlerが既に永続化した
+    refを読み戻さず、`run_comparison`を独立にもう一度呼ぶ——`ds`は
+    `_ALWAYS_RECONSTRUCT_STAGE_IDS`により同一worker呼出し内で必ず新しく
+    構築済みなので、統計計算自体は安価かつ`differential`と同じ`ds`から
+    同じ数値が出る。worker再起動をまたいで`differential`が既にsucceededで
+    skipされ、`export`だけがこのpassで動く場合でも、この独立再計算により
+    `assert_current`（`ds.preprocess_id`一致検査）を満たしたまま完結できる。
+    """
+    ds = context["runtime"]["dataset"]
+    metadata = context["runtime"]["metadata"]
+    cid = context["comparison_id"]
+    comparison = _find_comparison(context["request"], cid)
+    pipeline_root = context["pipeline_root"]
+    request_revision = context["request_meta"].get("revision")
+
+    result = dataset_service.run_comparison(ds, comparison, metadata)
+
+    volcano_path = pipeline_root / _RESULTS_SUBDIR / f"volcano_{cid}.png"
+    result_output.save_result_figure(ds, result, volcano_path, kind="volcano")
+    volcano_ref = report_mod.persist_result(pipeline_root, {
+        "output_name": f"volcano:{cid}", "kind": "volcano",
+        "result_id": f"res_volcano_{cid}", "path": str(volcano_path),
+        "parent_ids": [result["provenance"]["result_id"]], "request_revision": request_revision,
+    })
+
+    result_refs = [volcano_ref]
+    warnings: list[dict] = []
+    tsv_path = pipeline_root / _RESULTS_SUBDIR / f"differential_{cid}.tsv"
+    try:
+        dataset_export.export_dataset_result(ds, result, tsv_path)
+    except DomainError as exc:
+        if exc.code != "NO_ANNOTATED_FEATURES":
+            raise
+        warnings.append({"code": "EXPORT_BACKGROUND_EMPTY", "message": exc.message})
+    else:
+        tsv_ref = report_mod.persist_result(pipeline_root, {
+            "output_name": f"tsv:{cid}", "kind": "tsv",
+            "result_id": f"res_tsv_{cid}", "path": str(tsv_path),
+            "parent_ids": [result["provenance"]["result_id"]], "request_revision": request_revision,
+        })
+        result_refs.append(tsv_ref)
+
+    return {"status": "succeeded", "result_refs": result_refs, "warnings": warnings, "error": None}
+
+
+# ---------- report（Task17） ----------
+
+def _handle_report(context: dict) -> dict:
+    """レポートは完全な`record`（`warnings`/`needs_input`を含む）を必要とする
+    ため、`context`から組み立てず`store.load_run`で読み直す（読取専用）。
+    """
+    pipeline_root = context["pipeline_root"]
+    record = store.load_run(pipeline_root)
+    report_path = pipeline_root / "reports" / "pipeline-quality-report.md"
+    summary = report_mod.write_pipeline_report(record, report_path)
+
+    ref = report_mod.persist_result(pipeline_root, {
+        "output_name": "quality_report", "kind": "quality_report",
+        "result_id": f"res_quality_report_{context['identity']['pipeline_id']}",
+        "path": str(report_path),
+    })
+    warnings: list[dict] = []
+    if summary["status"] != "completed":
+        warnings.append({
+            "code": "REPORT_INCOMPLETE_AT_WRITE_TIME",
+            "message": f"レポート生成時点でstatus={summary['status']}でした。",
+        })
+    return {"status": "succeeded", "result_refs": [ref], "warnings": warnings, "error": None}

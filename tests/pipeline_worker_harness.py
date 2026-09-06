@@ -39,14 +39,49 @@ _HANDLER_KEYS = (
     "differential", "export", "report",
 )
 
+#: handlerキー → 登録するoutput_name一覧（Task18: `lipidmix.pipeline.report.
+#: evaluate_target`がhash照合込みで`output_name`付きrefだけを「達成」と数える
+#: ため、文字列ダミーのrefでは`finish_success`が常にfailed/partialへ落ちる。
+#: 本harnessが検証する対象はengine自体（stage順序・owner lock）で、Task18の
+#: 実handler契約と揃えるためだけにこの最小限のマッピングを持つ）。
+_OUTPUT_NAMES = {
+    "preprocess": ("preprocess",),
+    "pca": ("pca", "pca_figure"),
+    "report": ("quality_report",),
+}
+
+
+def _persist(pipeline_root, name: str) -> dict:
+    from lipidmix.pipeline.report import persist_result
+    return persist_result(pipeline_root, {
+        "output_name": name, "kind": "synthetic",
+        "result_id": f"{name.replace(':', '_')}-result",
+        "data": {"synthetic": True, "name": name},
+    })
+
 
 def _build_handlers(sleep_stage: str | None, sleep_seconds: float) -> dict:
     def make(name):
         def handler(context: dict) -> dict:
             if sleep_stage is not None and context["stage_id"] == sleep_stage and sleep_seconds > 0:
                 time.sleep(sleep_seconds)
-            return {"status": "succeeded", "result_refs": [f"{name}-result"],
-                    "warnings": [], "error": None}
+            if name == "upstream":
+                return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None,
+                        "record_updates": {"upstream": {
+                            "console_job_path": None, "execution_id": "exec-fake",
+                            "verification": {"status": "completed"}}}}
+            if name == "differential":
+                cid = context["comparison_id"]
+                ref = _persist(context["pipeline_root"], f"differential:{cid}")
+                return {"status": "succeeded", "result_refs": [ref], "warnings": [], "error": None}
+            if name == "export":
+                cid = context["comparison_id"]
+                refs = [_persist(context["pipeline_root"], f"volcano:{cid}"),
+                        _persist(context["pipeline_root"], f"tsv:{cid}")]
+                return {"status": "succeeded", "result_refs": refs, "warnings": [], "error": None}
+            names = _OUTPUT_NAMES.get(name, ())
+            refs = [_persist(context["pipeline_root"], out_name) for out_name in names]
+            return {"status": "succeeded", "result_refs": refs, "warnings": [], "error": None}
         return handler
 
     return {key: make(key) for key in _HANDLER_KEYS}

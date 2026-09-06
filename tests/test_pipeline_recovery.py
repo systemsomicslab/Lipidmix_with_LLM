@@ -35,12 +35,55 @@ def _minimal_inputs(root: Path, *, fingerprint: str = "f" * 64) -> dict:
     return {"source_root": str(root), "fingerprint": fingerprint, "raw_inventory": []}
 
 
+def _persist(pipeline_root, name: str):
+    """`output_name=name`の実ファイル付きref（Task18: `evaluate_target`は
+    hash照合込みで`output_name`付きrefだけを「達成」と数えるため、文字列の
+    ダミーrefでは`finish_success`が常にfailed/partialへ落ちる）。"""
+    from lipidmix.pipeline import report as report_mod
+    return report_mod.persist_result(pipeline_root, {
+        "output_name": name, "kind": "synthetic",
+        "result_id": f"{name.replace(':', '_')}-result",
+        "data": {"synthetic": True, "name": name},
+    })
+
+
 def _recorder(calls: list[str], *, status: str = "succeeded",
-              result_refs: list | None = None, error: dict | None = None):
+              output_names: list[str] | None = None, error: dict | None = None):
     def handler(context: dict) -> dict:
         calls.append(context["stage_id"])
-        return {"status": status, "result_refs": list(result_refs or []),
-                "warnings": [], "error": error}
+        refs = [_persist(context["pipeline_root"], name) for name in (output_names or [])]
+        return {"status": status, "result_refs": refs, "warnings": [], "error": error}
+    return handler
+
+
+def _upstream_recorder(calls: list[str]):
+    """`record["upstream"]["verification"]`をcompletedへ書く合成upstream
+    （`evaluate_target`はこれが無いとどのoutputも達成と認めない）。"""
+    def handler(context: dict) -> dict:
+        calls.append(context["stage_id"])
+        return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None,
+                "record_updates": {"upstream": {
+                    "console_job_path": None, "execution_id": "exec-fake",
+                    "verification": {"status": "completed"}}}}
+    return handler
+
+
+def _differential_recorder(calls: list[str]):
+    def handler(context: dict) -> dict:
+        calls.append(context["stage_id"])
+        cid = context["comparison_id"]
+        ref = _persist(context["pipeline_root"], f"differential:{cid}")
+        return {"status": "succeeded", "result_refs": [ref], "warnings": [], "error": None}
+    return handler
+
+
+def _export_recorder(calls: list[str]):
+    def handler(context: dict) -> dict:
+        calls.append(context["stage_id"])
+        cid = context["comparison_id"]
+        refs = [_persist(context["pipeline_root"], f"volcano:{cid}"),
+                _persist(context["pipeline_root"], f"tsv:{cid}")]
+        return {"status": "succeeded", "result_refs": refs, "warnings": [], "error": None}
     return handler
 
 
@@ -52,15 +95,23 @@ _HANDLER_KEYS = (
 
 
 def _build_pipeline(tmp_path: Path, *, target: str, comparisons: list | None = None):
+    """`save_project=False`を明示する（`evaluate_target`の`gui_project`必須化を
+    避ける——本ファイルのfixtureはvalidate_outputsでGUI projectを作らない）。"""
     source_root = tmp_path / "source"
     source_root.mkdir()
-    request = resolve_request(source_root, {"target": target, "comparisons": comparisons or []})
+    request = resolve_request(source_root, {"target": target, "comparisons": comparisons or [],
+                                            "save_project": False})
     inputs = _minimal_inputs(source_root)
     pipeline_path = create_run(source_root, request, inputs)
 
     calls: list[str] = []
     handlers = {key: _recorder(calls) for key in _HANDLER_KEYS}
-    handlers["pca"] = _recorder(calls, result_refs=["pca-result"])
+    handlers["upstream"] = _upstream_recorder(calls)
+    handlers["preprocess"] = _recorder(calls, output_names=["preprocess"])
+    handlers["pca"] = _recorder(calls, output_names=["pca", "pca_figure"])
+    handlers["differential"] = _differential_recorder(calls)
+    handlers["export"] = _export_recorder(calls)
+    handlers["report"] = _recorder(calls, output_names=["quality_report"])
     return pipeline_path, handlers, calls
 
 
@@ -292,9 +343,11 @@ def test_resume_reuses_upstream_and_completes_after_adding_comparisons(tmp_path)
     # (R20のcommit_stage_outcome重複防止)。pcaは_ALWAYS_RECONSTRUCT_STAGE_IDSに
     # 属し2回目のrun_engineでも必ずhandlerを呼び直すが、前回と完全に同じ
     # result_refsを返す限り"results"へは1回しか積まれない。件数チェックでない
-    # `assert old_results`（存在確認だけ）は、重複防止を後退させて
-    # "pca-result"が2回積まれても素通りしてしまい、この回帰を検出できない。
-    assert record["results"].count("pca-result") == 1
+    # 存在確認だけでは、重複防止を後退させて"pca"のrefが2回積まれても
+    # 素通りしてしまい、この回帰を検出できない。
+    pca_entries = [r for r in record["results"]
+                   if isinstance(r, dict) and r.get("output_name") == "pca"]
+    assert len(pca_entries) == 1
 
 
 # ---------- group-only更新: 変更した比較だけreset ----------
@@ -471,7 +524,8 @@ def test_tampered_result_artifact_forces_recompute(tmp_path):
         import hashlib
         digest = hashlib.sha256(output_file.read_bytes()).hexdigest()
         return {"status": "succeeded",
-                "result_refs": [{"relative_path": "report.txt", "hash": digest}],
+                "result_refs": [{"output_name": "quality_report", "result_id": "report-result",
+                                 "relative_path": "report.txt", "hash": digest}],
                 "warnings": [], "error": None}
 
     handlers["report"] = report_handler
