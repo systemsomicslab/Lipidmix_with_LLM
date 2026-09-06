@@ -10,6 +10,35 @@ import sys
 from pathlib import Path
 
 
+def make_source(root: Path) -> dict:
+    """Task 13 (入力隔離・メソッド選択) 用の合成生データフォルダを作る。
+
+    root直下にS0..S7.wiff・GUI自動保存形式のlab_param_202609050001.txt
+    （Ion mode/Target omics/Lbm file path）・fake.lbm2・fake.exeを作り、
+    それぞれのPathを返す。fake.exeは実行しない（中身は placeholder テキスト）
+    ——単体テストではlipidmix.console.runner.is_console_exeを差し替えて使う。
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    for i in range(8):
+        (root / f"S{i}.wiff").write_text(f"raw-{i}", encoding="ascii")
+
+    lbm = root / "fake.lbm2"
+    lbm.write_bytes(b"fake-lbm-library")
+
+    method = root / "lab_param_202609050001.txt"
+    method.write_text(
+        "Ion mode: negative\n"
+        "Target omics: Lipidomics\n"
+        "Lbm file path: fake.lbm2\n",
+        encoding="ascii", newline="\n")
+
+    exe = root / "fake.exe"
+    exe.write_text("fake console executable placeholder", encoding="ascii")
+
+    return {"root": root, "method": method, "lbm": lbm, "exe": exe}
+
+
 def execution_record(**overrides):
     """console-execution.v1 の妥当な最小レコードを返す。
 
