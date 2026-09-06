@@ -503,6 +503,43 @@ def test_explicit_null_comparisons_is_rejected_in_merge_updates(tmp_path):
         merge_updates(req, {"comparisons": None})
 
 
+def test_explicit_exploratory_target_with_comparisons_is_rejected(tmp_path):
+    """最終レビュー指摘5: `target="exploratory"`＋比較指定は矛盾した要求。
+
+    `engine.build_stages`は`effective_target == "exploratory"`のとき
+    `differential:*`/`export:*`を計画から外し、`_mark_out_of_scope`が
+    `STAGE_OUT_OF_SCOPE_FOR_TARGET`を**stage側のwarningsにだけ**書く
+    ——`read_status`もレポートの「Unverified Conditions」も
+    `record["warnings"]`しか読まないので、利用者が明示的に頼んだ比較が
+    1件も実行されないまま`completed`が返り、痕跡がどこにも出ない。
+    spec §8.2「明示的に要求した処理を実施できなければneeds_input」に反する。
+
+    `target="auto"`＋比較は矛盾ではない（`differential`へ昇格する）ので、
+    拒否されるのは**明示的なexploratory**との組合せだけ。
+    """
+    root = tmp_path / "source"
+    root.mkdir()
+    comparisons = [{"comparison_id": "treated_vs_control",
+                    "reference_group": "control", "test_group": "treated"}]
+
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve_request(root, {"target": "exploratory", "comparisons": comparisons})
+
+    # autoは昇格するので通る（拒否の的が広すぎないことの確認）。
+    promoted = resolve_request(root, {"target": "auto", "comparisons": comparisons})
+    assert promoted["effective_target"] == "differential"
+
+    # resumeで後から比較だけを足す経路も同じ理由で拒否する。
+    exploratory = resolve_request(root, {"target": "exploratory"})
+    assert exploratory["effective_target"] == "exploratory"
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        merge_updates(exploratory, {"comparisons": comparisons})
+
+    # 同じresumeでtargetも一緒に直せば通る（利用者に出口がある）。
+    fixed = merge_updates(exploratory, {"target": "differential", "comparisons": comparisons})
+    assert fixed["effective_target"] == "differential"
+
+
 def test_permitted_explicit_nulls_still_work(tmp_path):
     """R13の許可リスト3つ（sample_manifest・blank_min_fold・max_qc_rsd）は
     引き続き明示nullで無効化できる。"""

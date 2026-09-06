@@ -45,7 +45,14 @@ def pipeline_harness(tmp_path, monkeypatch):
 
 def test_resume_reuses_console_and_completes_exports(pipeline_harness):
     """spec D02/D03: 群未指定なら探索まで進んでneeds_input、シートと比較を足して
-    再開したらConsoleを**再実行せず**比較・出力まで完了する。"""
+    再開したらConsoleを**再実行せず**比較・出力まで完了する。
+
+    **成果物の存在だけでは足りない**（最終レビュー指摘1）。resumeで足した
+    比較stageが`report`より後ろへ追記されると、レポートは比較を1件も
+    実行していない時点で書かれ、TSVとvolcanoはディスク上に在るのに
+    レポートは「missing」「(n/a)」と告げ、runはcompletedを名乗る。
+    ここではレポート**本文**が実際の比較結果を載せていることまで見る。
+    """
     run = pipeline_harness.start(target="differential", comparisons=[])
     waiting = pipeline_harness.wait(run, expected="needs_input")
     assert waiting["request"]["effective_target"] == "differential"
@@ -56,6 +63,28 @@ def test_resume_reuses_console_and_completes_exports(pipeline_harness):
     tsv = pipeline_harness.output_path(completed, "tsv:treated_vs_control")
     assert Path(tsv).is_file()
     assert json.loads(Path(run).read_text(encoding="utf-8"))["status"] == "completed"
+
+    # runが自分で「不完全なまま書いた」と記録していない。
+    codes = {w["code"] for w in completed.get("warnings") or []}
+    assert "REPORT_INCOMPLETE_AT_WRITE_TIME" not in codes, completed["warnings"]
+
+    report_text = Path(
+        pipeline_harness.output_path(completed, "quality_report")).read_text(encoding="utf-8")
+    # 比較行がachieved（missingではない）で、向きもそのまま載っている。
+    assert "| treated_vs_control | control | treated | achieved |" in report_text, report_text
+    # InChIKey被覆が実数（(n/a)ではない）——TSVを実際に読めた証拠。
+    assert "| treated_vs_control | 3 | 3 | 0 |" in report_text, report_text
+    # サンプル来歴が実サンプルを名指ししている（最終レビュー指摘2）。
+    provenance = report_text.split(
+        "## Role / Group / Batch / Order Provenance", 1)[1].split("\n## ", 1)[0]
+    assert "(no sample manifest recorded)" not in provenance, provenance
+    sample_rows = [line for line in provenance.splitlines() if line.startswith("| S")]
+    assert len(sample_rows) == 8, provenance
+    assert provenance.count("| control |") == 4, provenance
+    assert provenance.count("| treated |") == 4, provenance
+    # レポートは比較stageのあとに書かれている（工程順そのものの確認）。
+    stages = completed["stages"]
+    assert stages["report"]["updated_at"] >= stages["export:treated_vs_control"]["updated_at"]
 
 
 # briefの受入表は5シナリオすべての期待値をpartialとしているが、実装とspec §9.1の
@@ -110,6 +139,52 @@ def test_execution_scenarios(pipeline_harness, scenario, expected, termination,
             f"{retained} が保持されていません: {[a.path for a in artifacts]}"
     # `failed`（`partial`ではない）である根拠: 有効な解析出力が1件も無い。
     assert record["results"] == []
+
+
+# ---------- 最終レビュー指摘3: rerun_upstreamは前回attemptの証跡を消さない ----------
+
+def test_rerun_upstream_creates_a_new_attempt_and_keeps_the_old_evidence(pipeline_harness):
+    """spec §9.1/§9.3・D09: Consoleの再試行は**新しいjob/attempt**を作る。
+
+    timeoutで打ち切ったConsole実行の終了証跡（`execution-result.json`）・
+    Console自身のログ（`msdial.log`は`_CREATE_ALWAYS`＝切り詰めで開かれる）・
+    再収集に要る実行前スナップショット（`worker.json`の`recovery.befores`）は、
+    再実行後も1バイトも変わっていないこと。run_dirがattemptに依らない固定
+    パスだと、これらは上書き・切り詰め・置換され「timeoutした事実」を
+    後から証明できなくなる。
+    """
+    from lipidmix.pipeline import service
+
+    run = pipeline_harness.start_scenario("hang", timeout_s=3)
+    pipeline_harness.wait(run, expected="failed")
+
+    first_dir = pipeline_harness.console_run_dir(run)
+    first_receipt = json.loads((first_dir / "execution-result.json").read_text(encoding="utf-8"))
+    assert first_receipt["termination"] == "timeout"
+    first_log = (first_dir / "msdial.log").read_bytes()
+    first_state = json.loads((first_dir / "worker.json").read_text(encoding="utf-8"))
+    assert first_state["recovery"]["befores"], first_state
+
+    pipeline_harness.set_launch_options(run, scenario="success")
+    service.resume_pipeline(pipeline_harness.pipeline_root(run), rerun_upstream=True)
+    completed = pipeline_harness.wait(run, expected="completed")
+
+    # 明示的な再実行なのでConsoleは2回起動した（自動再試行ではない）。
+    assert pipeline_harness.console_start_count(run) == 2
+    second_dir = pipeline_harness.console_run_dir(run)
+    assert second_dir != first_dir, "再実行が前回と同じrun_dirを使っています"
+    assert Path(completed["upstream"]["console_job_path"]).parent == second_dir
+
+    # 前回attemptの証跡はそのまま残っている。
+    assert json.loads(
+        (first_dir / "execution-result.json").read_text(encoding="utf-8")) == first_receipt
+    assert (first_dir / "msdial.log").read_bytes() == first_log
+    assert json.loads(
+        (first_dir / "worker.json").read_text(encoding="utf-8")) == first_state
+    # 新しいattemptは自分の証跡を別に持つ。
+    assert json.loads(
+        (second_dir / "execution-result.json").read_text(encoding="utf-8"))["termination"] \
+        == "exited"
 
 
 # ---------- E02: 出力TSVをパースして照合する ----------

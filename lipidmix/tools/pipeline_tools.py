@@ -55,6 +55,10 @@ def pipeline_plan(dataset_root: str, request: dict | None = None,
     request_id:
         冪等性キー。同一内容の再送は同じ結果を返し、別内容は `IDEMPOTENCY_CONFLICT`。
 
+    receiptの `resolved` に、解決済みの実行条件——`method`（`source_path` /
+    `sha256`）・`lbm`・`polarity`（`value` とその `source`）——が入る。何も
+    起動しないうちにこの3項目を確認するのがこのツールの用途。
+
     起動せずに `needs_input` を保存することがある（不正なsample_manifest等、
     spec §9.2「既知の不正入力はConsole起動前に拒否する」）。条件だけ確認したい
     利用者はこちらを使い、実際に進めたいときは `pipeline_run` を使う。

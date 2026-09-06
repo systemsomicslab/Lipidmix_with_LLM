@@ -298,6 +298,43 @@ def test_resume_of_a_running_run_with_an_unresolvable_worker_does_nothing(tmp_pa
     assert cancel_request_path(pipeline_path).is_file()
 
 
+def test_resume_keeps_the_cancel_of_a_planned_run_whose_worker_has_not_registered_yet(tmp_path):
+    """最終レビュー保留1: 起動直後の窓で、出された取消を黙って消さない。
+
+    `engine.run_engine`がworker identityを刻む（`_record_worker_identity`）のは
+    owner lockを取ったあと——起動から数秒間、runは`planned`のままidentityが
+    無い。この窓で`_worker_health`は`"unknown"`（identity無し）を返すが、
+    それは「死んでいる証拠」ではない（`_RESUMABLE_RUNNING_HEALTH`が
+    `"unknown"`を入れないのと同じ理由）。ここでフラグを消すと、これから
+    stage loopへ入るworkerは取消を一度も見ずMS-DIALを起動する
+    ——利用者が出した取消が黙って無効になる唯一の経路。
+
+    握り潰さない代償は、resumeがもう1往復要ること（起きたworkerが最初の
+    stage境界で`cancelled`を確定させ、そのあとのresumeでフラグが消える）
+    だけで、恒久的に再開不能にはならない。
+    """
+    pipeline_path = _completed_then(tmp_path, "planned")
+    record = load_run(pipeline_path)
+    record["worker"] = {"identity": None, "started_at": None}  # まだ刻まれていない
+    save_run(pipeline_path, record, expected_revision=record["state_revision"])
+    assert read_status(pipeline_path)["status"] == "planned"
+
+    request_cancel(pipeline_path)
+    assert cancel_request_path(pipeline_path).is_file()
+
+    prepare_resume(pipeline_path)
+
+    assert cancel_request_path(pipeline_path).is_file(), \
+        "起動直後の窓で、出された取消を握り潰した"
+
+    # 停止が確定（cancelled）したあとのresumeでは、従来どおり取り下げる。
+    record = load_run(pipeline_path)
+    record["status"] = "cancelled"
+    save_run(pipeline_path, record, expected_revision=record["state_revision"])
+    prepare_resume(pipeline_path)
+    assert not cancel_request_path(pipeline_path).exists()
+
+
 # ---------- prepare_resume: EXECUTION_UNRESOLVED / UPSTREAM_RERUN_REQUIRED ----------
 
 def test_upstream_not_succeeded_requires_explicit_rerun_upstream(tmp_path):

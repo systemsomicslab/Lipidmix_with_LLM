@@ -417,14 +417,27 @@ def _clear_cancel_request(pipeline_root: Path, *, prior_status: str,
 
     ただし**停止処理がまだ進行中かもしれない取消は握り潰さない**。
     `prior_status`が`running`/`planned`（＝workerが今このrunを進めている最中で
-    ありうる状態）で、しかもそのworkerの生存を確認できた場合だけは消さずに残す
+    ありうる状態）なら、そのworkerが**もう居ないと観測できたとき**
+    （`worker_health == "worker_missing"`）以外は消さずに残す
     ——そこで消すと、利用者が出した取消がworkerに届く前に黙って無効になる。
+
+    `"unknown"`（identityがまだ記録されていない／生存確認そのものが失敗した）を
+    「居ない」と読まないのが要点で、`_RESUMABLE_RUNNING_HEALTH`が`"unknown"`を
+    入れないのと同じ理由。`engine.run_engine`がworker identityを刻むのは
+    owner lockを取ったあと——起動から数秒間、runは`planned`のままidentityが
+    無く`"unknown"`になる。その窓でフラグを消すと、これからstage loopへ入る
+    workerは取消を一度も見ずにMS-DIALを起動してしまう。
+
+    握り潰さない代償は、resumeがもう1往復要ること（起きたworkerが最初の
+    stage境界で`cancelled`を確定させ、そのあとのresumeでフラグが消える）だけ
+    で、恒久的に再開不能にはならない。
 
     逆に`cancelled`（`engine.finish_cancelled`が停止完了を確定させた）や
     その他の終端状態から再開するときは、識別子として記録されているworkerが
     まだ生きていても（終了処理中・pid再利用）取消はもう完了しているので消す。
     """
-    if prior_status in {"running", "planned"} and worker_health == "ok":
+    if prior_status in {"running", "planned"} \
+            and worker_health not in _RESUMABLE_RUNNING_HEALTH:
         return
     engine.cancel_request_path(pipeline_root).unlink(missing_ok=True)
 

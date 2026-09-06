@@ -57,10 +57,22 @@ MCP層は薄い(`lipidmix/tools/pipeline_tools.py`)。実体は `lipidmix/pipeli
 
 1. lipidmix/tools/pipeline_tools.py  pipeline_plan()
 2. └─ lipidmix/pipeline/service.py  plan_pipeline()
-3.    └─ lipidmix/pipeline/service.py  _prepare_run()
+3.    ├─ lipidmix/pipeline/service.py  _prepare_run()
+4.    └─ lipidmix/pipeline/service.py  _dispatch_receipt()
+5.       └─ lipidmix/pipeline/service.py  _resolved_settings()
 
 `pipeline_run` と事前検査までは完全に同じ経路(`_prepare_run`)を共有するが、
 `launch_pipeline_worker` を一切呼ばない——検査・計画・不足情報の保存だけで終える。
+
+手順5の `_resolved_settings` は `plan_pipeline` の発送receiptにだけ足される
+(`_dispatch_receipt(include_resolved=True)`)。載せるのは解決済みの
+method(`source_path`/`sha256`)・LBM・polarity(`value`/`source`)の3項目だけで、
+`raw_stat`・`entries`・`overrides` のような大きな中間データは `record["inputs"]`
+に残したまま出さない。サーバー共通指示(`lipidmix/core/mcp_core.py` の ENTRY POINT)が
+このツールを「起動前に解決結果を確認する入口」として案内しているため、receiptが
+それを持たないと `pipeline_status(include_details=true)` でrecord全体を引くしかなく、
+「receiptはコンパクトに」という拘束と衝突する。起動する側(`pipeline_run`)の
+receiptは従来どおり最小のまま。
 
 ## pipeline_status
 
@@ -139,11 +151,30 @@ MCP層は薄い(`lipidmix/tools/pipeline_tools.py`)。実体は `lipidmix/pipeli
 23.    └─ lipidmix/pipeline/engine.py  finish_success()
 24.       └─ lipidmix/pipeline/report.py  evaluate_target()
 
+手順4の `_run_stage_loop` は **`build_stages` の計画順**で回す
+(`_stage_order`)。`record["stages"]` の挿入順ではない——`prepare_resume` は
+resume時に「recordに無いstage_id」を末尾へ追記するので、比較を後から足したrunでは
+`differential:*`/`export:*` が `report` の後ろに並ぶ。その順で回すと手順21のreportが
+比較を1件も実行していない時点で書かれる。計画に無いstage_id(exploratory目標の
+`resolve_comparisons`)だけが計画順のあとに回り、`_mark_out_of_scope` が畳む。
+
 `_handle_upstream`は`lipidmix.console.worker`（単体Console用の監視ワーカー）を
 一切呼ばない——`execution.supervise`を直接呼ぶことで、pipeline用worker自身が
 「起動して見張る」役を兼ねる(Console用workerの二重起動を避ける)。
 `console_job_path`は`analysis-job.json`そのものへのパス(`run_dir = Path(job_path)
-.parent`という、コードベース全体の規約)として記録する。
+.parent`という、コードベース全体の規約)として記録する。run_dirは
+**attemptごとに分ける**(`<pipeline_root>/console/attempt-NNNN/`。NNNNは
+`upstream` stageの`attempt`)——固定パスにすると`rerun_upstream=true`の再実行が
+前回の終了証跡(`execution-result.json`)を上書きし、`msdial.log`を切り詰め
+(`process_control`は`_CREATE_ALWAYS`で開く)、`worker.json`の`recovery.befores`
+(再収集に要る実行前スナップショット)を置き換えてしまう。規約そのもの
+(`console_job_path`＝job.json、`run_dir`＝その親)は変わらない。
+
+`_handle_resolve_metadata`は解決した行(role/group/batch/injection_order/qc_pool)を
+`record_updates`で`record["inputs"]["manifest"]`へ残す。ここが唯一の書き手で、
+読み手は品質レポートのサンプル来歴セクション(`report._section_sample_provenance`)・
+保存時の相対化(`store._relativize_inputs_paths`)・再開時の絶対化
+(`recovery._absolutize_inputs_paths`)の3つ。明示シートでも自動生成でも同じ形の行を書く。
 
 `_handle_pca`はPCA不成立を検出した`PreconditionError`（`lipidmix.analysis.
 dataset_analysis.run_dataset_pca`が送出。`DomainError`の派生ではないため

@@ -26,8 +26,11 @@ from lipidmix.handoff.schema import Artifact, MztabEntry, sha256_file
 # ジョブ運用のためにランディレクトリへ書かれるファイル。MS-DIAL の生成物ではない。
 # msdial.log は supervise が必ず作るため、除外しないと「出力ゼロ」を検出できない。
 # analysis-job.json は実行中に status 遷移で書き換わるため、差分に混入する。
-# execution-result.json / worker.json / control.json は監視ワーカーが書く終了証跡・
-# 監視状態・排他制御用のファイル。worker.log は切り離しワーカー自身の出力、
+# execution-result.json / worker.json は監視ワーカーが書く終了証跡・監視状態
+# （`lipidmix.console.execution` の RECEIPT_FILENAME / SUPERVISION_FILENAME）。
+# control.json はここに**置かない**——実際に書く側がどこにも居ない予約名は、
+# 将来 MS-DIAL がその名前で出力を書いたときに黙って捨てる罠になる
+# （worker.json は実在するので残す）。worker.log は切り離しワーカー自身の出力、
 # job.lock は job 単位の排他ロックの実体ファイル。pipeline-owner.json は
 # Task 14（pipeline/store.py）が Console 起動前に書く所有権 sidecar
 # （このジョブをどの pipeline が所有しているかの参照だけを持つ）。
@@ -35,7 +38,7 @@ from lipidmix.handoff.schema import Artifact, MztabEntry, sha256_file
 # として誤収集され、生成物ゼロの実行が partial に化ける。
 _OPERATIONAL_FILES = frozenset({
     "msdial.log", "analysis-job.json",
-    "execution-result.json", "worker.json", "control.json",
+    "execution-result.json", "worker.json",
     "worker.log", "job.lock", "pipeline-owner.json",
 })
 

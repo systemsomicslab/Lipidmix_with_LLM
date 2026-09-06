@@ -360,6 +360,88 @@ def test_worker_main_invokes_run_worker_with_parsed_path(monkeypatch, tmp_path, 
     assert "status=completed" in capsys.readouterr().out
 
 
+# ---------- 最終レビュー指摘1: resumeで足した比較stageとreportの順序 ----------
+
+def test_comparisons_added_by_resume_run_before_report(tmp_path):
+    """resumeで比較を足したとき、`report`は比較stageより**後**に呼ばれる。
+
+    `recovery.prepare_resume`は`record["stages"]`へ後から`differential:*`/
+    `export:*`を**追記**する——永続dictの挿入順では`report`より後ろに並ぶ。
+    engineが永続順のまま回すと、比較を1件も実行していない時点でレポートを
+    書き、そのレポート自身が「必須出力が無い（REQUIRED_OUTPUT_MISSING）」と
+    告げているのにrunはcompletedになる。`docs/workflow/pipeline.md`の手順21は
+    差次的解析・exportの**後**にreportを置いており、これは意図ではなく欠陥。
+
+    永続順が実際に崩れていること自体を先に確かめてから呼出し順を見る
+    ——「たまたま順序が合っていたから通った」テストにしないため。
+    """
+    from lipidmix.pipeline.recovery import prepare_resume
+
+    comparison = {"comparison_id": "cmp1", "reference_group": "control",
+                  "test_group": "treated"}
+    path, handlers, calls = _build_pipeline(tmp_path, target="differential", comparisons=[])
+    first = run_engine(path, handlers)
+    assert first["status"] == "needs_input"  # 比較が無いので必須出力を満たせない
+
+    prepare_resume(path, updates={"comparisons": [comparison]})
+
+    persisted_order = list(load_run(path)["stages"].keys())
+    assert persisted_order.index("report") < persisted_order.index("differential:cmp1"), \
+        "前提が崩れています（永続順で既にreportが比較stageより後ろにある）"
+
+    calls.clear()
+    second = run_engine(path, handlers)
+
+    assert "differential:cmp1" in calls and "export:cmp1" in calls
+    assert calls.index("report") > calls.index("export:cmp1"), \
+        f"reportが比較stageより先に呼ばれています: {calls}"
+    assert calls[-1] == "report"
+    assert second["status"] == "completed"
+    assert not [w for w in second.get("warnings") or []
+                if w.get("code") == "REPORT_INCOMPLETE_AT_WRITE_TIME"]
+
+
+# ---------- 最終レビュー指摘4: engineの保存も状態競合を吸収する ----------
+
+def test_a_concurrent_state_revision_bump_does_not_kill_the_worker(tmp_path):
+    """他アクターが`state_revision`を進めても、engineはworkerを落とさない。
+
+    `pipeline_resume`が長時間のstage（実運用ではupstream）の最中に届くと、
+    `prepare_resume`はstatusを動かさなくても`state_revision`を1つ進める。
+    その直後にengineが「stage開始時に読んだrecord」で保存すると
+    `STATE_REVISION_CONFLICT`が`_invoke_handler`のtryの**外**で送出され、
+    `run_engine`を貫いてworkerが死ぬ——ディスク上は`stages.upstream.status ==
+    "running"`のまま残り、次のresumeは`UPSTREAM_RERUN_REQUIRED`を返し、
+    既に成功していたConsole実行を捨てて再実行させることになる。
+
+    他の状態書込み側（`store._patch_request_id_with_retry`・
+    `recovery.prepare_resume`）は同じ競合を有限回の読み直しで吸収している。
+    """
+    path, handlers, calls = _build_pipeline(tmp_path, target="exploratory")
+    real_pca = handlers["pca"]
+    bumped = {"count": 0}
+
+    def pca_with_concurrent_bump(context: dict) -> dict:
+        outcome = real_pca(context)
+        # handler実行中に別アクターが状態を1つ進める（内容は変えない）。
+        latest = load_run(path)
+        store_module.save_run(path, latest, expected_revision=latest["state_revision"])
+        bumped["count"] += 1
+        return outcome
+
+    handlers["pca"] = pca_with_concurrent_bump
+
+    result = run_engine(path, handlers)
+
+    assert bumped["count"] == 1
+    assert result["status"] == "completed"
+    assert result["stages"]["pca"]["status"] == "succeeded"
+    # 競合で取りこぼさず、後続stageも走り切っている。
+    assert calls[-1] == "report"
+    # 割り込んだ側の保存も残っている（読み直して再適用した＝上書きしていない）。
+    assert result["state_revision"] > 0
+
+
 # ---------- 試験harness: 実プロセスとしてrun_engineを起動する ----------
 
 def test_worker_harness_runs_pipeline_as_real_subprocess(tmp_path):

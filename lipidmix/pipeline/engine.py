@@ -294,25 +294,71 @@ def make_context(record: dict, stage: dict, runtime: dict, request: dict) -> dic
     }
 
 
+#: engineの状態保存が`STATE_REVISION_CONFLICT`を読み直して再適用する上限。
+#: `store._REQUEST_ID_PATCH_MAX_ATTEMPTS`・`recovery._RESUME_RETRY_MAX_ATTEMPTS`と
+#: 同じ考え方（有限回で十分吸収できる。無関係な同時更新でworkerを殺さない）。
+_STATE_SAVE_MAX_ATTEMPTS = 5
+
+
+def _save_with_retry(pipeline_path: Path, record: dict, apply_change) -> dict:
+    """`apply_change(record) -> record`を保存し、状態競合は読み直して再適用する。
+
+    engineの保存だけが、他の状態書込み側（`store._patch_request_id_with_retry`・
+    `recovery.prepare_resume`はどちらも有限回のリトライを持つ）と違って
+    競合を吸収していなかった。長時間のstage（upstream）の最中に
+    `pipeline_resume`が届くと——`prepare_resume`はworkerが生きている限り
+    statusを動かさないが`state_revision`は必ず1つ進める——stage開始時に
+    読んだrecordでの保存が`STATE_REVISION_CONFLICT`になり、その送出は
+    `_invoke_handler`のtryの**外**なので`run_engine`を貫いてworkerが死ぬ。
+    ディスク上はstageが`running`のまま残り、次のresumeは
+    `UPSTREAM_RERUN_REQUIRED`——既に成功していたConsole実行を捨てさせる。
+
+    `apply_change`は「最新recordへの純粋な再適用」でなければならない
+    （変更内容をrecordの現在値から計算し、`state_revision`には触れない）。
+    そうであれば、読み直してもう一度適用するだけで正しい結果になる。
+    """
+    for _ in range(_STATE_SAVE_MAX_ATTEMPTS):
+        updated = apply_change(copy.deepcopy(record))
+        try:
+            store.save_run(pipeline_path, updated,
+                          expected_revision=updated["state_revision"])
+        except DomainError as exc:
+            if exc.code == "STATE_REVISION_CONFLICT":
+                record = store.load_run(pipeline_path)  # 最新を読み直して再適用
+                continue
+            raise
+        return store.load_run(pipeline_path)
+    raise DomainError(
+        "STATE_REVISION_CONFLICT",
+        f"工程状態の保存が状態競合の再試行上限（{_STATE_SAVE_MAX_ATTEMPTS}回）に"
+        f"達しました: {pipeline_path}",
+        {"pipeline_root": str(pipeline_path)})
+
+
 def mark_stage_running(pipeline_path: Path, record: dict, stage: dict) -> dict:
     """stageを`running`にして原子的に保存し、再読込した最新recordを返す。
 
     毎回 `save_run` 後に `load_run` で読み直す（`save_run` は渡した引数の
     dictを書き換えず、内部で深複製した別dictへ`state_revision`/`updated_at`を
     刻んで書くため、呼び出し側が手で追随するより読み直す方が確実）。
+
+    状態競合は`_save_with_retry`が読み直して再適用する——`attempt`は毎回
+    「そのとき読んだrecordの値+1」なので、再適用しても二重加算にならない。
     """
-    record = copy.deepcopy(record)
     stage_id = stage["stage_id"]
-    target = record["stages"][stage_id]
-    now = _now_iso()
-    target["status"] = "running"
-    target["attempt"] = int(target.get("attempt") or 0) + 1
-    target["started_at"] = now
-    target["updated_at"] = now
-    target["error"] = None
-    record["status"] = "running"
-    store.save_run(pipeline_path, record, expected_revision=record["state_revision"])
-    return store.load_run(pipeline_path)
+
+    def _apply(current: dict) -> dict:
+        target = current["stages"][stage_id]
+        now = _now_iso()
+        target["status"] = "running"
+        target["attempt"] = int(target.get("attempt") or 0) + 1
+        target["started_at"] = now
+        target["updated_at"] = now
+        target["error"] = None
+        current["status"] = "running"
+        return current
+
+    return _save_with_retry(pipeline_path, record, _apply)
 
 
 def commit_stage_outcome(pipeline_path: Path, record: dict, stage: dict, outcome: dict) -> dict:
@@ -339,34 +385,39 @@ def commit_stage_outcome(pipeline_path: Path, record: dict, stage: dict, outcome
     返した、handler呼出し**前**のスナップショット）——`record_updates`は
     handlerの戻り値として運び、ここで初めて`record`へ反映してから1回だけ
     保存する。
+
+    状態競合は`_save_with_retry`が読み直して再適用する。反映内容は
+    `outcome`と「そのとき読んだrecord」だけから計算するので、再適用しても
+    resultsやwarningsが二重に積まれることはない。
     """
-    record = copy.deepcopy(record)
     stage_id = stage["stage_id"]
-    target = record["stages"][stage_id]
-    previous_result_refs = list(target.get("result_refs") or [])
-    target["status"] = outcome.get("status")
-    target["updated_at"] = _now_iso()
-    target["result_refs"] = list(outcome.get("result_refs") or [])
-    target["warnings"] = list(outcome.get("warnings") or [])
-    target["error"] = outcome.get("error")
 
-    result_refs = outcome.get("result_refs") or []
-    if result_refs and result_refs != previous_result_refs:
-        record["results"] = list(record.get("results") or []) + list(result_refs)
+    def _apply(current: dict) -> dict:
+        target = current["stages"][stage_id]
+        previous_result_refs = list(target.get("result_refs") or [])
+        target["status"] = outcome.get("status")
+        target["updated_at"] = _now_iso()
+        target["result_refs"] = list(outcome.get("result_refs") or [])
+        target["warnings"] = list(outcome.get("warnings") or [])
+        target["error"] = outcome.get("error")
 
-    for warning in outcome.get("warnings") or []:
-        entry = dict(warning)
-        entry.setdefault("stage_id", stage_id)
-        record.setdefault("warnings", [])
-        record["warnings"].append(entry)
+        result_refs = outcome.get("result_refs") or []
+        if result_refs and result_refs != previous_result_refs:
+            current["results"] = list(current.get("results") or []) + list(result_refs)
 
-    record_updates = outcome.get("record_updates")
-    if record_updates:
-        for key, value in record_updates.items():
-            record[key] = copy.deepcopy(value)
+        for warning in outcome.get("warnings") or []:
+            entry = dict(warning)
+            entry.setdefault("stage_id", stage_id)
+            current.setdefault("warnings", [])
+            current["warnings"].append(entry)
 
-    store.save_run(pipeline_path, record, expected_revision=record["state_revision"])
-    return store.load_run(pipeline_path)
+        record_updates = outcome.get("record_updates")
+        if record_updates:
+            for key, value in record_updates.items():
+                current[key] = copy.deepcopy(value)
+        return current
+
+    return _save_with_retry(pipeline_path, record, _apply)
 
 
 def _mark_out_of_scope(pipeline_path: Path, record: dict, stage_id: str) -> dict:
@@ -508,13 +559,38 @@ def _load_request(pipeline_path: Path, record: dict) -> dict:
     return json.loads(full_path.read_text(encoding="utf-8"))
 
 
+def _stage_order(record: dict, plan: dict) -> list[str]:
+    """実行順を決める。**永続dictの挿入順ではなく`build_stages`の計画順**が正準。
+
+    `record["stages"]`の挿入順は、`recovery.prepare_resume`がresume時に
+    「recordに無いstage_id」を末尾へ**追記**するせいで計画順と一致しなくなる
+    ——比較を後から足したrunでは`differential:*`/`export:*`が`report`の
+    **後ろ**に並ぶ。その順で回すと、比較を1件も実行していない時点でレポートを
+    書き、そのレポート自身が必須出力の欠落を告げているのにrunはcompletedに
+    なる（`docs/workflow/pipeline.md`の手順21はreportを差次的解析・exportの
+    後に置いている）。
+
+    計画に無いstage_id（exploratory目標の`resolve_comparisons`など、record
+    だけが持つもの）は計画順のあとへ回す——`_mark_out_of_scope`がhandlerを
+    呼ばずにskipとして畳むだけなので、どこで処理しても順序上の意味は無い。
+    計画にあってrecordに無いstage_idは`record["stages"][...]`を引けないため
+    ここでは扱わない（`build_stages`と`store._stage_ids_for`は同じ規則で
+    組み立てられており、通常は起こらない）。
+    """
+    stages = record["stages"]
+    ordered = [sid for sid in plan if sid in stages]
+    planned = set(ordered)
+    ordered += [sid for sid in stages if sid not in planned]
+    return ordered
+
+
 def _run_stage_loop(pipeline_path: Path, handlers: dict) -> dict:
     record = store.load_run(pipeline_path)
     request = _load_request(pipeline_path, record)
     plan = {entry["stage_id"]: entry for entry in build_stages(request)}
     runtime: dict = {}
 
-    for stage_id in list(record["stages"].keys()):
+    for stage_id in _stage_order(record, plan):
         entry = plan.get(stage_id)
         if entry is None:
             record = _mark_out_of_scope(pipeline_path, record, stage_id)

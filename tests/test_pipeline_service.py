@@ -14,6 +14,7 @@ engine自体（stage順序・owner lock・冪等性）を検証しており、`b
 from __future__ import annotations
 
 import copy
+import json
 import sys
 from pathlib import Path
 
@@ -165,6 +166,41 @@ def test_confounded_comparison_becomes_needs_input_not_failed(monkeypatch):
 
     assert outcome["status"] == "needs_input"
     assert outcome["error"]["code"] == "CONFOUNDED_COMPARISON"
+
+
+# ---------- 最終レビュー指摘2: resolve_metadataが解決した行をrecordへ残す ----------
+
+def test_resolve_metadata_records_the_resolved_manifest_into_inputs():
+    """spec §7.3/§11: 解決したrole/group/batch/orderの出所をrecordへ残す。
+
+    `record["inputs"]["manifest"]`は`lipidmix.pipeline.report._section_sample_
+    provenance`が読み、`store`が相対化し、`recovery`が絶対化する——**読む側は
+    3つあるのに書く側が居なかった**。`_handle_resolve_metadata`が
+    `record_updates`を返さない限り、解決結果は`context["runtime"]`にしか
+    残らず、品質レポートのサンプル来歴は毎回
+    `(no sample manifest recorded)`になる。
+    """
+    from tests.pipeline_fixtures import make_dataset
+
+    ds = make_dataset()
+    context = {
+        "runtime": {"dataset": ds},
+        "request": {"sample_manifest": None},
+        "identity": {"source_root": str(Path.cwd())},
+        "inputs": {"source_root": "src", "method": {"source_path": "inputs/method.txt"}},
+    }
+
+    outcome = service._handle_resolve_metadata(context)
+
+    assert outcome["status"] == "succeeded"
+    manifest = outcome["record_updates"]["inputs"]["manifest"]
+    assert [row["sample_id"] for row in manifest] == ds.sample_names
+    # 既存の入力スナップショットを取りこぼさない（manifestを足すだけ）。
+    assert outcome["record_updates"]["inputs"]["method"] == {"source_path": "inputs/method.txt"}
+    # レポートが読む8列がそのまま揃っている。
+    for column in ("sample_id", "source_file", "role", "group", "batch",
+                   "injection_order", "qc_pool", "include"):
+        assert column in manifest[0], column
 
 
 # ---------- レビュー指摘4: quality_report自身の未生成を理由にした偽陽性警告 ----------
@@ -447,6 +483,39 @@ def test_plan_pipeline_never_launches_a_worker(tmp_path, monkeypatch):
     assert record["status"] == "planned"
 
 
+def test_plan_receipt_shows_the_resolved_settings_the_instructions_promise(tmp_path, monkeypatch):
+    """最終レビュー指摘6: `MCP_INSTRUCTIONS`は`pipeline_plan`を
+    「method file / LBM / polarityの解決結果を起動前に確認する」入口として
+    案内している。receiptがそれを持っていなければ、案内された確認は
+    `pipeline_status(include_details=True)`でrecord全体を引っぱるしかない
+    ——コンパクトなreceiptという制約と正面から衝突する。
+
+    同時に**肥大させない**ことも縛る（CLAUDE.md「戻り値を肥大させない」）:
+    raw一覧・stat・entries・overridesのような大きな中間データは載せない。
+    """
+    source = _prepare_source(tmp_path, monkeypatch)
+
+    receipt = service.plan_pipeline(source["root"])
+
+    resolved = receipt["resolved"]
+    assert resolved["method"]["source_path"] == str(Path(source["method"]).resolve())
+    assert len(resolved["method"]["sha256"]) == 64
+    assert resolved["lbm"]["path"] == str(Path(source["lbm"]).resolve())
+    assert resolved["polarity"]["value"] in ("positive", "negative")
+    assert resolved["polarity"]["source"]
+
+    # コンパクトさ: 大きな中間データを持ち込んでいない。
+    assert set(resolved) == {"method", "lbm", "polarity"}
+    assert set(resolved["method"]) == {"source_path", "sha256"}
+    text = json.dumps(receipt, ensure_ascii=False)
+    assert "raw_stat" not in text and "entries" not in text
+    assert len(text) < 1500, len(text)
+
+    # 起動する側（pipeline_run）のreceiptは従来どおり最小のまま。
+    assert "resolved" not in service._dispatch_receipt(
+        Path(receipt["pipeline_path"]), launched=False)
+
+
 def test_start_pipeline_saves_needs_input_without_launching_on_bad_manifest(tmp_path, monkeypatch):
     """`_mark_needs_input_without_launch`の実経路: 壊れたsample_manifestは
     Console起動前に検出され、runは`needs_input`のまま保存されるが
@@ -522,7 +591,9 @@ def test_worker_run_worker_completes_a_real_exploratory_pipeline(tmp_path, monke
     staged_sources = [pipeline_path / "input" / f"S{i}.wiff" for i in range(8)]
     mztab_content = mztab_text(tmp_path, staged_sources)
 
-    run_dir = pipeline_path / "console"
+    # Console実行はattemptごとに別run_dirを持つ（最終レビュー指摘3）。この
+    # runは初回なのでattempt-0001。
+    run_dir = pipeline_path / "console" / "attempt-0001"
     mztab_out = run_dir / "msdial" / "Height_AlignmentResult_1.mzTab"
     use_fake_console(monkeypatch, fake_console_command({mztab_out: mztab_content}))
 

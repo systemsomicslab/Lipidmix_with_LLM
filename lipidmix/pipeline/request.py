@@ -352,6 +352,22 @@ def _validate_fields(data: dict) -> None:
     data["preprocess"] = _validate_preprocess(data.get("preprocess"))
     data["comparisons"] = _validate_comparisons(data.get("comparisons"))
 
+    if target == "exploratory" and data["comparisons"]:
+        # 明示的なexploratoryと比較指定は両立しない矛盾した要求。黙って
+        # 比較を落とすと`engine.build_stages`が`differential:*`/`export:*`を
+        # 計画から外し、`_mark_out_of_scope`はstage側のwarningsにしか
+        # `STAGE_OUT_OF_SCOPE_FOR_TARGET`を書かない——`read_status`も品質
+        # レポートの「Unverified Conditions」も`record["warnings"]`しか
+        # 読まないため、利用者が頼んだ比較が1件も実行されないまま
+        # `completed`が返り、痕跡がどこにも残らない。spec §8.2「明示的に
+        # 要求した処理を実施できなければneeds_input」・§9.2「既知の不正入力は
+        # Console起動前に拒否する」に従い、受付で止める。
+        # `target="auto"`＋比較は矛盾ではない（`differential`へ昇格する）。
+        _fail("target='exploratory'とcomparisonsは同時に指定できません"
+              "（比較を実行するならtarget='differential'または'auto'にしてください）。",
+              target=target,
+              comparison_ids=[c["comparison_id"] for c in data["comparisons"]])
+
 
 def _compute_effective_target(target: str, comparisons: list) -> str:
     """spec §9: target=autoは、有効な比較定義があればdifferential、なければ

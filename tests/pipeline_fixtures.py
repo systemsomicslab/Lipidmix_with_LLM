@@ -651,9 +651,19 @@ class PipelineHarness:
         return [ln.split("\t") for ln in path.read_text(encoding="utf-8").splitlines()
                 if ln.strip()]
 
-    def console_run_dir(self, run) -> Path:
-        """pipelineが所有するConsole job のrun_dir（`_CONSOLE_RUN_SUBDIR`規約）。"""
-        return self.pipeline_root(run) / "console"
+    def console_run_dir(self, run, *, attempt: int | None = None) -> Path:
+        """pipelineが所有するConsole job のrun_dir（`_CONSOLE_RUN_SUBDIR`規約）。
+
+        Console実行はattemptごとに別ディレクトリ（`console/attempt-NNNN/`）を
+        持つ——`rerun_upstream=True`が前回の終了証跡・ログ・復旧用スナップ
+        ショットを上書きしないため。`attempt`を省略すると**最新のattempt**を
+        返す（`console/`直下しか無い古い形も一応受ける）。
+        """
+        base = self.pipeline_root(run) / "console"
+        if attempt is not None:
+            return base / f"attempt-{attempt:04d}"
+        attempts = sorted(p for p in base.glob("attempt-*") if p.is_dir())
+        return attempts[-1] if attempts else base
 
     def console_receipt(self, run) -> dict:
         """ディスク上の終了証跡（console-execution.v1）をそのまま読む。"""

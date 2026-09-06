@@ -187,7 +187,14 @@ def test_cancel_at_a_stage_boundary_keeps_earlier_results(pipeline_harness):
 
 
 def test_cancelled_run_can_be_resumed(pipeline_harness):
-    """spec D09: 取消後のresumeは、過去attemptを保持したまま続きから進められること。"""
+    """spec D09: 取消後のresumeは、過去attemptを保持したまま続きから進められること。
+
+    resumeで渡すのはシートだけで、比較は足さない（`comparisons=[]`）
+    ——このrunは`target="exploratory"`であり、探索目標へ比較を足す要求は
+    矛盾として受付で拒否されるようになった（最終レビュー指摘5）。
+    このテストが見るのは取消後の再開そのものなので、比較の有無は本題では
+    ない。assertは一切緩めていない。
+    """
     run = pipeline_harness.start(target="exploratory",
                                  sleep_stage="pca", sleep_seconds=5)
     pipeline_harness.wait_for_stage(run, "pca")
@@ -195,7 +202,7 @@ def test_cancelled_run_can_be_resumed(pipeline_harness):
     cancelled = pipeline_harness.wait(run, expected="cancelled")
     before_attempt = cancelled["stages"]["pca"]["attempt"]
 
-    pipeline_harness.resume_with_groups(run, sleep_seconds=0.0)
+    pipeline_harness.resume_with_groups(run, comparisons=[], sleep_seconds=0.0)
     resumed = pipeline_harness.wait(run, expected="completed")
 
     assert resumed["stages"]["pca"]["attempt"] > before_attempt

@@ -177,11 +177,40 @@ def _mark_needs_input_without_launch(pipeline_path: Path, exc: DomainError, *, s
     store.save_run(pipeline_path, record, expected_revision=record["state_revision"])
 
 
-def _dispatch_receipt(pipeline_path: Path, *, launched: bool, launch: dict | None = None) -> dict:
+def _resolved_settings(record: dict) -> dict:
+    """`pipeline_plan`のreceiptへ載せる「解決した実行条件」だけを抜き出す。
+
+    `MCP_INSTRUCTIONS`のENTRY POINTは`pipeline_plan`を「method file・LBM・
+    polarityの解決結果を、何も起動しないうちに確認する」入口として案内して
+    いる。receiptがそれを持たないと、案内された確認は
+    `pipeline_status(include_details=True)`でrecord全体を引くしかない
+    ——コンパクトなreceiptという拘束と正面から衝突する。
+
+    載せるのは3項目だけ。`raw_stat`・`entries`・`companions`・`overrides`の
+    ような大きな中間データは`record["inputs"]`に残したまま、receiptへは
+    出さない（CLAUDE.md「戻り値を肥大させない」）。
+    """
+    inputs = record.get("inputs") or {}
+    method = inputs.get("method") or {}
+    lbm = inputs.get("lbm") or {}
+    polarity = inputs.get("polarity") or {}
+    return {
+        "method": {"source_path": method.get("source_path"), "sha256": method.get("sha256")},
+        "lbm": {"path": lbm.get("path"), "sha256": lbm.get("sha256")},
+        "polarity": {"value": polarity.get("value"), "source": polarity.get("source")},
+    }
+
+
+def _dispatch_receipt(pipeline_path: Path, *, launched: bool, launch: dict | None = None,
+                      include_resolved: bool = False) -> dict:
     """コンパクトな発送receipt（CLAUDE.md「戻り値を肥大させない」）。
 
     行列・スコア・volcano点列は一切含めない。status・pipeline_id/path・
     effective_target・needs_input（あれば）・launch状態だけを返す。
+
+    `include_resolved=True`（`plan_pipeline`だけが渡す）のときに限り、
+    解決済みのmethod/LBM/polarityを`resolved`として足す——起動する側
+    （`pipeline_run`）のreceiptは従来どおり最小のままにする。
     """
     record = store.load_run(pipeline_path)
     receipt: dict = {
@@ -191,6 +220,8 @@ def _dispatch_receipt(pipeline_path: Path, *, launched: bool, launch: dict | Non
         "effective_target": record["request"].get("effective_target"),
         "launched": launched,
     }
+    if include_resolved:
+        receipt["resolved"] = _resolved_settings(record)
     if record.get("needs_input"):
         receipt["needs_input"] = record["needs_input"]
     if launch is not None:
@@ -223,9 +254,14 @@ def _prepare_run(dataset_root: Path, request: dict | None,
 
 def plan_pipeline(dataset_root: Path, request: dict | None = None,
                   request_id: str | None = None) -> dict:
-    """入力検査・不足情報・固定要求の保存のみを行う。Consoleは起動しない。"""
+    """入力検査・不足情報・固定要求の保存のみを行う。Consoleは起動しない。
+
+    receiptには解決済みのmethod/LBM/polarityを`resolved`として載せる
+    ——`MCP_INSTRUCTIONS`がこのツールを「起動前に解決結果を確認する」入口
+    として案内しているため（`_resolved_settings`）。
+    """
     pipeline_path, _manifest_error = _prepare_run(dataset_root, request, request_id)
-    return _dispatch_receipt(pipeline_path, launched=False)
+    return _dispatch_receipt(pipeline_path, launched=False, include_resolved=True)
 
 
 def start_pipeline(dataset_root: Path, request: dict | None = None,
@@ -404,11 +440,23 @@ def _handle_upstream(context: dict) -> dict:
     `lipidmix.pipeline.store.register_job_owner`・`lipidmix.console.job_manager`と
     同じ。`lipidmix.pipeline.recovery._console_supervision_state`もこの規約を
     前提にしている）。
+
+    **run_dirはattemptごとに分ける**（`console/attempt-NNNN/`。spec §9.3
+    「Consoleの再試行だけは`rerun_upstream=true`の明示を必要とし、**新しい
+    job/attemptを作る**」）。固定パスにすると、再実行が前回の終了証跡
+    （`execution-result.json`）を上書きし、`msdial.log`を切り詰め
+    （`process_control`は`_CREATE_ALWAYS`で開く）、`supervise`が
+    `worker.json`の`recovery.befores`（再収集に要る実行前スナップショット）を
+    置き換える——timeoutで打ち切った事実そのものが後から証明できなくなる
+    （spec §9.1「既存の失敗記録を消さない」）。stageの`attempt`は
+    `engine.mark_stage_running`が単調に増やすので、これがそのまま
+    「何回目のConsole実行か」になる。
     """
     pipeline_root = context["pipeline_root"]
     request = context["request"]
     inputs_snapshot = context["inputs"]
-    run_dir = pipeline_root / _CONSOLE_RUN_SUBDIR
+    attempt = max(1, int(context.get("attempt") or 1))
+    run_dir = pipeline_root / _CONSOLE_RUN_SUBDIR / f"attempt-{attempt:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
     job_path = run_dir / job_manager.JOB_FILENAME
     dataset_root = pipeline_root / _INPUT_SUBDIR
@@ -529,6 +577,17 @@ def _raw_manifest_layout(ds) -> tuple[Path, list[str]]:
 
 
 def _handle_resolve_metadata(context: dict) -> dict:
+    """解決したrole/group/batch/orderを`record["inputs"]["manifest"]`へ残す。
+
+    解決結果を`context["runtime"]`だけに置くと、このworkerプロセスが終わった
+    時点で消える。`record["inputs"]["manifest"]`は品質レポートのサンプル来歴
+    セクション（`lipidmix.pipeline.report._section_sample_provenance`、spec §11
+    が要求し §7.3 が出所の記録を義務付ける）が読む場所そのもので、
+    `store._relativize_inputs_paths`（保存時に`source_file`を相対化）と
+    `recovery._absolutize_inputs_paths`（再開時に絶対化）も既にこのキーを
+    前提にしている——**読む側が3つあるのに書く側が居なかった**。
+    明示シートでも自動生成でも同じ形の行が出るので、両方ここで記録する。
+    """
     ds = context["runtime"]["dataset"]
     request = context["request"]
     source_root = Path(context["identity"]["source_root"])
@@ -540,7 +599,9 @@ def _handle_resolve_metadata(context: dict) -> dict:
         rows = parse_manifest(manifest_path, source_root=raw_root, expected_sources=expected_sources)
     metadata = resolve_sample_metadata(ds, rows)
     context["runtime"]["metadata"] = metadata
-    return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None}
+    inputs_update = {**(context.get("inputs") or {}), "manifest": metadata}
+    return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None,
+            "record_updates": {"inputs": inputs_update}}
 
 
 # ---------- preprocess（Task11） ----------

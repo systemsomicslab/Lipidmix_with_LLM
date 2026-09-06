@@ -444,7 +444,6 @@ def test_control_files_are_not_counted_as_artifacts(tmp_path):
 
     (run_dir / "execution-result.json").write_text("{}", encoding="utf-8")
     (run_dir / "worker.json").write_text("{}", encoding="utf-8")
-    (run_dir / "control.json").write_text("{}", encoding="utf-8")
     (run_dir / "AlignResult-1.mzTab").write_text(
         "MTD\tmzTab-version\t2.0.0-M\n", encoding="utf-8")
 
@@ -453,5 +452,31 @@ def test_control_files_are_not_counted_as_artifacts(tmp_path):
     all_paths = {a.path for a in other_artifacts} | {"AlignResult-1.mzTab" if mztab_entries else ""}
     assert "execution-result.json" not in all_paths
     assert "worker.json" not in all_paths
-    assert "control.json" not in all_paths
     assert len(mztab_entries) == 1
+
+
+def test_reserved_names_are_limited_to_files_something_actually_writes(tmp_path):
+    """除外集合に「誰も書かない予約名」を残さない（最終レビュー保留2）。
+
+    `control.json` はどのコードも書かない予約名だった——将来 MS-DIAL が
+    その名前で出力を書けば、収集が黙って捨てて「生成物ゼロ」に化ける。
+    実在する運用ファイル名（`lipidmix.console.execution` の定数）だけを
+    除外集合に置く。
+    """
+    from lipidmix.console import execution
+    from lipidmix.console.output_collector import _OPERATIONAL_FILES, collect_artifacts, snapshot
+
+    assert "control.json" not in _OPERATIONAL_FILES
+    assert execution.RECEIPT_FILENAME in _OPERATIONAL_FILES
+    assert execution.SUPERVISION_FILENAME in _OPERATIONAL_FILES
+    assert execution.CONSOLE_LOG_FILENAME in _OPERATIONAL_FILES
+
+    # 予約を外した名前は、実際に成果物として拾われる。
+    run_dir = tmp_path / "runs" / "job_reserved"
+    run_dir.mkdir(parents=True)
+    befores = {"run_dir": snapshot(run_dir)}
+    (run_dir / "control.json").write_text("{}", encoding="utf-8")
+
+    _mztab_entries, other_artifacts = collect_artifacts({"run_dir": run_dir}, befores)
+
+    assert "control.json" in {a.path for a in other_artifacts}

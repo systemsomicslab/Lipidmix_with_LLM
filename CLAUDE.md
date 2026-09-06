@@ -48,6 +48,8 @@ lipidmix/plots/     描画 payload の組み立てと matplotlib 描画（volcan
 lipidmix/{arf,arf2,pai2,dcl,eic}/   形式ごとの reader.py（パーサ）と tools.py（MCP ツール）
 lipidmix/mztab/     mzTab-M リーダ・DatasetState 構築
 lipidmix/console/   MS-DIAL Console 実行層（job_manager / runner / output_collector）
+lipidmix/pipeline/  生データフォルダ起点の統括（受付 request/inputs/store・独立 worker が回す engine・
+                    工程 handler の service・再開/取消の recovery・必須出力判定と品質レポートの report）
 lipidmix/handoff/   Console 成果物の受け渡しスキーマ（analysis-job.json）
 lipidmix/corpus/    蓄積ノートの純ロジック（knowledge_store / paper_ingest）
 lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプル検索・目的・レポート・リソース）
@@ -92,6 +94,22 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
   - 図は座標を LLM に渡すより**サーバで描いて画像で返す**ほうが 2 桁安い
     （volcano 実測: 点列 183,578 字 ≒数万トークン → PNG 327 画像トークン）。
     画像トークンは `幅×高さ/750` なので dpi は上げない（`plots/render.py`）。
+- **`lipidmix/pipeline/` は独立 worker プロセスが回す層**。守るべき決まりごと:
+  - **`pipeline/{engine,worker,service,recovery,store}.py` はグローバル session を import しない**
+    （`lipidmix.core.session_state` / `lipidmix.core.mcp_core` / `lipidmix.tools.*`。
+    `tests/test_pipeline_engine.py` の AST テストが固定している）。進行状況は
+    `pipeline-run.json` と、そのプロセスだけが持つ `runtime` dict に住む。
+  - **`core/atomic_io.py` と `core/process_control.py` は stdlib だけの leaf**。
+    別プロセスの worker が最初に import するので、重い依存を持ち込まない。
+  - **run record の `results` は追記専用**（`store._assert_results_append_only` が
+    既存要素の書換えを拒否する）。永続化する pipeline 内のパスは `pipeline_root` 相対。
+  - **`pipeline_status` は読取専用**。生存確認 probe の失敗を「死んでいる」と読まない。
+  - **Console の自動再試行は行わない**。やり直しは `rerun_upstream=true` の明示が要り、
+    そのときは新しい attempt ディレクトリを作る（前回の終了証跡・ログを上書きしない）。
+  - 工程の実行順の正準は `engine.build_stages` の計画順（`record["stages"]` の挿入順ではない）。
+    report は必ず最後。
+  - 状態を保存する側は `STATE_REVISION_CONFLICT` を有限回まで読み直して再適用する
+    （`store` / `recovery` / `engine` すべて）。競合で worker を殺さない。
 
 ## ドキュメントの地図（用途別に読み分ける）
 
