@@ -1,0 +1,461 @@
+"""再開・再構築・取消・中断の読取表示（spec §9.2/9.3）。
+
+このモジュールが解く問題は3つ、公開関数もその3つに対応する。
+
+1. **`read_status`**: pipeline-run.jsonを読むだけの、絶対に書き換えないstatus取得。
+   `status="running"`のときだけ、記録済みの`worker`（`lipidmix.pipeline.engine.
+   run_engine`が刻む自分自身のidentity）が今も生きているかを`same_process`で見る。
+   このprobeがどう転んでも（生存・消失・判定不能）ファイルには一切触れない
+   ——observed_healthという別軸で返すだけで、statusフィールド自体は変えない。
+2. **`request_cancel`**: 協調的な取消フラグ（`lipidmix.pipeline.engine.
+   cancel_request_path`が指す小さなJSON）を書いて受理を返すだけ。ここでは
+   一切のプロセスを直接殺さない——上流のConsole停止は`supervise`側の
+   `cancel_path`監視（既存機構）に、下流の停止はengineのstage境界チェックに
+   委ねる。受理（このファイルが書けたこと）と、実際にworkerが止まったこと
+   （`cancelled`への確定）は別状態として扱う。
+3. **`prepare_resume`**: 新しいattempt/revisionを用意し、どのstageを`pending`へ
+   戻すかを決めて保存するだけ——**launchしない**。以下の順で安全装置を通す:
+
+   a. 監視を失ったまま稼働中のConsoleがあれば`EXECUTION_UNRESOLVED`（終了を
+      確認できないものを勝手にverified completedへ昇格しない）。
+   b. 上流が未完了（succeeded以外）なのに`rerun_upstream`が無ければ
+      `UPSTREAM_RERUN_REQUIRED`（自動再試行はしない）。
+   c. `rerun_upstream=False`のときだけ、固定済み入力（raw stat・実効method
+      ハッシュを含む）を再検証する——Task13の`inputs.verify_inputs`に加え、
+      Consoleが実際に読む`inputs/effective-method.txt`のhashもここで照合する
+      （Task13の申し送り。`verify_inputs`自体は原本methodの原本ハッシュしか
+      見ない）。
+   d. `updates`を`lipidmix.pipeline.request.merge_updates`で検証・統合し、
+      内容が変わっていなければ新しいrequest revisionを作らない。
+   e. Task 6の依存区分に倣い、更新内容からどのstageを`pending`へ戻すかを決める
+      （`_stages_to_reset`）。
+
+   `request_id`を指定した再送は、直前と同じ`updates`/`rerun_upstream`なら
+   新しいrevision/attemptを作らず直前の結果を返す（`resume_log`。source_root単位の
+   受付索引＝`store.find_or_create_run`とは別物で、pipeline_root内に閉じる）。
+   `request_id`を指定しない再送でも、統合後の内容が現行のrequestと同一なら
+   同様に新revisionを作らない。
+
+このモジュールはsessionを一切importしない（`lipidmix.core.session_state` /
+`lipidmix.core.mcp_core` / `lipidmix.tools.*`）——read_status/request_cancel/
+prepare_resumeはすべてMCP接続やグローバル状態と無関係に、ファイルだけで完結する。
+"""
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+from lipidmix.console import execution as console_execution
+from lipidmix.core.atomic_io import DomainError, atomic_write_json, canonical_hash
+from lipidmix.core.process_control import same_process
+from lipidmix.pipeline import engine
+from lipidmix.pipeline import inputs as inputs_mod
+from lipidmix.pipeline import request as request_mod
+from lipidmix.pipeline import store
+
+__all__ = ["prepare_resume", "read_status", "request_cancel"]
+
+#: prepare_resumeの状態競合吸収リトライ上限（store.pyの
+#: _REQUEST_ID_PATCH_MAX_ATTEMPTSと同じ考え方——有限回の読み直しで十分安全に
+#: 吸収できる。無関係な同時更新のせいでresume受付全体を失敗させない）。
+_RESUME_RETRY_MAX_ATTEMPTS = 5
+
+#: 中断由来の終端状態。`completed`と違い、何も変えなくてもresumeが呼ばれた
+#: 時点で常に`planned`へ戻してよい（D09「取消後・timeout後のresume」）。
+_INTERRUPTED_STATUSES = frozenset({"partial", "failed", "cancelled", "needs_input"})
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _normalize_pipeline_root(path: Path) -> Path:
+    """`path`がpipeline-run.jsonそのものでも、その親（pipeline_root）でも
+    受け付ける。
+
+    Task14/15の他モジュール（store.load_run/save_run、engine.run_engine）は
+    一貫してpipeline_root（ディレクトリ）を受け取る。このモジュールの3公開
+    関数も同じ流儀に合わせるが、`read_status`をfile-levelで検証したい
+    呼び出し側（このファイルの`.read_bytes()`で「一切書き換えていない」ことを
+    直接証明できる）にも応えられるよう、run.jsonファイルのパスを渡された
+    場合はその親を使う。
+    """
+    p = Path(path)
+    if p.is_file():
+        return p.parent
+    return p
+
+
+# ---------- read_status ----------
+
+def _stage_statuses(record: dict) -> dict:
+    return {sid: stage.get("status") for sid, stage in record.get("stages", {}).items()}
+
+
+def read_status(path: Path, *, include_details: bool = False) -> dict:
+    """pipeline状態を読むだけで、一切書き換えない（brief「read-onlyとする」）。
+
+    `status`が"running"のときだけ、記録済みworker identityの生死を`same_process`
+    で見る。この生存確認自体が失敗しても（例外・判定不能）"dead"とは読まず、
+    `observed_health="unknown"`として呼び出し側に復旧判断を委ねる——
+    「liveness probeの失敗をdeadと解釈しない」というbriefの制約そのもの。
+    """
+    pipeline_root = _normalize_pipeline_root(path)
+    record = store.load_run(pipeline_root)  # 読取専用。ここでは一切保存しない。
+
+    status = record.get("status")
+    observed_health = "ok"
+    if status == "running":
+        identity = (record.get("worker") or {}).get("identity")
+        if not identity:
+            observed_health = "unknown"
+        else:
+            try:
+                alive = same_process(identity)
+            except Exception:  # noqa: BLE001 - probe自体の失敗をdeadと解釈しない
+                observed_health = "unknown"
+            else:
+                observed_health = "ok" if alive else "worker_missing"
+
+    result = {
+        "pipeline_id": record.get("identity", {}).get("pipeline_id"),
+        "status": status,
+        "effective_target": record.get("request", {}).get("effective_target"),
+        "observed_health": observed_health,
+        "needs_input": record.get("needs_input"),
+        "warnings": list(record.get("warnings") or []),
+        "stage_statuses": _stage_statuses(record),
+    }
+    if status == "running" and observed_health in {"worker_missing", "unknown"}:
+        result["recovery_hint"] = {
+            "code": "PIPELINE_INTERRUPTED" if observed_health == "worker_missing"
+                    else "SUPERVISION_UNKNOWN",
+            "message": "workerの生存を確認できません。prepare_resumeで再開してください。",
+        }
+    if include_details:
+        result["record"] = record
+    return result
+
+
+# ---------- request_cancel ----------
+
+def request_cancel(path: Path) -> dict:
+    """協調的な取消フラグを保存し、受理だけを返す（brief「cancelledは実際に
+    workerが停止を確認した後に確定する」）。
+
+    ここでは一切のプロセスを直接殺さない。上流Consoleの停止はTask18の
+    upstream handlerが`supervise`へ`cancel_path=engine.cancel_request_path(...)`
+    を渡すことで、既存の`_monitor`が拾う（同じファイルの存在を見る）。
+    Job Objectのowner processが不明な状況でこの関数が別PIDを終了させることは
+    無い——それ自体をしないという設計でその要件を満たす。
+    """
+    pipeline_root = _normalize_pipeline_root(path)
+    record = store.load_run(pipeline_root)  # 存在・schema確認（読取専用）。
+
+    requested_at = _now_iso()
+    atomic_write_json(engine.cancel_request_path(pipeline_root),
+                      {"cancel_requested": True, "requested_at": requested_at})
+
+    status = read_status(pipeline_root)
+    return {
+        "pipeline_id": record.get("identity", {}).get("pipeline_id"),
+        "accepted": True,
+        "cancel_requested_at": requested_at,
+        "status": status["status"],
+        "observed_health": status["observed_health"],
+    }
+
+
+# ---------- prepare_resume: 補助関数 ----------
+
+def _load_full_request(pipeline_root: Path, record: dict) -> dict:
+    saved_path = record["request"]["saved_path"]
+    return json.loads((Path(pipeline_root) / saved_path).read_text(encoding="utf-8"))
+
+
+def _console_supervision_state(record: dict) -> tuple[dict | None, bool]:
+    """(console process identity, 検証済みか)を返す。
+
+    `verified`はpipelineの`upstream`stage自体がsucceededかどうか
+    （＝validate_outputsまで含め検証済みかどうか）で判定する。まだ
+    Console jobを起動していない（`console_job_path`が無い）ならidentityは
+    Noneで返す。
+
+    `console_job_path`は本コードベース全体の流儀（`lipidmix.pipeline.store.
+    register_job_owner`・`lipidmix.console.job_manager.load_job`等）に合わせ、
+    analysis-job.jsonそのものへのパスとして扱う——終了証跡
+    （`execution-result.json`）はその親（run_dir）に置かれる。
+    """
+    verified = record.get("stages", {}).get("upstream", {}).get("status") == "succeeded"
+    job_path = (record.get("upstream") or {}).get("console_job_path")
+    if not job_path:
+        return None, verified
+    run_dir = Path(job_path).parent
+    try:
+        raw = console_execution.receipt_path(run_dir).read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, ValueError):
+        return None, verified
+    identity = data.get("process_identity")
+    if not isinstance(identity, dict):
+        return None, verified
+    return identity, verified
+
+
+def _absolutize_inputs_paths(inputs: dict, pipeline_root: Path) -> dict:
+    """`store._relativize_inputs_paths`の逆操作。
+
+    method/lbm/exe・manifest[].source_fileがpipeline_root相対に固定されている
+    場合だけ、再び絶対パスへ戻す（`inputs.verify_inputs`はこれらを絶対パスと
+    して扱う）。
+    """
+    pipeline_root = Path(pipeline_root).resolve()
+
+    def _fix(value: str) -> str:
+        if isinstance(value, str) and not Path(value).is_absolute():
+            return str((pipeline_root / value).resolve())
+        return value
+
+    result = copy.deepcopy(inputs)
+    for top, sub in (("method", "source_path"), ("lbm", "path"), ("exe", "path")):
+        section = result.get(top)
+        if isinstance(section, dict) and isinstance(section.get(sub), str):
+            section[sub] = _fix(section[sub])
+    manifest_rows = result.get("manifest")
+    if isinstance(manifest_rows, list):
+        for row in manifest_rows:
+            if isinstance(row, dict) and isinstance(row.get("source_file"), str):
+                row["source_file"] = _fix(row["source_file"])
+    result["pipeline_root"] = str(pipeline_root)
+    return result
+
+
+def _verify_effective_method(snapshot: dict, pipeline_root: Path) -> None:
+    """Task13の申し送り: `inputs.verify_inputs`は原本methodの原本ハッシュしか
+    見ず、実際にConsoleが読む`inputs/effective-method.txt`のhashを再検証しない。
+    ここで`method.effective_relative_path`/`effective_sha256`（Task13
+    `stage_inputs`が固定した値）を実ファイルと照合する。
+    """
+    method = snapshot.get("method") or {}
+    rel = method.get("effective_relative_path")
+    expected = method.get("effective_sha256")
+    if not rel or not expected:
+        return  # 最小fixture等、実効メソッドを固定していないrunは対象外
+    target = Path(pipeline_root) / rel
+    try:
+        actual = _sha256_file(target)
+    except OSError as exc:
+        raise DomainError(
+            "STAGED_INPUT_MISMATCH",
+            f"実効メソッドファイルが読めません（再開時の照合）: {target}",
+            {"path": str(target)},
+        ) from exc
+    if actual != expected:
+        raise DomainError(
+            "STAGED_INPUT_MISMATCH",
+            f"実効メソッドファイルが元の固定内容と一致しません（再開時の照合）: {target}",
+            {"path": str(target)},
+        )
+
+
+def _verify_staged_inputs(record: dict) -> None:
+    """再開時の入力再検証（D05）。`rerun_upstream=True`のときは呼ばない
+    ——上流をやり直す以上、`prepare_input`が自分で再検証・再配置する。
+    """
+    pipeline_root = Path(record["identity"]["pipeline_root"])
+    snapshot = _absolutize_inputs_paths(record.get("inputs") or {}, pipeline_root)
+    if not snapshot.get("source_root") or not snapshot.get("raw_stat"):
+        return  # 検証対象を持たない最小fixture（単体test）向けの安全側スキップ
+    inputs_mod.verify_inputs(snapshot)
+    _verify_effective_method(snapshot, pipeline_root)
+
+
+def _diff_comparisons(old: list, new: list) -> set:
+    """変更・新規追加されたcomparison_idの集合を返す（内容が完全一致するものは
+    含めない——B04「groupだけ訂正」で、無関係なcomparisonまで巻き込まないため）。
+    """
+    old_by_id = {c["comparison_id"]: c for c in (old or [])}
+    changed = set()
+    for c in new or []:
+        cid = c["comparison_id"]
+        if old_by_id.get(cid) != c:
+            changed.add(cid)
+    return changed
+
+
+def _stages_to_reset(current_request: dict, merged_request: dict, *,
+                     rerun_upstream: bool, stage_ids: set) -> set:
+    """Task 6の依存区分に倣い、更新内容からどのstageを`pending`へ戻すかを返す。
+
+    `load_dataset`/`resolve_metadata`/`preprocess`/`pca`は対象にしない——
+    `engine._ALWAYS_RECONSTRUCT_STAGE_IDS`により、resumeのたびに無条件で
+    handlerを呼び直すため、明示的にpendingへ戻す必要が無い。
+    """
+    if rerun_upstream:
+        # 上流のやり直しは下流すべてに波及する（Consoleの出力自体が変わりうる）。
+        return set(stage_ids)
+
+    reset: set = set()
+    metadata_or_preprocess_changed = (
+        current_request.get("sample_manifest") != merged_request.get("sample_manifest")
+        or current_request.get("preprocess") != merged_request.get("preprocess")
+    )
+    target_changed = current_request.get("target") != merged_request.get("target")
+    changed_comparison_ids = _diff_comparisons(
+        current_request.get("comparisons"), merged_request.get("comparisons"))
+
+    if metadata_or_preprocess_changed or target_changed:
+        for sid in stage_ids:
+            if sid == "resolve_comparisons" or sid == "report" \
+                    or sid.startswith(("differential:", "export:")):
+                reset.add(sid)
+    elif changed_comparison_ids:
+        reset.add("resolve_comparisons")
+        reset.add("report")
+        for cid in changed_comparison_ids:
+            reset.add(f"differential:{cid}")
+            reset.add(f"export:{cid}")
+    return reset
+
+
+def _reset_stage_for_resume(stage: dict) -> dict:
+    reset = dict(stage)
+    reset["status"] = "pending"
+    reset["input_fingerprint"] = None
+    reset["result_refs"] = []
+    reset["error"] = None
+    return reset
+
+
+def _resume_receipt(record: dict, *, reused: bool, reset_stage_ids: list | None = None) -> dict:
+    return {
+        "pipeline_id": record["identity"]["pipeline_id"],
+        "status": record["status"],
+        "request_revision": record["request"]["revision"],
+        "effective_target": record["request"].get("effective_target"),
+        "reused": reused,
+        "reset_stage_ids": sorted(reset_stage_ids or []),
+    }
+
+
+# ---------- prepare_resume ----------
+
+def prepare_resume(path: Path, *, updates: dict | None = None,
+                   request_id: str | None = None, rerun_upstream: bool = False) -> dict:
+    """新しいrevision/attemptと再利用判断を保存する。**launchしない**。
+
+    手順は本モジュールdocstringのa〜eのとおり。`STATE_REVISION_CONFLICT`
+    （他アクターがこのrunを同時に更新した）は有限回まで読み直して吸収する
+    （`store._patch_request_id_with_retry`と同じ考え方）。
+    """
+    pipeline_root = _normalize_pipeline_root(path)
+    updates = dict(updates) if updates else {}
+    updates_hash = canonical_hash({"updates": updates, "rerun_upstream": rerun_upstream})
+
+    for _ in range(_RESUME_RETRY_MAX_ATTEMPTS):
+        record = store.load_run(pipeline_root)
+
+        # --- 冪等性: 同じrequest_idの再送は直前の結果をそのまま返す ---
+        resume_log = dict(record.get("resume_log") or {})
+        if request_id is not None and request_id in resume_log:
+            prior = resume_log[request_id]
+            if prior["updates_hash"] != updates_hash:
+                raise DomainError(
+                    "IDEMPOTENCY_CONFLICT",
+                    f"request_id={request_id!r}は既存の異なる内容のresumeと衝突しています。",
+                    {"request_id": request_id})
+            return _resume_receipt(record, reused=True,
+                                   reset_stage_ids=prior.get("reset_stage_ids"))
+
+        # --- a. 監視を失った稼働中Console ---
+        console_identity, verified_receipt = _console_supervision_state(record)
+        if console_identity and same_process(console_identity) and not verified_receipt:
+            raise DomainError("EXECUTION_UNRESOLVED", "監視を失ったConsoleが稼働しています")
+
+        # --- b. 上流再実行の明示要求 ---
+        upstream_status = record["stages"].get("upstream", {}).get("status")
+        upstream_needs_rerun = upstream_status != "succeeded"
+        if upstream_needs_rerun and not rerun_upstream:
+            raise DomainError("UPSTREAM_RERUN_REQUIRED", "上流の再実行を明示してください")
+
+        # --- c. 固定済み入力の再検証（上流をやり直さない場合だけ） ---
+        if not rerun_upstream:
+            _verify_staged_inputs(record)
+
+        # --- d. updatesの検証・統合 ---
+        current_request = _load_full_request(pipeline_root, record)
+        merged_request = (request_mod.merge_updates(current_request, updates)
+                          if updates else current_request)
+        new_content_hash = request_mod.request_fingerprint(merged_request)
+        request_changed = new_content_hash != record["request"]["content_hash"]
+
+        record = copy.deepcopy(record)
+
+        if request_changed:
+            next_revision = int(record["request"]["revision"]) + 1
+            saved_rel = f"{store.REQUESTS_SUBDIR}/revision-{next_revision:04d}.json"
+            atomic_write_json(pipeline_root / saved_rel, merged_request)
+            record["request"] = {
+                "revision": next_revision,
+                "request_id": record["request"].get("request_id"),
+                "content_hash": new_content_hash,
+                "saved_path": saved_rel,
+                "effective_target": merged_request.get("effective_target"),
+            }
+
+        # --- e. 依存区分に基づくstageのpending化 ---
+        for sid in store.stage_ids_for(merged_request):
+            if sid not in record["stages"]:
+                record["stages"][sid] = store.initial_stage(sid)
+
+        reset_ids = _stages_to_reset(
+            current_request, merged_request, rerun_upstream=rerun_upstream,
+            stage_ids=set(record["stages"].keys()))
+        for sid in reset_ids:
+            record["stages"][sid] = _reset_stage_for_resume(record["stages"][sid])
+
+        # 中断由来の終端状態（partial/failed/cancelled）とneeds_inputは、resumeが
+        # 呼ばれた時点で常に`planned`へ戻す——「取消後・timeout後のresume」は
+        # 何も変えなくても続行できて当然（D09）。一方`completed`は、実際に何か
+        # 変わった場合（request内容・stageのpending化・上流再実行の明示）だけ
+        # `planned`へ戻す——変化の無いno-op resumeでcompletedを崩さない。
+        made_changes = request_changed or bool(reset_ids) or rerun_upstream
+        if record["status"] in _INTERRUPTED_STATUSES:
+            record["status"] = "planned"
+            record["needs_input"] = None
+        elif record["status"] == "completed" and made_changes:
+            record["status"] = "planned"
+
+        if request_id is not None:
+            resume_log[request_id] = {
+                "updates_hash": updates_hash,
+                "revision": record["request"]["revision"],
+                "reset_stage_ids": sorted(reset_ids),
+            }
+            record["resume_log"] = resume_log
+
+        try:
+            store.save_run(pipeline_root, record, expected_revision=record["state_revision"])
+        except DomainError as exc:
+            if exc.code == "STATE_REVISION_CONFLICT":
+                continue  # 他アクターが進めた最新を読み直して再試行
+            raise
+        saved = store.load_run(pipeline_root)
+        return _resume_receipt(saved, reused=False, reset_stage_ids=reset_ids)
+
+    raise DomainError(
+        "STATE_REVISION_CONFLICT",
+        f"resumeの状態競合の再試行上限（{_RESUME_RETRY_MAX_ATTEMPTS}回）に達しました: "
+        f"{pipeline_root}",
+        {"pipeline_root": str(pipeline_root)})

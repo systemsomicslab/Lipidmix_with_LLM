@@ -44,14 +44,18 @@ __all__ = [
     "ACTIVE_STATUSES",
     "SCHEMA",
     "RUN_FILENAME",
+    "REQUESTS_SUBDIR",
     "STAGE_IDS",
     "TERMINAL_STATUSES",
     "create_run",
     "find_or_create_run",
+    "initial_stage",
     "load_run",
     "pipeline_owner_block_reason",
     "register_job_owner",
     "save_run",
+    "stage_ids_for",
+    "verify_result_refs",
 ]
 
 SCHEMA = "pipeline-run.v1"
@@ -159,6 +163,17 @@ def _initial_stage(stage_id: str) -> dict:
 #: モジュール公開のstage ID一覧（comparison非依存の固定部分だけ）。common-context.md
 #: の一覧をそのまま参照可能にする（他タスクが照合に使えるように）。
 STAGE_IDS = _BASE_STAGE_IDS + (_FINAL_STAGE_ID,)
+
+
+def stage_ids_for(request: dict) -> list[str]:
+    """`_stage_ids_for`の公開版（Task16 `lipidmix.pipeline.recovery`が再開時に
+    要求内容からstage集合を再計算し、新規comparisonのstage初期化に使う）。"""
+    return _stage_ids_for(request)
+
+
+def initial_stage(stage_id: str) -> dict:
+    """`_initial_stage`の公開版（Task16が再開時に新規stage_idを初期化するのに使う）。"""
+    return _initial_stage(stage_id)
 
 
 # ---------- 絶対パスの相対化 ----------
@@ -284,6 +299,11 @@ def create_run(source_root: Path, request: dict, inputs: dict, *,
         "results": [],
         "needs_input": None,
         "warnings": list(warnings) if warnings else [],
+        # spec §9.3「ロックにはowner identityを記録し」の実体。run_engine（Task15/16）が
+        # owner lock取得直後にここへ自分のprocess identityを刻む。pidだけでは再利用を
+        # 見分けられないため、Task16のread_status/prepare_resumeはcreation_timeと
+        # 組みで`same_process`により生死を判定する（PIDだけを根拠にしない）。
+        "worker": {"identity": None, "started_at": None},
     }
     atomic_write_json(pipeline_root / RUN_FILENAME, record)
     return pipeline_root
@@ -437,15 +457,18 @@ def _write_index_entry(index_dir: Path, *, pipeline_root: Path,
     _write_index(index_dir, {"entries": entries})
 
 
-def _artifacts_verify(record: dict, pipeline_root: Path) -> list[dict]:
-    """record["results"]の各成果物hashを実ファイルと照合し、不一致だけを返す。
+def verify_result_refs(pipeline_root: Path, result_refs: list) -> list[dict]:
+    """`result_refs`各件の成果物hashを実ファイルと照合し、不一致だけを返す。
 
-    戻り値は不一致（またはファイル自体を読めない）entryのリスト。空リストは
-    全件一致（resultsが空——探索・比較のいずれもまだ結果を持たないcompleted、
-    通常は起こらないが安全側で許す——場合も同様に空虚に真とする）。
+    戻り値は不一致（またはファイル自体を読めない）entryのリスト。空リストは全件一致
+    （result_refsが空の場合も、検証対象が無いという意味で空虚に真とする）。
+    `_artifacts_verify`（run全体のresults検証）とTask16
+    `lipidmix.pipeline.engine.stage_inputs_unchanged`（stage単位の再利用可否判定）の
+    両方がこれを共有する——「resultsの一部だけを検証したい」呼び出し元向けに、
+    record全体を要求しない形で公開する。
     """
     failures: list[dict] = []
-    for result in record.get("results", []):
+    for result in result_refs or []:
         rel = result.get("relative_path")
         expected = result.get("hash")
         if not rel or not expected:
@@ -458,6 +481,16 @@ def _artifacts_verify(record: dict, pipeline_root: Path) -> list[dict]:
         if actual != expected:
             failures.append({"relative_path": rel, "expected_hash": expected, "actual_hash": actual})
     return failures
+
+
+def _artifacts_verify(record: dict, pipeline_root: Path) -> list[dict]:
+    """record["results"]（run全体）の各成果物hashを実ファイルと照合する。
+
+    戻り値は不一致（またはファイル自体を読めない）entryのリスト。空リストは
+    全件一致（resultsが空——探索・比較のいずれもまだ結果を持たないcompleted、
+    通常は起こらないが安全側で許す——場合も同様に空虚に真とする）。
+    """
+    return verify_result_refs(pipeline_root, record.get("results", []))
 
 
 def _resolve_reusable(pipeline_root_str: str, *, explicit_request_id: bool):

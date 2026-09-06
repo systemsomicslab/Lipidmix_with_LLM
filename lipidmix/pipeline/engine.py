@@ -6,9 +6,35 @@ ASTで検査する）。解析の進行状況は `pipeline-run.json`（Task14 `l
 このプロセスだけが持つ `runtime`（worker固有の `DatasetState` を積む素のdict）に住む。
 `runtime` は絶対に永続化しない——再開後の新しいworkerプロセスは空の `runtime` から
 始まる。したがって「前回成功した」という記録だけでstageを飛ばすと、後続stageが
-参照する `runtime` の中身が無いまま呼ばれる事故になる。`stage_inputs_unchanged` が
-常に `False` を返すのはこの事故を避けるためで、実際の依存fingerprintによる
-再利用判定（＝再開時の再構築）はTask16の責務として本関数を差し替える。
+参照する `runtime` の中身が無いまま呼ばれる事故になる。
+
+**stage_inputs_unchanged（Task16で実装）は3種類に分ける。**
+
+1. `load_dataset` / `resolve_metadata` / `preprocess` / `pca`
+   （`_ALWAYS_RECONSTRUCT_STAGE_IDS`）: 常に `False`（絶対にskipしない）。
+   `runtime` を実際に組み立てる工程だからで、再開のたびに——たとえ前回成功していても
+   ——handlerを呼び直して `runtime` を作り直す（brief「loading→metadata→
+   必要ならpreprocess/PCAを再構築する」）。これらはConsoleのような外部プロセスを
+   起動しない、安価な再計算という前提に立つ。
+2. `prepare_input` / `upstream` / `validate_outputs`
+   （`_TRUST_PERSISTED_STAGE_IDS`）: 永続状態がsucceeded/skippedならそのまま `True`
+   （信頼してskip）。**hashの再検証はここでは行わない**——`upstream`をこの関数の
+   都合で自動的に選び直すと、壊れたreceiptを検出した瞬間にConsoleを黙って
+   再起動しかねない（「自動再試行は行わない」に反する）。壊れ・改変の検出は
+   `lipidmix.pipeline.recovery.prepare_resume` が resume の前段で行う責務とし、
+   本当に再実行が要るときは `rerun_upstream=True` で明示的にこれらのstageを
+   `pending` へ戻す（recoveryの責務）。エンジン自身は「まだ`succeeded`のまま
+   残っているなら、それはrecoveryが既に安全と判断した結果」として信頼する。
+3. それ以外（`resolve_comparisons` / `differential:*` / `export:*` / `report`）:
+   自身の `result_refs` を `store.verify_result_refs` で実ファイルと照合し、
+   一致すれば `True`、成果物が消えた・改変されていれば `False`（再実行——
+   Consoleを起動しない工程なので、自動的にやり直しても安全）。
+
+`stage_inputs_unchanged` 自体は「このstageは既にrecoveryの判断を経て
+succeeded/skippedのままだ」という前提の上でしか呼ばれない
+（`_run_stage_loop` が先にstatusを見てから渡す）。REQUESTの内容が変わった
+かどうかの判定・どのstageを`pending`へ戻すかの決定は本モジュールの外
+（`lipidmix.pipeline.recovery.prepare_resume`）にある。
 
 **handlerキーとstage_idは別物。** `differential:<comparison_id>` / `export:<comparison_id>`
 という複数のstage_idは、`differential` / `export` という**1つのhandlerキー**を共有し、
@@ -40,12 +66,13 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from lipidmix.core.atomic_io import DomainError
-from lipidmix.core.process_control import file_lock
+from lipidmix.core.process_control import file_lock, process_identity
 from lipidmix.pipeline import store
 
 __all__ = [
@@ -174,23 +201,64 @@ def build_stages(request: dict) -> list[dict]:
 
 # ---------- ループ内helper（brief step3） ----------
 
-def stage_inputs_unchanged(stage: dict) -> bool:
+#: `runtime`を実際に組み立てる工程。再開のたびに必ずhandlerを呼び直す
+#: （R20/spec §9.3「下流の再開は…DatasetStateと必要結果を再構築できることを必須とする」）。
+_ALWAYS_RECONSTRUCT_STAGE_IDS = frozenset({
+    "load_dataset", "resolve_metadata", "preprocess", "pca",
+})
+
+#: 永続状態がsucceeded/skippedのままなら無条件に信頼してskipするstage。
+#: `upstream`のConsole再起動は`rerun_upstream=True`を通じてrecoveryが明示的に
+#: stageを`pending`へ戻さない限り、このengineが自発的に選び直すことは絶対にない
+#: （「自動再試行は行わない」）。
+_TRUST_PERSISTED_STAGE_IDS = frozenset({
+    "prepare_input", "upstream", "validate_outputs",
+})
+
+
+def stage_inputs_unchanged(stage: dict, *, pipeline_root: Path) -> bool:
     """既存の成功/skip結果をそのまま使ってよいか（＝handlerを呼ばず飛ばせるか）。
 
-    Task15時点では常に `False`。理由: `runtime`（worker固有の `DatasetState` 置き場）
-    はプロセス内限定で絶対に永続化されない。もしここで「前回のfingerprintが
-    記録済みだから」というpersisted状態だけの判断でskipを許すと、再開後の
-    新しいworkerプロセスでは対応するhandlerが一度も呼ばれないまま、後続stageが
-    `runtime` に無いはずの `DatasetState` を参照する事故につながる（brief
-    「メモリ上に存在しないDatasetStateを工程skipだけで利用しない」）。
-    実際の依存fingerprint照合による再利用判定は、再構築（loadingからの
-    再実行によるruntime復元）を併せ持つTask16がこの関数を差し替える。
+    呼び出し元（`_run_stage_loop`）は、対象stageの永続statusが既に
+    `succeeded`/`skipped`である場合にしか本関数を呼ばない。つまりここでの
+    「True」は「まだ信頼してよい」、「False」は「（安全に）handlerを呼び直す」
+    という意味であり、要求内容が変わったかどうかの判定・どのstageを`pending`へ
+    戻すかの決定は本関数の外（`lipidmix.pipeline.recovery.prepare_resume`）が
+    既に済ませている前提に立つ。
+
+    分類はモジュール docstring の3分類のとおり:
+      - `_ALWAYS_RECONSTRUCT_STAGE_IDS`: 常に`False`（`runtime`復元のため）。
+      - `_TRUST_PERSISTED_STAGE_IDS`: 常に`True`（`upstream`の自動再起動を防ぐ）。
+      - それ以外: 自身の`result_refs`のhashを実ファイルと照合し、一致すれば
+        `True`、成果物が消失・改変されていれば`False`（安全に再実行できる工程
+        のみがここに属する——Consoleを起動しない）。
     """
-    return False
+    stage_id = stage.get("stage_id")
+    if stage_id in _ALWAYS_RECONSTRUCT_STAGE_IDS:
+        return False
+    if stage_id in _TRUST_PERSISTED_STAGE_IDS:
+        return True
+    failures = store.verify_result_refs(Path(pipeline_root), stage.get("result_refs") or [])
+    return not failures
 
 
-def make_context(record: dict, stage: dict, runtime: dict) -> dict:
-    """handlerへ渡すstage contextを組み立てる。
+def make_context(record: dict, stage: dict, runtime: dict, request: dict) -> dict:
+    """handlerへ渡すstage contextを組み立てる（R19: run_record全体を見渡せるよう拡張）。
+
+    Task15時点では`request`（`record["request"]`の要約——revision/request_id/
+    content_hash/saved_path/effective_targetだけ）しか渡しておらず、handlerが
+    `target`/`comparisons`/`preprocess`/`sample_manifest`本体へ触るには
+    `store.load_run`を自分で呼び直す必要があった。ここでは呼び出し元
+    （`_run_stage_loop`。既に`_load_request`で読み込み済みの完全な
+    pipeline-request.v1）から丸ごと受け取り、`context["request"]`として渡す
+    ——`record["request"]`の要約は`context["request_meta"]`として別に残す
+    （revision/saved_pathなど、要求本体ではなく「この要求のどの版か」を指す
+    情報はこちらにしかない）。
+
+    合わせて`identity`（pipeline_id/source_root/pipeline_root/作成・更新時刻）・
+    `inputs`（Task13が固定した入力スナップショット）・`upstream`（Console job
+    path・execution_id・検証記録）も渡す——いずれも`record`が最初から持つ
+    フィールドで、handlerが`store.load_run`を再呼出ししなくても読めるようにする。
 
     `runtime` はこのworkerプロセスだけが持つ素のdict（例: `runtime["dataset"]`に
     `DatasetState` を積む）への参照そのものを渡す——handler間で状態を共有するのは
@@ -200,10 +268,14 @@ def make_context(record: dict, stage: dict, runtime: dict) -> dict:
     return {
         "pipeline_root": Path(record["identity"]["pipeline_root"]),
         "pipeline_id": record["identity"]["pipeline_id"],
+        "identity": dict(record["identity"]),
         "stage_id": stage_id,
         "comparison_id": _comparison_id_from_stage_id(stage_id),
         "attempt": stage.get("attempt", 0),
-        "request": dict(record["request"]),
+        "request": dict(request),
+        "request_meta": dict(record["request"]),
+        "inputs": copy.deepcopy(record.get("inputs") or {}),
+        "upstream": copy.deepcopy(record.get("upstream") or {}),
         "results": list(record.get("results") or []),
         "runtime": runtime,
     }
@@ -237,10 +309,18 @@ def commit_stage_outcome(pipeline_path: Path, record: dict, stage: dict, outcome
     `store.save_run` が既存要素の書換えを拒否する）へ追記する——failed/needs_input
     でも、そのstageが実際に有効な出力を残していたなら「有効な解析出力があるか」
     （`finish_interrupted` のpartial/failed判定）の材料になる。
+
+    ただし、そのstageの直前の`result_refs`と**完全に同じ内容**を返した場合は
+    追記しない（Task16: `_ALWAYS_RECONSTRUCT_STAGE_IDS` は再開のたびに
+    handlerを呼び直すため、決定論的なhandlerが前回と同じ成果物を指すoutcomeを
+    返すと、何もしなければ`results`が無限に重複して膨らむ。「旧結果を書き換え
+    ない」はここでは満たしたまま——新しい内容の追記だけが対象で、既存要素は
+    一切触らない）。
     """
     record = copy.deepcopy(record)
     stage_id = stage["stage_id"]
     target = record["stages"][stage_id]
+    previous_result_refs = list(target.get("result_refs") or [])
     target["status"] = outcome.get("status")
     target["updated_at"] = _now_iso()
     target["result_refs"] = list(outcome.get("result_refs") or [])
@@ -248,7 +328,7 @@ def commit_stage_outcome(pipeline_path: Path, record: dict, stage: dict, outcome
     target["error"] = outcome.get("error")
 
     result_refs = outcome.get("result_refs") or []
-    if result_refs:
+    if result_refs and result_refs != previous_result_refs:
         record["results"] = list(record.get("results") or []) + list(result_refs)
 
     for warning in outcome.get("warnings") or []:
@@ -377,7 +457,8 @@ def _run_stage_loop(pipeline_path: Path, handlers: dict) -> dict:
             continue
 
         stage = record["stages"][stage_id]
-        if stage["status"] in {"succeeded", "skipped"} and stage_inputs_unchanged(stage):
+        if (stage["status"] in {"succeeded", "skipped"}
+                and stage_inputs_unchanged(stage, pipeline_root=pipeline_path)):
             continue
 
         if cancel_requested(pipeline_path):
@@ -385,7 +466,7 @@ def _run_stage_loop(pipeline_path: Path, handlers: dict) -> dict:
 
         record = mark_stage_running(pipeline_path, record, stage)
         stage = record["stages"][stage_id]
-        context = make_context(record, stage, runtime)
+        context = make_context(record, stage, runtime, request)
         outcome = _invoke_handler(handlers[entry["handler"]], context)
         record = commit_stage_outcome(pipeline_path, record, stage, outcome)
 
@@ -393,6 +474,19 @@ def _run_stage_loop(pipeline_path: Path, handlers: dict) -> dict:
             return finish_interrupted(pipeline_path, record, {**outcome, "stage_id": stage_id})
 
     return finish_success(pipeline_path, record)
+
+
+def _record_worker_identity(pipeline_path: Path) -> None:
+    """自分（現在プロセス）のidentityをrunへ刻む（spec §9.3「ロックにはowner
+    identityを記録し」の実体）。owner lock取得直後、stage loop開始前に1回だけ
+    呼ぶ。Task16 `lipidmix.pipeline.recovery.read_status`/`prepare_resume`が
+    これを読み、`same_process`でこのworkerがまだ生きているかを判定する
+    （pidだけでは再利用と見分けられないため、creation_timeと組みで記録する）。
+    """
+    record = store.load_run(pipeline_path)
+    record = copy.deepcopy(record)
+    record["worker"] = {"identity": process_identity(os.getpid()), "started_at": _now_iso()}
+    store.save_run(pipeline_path, record, expected_revision=record["state_revision"])
 
 
 def run_engine(pipeline_path: Path, handlers: dict[str, Callable[[dict], dict]]) -> dict:
@@ -426,6 +520,7 @@ def run_engine(pipeline_path: Path, handlers: dict[str, Callable[[dict], dict]])
             ) from exc
         raise
     try:
+        _record_worker_identity(pipeline_path)
         return _run_stage_loop(pipeline_path, handlers)
     finally:
         owner_lock.__exit__(None, None, None)
