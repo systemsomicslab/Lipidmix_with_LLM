@@ -190,12 +190,31 @@ def _console_supervision_state(record: dict) -> tuple[dict | None, bool]:
     `verified`はpipelineの`upstream`stage自体がsucceededかどうか
     （＝validate_outputsまで含め検証済みかどうか）で判定する。まだ
     Console jobを起動していない（`console_job_path`が無い）ならidentityは
-    Noneで返す。
+    Noneで返す——これは「そもそも確認すべき対象が無い」正当な状態。
 
     `console_job_path`は本コードベース全体の流儀（`lipidmix.pipeline.store.
     register_job_owner`・`lipidmix.console.job_manager.load_job`等）に合わせ、
     analysis-job.jsonそのものへのパスとして扱う——終了証跡
-    （`execution-result.json`）はその親（run_dir）に置かれる。
+    （`execution-result.json`）はその親（run_dir）に置かれる。**ただしTask18
+    （build_handlers）はまだ無く、この規約は本タスクの推測にすぎない
+    （report「懸念3」参照）。**
+
+    Task18が逆の規約（`console_job_path`をrun_dirそのものとして書く等）を
+    選んだ場合、ここで`console_job_path`は記録されているのに終了証跡が
+    読めない・想定の形をしていない、という状況が起こる。これを
+    「`console_job_path`が最初から記録されていない」場合と同じ
+    `(None, verified)`で返すと、`prepare_resume`のEXECUTION_UNRESOLVEDゲート
+    （呼び出し元）を素通りしてしまい、監視を失って稼働中かもしれない
+    Consoleが黙ってverified扱いされかねない（spec §9.3「その実行を
+    verified completedへ昇格しない」）。
+
+    そこで、`upstream`stageがまだ`verified`でない（＝succeededと永続化
+    されていない）のに`console_job_path`は記録されている、という組合せで
+    終了証跡が読めない・process_identityを持たない場合は、ここで
+    `DomainError("EXECUTION_UNRESOLVED", ...)`を送出し、呼び出し元
+    （`prepare_resume`）へ「規約不一致・判定不能」を騒がしく伝える
+    （`verified`が既にTrueなら、record自体が既にsucceededと確定させている
+    ので、受信できない終了証跡があっても実害は無く例外にしない）。
     """
     verified = record.get("stages", {}).get("upstream", {}).get("status") == "succeeded"
     job_path = (record.get("upstream") or {}).get("console_job_path")
@@ -205,11 +224,24 @@ def _console_supervision_state(record: dict) -> tuple[dict | None, bool]:
     try:
         raw = console_execution.receipt_path(run_dir).read_text(encoding="utf-8")
         data = json.loads(raw)
-    except (OSError, ValueError):
-        return None, verified
+    except (OSError, ValueError) as exc:
+        if verified:
+            return None, verified
+        raise DomainError(
+            "EXECUTION_UNRESOLVED",
+            "console_job_pathは記録されていますが終了証跡を読めません"
+            f"（規約不一致の疑い、Task18確認要）: {run_dir}",
+            {"console_job_path": str(job_path), "run_dir": str(run_dir)},
+        ) from exc
     identity = data.get("process_identity")
     if not isinstance(identity, dict):
-        return None, verified
+        if verified:
+            return None, verified
+        raise DomainError(
+            "EXECUTION_UNRESOLVED",
+            f"終了証跡がprocess_identityを持たない不正な形式です: {run_dir}",
+            {"console_job_path": str(job_path), "run_dir": str(run_dir)},
+        )
     return identity, verified
 
 

@@ -219,6 +219,40 @@ def test_execution_unresolved_when_console_alive_but_unverified(tmp_path, monkey
         prepare_resume(pipeline_path)
 
 
+def test_mismatched_console_job_path_convention_is_not_silently_verified(tmp_path):
+    """Finding2: console_job_pathが記録されているのに終了証跡が読めない
+    （Task18が本タスクの推測と逆の規約を選んだ場合を想定）状況では、
+    「console_job_path未記録」と同じ(None, verified)を返して素通りしては
+    ならない——upstreamが未verifiedのままEXECUTION_UNRESOLVEDで騒ぐべきで、
+    静かにUPSTREAM_RERUN_REQUIRED（または成功）へ落ちてはいけない。
+    """
+    pipeline_path, _handlers, _calls = _build_pipeline(tmp_path, target="exploratory")
+
+    # 「逆の規約」を再現する: console_job_pathがrun_dirそのものを指しており、
+    # 本実装(job_path.parent=run_dir)が読みに行く場所には何も無い。
+    job_dir = tmp_path / "console_job"
+    job_dir.mkdir()
+    (job_dir / "execution-result.json").write_text(
+        json.dumps({"schema": "console-execution.v1",
+                    "process_identity": {"pid": 4242, "creation_time": 7}}),
+        encoding="utf-8")
+
+    record = load_run(pipeline_path)
+    # upstreamはまだ未verified(pending)のまま。
+    assert record["stages"]["upstream"]["status"] != "succeeded"
+    record["upstream"]["console_job_path"] = str(job_dir)  # job.jsonではなくrun_dir自体
+    save_run(pipeline_path, record, expected_revision=record["state_revision"])
+
+    # 静かに(None, verified=False)へ丸め込まれてUPSTREAM_RERUN_REQUIREDだけが
+    # 出るのではなく、規約不一致・判定不能がEXECUTION_UNRESOLVEDとして
+    # 見えることを確認する。rerun_upstream=Trueを渡しても素通りしない
+    # (既存のEXECUTION_UNRESOLVEDチェック同様、rerun_upstreamでは回避できない)。
+    with pytest.raises(DomainError, match="EXECUTION_UNRESOLVED"):
+        prepare_resume(pipeline_path)
+    with pytest.raises(DomainError, match="EXECUTION_UNRESOLVED"):
+        prepare_resume(pipeline_path, rerun_upstream=True)
+
+
 # ---------- D03: 上流を再実行せずcomparisonを解決して完走する ----------
 
 def test_resume_reuses_upstream_and_completes_after_adding_comparisons(tmp_path):
@@ -254,9 +288,13 @@ def test_resume_reuses_upstream_and_completes_after_adding_comparisons(tmp_path)
     assert calls.count("export:treated_vs_control") == 1
 
     record = load_run(path)
-    # 探索段階の旧resultは消えていない(append-only)。
-    old_results = [r for r in record["results"] if r == "pca-result"]
-    assert old_results  # 前回attemptのpca-resultが保持されている
+    # 探索段階の旧resultは消えていない(append-only)かつ重複追記されていない
+    # (R20のcommit_stage_outcome重複防止)。pcaは_ALWAYS_RECONSTRUCT_STAGE_IDSに
+    # 属し2回目のrun_engineでも必ずhandlerを呼び直すが、前回と完全に同じ
+    # result_refsを返す限り"results"へは1回しか積まれない。件数チェックでない
+    # `assert old_results`（存在確認だけ）は、重複防止を後退させて
+    # "pca-result"が2回積まれても素通りしてしまい、この回帰を検出できない。
+    assert record["results"].count("pca-result") == 1
 
 
 # ---------- group-only更新: 変更した比較だけreset ----------
