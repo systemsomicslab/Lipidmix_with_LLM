@@ -113,6 +113,22 @@ def _achieved_ref(record: dict, name: str) -> dict | None:
     return matches[-1] if matches else None
 
 
+def _upstream_verified(record: dict) -> bool:
+    """`record["upstream"]["verification"]`が上流の完了検証済みを示すか判定する。
+
+    Task 3が確立した`completion_status`語彙（"completed"/"partial"/"failed"、
+    `lipidmix/console/validation.py`）をそのまま再利用する——新しい語彙は作らない。
+    "completed"だけを検証済みとし、未解決（キー自体が無い/None）・"partial"・
+    "failed"はいずれも「上流が検証済みでない」として扱う（brief「evaluate_target
+    は上流verifiedと全必須outputのhash/IDを検査し」、レビュー指摘3）。
+    `_section_execution`と同じ形（dictの"status"、または生の文字列）を読む。
+    """
+    upstream = record.get("upstream") or {}
+    verification = upstream.get("verification")
+    status = verification.get("status") if isinstance(verification, dict) else verification
+    return status == "completed"
+
+
 def evaluate_target(record: dict) -> dict:
     """目標別の必須出力が揃っているかを判定する（spec §9.2、brief step3）。
 
@@ -126,6 +142,12 @@ def evaluate_target(record: dict) -> dict:
     差次的目標で比較定義が空の場合は、上流・探索解析の達成状況に関わらず
     `needs_input`/`COMPARISON_REQUIRED`を返す（spec §9.2「比較群を要求しない」
     exploratory目標とは違い、differentialは比較の向きが要る）。
+
+    各出力refのhash/ID検証に加え、`_upstream_verified(record)`
+    （`record["upstream"]["verification"]`）も検査する（brief「上流verifiedと
+    全必須outputのhash/IDを検査し」）。ref自体が有効でも上流が検証済み
+    （"completed"）でなければ「達成」と認めない——`evaluate_target`は単体で
+    呼べる関数であり、engineのstage順序が上流成功を保証してくれるとは限らない。
     """
     request = _load_full_request(record)
     pipeline_root = Path(record["identity"]["pipeline_root"])
@@ -144,6 +166,7 @@ def evaluate_target(record: dict) -> dict:
 
     required = required_outputs(request)
     output_failures = dict(record.get("output_failures") or {})
+    upstream_verified = _upstream_verified(record)
 
     achieved: list[str] = []
     missing: list[str] = []
@@ -153,11 +176,18 @@ def evaluate_target(record: dict) -> dict:
         ref = _achieved_ref(record, name)
         if ref is not None:
             failures = store.verify_result_refs(pipeline_root, [ref])
-            if not failures:
-                achieved.append(name)
+            if failures:
+                reason_codes.append("RESULT_INTEGRITY_MISMATCH")
+                missing.append(name)
                 continue
-            reason_codes.append("RESULT_INTEGRITY_MISMATCH")
-            missing.append(name)
+            if not upstream_verified:
+                # ref自体は有効でも、上流が検証済みでなければ「達成」と認めない
+                # （レビュー指摘3）。hash/IDが揃っていることは、その計算の
+                # 前提（Console実行が実際に検証済み完了した）を保証しない。
+                reason_codes.append("UPSTREAM_NOT_VERIFIED")
+                missing.append(name)
+                continue
+            achieved.append(name)
             continue
         missing.append(name)
         code = output_failures.get(name)
@@ -255,6 +285,41 @@ _MANIFEST_COLUMNS = ("sample_id", "source_file", "role", "group", "batch",
                     "injection_order", "qc_pool", "include")
 
 
+def _read_tsv_coverage(pipeline_root: Path, ref: dict | None) -> dict | None:
+    """``tsv:<cid>``として登録済みのTSVファイル自身から、InChIKey被覆3件を読む。
+
+    `tsv_summary:<cid>`のような別出力名は`required_outputs`が作らず、
+    誰も永続化しない（レビュー指摘1: 死んだコード）。件数は既に
+    `export_contract.build_meta`がTSVのメタ行へ書いている
+    （`# n_features_total = ...\\tn_with_inchikey = ...\\tn_unannotated = ...`）
+    ので、そこを読むだけで足りる——`_read_result_data`は``data``モード
+    （JSON）専用でTSVの中身をJSONとして読もうとして失敗するため、別に用意する。
+    """
+    if not ref:
+        return None
+    try:
+        text = (Path(pipeline_root) / ref["relative_path"]).read_text(encoding="utf-8")
+    except (OSError, KeyError):
+        return None
+    for line in text.splitlines():
+        if not line.startswith("# n_features_total"):
+            continue
+        fields: dict[str, str] = {}
+        for part in line[2:].split("\t"):
+            key, sep, value = part.partition("=")
+            if sep:
+                fields[key.strip()] = value.strip()
+        try:
+            return {
+                "n_features_total": int(fields["n_features_total"]),
+                "n_with_inchikey": int(fields["n_with_inchikey"]),
+                "n_unannotated": int(fields["n_unannotated"]),
+            }
+        except (KeyError, ValueError):
+            return None
+    return None
+
+
 def _section_source(record: dict) -> str:
     identity = record.get("identity") or {}
     lines = ["## Source", "",
@@ -302,12 +367,19 @@ def _section_sample_provenance(record: dict) -> str:
     return "\n".join(["## Role / Group / Batch / Order Provenance", "", table])
 
 
-def _section_applied_skipped(record: dict, pipeline_root: Path) -> str:
-    data = _read_result_data(pipeline_root, _achieved_ref(record, "preprocess"))
+def _section_applied_skipped(record: dict, pipeline_root: Path, evaluation: dict) -> str:
+    """`evaluation["achieved_outputs"]`だけを可否の根拠にする（レビュー指摘2）。
+
+    以前はファイルが読めるかどうかだけを見ており、`evaluate_target`が同じ
+    `record`から出すhash整合性検証を無視していた——改変されたファイルでも
+    構文的に読めれば「applied_steps」を出してしまい、レポート冒頭の
+    `status_at_report_time`（partial/RESULT_INTEGRITY_MISMATCH）と矛盾する。
+    """
     lines = ["## Applied / Skipped", ""]
-    if not data:
+    if "preprocess" not in evaluation["achieved_outputs"]:
         lines.append("(preprocess result not available)")
         return "\n".join(lines)
+    data = _read_result_data(pipeline_root, _achieved_ref(record, "preprocess")) or {}
     applied = data.get("applied_steps") or []
     skipped = data.get("skipped_steps") or []
     lines.append(f"- applied_steps: {', '.join(applied) if applied else '(none)'}")
@@ -319,12 +391,17 @@ def _section_applied_skipped(record: dict, pipeline_root: Path) -> str:
     return "\n".join(lines)
 
 
-def _section_pca(record: dict, pipeline_root: Path) -> str:
-    ref = _achieved_ref(record, "pca")
+def _section_pca(record: dict, pipeline_root: Path, evaluation: dict) -> str:
+    """PCAも同じ理由（レビュー指摘2）で`evaluation["achieved_outputs"]`を見る。
+
+    以前は`ref`の有無だけを見ており、hashが一致しない（改変された）refでも
+    result_id・リンク・数値をそのまま出していた。
+    """
     lines = ["## PCA", ""]
-    if not ref:
+    if "pca" not in evaluation["achieved_outputs"]:
         lines.append("(PCA result not available)")
         return "\n".join(lines)
+    ref = _achieved_ref(record, "pca")
     lines.append(f"- result_id: {ref.get('result_id')}")
     lines.append(f"- source: [{ref['relative_path']}]({ref['relative_path']})")
     data = _read_result_data(pipeline_root, ref)
@@ -340,7 +417,17 @@ def _section_pca(record: dict, pipeline_root: Path) -> str:
     return "\n".join(lines)
 
 
-def _section_comparisons(record: dict, pipeline_root: Path, request: dict) -> str:
+def _section_comparisons(record: dict, pipeline_root: Path, request: dict,
+                         evaluation: dict) -> str:
+    """`status`列は`evaluation["achieved_outputs"]`から取る（レビュー指摘2）。
+
+    以前は`_read_result_data`がJSONとして読めたかどうかだけで
+    achieved/missingを決めており、`write_pipeline_report`が同じ`record`から
+    既に呼んでいる`evaluate_target`のhash整合性検証と無関係だった。改変されて
+    もJSONとして読める限り「achieved」と出てしまい、レポート冒頭の
+    `status_at_report_time`（partial/RESULT_INTEGRITY_MISMATCH）と矛盾する
+    ——一つの`record`から一つの整合性判定だけを使う。
+    """
     comparisons = request.get("comparisons") or []
     lines = ["## Comparisons", ""]
     if not comparisons:
@@ -350,12 +437,13 @@ def _section_comparisons(record: dict, pipeline_root: Path, request: dict) -> st
     rows = []
     for comparison in comparisons:
         cid = comparison["comparison_id"]
-        ref = _achieved_ref(record, f"differential:{cid}")
-        data = _read_result_data(pipeline_root, ref)
+        name = f"differential:{cid}"
+        achieved = name in evaluation["achieved_outputs"]
+        data = _read_result_data(pipeline_root, _achieved_ref(record, name)) if achieved else None
         prov_comparison = ((data or {}).get("provenance") or {}).get("comparison") or {}
         rows.append([
             cid, comparison.get("reference_group"), comparison.get("test_group"),
-            "achieved" if data else "missing",
+            "achieved" if achieved else "missing",
             "yes" if prov_comparison.get("unadjusted_confounded") else "no",
         ])
     lines.append(_md_table(headers, rows))
@@ -372,10 +460,10 @@ def _section_inchikey_coverage(record: dict, pipeline_root: Path, request: dict)
     rows = []
     for comparison in comparisons:
         cid = comparison["comparison_id"]
-        data = _read_result_data(pipeline_root, _achieved_ref(record, f"tsv_summary:{cid}"))
-        if data:
-            rows.append([cid, data.get("n_features_total"), data.get("n_with_inchikey"),
-                        data.get("n_unannotated")])
+        coverage = _read_tsv_coverage(pipeline_root, _achieved_ref(record, f"tsv:{cid}"))
+        if coverage:
+            rows.append([cid, coverage["n_features_total"], coverage["n_with_inchikey"],
+                        coverage["n_unannotated"]])
         else:
             rows.append([cid, "(n/a)", "(n/a)", "(n/a)"])
     lines.append(_md_table(headers, rows))
@@ -436,9 +524,9 @@ def write_pipeline_report(record: dict, path) -> dict:
         _section_method(record),
         _section_execution(record),
         _section_sample_provenance(record),
-        _section_applied_skipped(record, pipeline_root),
-        _section_pca(record, pipeline_root),
-        _section_comparisons(record, pipeline_root, request),
+        _section_applied_skipped(record, pipeline_root, evaluation),
+        _section_pca(record, pipeline_root, evaluation),
+        _section_comparisons(record, pipeline_root, request, evaluation),
         _section_inchikey_coverage(record, pipeline_root, request),
         _section_unverified(record),
     ]

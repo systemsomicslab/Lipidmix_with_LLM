@@ -121,7 +121,13 @@ def test_persist_result_writes_inline_numeric_data_converting_nonfinite_to_null(
 # ---------- evaluate_target ----------
 
 def _build_record(tmp_path, *, target, comparisons=None, save_project=False):
-    """create_runでpipeline_rootとpipeline-run.v1レコードを1本作る。"""
+    """create_runでpipeline_rootとpipeline-run.v1レコードを1本作る。
+
+    `upstream.verification`は既定で完了検証済み（Task 3の`completion_status`
+    語彙で"completed"）にする——`evaluate_target`がこれを検査する
+    （レビュー指摘3）ため、ここは「一通り正しく進んだpipeline」を表す既定値で、
+    上流が未検証であることを試したいテストだけが明示的に上書きする。
+    """
     source_root = tmp_path / "source"
     source_root.mkdir()
     request = resolve_request(source_root, {
@@ -129,6 +135,7 @@ def _build_record(tmp_path, *, target, comparisons=None, save_project=False):
     inputs = _minimal_inputs(source_root)
     pipeline_root = create_run(source_root, request, inputs)
     record = load_run(pipeline_root)
+    record["upstream"]["verification"] = {"status": "completed"}
     return pipeline_root, record
 
 
@@ -254,6 +261,24 @@ def test_evaluate_target_treats_a_tampered_output_as_not_achieved(tmp_path):
     assert "tsv:t_vs_c" not in evaluation["achieved_outputs"]
 
 
+@pytest.mark.parametrize("verification", [None, {"status": "failed"}])
+def test_evaluate_target_does_not_achieve_outputs_when_upstream_is_not_verified(tmp_path, verification):
+    """レビュー指摘3: brief「evaluate_targetは上流verifiedと全必須outputのhash/ID
+    を検査し」にもかかわらず、`record["upstream"]["verification"]`が一切
+    読まれておらず、上流が未解決(None)・failedでも成果物refのhash/IDさえ
+    有効なら達成扱いになっていた。Task 3が確立した`completion_status`語彙
+    ("completed"/"partial"/"failed")を再利用し、"completed"以外
+    （未解決のNoneも含む）は上流未検証として扱う。"""
+    pipeline_root, record = _differential_pipeline(tmp_path)
+    record["upstream"]["verification"] = verification
+
+    evaluation = evaluate_target(record)
+
+    assert evaluation["status"] != "completed"
+    assert "UPSTREAM_NOT_VERIFIED" in evaluation["reason_codes"]
+    assert "tsv:t_vs_c" not in evaluation["achieved_outputs"]
+
+
 # ---------- write_pipeline_report ----------
 
 _SECTION_HEADERS_IN_ORDER = (
@@ -336,6 +361,50 @@ def test_report_marks_unadjusted_confounded_comparisons(tmp_path):
 
     text = (pipeline_root / "report.md").read_text(encoding="utf-8")
     assert "unadjusted" in text.lower()
+
+
+def test_report_states_real_inchikey_coverage_from_the_generated_tsv(tmp_path):
+    """レビュー指摘1: `tsv_summary:<cid>`は`required_outputs`が作らず誰も永続化
+    しない存在しない出力名なので、このセクションは常に(n/a)だった（死んだ
+    コード）。`tsv:<cid>`として登録済みのTSV自身のメタ行
+    （`export_contract.build_meta`が書く`# n_features_total = ...`行）から
+    読む——別の出力名を新設しない。make_dataset()は6特徴・全件InChIKey付き
+    なので6/6/0のはず。"""
+    pipeline_root, record = _differential_pipeline(tmp_path)
+
+    write_pipeline_report(record, pipeline_root / "report.md")
+
+    text = (pipeline_root / "report.md").read_text(encoding="utf-8")
+    coverage_section = text.split("## InChIKey Coverage", 1)[1].split(
+        "## Unverified Conditions", 1)[0]
+    assert "(n/a)" not in coverage_section
+    assert "| t_vs_c | 6 | 6 | 0 |" in coverage_section
+
+
+def test_report_comparisons_table_does_not_say_achieved_when_the_result_is_tampered(tmp_path):
+    """レビュー指摘2: `_section_comparisons`はJSONとして読めるかどうかだけで
+    achieved/missingを決めており、`evaluate_target`が同じ`record`から出す
+    hash整合性検証を無視していた。改変後も構文的にはJSONとして読める内容
+    （フィールド値だけ書き換え、hashは付け替えない）で、ヘッダの
+    status_at_report_timeと矛盾しないことを見る——これが本来落ちるべきgapで、
+    `test_evaluate_target_treats_a_tampered_output_as_not_achieved`は
+    `evaluate_target`の戻り値しか見ておらずレポート本文の矛盾を検知できない。"""
+    pipeline_root, record = _differential_pipeline(tmp_path)
+    differential_ref = next(r for r in record["results"] if r["output_name"] == "differential:t_vs_c")
+    tampered_path = Path(pipeline_root) / differential_ref["relative_path"]
+    payload = json.loads(tampered_path.read_text(encoding="utf-8"))
+    payload["data"]["a"] = "tampered-group-name"
+    tampered_path.write_text(json.dumps(payload), encoding="utf-8")
+    # hashは付け替えない——ハッシュ不一致こそが今回検知したい整合性違反。
+
+    write_pipeline_report(record, pipeline_root / "report.md")
+
+    text = (pipeline_root / "report.md").read_text(encoding="utf-8")
+    assert "status_at_report_time: completed" not in text
+    assert "RESULT_INTEGRITY_MISMATCH" in text
+    comparisons_section = text.split("## Comparisons", 1)[1].split(
+        "## InChIKey Coverage", 1)[0]
+    assert "achieved" not in comparisons_section
 
 
 def test_write_pipeline_report_returns_the_status_snapshot(tmp_path):
