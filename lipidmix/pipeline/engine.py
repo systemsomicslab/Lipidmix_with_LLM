@@ -387,8 +387,19 @@ def commit_stage_outcome(pipeline_path: Path, record: dict, stage: dict, outcome
     保存する。
 
     状態競合は`_save_with_retry`が読み直して再適用する。反映内容は
-    `outcome`と「そのとき読んだrecord」だけから計算するので、再適用しても
-    resultsやwarningsが二重に積まれることはない。
+    `outcome`と「そのとき読んだrecord」だけから計算するため、通常は
+    再適用してもresultsが二重に積まれることはない（`previous_result_refs`
+    と一致すれば追記しない、上記の判定による）。
+
+    ただし一つ例外がある——再適用のために読み直したstageが、その間に
+    並行する`prepare_resume`から**同じstage**のリセット（`result_refs`を
+    `[]`にする）を受けていた場合、`previous_result_refs`は`[]`に見えて
+    しまい、既に`results`へ入っている同じrefsをもう一度追記しうる。
+    `store._assert_results_append_only`は追記であることに変わりはないため
+    これを拒否せず、`report._achieved_ref`は一致する最後の要素を採るため
+    現時点で実害はないが、履歴には重複が残る（詳細は
+    `docs/superpowers/notes/2026-09-05-raw-folder-pipeline-validation.md`の
+    既知の制限「リトライ経路でresult_refsが重複しうる」を参照）。
     """
     stage_id = stage["stage_id"]
 
