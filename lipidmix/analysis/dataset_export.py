@@ -128,6 +128,24 @@ def _preprocess_parameters(ds, result: dict) -> dict:
     return dict(getattr(ds, "preprocessing_recipe", {}) or {})
 
 
+def _unadjusted_confounded_lines(prov: dict) -> list[str]:
+    """spec §7.4(R16): allow_confounded=true で継続した比較は、TSV付随メタにも
+    その旨を残す。図（ASCII 但し書き）・レポートと合わせて3つの経路の1つ。
+
+    真偽値の行（機械可読）と、`run_comparison` が来歴へ残した日本語の説明
+    （`result["provenance"]["warnings"]`）の両方を書く。未調整でなければ何も
+    足さない——常に行があると、本当に注意が要る比較が埋もれる。
+    """
+    comparison = prov.get("comparison") or {}
+    if not comparison.get("unadjusted_confounded"):
+        return []
+    explanation = next((w for w in prov.get("warnings") or [] if "未調整" in w), None)
+    lines = ["# unadjusted_confounded = true"]
+    if explanation:
+        lines.append(f"# unadjusted_confounded_note = {explanation}")
+    return lines
+
+
 def _meta_lines(ds, result, rows, n_total, n_unannotated) -> list[str]:
     prov = result["provenance"]
     return export_contract.build_meta(
@@ -148,6 +166,7 @@ def _meta_lines(ds, result, rows, n_total, n_unannotated) -> list[str]:
             f"# result_id = {prov['result_id']}",
             f"# preprocess_id = {'; '.join(prov.get('parent_ids') or [])}",
             f"# source_verification = {getattr(ds, 'source_verification', '')}",
+            *_unadjusted_confounded_lines(prov),
         ],
         preprocess_line=f"# preprocess = {_preprocess_parameters(ds, result)}",
     )

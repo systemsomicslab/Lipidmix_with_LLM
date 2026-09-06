@@ -144,6 +144,31 @@ def test_one_of_two_comparisons_failing_yields_partial_and_stops(tmp_path):
     assert stage["error"]["code"] == "RuntimeError"
 
 
+def test_a_recorded_export_background_empty_warning_downgrades_completed_to_partial(tmp_path):
+    """spec §9.2/§11: InChIKey 0件でTSVを作れない場合はEXPORT_BACKGROUND_EMPTYを
+    記録し、有効な出力を残したpartialとする——全stageがsucceededでも「completed」
+    を名乗らせない（brief「quality_report作成前の必須判定と最終確定は分け…
+    最終completedはreport保存後のstate更新で確定する」の実体）。
+    """
+    comparisons = [{"comparison_id": "cmp1", "reference_group": "control", "test_group": "treated"}]
+    path, handlers, calls = _build_pipeline(tmp_path, target="differential", comparisons=comparisons)
+
+    def export_with_empty_background(context: dict) -> dict:
+        calls.append(context["stage_id"])
+        return {"status": "succeeded", "result_refs": [], "warnings": [
+            {"code": "EXPORT_BACKGROUND_EMPTY",
+             "message": "InChIKeyが0件のためTSVを作成しませんでした。"}],
+            "error": None}
+
+    handlers["export"] = export_with_empty_background
+
+    result = run_engine(path, handlers)
+
+    assert result["status"] == "partial"
+    assert any(w["code"] == "EXPORT_BACKGROUND_EMPTY" for w in result["warnings"])
+    assert "export:cmp1" in calls  # stage自体は成功として最後まで進む
+
+
 def test_missing_explicit_preprocess_prerequisite_becomes_needs_input(tmp_path):
     path, handlers, calls = _build_pipeline(tmp_path, target="exploratory")
 

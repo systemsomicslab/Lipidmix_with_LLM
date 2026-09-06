@@ -363,9 +363,30 @@ def _mark_out_of_scope(pipeline_path: Path, record: dict, stage_id: str) -> dict
     return store.load_run(pipeline_path)
 
 
+#: 全stageがsucceeded/skippedでも「completed」を名乗らせない、既知の非致命的
+#: warningコード（spec §9.2/§11: InChIKey 0件でTSVを作れない・save_project=true
+#: でGUI projectが無い、等）。これらは該当stage自身は失敗させず（Consoleを
+#: 再実行させない・有効な出力は残す）succeededのまま進むが、run全体としては
+#: 「要求された契約を満たしていない」ので、この既知codeがrecord["warnings"]に
+#: 1件でも記録されていればpartialへ格下げする。
+#:
+#: `lipidmix.pipeline.report.evaluate_target`が持つ、成果物のhash照合まで含む
+#: 厳密な必須出力判定とは意図的に切り離してある——evaluate_targetは
+#: `results`の各refが`output_name`キーを持つ前提で組んであり、本モジュールの
+#: 単体テスト（`tests/test_pipeline_engine.py`）が使う簡易なresult_refs
+#: （文字列や空リスト）とは噛み合わない。両者の統合は実handler一式を作る
+#: Task18まで持ち越す（report「懸念」節）。
+_PARTIAL_ON_WARNING_CODES = frozenset({
+    "EXPORT_BACKGROUND_EMPTY",     # spec §9.2: InChIKey 0件でTSVを作れない
+    "GUI_PROJECT_UNAVAILABLE",     # spec §11: save_project=trueでGUI projectがない
+})
+
+
 def finish_success(pipeline_path: Path, record: dict) -> dict:
     record = copy.deepcopy(record)
-    record["status"] = "completed"
+    downgrade = any(w.get("code") in _PARTIAL_ON_WARNING_CODES
+                   for w in record.get("warnings") or [])
+    record["status"] = "partial" if downgrade else "completed"
     store.save_run(pipeline_path, record, expected_revision=record["state_revision"])
     return store.load_run(pipeline_path)
 

@@ -145,6 +145,29 @@ def test_a_verified_dataset_gets_no_disclaimer():
     assert figure_annotations(ds) == []
 
 
+def test_unadjusted_confounded_comparisons_get_an_ascii_disclaimer_on_the_figure(tmp_path):
+    """spec §7.4(R16): allow_confounded=trueで継続した比較は、図の中にもその旨が
+    要る。matplotlibの既定フォントは日本語字形を持たないため、他の但し書きと
+    同じくASCIIで書く。"""
+    from lipidmix.plots.result_output import figure_annotations
+    result = dict(_VOLCANO)
+    result["provenance"] = {"comparison": {"unadjusted_confounded": True}}
+
+    out = save_result_figure(None, result, tmp_path / "unadjusted.png", kind="volcano")
+
+    assert out.is_file()
+    note = figure_annotations(None, result)
+    assert any("UNADJUSTED" in a for a in note)
+    assert all(a.isascii() for a in note)
+
+
+def test_adjusted_comparisons_get_no_confounding_disclaimer():
+    from lipidmix.plots.result_output import figure_annotations
+    result = dict(_VOLCANO)
+    result["provenance"] = {"comparison": {"unadjusted_confounded": False}}
+    assert figure_annotations(None, result) == []
+
+
 # ---------- TSV ----------
 
 def _prepared_dataset():
@@ -181,6 +204,36 @@ def test_export_records_the_preprocessing_that_the_result_actually_used(tmp_path
 
     assert any("'normalize': 'none'" in l for l in meta if "preprocess" in l)
     assert any(f"result_id = {result['provenance']['result_id']}" in l for l in meta)
+
+
+def test_export_records_unadjusted_confounded_status_in_the_meta(tmp_path):
+    """spec §7.4(R16): allow_confounded=trueで継続した比較は、TSV付随メタにもその旨が
+    要る。`_meta_lines`は既にprovenanceを読んでいるので確認する（見た目は近いが、
+    未調整フラグまで読んでいるかは別に確認しないと分からない）。"""
+    from lipidmix.analysis.dataset_export import export_dataset_result
+    ds, result = _prepared_dataset()
+    result["provenance"]["comparison"] = {"unadjusted_confounded": True}
+    result["provenance"]["warnings"] = [
+        "allow_confounded=true が明示されたため、群とバッチの完全交絡を未調整の"
+        "まま解析を継続しました（図・TSV・レポートにこの旨を残すこと）。"]
+
+    meta = [l for l in
+            _exported_lines(export_dataset_result, ds, result, tmp_path / "u.tsv")
+            if l.startswith("#")]
+
+    assert any("unadjusted_confounded = true" in l for l in meta)
+    assert any("未調整" in l for l in meta)
+
+
+def test_export_omits_the_unadjusted_confounded_line_when_not_confounded(tmp_path):
+    from lipidmix.analysis.dataset_export import export_dataset_result
+    ds, result = _prepared_dataset()
+
+    meta = [l for l in
+            _exported_lines(export_dataset_result, ds, result, tmp_path / "n.tsv")
+            if l.startswith("#")]
+
+    assert not any("unadjusted_confounded" in l for l in meta)
 
 
 def test_export_refuses_a_result_from_a_superseded_preprocessing(tmp_path):

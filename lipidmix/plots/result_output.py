@@ -32,6 +32,13 @@ __all__ = ["figure_annotations", "save_result_figure", "select_result"]
 _EXPLORATORY_NOTE = ("NOTE: exploratory only - drawn from an incomplete analysis "
                      "run; samples/features may be missing.")
 
+#: spec §7.4(R16): allow_confounded=true で継続した比較は、図の中にもその旨が要る。
+#: 同じくASCII——`run_comparison`が`result["provenance"]["warnings"]`へ残す日本語の
+#: 注記は図には使えない（豆腐になる）ので、ここだけ別文面で書く。
+_UNADJUSTED_CONFOUNDED_NOTE = (
+    "NOTE: allow_confounded=true - group and batch are fully confounded; "
+    "this comparison is UNADJUSTED for batch effect.")
+
 
 def select_result(candidates: list[dict], *, source: str = "auto",
                   result_id: str | None = None) -> dict:
@@ -65,15 +72,21 @@ def select_result(candidates: list[dict], *, source: str = "auto",
     return eligible[0]
 
 
-def figure_annotations(ds) -> list[str]:
+def figure_annotations(ds, result: dict | None = None) -> list[str]:
     """図へ載せる但し書きを返す（無ければ空）。
 
-    PNG はレポートへ貼られた後は単体で読まれる。「探索専用のデータから描いた」は
-    戻り値ではなく図の中に要る。
+    PNG はレポートへ貼られた後は単体で読まれる。「探索専用のデータから描いた」も
+    「群とバッチが交絡したまま未調整で解析した」も、戻り値ではなく図の中に要る。
+
+    `result` は任意（PCA 図など、比較の来歴を持たない図からは呼ばれない）。
     """
+    notes: list[str] = []
     if ds is not None and getattr(ds, "exploratory_only", False):
-        return [_EXPLORATORY_NOTE]
-    return []
+        notes.append(_EXPLORATORY_NOTE)
+    comparison_prov = ((result or {}).get("provenance") or {}).get("comparison") or {}
+    if comparison_prov.get("unadjusted_confounded"):
+        notes.append(_UNADJUSTED_CONFOUNDED_NOTE)
+    return notes
 
 
 def save_result_figure(ds, result: dict, path: Path, *, kind: str,
@@ -87,7 +100,7 @@ def save_result_figure(ds, result: dict, path: Path, *, kind: str,
 
     fig = _render(result, kind=kind, title=title)
     try:
-        notes = figure_annotations(ds)
+        notes = figure_annotations(ds, result)
         if notes:
             fig.text(0.5, 0.005, "\n".join(notes), ha="center", va="bottom",
                      fontsize=8, color="#a33")
