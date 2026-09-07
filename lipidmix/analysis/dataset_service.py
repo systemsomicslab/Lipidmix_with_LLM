@@ -40,29 +40,28 @@ __all__ = [
 ]
 
 
-def preprocess_dataset(ds, recipe: dict, *, request_revision: int | None = None) -> dict:
-    """前処理を適用し、成功したときだけ状態を差し替える。
+def _reusable_preprocess(ds, fingerprint: str) -> dict | None:
+    """同じ入力・同じレシピの前処理結果が既にあるならそれを返す（無ければ None）。
 
-    同値のレシピを同じ入力へ再適用した場合は**計算し直さず**、前回の結果と
-    result_id をそのまま返す（派生結果も生かしたまま）。同じ計算に別の ID を
-    付けると来歴が「別の実行」に見えるし、無関係な再計算を強いる。
-
-    Returns
-    -------
-    dict
-        `run_dataset_preprocess` の report に `provenance` を足したもの。
+    同値のレシピを同じ入力へ再適用した場合は**計算し直さない**。同じ計算に別の
+    ID を付けると来歴が「別の実行」に見えるし、無関係な再計算を強いる。
     """
-    metadata_hash = _metadata_hash(ds)
-    fingerprint = result_state.preprocess_fingerprint(ds, recipe, metadata_hash)
-
     current = ds.results.get(ds.preprocess_id) if ds.preprocess_id else None
     if (current is not None and ds.pp_matrix is not None
             and current["provenance"]["input_fingerprint"] == fingerprint):
         return current
+    return None
 
-    # ここから先が「新しい前処理」。計算は一時変数へ受け、全部成功してから反映する。
-    (pp_matrix, pp_sample_names, pp_feature_names,
-     roles, sample_meta, report) = run_dataset_preprocess(ds, recipe)
+
+def _commit_preprocess(ds, recipe: dict, computed: tuple, *, metadata_hash: str | None,
+                       fingerprint: str, request_revision: int | None) -> dict:
+    """計算済みの前処理結果を ds へ反映して登録する（whole-or-nothing の後半）。
+
+    `computed` は `run_dataset_preprocess` の戻り値そのもの。計算と反映を
+    分けてあるのは、呼び出し側（`preprocess_auto`）が反映の**前に**結果を
+    検査できるようにするため——検査で落ちれば ds は一切書き換わらない。
+    """
+    (pp_matrix, pp_sample_names, pp_feature_names, roles, sample_meta, report) = computed
 
     # 前処理をやり直した以上、前の行列から出た結果は全部古い。
     result_state.invalidate_results(ds, {"recipe"})
@@ -85,6 +84,30 @@ def preprocess_dataset(ds, recipe: dict, *, request_revision: int | None = None)
     return result_state.register_result(ds, result)
 
 
+def preprocess_dataset(ds, recipe: dict, *, request_revision: int | None = None) -> dict:
+    """前処理を適用し、成功したときだけ状態を差し替える。
+
+    同値のレシピを同じ入力へ再適用した場合は**計算し直さず**、前回の結果と
+    result_id をそのまま返す（派生結果も生かしたまま）。
+
+    Returns
+    -------
+    dict
+        `run_dataset_preprocess` の report に `provenance` を足したもの。
+    """
+    metadata_hash = _metadata_hash(ds)
+    fingerprint = result_state.preprocess_fingerprint(ds, recipe, metadata_hash)
+
+    reusable = _reusable_preprocess(ds, fingerprint)
+    if reusable is not None:
+        return reusable
+
+    # ここから先が「新しい前処理」。計算は一時変数へ受け、全部成功してから反映する。
+    computed = run_dataset_preprocess(ds, recipe)
+    return _commit_preprocess(ds, recipe, computed, metadata_hash=metadata_hash,
+                              fingerprint=fingerprint, request_revision=request_revision)
+
+
 def preprocess_auto(ds, requested: dict, metadata: list[dict], *,
                     request_revision: int | None = None) -> dict:
     """conservative-v1でレシピを解決し、検査してから前処理をcommitする（spec §8）。
@@ -99,16 +122,35 @@ def preprocess_auto(ds, requested: dict, metadata: list[dict], *,
     4. `check_applied_policy` でその結果を検査する。ここで例外なら ``ds`` の
        前処理系フィールドは一切書き換わっていない（前段の metadata 確定だけが
        残る——実験情報の確定自体は前処理の成否と独立に有効な情報のため）。
-    5. 検査を通ってはじめて Task 6 の `preprocess_dataset`（whole-or-nothingの
-       commitは再実装せずここへ委譲する）で本commitする。
+    5. 検査を通ってはじめて `_commit_preprocess` で本commitする。
+
+    **計算は1回だけ**。`preprocess_dataset` をそのまま呼ぶと、検査用に一度
+    計算した同じ行列を commit のためにもう一度計算することになる（間に ``ds``
+    の入力は何も変わらないので、二度目は結果まで同じ）——検体数×特徴量数の
+    行列に対する全量の重複計算で、得られるものは無い。ここでは
+    `preprocess_dataset` と同じ再利用判定・同じ commit 手順を、計算を1回に
+    畳んだ順序で組み立てる。
     """
     plan = resolve_policy(ds, requested, metadata)
     apply_metadata(ds, metadata)
+    recipe = plan["resolved_recipe"]
 
-    _, _, _, _, _, report = run_dataset_preprocess(ds, plan["resolved_recipe"])
-    check_applied_policy(plan, report)
+    metadata_hash = _metadata_hash(ds)
+    fingerprint = result_state.preprocess_fingerprint(ds, recipe, metadata_hash)
+    reusable = _reusable_preprocess(ds, fingerprint)
+    if reusable is not None:
+        # 同じ入力・同じレシピの結果がもう手元にある。検査だけはやり直す
+        # ——policy の解決が前回と同じ結論に達したことを確かめる材料は
+        # レポート（＝この結果）に全部入っている。
+        check_applied_policy(plan, reusable)
+        result = reusable
+    else:
+        computed = run_dataset_preprocess(ds, recipe)
+        check_applied_policy(plan, computed[-1])  # 6要素目が report
+        result = _commit_preprocess(ds, recipe, computed, metadata_hash=metadata_hash,
+                                    fingerprint=fingerprint,
+                                    request_revision=request_revision)
 
-    result = preprocess_dataset(ds, plan["resolved_recipe"], request_revision=request_revision)
     plan["applied_steps"] = list(result.get("recipe_applied", []))
     plan["result"] = result
     return plan
@@ -161,6 +203,11 @@ def compare_dataset(ds, group_a: list[str], group_b: list[str], *,
         parent_ids=[ds.preprocess_id] if ds.preprocess_id else [],
         warnings=list(result.get("caveats", [])),
         request_revision=request_revision)
+    # 群割当の指紋を来歴へ刻む。差次的結果だけは前処理・データセットが同じでも
+    # 「どの群割当で計算したか」で古くなる——群を訂正したあとにこの結果を
+    # result_id で名指しされたとき、`result_state.is_current` がここを読んで
+    # 拒否する（訂正前の数字が現在の条件のラベル付きで書き出されるのを防ぐ）。
+    result["provenance"]["group_fingerprint"] = result_state.group_fingerprint(ds)
     ds.last_differential = result
     return result_state.register_result(ds, result)
 

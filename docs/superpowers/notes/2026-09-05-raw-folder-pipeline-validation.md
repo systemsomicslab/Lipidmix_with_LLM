@@ -113,8 +113,11 @@ Task 20で解消した6件の文書ドリフトは、`.superpowers/sdd/2026-09-0
 ## 既知の制限（最終スコープ再レビューで判明。controller裁定により修正せず出荷）
 
 以下は「動作未確認」ではなく「現状の挙動を確認したうえで、このまま出荷する」と
-裁定された既知の制限。将来直す場合の見立ても添えるが、本タスクではコードを
-変更していない。
+裁定された既知の制限。将来直す場合の見立ても添えるが、本タスク（Task 20）では
+コードを変更していない。
+
+> **2026-09-07 追記**: このうち1件目（mid-run resume staleness）は後続の
+> レビュー修正で解消した。下記「2026-09-07 レビュー指摘の修正」を参照。
 
 - **resume中のrequest/planが古いまま進む（mid-run resume staleness）。**
   `engine._run_stage_loop`は`request`と`plan`をloop開始時に一度だけ読み、以降
@@ -148,3 +151,63 @@ Task 20で解消した6件の文書ドリフトは、`.superpowers/sdd/2026-09-0
 
 - 検証コマンドの実行者: 本タスク（Task 20）自身。実MS-DIAL・実データの実行は行っていない。
 - 詳細な報告: `.superpowers/sdd/2026-09-05-raw-folder-pipeline-integrity-and-metadata/task-20-report.md`
+
+## 2026-09-07 レビュー指摘の修正
+
+plan実装後のレビューで挙がった12件を修正した（それぞれ回帰テスト付き。
+テストは修正前のコードで実際に落ちることを確認してから追加している）。
+
+### 計画の中心要件（訂正・再開で結果を取り違えない）に関わるもの
+
+1. **稼働中workerが要求の訂正を取り違える**（上記「既知の制限」1件目、
+   `engine._run_stage_loop`）。stage境界ごとに最新recordを読み直し、要求版の
+   変化（`_request_identity`）と通過済みstageの差し戻し（`_resume_reset_seen`）を
+   観測したらstage計画を組み直してpassをやり直す（`runtime`は捨てる）。
+   停止せず同じworkerが続けるのは、稼働中workerがいる限り`resume_pipeline`が
+   新しいworkerを起こさないため。組み直しは有限回で、超えれば
+   `REQUEST_REVISION_CHURN`。
+2. **同じシートを書き直した訂正が無視される**（`recovery._stages_to_reset`）。
+   `resolve_metadata`がシートの内容hashを`record["inputs"]["manifest_source"]`
+   （`inputs.manifest_source_record`）へ残し、resumeはそれを今のファイルと
+   突き合わせる。パス文字列の比較だけでは書き直しが変更として現れない。
+3. **群の訂正後も旧差次的結果が「現在の結果」として通る**
+   （`result_state.is_current`）。差次的結果の来歴へ群割当の指紋
+   （`result_state.group_fingerprint`）を刻み、比較の群依存を照合する。
+   これで`dataset_export_differential`のdocstringが約束している拒否が実際に働く。
+4. **除外試料の未検出が検出率の分母に残る**（`dataset_analysis._apply_detection_filter`）。
+   include=falseの位置計算を`_included_sample_indices`へ一本化し、行列と検出
+   マスクの両方を同じ集合へ揃える。`min_detection_rate=1.0`が正当な特徴量を
+   削らなくなる。
+5. **定量列の欠けたmzTabがcompletedになる**（`console.validation.validate_outputs`）。
+   MTDのassay対応とSMFの`abundance_assay[N]`列を突き合わせ、
+   `ABUNDANCE_COLUMN_MISSING` / `ABUNDANCE_COLUMN_UNMAPPED`を返す。
+6. **正当な訂正のあとの再送が偽の破損を報告する**（`store._artifacts_verify`）。
+   成果物検証の対象を`current_result_refs`（output_nameごとの最後の1件。
+   `report._achieved_ref`と同じ規則）へ揃え、上書きされた旧refのhash不一致を
+   `RESULT_INTEGRITY_MISMATCH`と読まないようにした。
+
+### 副次的なもの
+
+7. 完了ゲートがentryとjobの宣言の食い違いを見ていなかった
+   （`validate_outputs`。下流の`select_primary_entry`はjobの宣言で選ぶため
+   「completedなのに読めない」出力になっていた）。
+8. 切り離し起動後に親が無条件で`running`と所有記録を書き、先に終わった
+   ワーカーの`completed`を潰していた（`console_tools.console_run`）。
+   状態が`planned`のときだけ書き、所有記録はワーカーが書いていなければ書く。
+9. ロック取得後にジョブ状態を再確認しておらず、同時`console_run`でMS-DIALが
+   二度走りえた（`console.worker.run_job` → `JOB_ALREADY_FINISHED`）。
+10. `owner_is_active`がidentityをstatusより先に見ており、同期実行の所有者
+    （MCPサーバ自身）が生きている限り`console_cleanup`が永久に`JOB_BUSY`だった。
+11. `PreconditionError`がengineの汎用例外分岐に落ち、Pythonのクラス名がcodeの
+    `failed`になっていた（`service.build_handlers`が全handlerを`_as_needs_input`で
+    包む。`_handle_pca`だけの個別回避を規則へ引き上げた）。
+12. spec §7.1の`analysis-request.json`探索と3段の優先順位が未実装だった
+    （`request.read_request_file` / `resolve_request`。`value_sources`に
+    `"request_file"`が入る）。
+
+あわせて、`preprocess_auto`が検査用とcommit用で同じ行列を2回計算していた
+（`dataset_service._reusable_preprocess` / `_commit_preprocess`へ分割し1回に畳んだ）。
+
+検証: `C:/Python314/python.exe -m pytest tests -q` → `1611 passed`
+（修正前は`1575 passed`。差分は本修正で追加した回帰テスト）。実MS-DIAL・実rawでの
+完走は本修正でも実施しておらず、上記「実データ実行未実施の範囲」はそのまま残る。

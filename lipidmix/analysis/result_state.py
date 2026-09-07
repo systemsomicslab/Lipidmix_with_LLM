@@ -28,6 +28,7 @@ __all__ = [
     "array_fingerprint",
     "assert_current",
     "dataset_fingerprint",
+    "group_fingerprint",
     "invalidate_results",
     "is_current",
     "metadata_fingerprints",
@@ -94,6 +95,24 @@ def metadata_fingerprints(rows: list[dict]) -> dict:
         fields.update(k for k in row if isinstance(k, str))
     return {field: canonical_hash([row.get(field) for row in ordered])
             for field in sorted(fields)}
+
+
+def group_fingerprint(ds) -> str:
+    """比較（差次的解析）の入力になる群割当の指紋。
+
+    前処理の指紋（`preprocess_fingerprint`）には `group` を混ぜない——群を
+    付け替えただけで前処理をやり直す羽目になるから。その代わり、群に依存する
+    結果（差次的解析）が「今の群割当から出たものか」を言えるように、群だけを
+    別の指紋にしてここへ分ける。
+
+    明示メタデータ（実験情報シート）が無いデータセットでは「群という入力が
+    無い」ことの指紋を返す。`sample_id` で整列してから見るので行の並び順には
+    依存しない（`metadata_fingerprints` と同じ規則）。
+    """
+    rows = getattr(ds, "sample_metadata_rows", None)
+    if not rows:
+        return canonical_hash({"group": None})
+    return canonical_hash({"group": metadata_fingerprints(rows).get("group")})
 
 
 def preprocess_fingerprint(ds, recipe: dict, metadata_hash: str | None = None) -> str:
@@ -173,6 +192,18 @@ def is_current(ds, result: dict) -> bool:
     証拠ではなく「調べる材料が無い」ということで、そこを False にすると、来歴を
     付ける前から動いていた経路（ARF の旧結果・手で組んだ結果）の図が一律に
     描けなくなる。来歴があるなら厳密に照合する。
+
+    照合は「その結果が何に依存しているか」で変わる。前処理・データセットの
+    一致だけを見ると、**群依存**の結果を取りこぼす: 群だけを訂正した場合、
+    前処理は正しく生き残る（`invalidate_results` が `last_differential` だけを
+    捨てる）ので、古い差次的結果は親の preprocess_id も dataset_id も
+    一致したままになる。`ds.results` に残っているそれを result_id で名指しすれば
+    「現在の結果」として通ってしまい、旧群の数字が現在の前処理条件のラベル付きで
+    書き出される——`dataset_export_differential` が拒否すると約束している当の
+    ケースがこれ。そこで差次的結果は群の指紋（`group_fingerprint`）まで見る。
+
+    群の指紋を持たない差次的結果（この検査より前に作られたもの・手で組んだ
+    もの）は、来歴無しと同じく「調べる材料が無い」として通す。
     """
     if not (result or {}).get("provenance"):
         return True
@@ -184,13 +215,18 @@ def is_current(ds, result: dict) -> bool:
         return False
     if prov.get("kind") == "preprocess":
         return prov.get("result_id") == getattr(ds, "preprocess_id", None)
+    if prov.get("kind") == "differential":
+        recorded_groups = prov.get("group_fingerprint")
+        if recorded_groups is not None and recorded_groups != group_fingerprint(ds):
+            return False
     return True
 
 
 def assert_current(ds, result: dict) -> None:
     """古い結果の利用を止める。理由は機械可読に返す。
 
-    黙って使わせると、図と TSV が別々の前処理から出た数字を並べる。
+    黙って使わせると、図と TSV が別々の前処理から出た数字を並べる（群だけを
+    訂正した場合も同じで、旧群の数字が現在の条件の顔をして出て行く）。
     """
     if is_current(ds, result):
         return
@@ -203,4 +239,6 @@ def assert_current(ds, result: dict) -> None:
          "result_dataset_id": prov.get("dataset_id"),
          "dataset_id": getattr(ds, "dataset_id", None),
          "result_parent_ids": prov.get("parent_ids"),
-         "preprocess_id": getattr(ds, "preprocess_id", None)})
+         "preprocess_id": getattr(ds, "preprocess_id", None),
+         "result_group_fingerprint": prov.get("group_fingerprint"),
+         "group_fingerprint": group_fingerprint(ds)})

@@ -560,3 +560,106 @@ def test_permitted_explicit_nulls_still_work(tmp_path):
     released_again = merge_updates(released, {"sample_manifest": None})
     assert released_again["sample_manifest"] is None
     assert released_again["value_sources"]["sample_manifest"] == "explicit_update"
+
+
+# ---------- analysis-request.json の探索と3段の優先順位（spec §7.1） ----------
+
+def _source_with_request_file(tmp_path, payload) -> "Path":
+    import json
+    from pathlib import Path
+
+    from lipidmix.pipeline.request import REQUEST_FILE_NAME
+
+    root = tmp_path / "source"
+    root.mkdir(exist_ok=True)
+    text = payload if isinstance(payload, str) else json.dumps(payload)
+    (root / REQUEST_FILE_NAME).write_text(text, encoding="utf-8")
+    return Path(root)
+
+
+def test_the_request_file_is_used_when_nothing_is_specified(tmp_path):
+    """元フォルダ直下に置いた要求ファイルが、既定値より優先される。"""
+    root = _source_with_request_file(tmp_path, {
+        "polarity": "positive", "timeout_s": 60,
+        "preprocess": {"normalize": "pqn", "impute": "knn"},
+        "comparisons": [{"comparison_id": "cmp1", "reference_group": "control",
+                         "test_group": "treated"}]})
+
+    request = resolve_request(root)
+
+    assert request["polarity"] == "positive"
+    assert request["timeout_s"] == 60
+    assert request["preprocess"]["normalize"] == "pqn"
+    assert request["effective_target"] == "differential"   # 比較があるので自動判定も効く
+    assert request["value_sources"]["polarity"] == "request_file"
+    assert request["value_sources"]["preprocess"]["normalize"] == "request_file"
+    assert request["value_sources"]["measure"] == "default"
+
+
+def test_an_explicit_value_beats_the_request_file(tmp_path):
+    """MCPで明示した値 > analysis-request.json（spec §7.1の優先順位）。"""
+    root = _source_with_request_file(tmp_path, {"polarity": "positive", "timeout_s": 60})
+
+    request = resolve_request(root, {"polarity": "negative"})
+
+    assert request["polarity"] == "negative"
+    assert request["timeout_s"] == 60           # 明示していない側はファイルのまま
+    assert request["value_sources"]["polarity"] == "explicit"
+    assert request["value_sources"]["timeout_s"] == "request_file"
+
+
+def test_preprocess_is_layered_per_sub_key(tmp_path):
+    """preprocessは子キー単位で重ねる（片方が丸ごと消えない）。"""
+    root = _source_with_request_file(
+        tmp_path, {"preprocess": {"normalize": "pqn", "impute": "knn"}})
+
+    request = resolve_request(root, {"preprocess": {"impute": "none"}})
+
+    assert request["preprocess"]["normalize"] == "pqn"     # ファイル由来が生き残る
+    assert request["preprocess"]["impute"] == "none"       # 明示が勝つ
+    assert request["value_sources"]["preprocess"]["normalize"] == "request_file"
+    assert request["value_sources"]["preprocess"]["impute"] == "explicit"
+    assert request["value_sources"]["preprocess"]["max_qc_rsd"] == "default"
+
+
+def test_a_request_file_value_participates_in_the_fingerprint(tmp_path):
+    """ファイル由来でも最終的な値が違えば別の要求（受付の冪等性判定の土台）。"""
+    with_file = resolve_request(_source_with_request_file(tmp_path, {"timeout_s": 60}))
+    plain_root = tmp_path / "plain"
+    plain_root.mkdir()
+    assert request_fingerprint(with_file) != request_fingerprint(resolve_request(plain_root))
+
+
+def test_a_broken_request_file_is_rejected_not_ignored(tmp_path):
+    """壊れたJSONを黙って無視すると、利用者は自分の指定で走ったと思い込む。"""
+    root = _source_with_request_file(tmp_path, "{ not json")
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve_request(root)
+
+
+def test_an_unknown_key_in_the_request_file_is_rejected(tmp_path):
+    root = _source_with_request_file(tmp_path, {"targett": "exploratory"})
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve_request(root)
+
+
+def test_a_non_object_request_file_is_rejected(tmp_path):
+    root = _source_with_request_file(tmp_path, ["exploratory"])
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve_request(root)
+
+
+def test_a_disallowed_null_in_the_request_file_is_rejected(tmp_path):
+    """nullは「無効化」を意味する設定だけの語彙（明示値と同じ規則を課す）。"""
+    root = _source_with_request_file(tmp_path, {"method_file": None})
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve_request(root)
+
+
+def test_no_request_file_keeps_the_previous_defaults(tmp_path):
+    """ファイルが無ければ従来どおり既定値だけで解決する。"""
+    root = tmp_path / "source"
+    root.mkdir()
+    request = resolve_request(root)
+    assert request["timeout_s"] == 21600
+    assert request["value_sources"]["timeout_s"] == "default"

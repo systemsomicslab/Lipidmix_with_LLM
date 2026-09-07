@@ -105,6 +105,29 @@ def _pp_inputs_from_explicit_metadata(sample_names: list[str], rows: list[dict])
     return roles, sample_meta
 
 
+def _included_sample_indices(ds) -> list[int] | None:
+    """明示メタデータで include=true の試料が占める ds.sample_names 上の位置。
+
+    None は「絞り込む必要が無い」——明示メタデータが無い、行数が合わない
+    （`build_dataset_pp_inputs` が別途 PreconditionError にする）、あるいは
+    全件 include=true の場合。
+
+    include=false の除外は行列（`build_dataset_pp_inputs`）と検出マスク
+    （`_apply_detection_filter`）の**両方**に効かせる必要があるので、位置の
+    計算はここ 1 か所に置く。片方だけに効かせると、除外した試料の未検出が
+    残ったまま検出率が計算され、min_detection_rate=1.0 が正当な特徴量を
+    削り落とす。
+    """
+    rows = getattr(ds, "sample_metadata_rows", None)
+    if not rows:
+        return None
+    sample_names = list(getattr(ds, "sample_names", []) or [])
+    if len(rows) != len(sample_names):
+        return None
+    keep = [i for i, row in enumerate(rows) if row.get("include", True)]
+    return keep if len(keep) != len(rows) else None
+
+
 def build_dataset_pp_inputs(ds):
     """DatasetState から preprocessing.preprocess() の引数を組む。
 
@@ -171,8 +194,8 @@ def build_dataset_pp_inputs(ds):
         # （controller裁定R15・レビュー Finding 1）。
         # roles/sample_meta の写像自体は削らない——除外理由の監査・表示
         # （dataset_status 等）は全件分の役割を必要とするため。
-        keep_idx = [i for i, row in enumerate(explicit_rows) if row.get("include", True)]
-        if len(keep_idx) != len(sample_names):
+        keep_idx = _included_sample_indices(ds)
+        if keep_idx is not None:
             matrix = matrix[keep_idx, :]
             sample_names = [sample_names[i] for i in keep_idx]
         return matrix, sample_names, feature_names, roles, sample_meta
@@ -230,7 +253,8 @@ def run_dataset_preprocess(ds, recipe: dict):
     # 検出率フィルタは前処理より前に掛ける。正規化・補完のあとでは gap-fill セルが
     # 実測値と区別できなくなり、「何を根拠に残したか」が言えなくなる。
     matrix, feature_names, detection_report = _apply_detection_filter(
-        ds, matrix, feature_names, recipe.get("min_detection_rate"))
+        ds, matrix, feature_names, recipe.get("min_detection_rate"),
+        sample_indices=_included_sample_indices(ds))
 
     run_order = {n: sample_meta[n]["run_order"] for n in sample_names}
 
@@ -484,11 +508,34 @@ def run_dataset_differential(
 # ---------- 内部ヘルパ ----------
 
 
-def _apply_detection_filter(ds, matrix, feature_names, min_detection_rate):
+def _restrict_mask_to_samples(ds, mask, sample_indices):
+    """検出マスク (特徴 × サンプル) の列を、解析に残す試料だけへ絞る。
+
+    `sample_indices` が None、マスクが 2 次元でない、列数が `ds.sample_names` と
+    合わない（＝並びの対応を保証できない）場合は絞らずそのまま返す。列の対応が
+    言えないマスクを位置で切ると、別の試料の検出状態を数えることになる。
+    """
+    arr = np.asarray(mask)
+    if sample_indices is None or arr.ndim != 2:
+        return arr
+    if arr.shape[1] != len(list(getattr(ds, "sample_names", []) or [])):
+        return arr
+    return arr[:, list(sample_indices)]
+
+
+def _apply_detection_filter(ds, matrix, feature_names, min_detection_rate, *,
+                           sample_indices=None):
     """実検出率（gap-fill を除く）で特徴量を足切りし、検出状況を報告する。
 
     `matrix` は (サンプル × 特徴)、`ds.detected_mask` は (特徴 × サンプル) の並び。
     足切りは列（特徴）に対して行う。
+
+    `sample_indices`（`_included_sample_indices`）を渡すと、マスクの列も
+    その試料だけへ絞ってから検出率を数える。**絞らないと、解析から除外した
+    試料（include=false）の未検出が検出率を押し下げる**——`matrix` 側は
+    `build_dataset_pp_inputs` が既に include=true だけにしているのに、分母だけ
+    全試料のままになり、`min_detection_rate=1.0` が「残す試料では全件検出
+    されている」正当な特徴量を削り落とす。
 
     検出状態が無いのに閾値を渡された場合は例外にする。0 扱いで通すと「gap-fill
     だけの特徴を実測として数えた行列」が黙って下流に流れるため。
@@ -510,6 +557,7 @@ def _apply_detection_filter(ds, matrix, feature_names, min_detection_rate):
             )
         return matrix, feature_names, {}
 
+    mask = _restrict_mask_to_samples(ds, mask, sample_indices)
     rates = preprocessing.detection_rates(mask)
     n_cells = int(mask.size)
     n_detected = int(mask.sum())
@@ -518,6 +566,8 @@ def _apply_detection_filter(ds, matrix, feature_names, min_detection_rate):
         "n_cells": n_cells,
         "n_detected": n_detected,
         "gap_filled_rate": round(1.0 - n_detected / n_cells, 4) if n_cells else None,
+        # 何試料分を数えたか。include=false を除いた場合、全試料数とは一致しない。
+        "n_samples": int(np.asarray(mask).shape[1]) if np.asarray(mask).ndim == 2 else None,
     }}
     if not requested:
         return matrix, feature_names, report

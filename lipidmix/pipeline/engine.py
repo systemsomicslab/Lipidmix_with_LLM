@@ -299,6 +299,12 @@ def make_context(record: dict, stage: dict, runtime: dict, request: dict) -> dic
 #: 同じ考え方（有限回で十分吸収できる。無関係な同時更新でworkerを殺さない）。
 _STATE_SAVE_MAX_ATTEMPTS = 5
 
+#: 要求版の変化を検知してstage計画を組み直す上限（`_run_stage_loop`）。
+#: 実運用で人が訂正を重ねても数回で収まる。ここに達するのは、要求の更新が
+#: 途切れずに届き続けてworkerが1passも完走できない状態だけで、そのときは
+#: 黙って回り続けるより止めて知らせるほうが正しい。
+_REQUEST_RELOAD_MAX_PASSES = 20
+
 
 def _save_with_retry(pipeline_path: Path, record: dict, apply_change) -> dict:
     """`apply_change(record) -> record`を保存し、状態競合は読み直して再適用する。
@@ -595,36 +601,109 @@ def _stage_order(record: dict, plan: dict) -> list[str]:
     return ordered
 
 
+def _request_identity(record: dict) -> tuple:
+    """「今どの要求版を実行しているか」を表す最小の識別子。
+
+    `state_revision`は使わない——無関係な同時更新（`pipeline_status`の
+    probe・取消フラグの保存）でも進むため、これで再計画すると要求が
+    変わっていないのにstage loopを何度も組み直すことになる。
+    """
+    request_meta = record.get("request") or {}
+    return (request_meta.get("revision"), request_meta.get("content_hash"),
+            request_meta.get("saved_path"))
+
+
+def _resume_reset_seen(record: dict, visited: list[str]) -> bool:
+    """このpassで既に通過したstageが、外から`pending`へ戻されたかを返す。
+
+    `prepare_resume`は`rerun_upstream=True`や比較の訂正で該当stageを
+    `pending`へ戻すが、要求内容そのものは変わらないことがある
+    （`rerun_upstream`だけの再開）。要求版の変化だけを見ていると、
+    その差し戻しを見ないまま先へ進み、古い前提のまま後続stageを
+    `succeeded`にしてしまう。
+    """
+    stages = record.get("stages") or {}
+    return any((stages.get(sid) or {}).get("status") == "pending" for sid in visited)
+
+
 def _run_stage_loop(pipeline_path: Path, handlers: dict) -> dict:
+    """要求版が変わっていないことを**stage境界ごとに**確かめながら1回分進める。
+
+    要求（`pipeline-request.v1`）はloop開始時に1回読むだけでは足りない。
+    workerが稼働している間に届いた`pipeline_resume`は——`prepare_resume`が
+    「稼働中workerがいるならstatusを動かさない」規則を持つため——
+    `pipeline_run.json`のrevisionと保存済み要求だけを差し替えて戻ってくる
+    （`resume_pipeline`はstatusが`planned`でないので新しいworkerを起こさない）。
+    このとき走り続けているworkerが**旧revisionの条件で計算した結果**を
+    新revisionの結果として`succeeded`にすると、群の訂正が結果へ反映されないまま
+    completedになる——planの中心要件（訂正・再開で結果を取り違えない）に
+    正面から反する。
+
+    そこで各stageの直前に最新recordを読み、要求版（`_request_identity`）か
+    既に通過したstageの差し戻し（`_resume_reset_seen`）を観測したら、
+    **その場でstage計画を組み直してpassをやり直す**。停止して次のresumeを
+    待つのではなくこのworkerが続けるのは、稼働中workerがいる限り
+    `resume_pipeline`が新しいworkerを起こさない（＝誰も再開しない）ため。
+
+    `runtime`はpassをやり直すとき必ず捨てる。`DatasetState`も
+    `runtime["differential"]`のキャッシュも旧要求の条件（旧シート・旧群割当）で
+    組み立てられており、これを引き継ぐと「新しい要求で計算した」と称して
+    古い数字を書き出すことになる。捨てても`_ALWAYS_RECONSTRUCT_STAGE_IDS`が
+    load_dataset〜pcaを必ず呼び直すので、次のpassで作り直される。
+    """
     record = store.load_run(pipeline_path)
     request = _load_request(pipeline_path, record)
-    plan = {entry["stage_id"]: entry for entry in build_stages(request)}
+    identity = _request_identity(record)
     runtime: dict = {}
 
-    for stage_id in _stage_order(record, plan):
-        entry = plan.get(stage_id)
-        if entry is None:
-            record = _mark_out_of_scope(pipeline_path, record, stage_id)
-            continue
+    for _ in range(_REQUEST_RELOAD_MAX_PASSES):
+        plan = {entry["stage_id"]: entry for entry in build_stages(request)}
+        visited: list[str] = []
+        restarted = False
 
-        stage = record["stages"][stage_id]
-        if (stage["status"] in {"succeeded", "skipped"}
-                and stage_inputs_unchanged(stage, pipeline_root=pipeline_path)):
-            continue
+        for stage_id in _stage_order(record, plan):
+            latest = store.load_run(pipeline_path)
+            if _request_identity(latest) != identity or _resume_reset_seen(latest, visited):
+                record = latest
+                request = _load_request(pipeline_path, latest)
+                identity = _request_identity(latest)
+                runtime.clear()
+                restarted = True
+                break
+            record = latest
+            visited.append(stage_id)
 
-        if cancel_requested(pipeline_path):
-            return finish_cancelled(pipeline_path, record)
+            entry = plan.get(stage_id)
+            if entry is None:
+                record = _mark_out_of_scope(pipeline_path, record, stage_id)
+                continue
 
-        record = mark_stage_running(pipeline_path, record, stage)
-        stage = record["stages"][stage_id]
-        context = make_context(record, stage, runtime, request)
-        outcome = _invoke_handler(handlers[entry["handler"]], context)
-        record = commit_stage_outcome(pipeline_path, record, stage, outcome)
+            stage = record["stages"][stage_id]
+            if (stage["status"] in {"succeeded", "skipped"}
+                    and stage_inputs_unchanged(stage, pipeline_root=pipeline_path)):
+                continue
 
-        if outcome["status"] in {"needs_input", "failed"}:
-            return finish_interrupted(pipeline_path, record, {**outcome, "stage_id": stage_id})
+            if cancel_requested(pipeline_path):
+                return finish_cancelled(pipeline_path, record)
 
-    return finish_success(pipeline_path, record)
+            record = mark_stage_running(pipeline_path, record, stage)
+            stage = record["stages"][stage_id]
+            context = make_context(record, stage, runtime, request)
+            outcome = _invoke_handler(handlers[entry["handler"]], context)
+            record = commit_stage_outcome(pipeline_path, record, stage, outcome)
+
+            if outcome["status"] in {"needs_input", "failed"}:
+                return finish_interrupted(pipeline_path, record,
+                                          {**outcome, "stage_id": stage_id})
+
+        if not restarted:
+            return finish_success(pipeline_path, record)
+
+    raise DomainError(
+        "REQUEST_REVISION_CHURN",
+        f"要求の更新が続いて工程計画が{_REQUEST_RELOAD_MAX_PASSES}回組み直されました。"
+        f"更新を止めてから再開してください: {pipeline_path}",
+        {"pipeline_root": str(pipeline_path)})
 
 
 def _record_worker_identity(pipeline_path: Path) -> None:

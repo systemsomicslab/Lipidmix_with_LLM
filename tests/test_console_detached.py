@@ -384,3 +384,128 @@ def test_console_status_reads_a_legacy_v1_job_without_rewriting_it(tmp_path):
     assert parsed["mztab_files"][0]["root"] == "run_dir"
     assert "execution_receipt" not in parsed  # 証跡が無いものを作り出さない
     assert _json.loads(job_path.read_text(encoding="utf-8")) == original
+
+
+# ---------- 先に終わったワーカーの結果を親が潰さない（レビュー指摘P2） ----------
+
+def test_console_run_detach_does_not_overwrite_a_worker_that_already_finished(
+        tmp_path, monkeypatch):
+    """起動直後に走り切ったワーカーの completed を、親が running で上書きしない。
+
+    `console_status` は読取専用なので、ここで潰された状態は誰も直せない
+    ——終わっている実行が永久に running のまま残る。
+    """
+    from lipidmix.console.job_manager import update_status
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned(tmp_path, monkeypatch)
+
+    def _fast_worker(command, *, cwd, log_path):
+        # 起動したワーカーが、親が戻るより先に走り切った状況。
+        update_status(job_path, "running")
+        update_status(job_path, "completed")
+        return {"pid": 31337, "identity": {"pid": 31337, "creation_time": 11},
+                "breakaway": "not_in_job", "log_path": str(log_path)}
+
+    monkeypatch.setattr("lipidmix.console.worker.launch_detached", _fast_worker)
+
+    parsed = _json.loads(console_run(str(job_path), detach=True))
+
+    assert load_job(job_path).status == "completed"
+    assert parsed["status"] == "completed"
+    assert parsed["pid"] == 31337          # 起動した事実は変わらず返す
+
+
+def test_console_run_detach_does_not_overwrite_the_owner_written_by_the_worker(
+        tmp_path, monkeypatch):
+    """ワーカーが自分の identity を書いていたら、親の pid 記録で上書きしない。"""
+    from lipidmix.console import worker as console_worker
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned(tmp_path, monkeypatch)
+    run_dir = _run_dir(job_path)
+
+    def _worker_that_claims_ownership(command, *, cwd, log_path):
+        console_worker.write_owner(run_dir, {
+            "kind": console_worker.OWNER_KIND_CONSOLE, "pid": 999,
+            "identity": {"pid": 999, "creation_time": 5},
+            "job_path": str(job_path), "status": "running"})
+        return {"pid": 31337, "identity": {"pid": 31337, "creation_time": 11},
+                "breakaway": "not_in_job", "log_path": str(log_path)}
+
+    monkeypatch.setattr("lipidmix.console.worker.launch_detached",
+                        _worker_that_claims_ownership)
+
+    console_run(str(job_path), detach=True)
+
+    assert console_worker.read_owner(run_dir)["pid"] == 999
+
+
+# ---------- 二重実行と所有の解除（レビュー指摘P2） ----------
+
+def test_run_job_refuses_a_job_that_another_process_already_finished(tmp_path, monkeypatch):
+    """ロック待ちの間に先行プロセスが走り切っていたら、MS-DIAL を二度起動しない。"""
+    from lipidmix.console import worker as console_worker
+    from lipidmix.console.job_manager import update_status
+    from lipidmix.core.atomic_io import DomainError
+
+    job_path = _planned(tmp_path, monkeypatch)
+    _prime_supervision(job_path)
+    update_status(job_path, "completed")
+
+    def _never(*args, **kwargs):
+        raise AssertionError("完了済みジョブで Console を起動してはいけない")
+
+    monkeypatch.setattr("lipidmix.console.worker.supervise", _never)
+
+    with pytest.raises(DomainError) as excinfo:
+        console_worker.run_job(job_path)
+    assert excinfo.value.code == "JOB_ALREADY_FINISHED"
+    assert load_job(job_path).status == "completed"   # 勝者の状態を壊さない
+
+
+def test_console_run_reports_an_already_finished_job_without_touching_its_state(
+        tmp_path, monkeypatch):
+    """同時に届いた2本目の console_run は、勝者の終端状態を failed で塗り替えない。"""
+    from lipidmix.console.job_manager import update_status
+    from lipidmix.tools.console_tools import console_run
+
+    job_path = _planned(tmp_path, monkeypatch)
+    _prime_supervision(job_path)
+
+    def _finish_first(job_path_arg, *, command=None):
+        # ロックを取るまでの間に先行プロセスが走り切っていた、という筋書き。
+        from lipidmix.core.atomic_io import DomainError
+        update_status(job_path, "completed")
+        raise DomainError("JOB_ALREADY_FINISHED", "既に実行を終えています",
+                          {"status": "completed"})
+
+    monkeypatch.setattr("lipidmix.console.worker.run_job", _finish_first)
+
+    parsed = _json.loads(console_run(str(job_path)))
+
+    assert parsed["error"]["code"] == "JOB_NOT_PLANNED"
+    assert load_job(job_path).status == "completed"
+
+
+def test_owner_is_released_when_the_run_finishes_in_this_process(tmp_path, monkeypatch):
+    """同期実行の所有者は MCP サーバ自身。終わったあとも生きているのは当然で、
+    それを「まだ実行中」と読むと console_cleanup が永久に JOB_BUSY になる。
+    """
+    import os
+
+    from lipidmix.console import worker as console_worker
+    from lipidmix.core.process_control import process_identity
+
+    job_path = _planned(tmp_path, monkeypatch)
+    run_dir = _run_dir(job_path)
+    identity = process_identity(os.getpid())
+    console_worker.write_owner(run_dir, {
+        "kind": console_worker.OWNER_KIND_CONSOLE, "pid": identity["pid"],
+        "identity": identity, "job_path": str(job_path), "status": "running"})
+    assert console_worker.owner_is_active(run_dir) is True
+
+    console_worker.clear_owner(run_dir)
+
+    assert console_worker.owner_is_active(run_dir) is False
+    assert console_worker.owner_summary(run_dir)["status"] == "finished"

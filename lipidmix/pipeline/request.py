@@ -27,6 +27,15 @@
 ``merge_updates`` がその戻り値（＝保存され読み戻された「既存値」）へ
 新しい明示値を重ねる、という形でこの3段が表現される。
 
+初回解決（``resolve_request``）の「既定値」の手前には、もう1段
+**元フォルダ直下の ``analysis-request.json``**（spec §7.1「要求値の優先順位は
+MCPで明示した値 > analysis-request.json > 本specの既定」）が入る。ファイルの
+値は ``value_sources`` で ``"request_file"`` として区別され、MCPで明示した値が
+あればそちらが勝つ。ファイルの不正（JSONとして壊れている・オブジェクトでない・
+未知キー・不許可のnull）は明示値と同じ土俵で ``PIPELINE_REQUEST_INVALID``
+にする——「置いてあるのに黙って無視された」という一番わかりにくい失敗を
+作らない。
+
 不正JSON・未知キー・不正値はこの場でDomainError（コード
 ``PIPELINE_REQUEST_INVALID``）にする。上流情報が単に「まだ無い」ケースを
 ``missing_state`` 風の封筒に化けさせて同じ呼び出しを無限反復させるのは
@@ -36,6 +45,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import re
 from pathlib import Path
@@ -43,8 +53,10 @@ from pathlib import Path
 from lipidmix.core.atomic_io import DomainError, canonical_hash
 
 __all__ = [
+    "REQUEST_FILE_NAME",
     "SCHEMA",
     "UPDATABLE",
+    "read_request_file",
     "merge_updates",
     "request_fingerprint",
     "resolve_request",
@@ -52,6 +64,10 @@ __all__ = [
 ]
 
 SCHEMA = "pipeline-request.v1"
+
+#: 元フォルダ直下から探す任意の要求ファイル（spec §7.1）。存在すれば
+#: 「MCPで明示した値 > analysis-request.json > 本specの既定」の中段になる。
+REQUEST_FILE_NAME = "analysis-request.json"
 
 #: resumeで変更可能なトップレベルキー（spec §10.1: 「resumeで変更可能なのは
 #: target、sample_manifest、preprocess、comparisonsに限定する」）。
@@ -209,16 +225,6 @@ def _validate_preprocess(preprocess: object) -> dict:
               min_detection_rate=min_detection_rate)
 
     return merged
-
-
-def _preprocess_sources(explicit_preprocess: object) -> dict:
-    """preprocessの子キーごとの出所（explicit/default）を返す。
-
-    型が不正な場合でも例外を投げない（後続の``_validate_preprocess``が
-    正しく拒否するので、ここでは安全側に倒して"default"扱いにするだけでよい）。
-    """
-    keys = explicit_preprocess if isinstance(explicit_preprocess, dict) else {}
-    return {key: ("explicit" if key in keys else "default") for key in _PREPROCESS_KEYS}
 
 
 # ---------- comparisons ----------
@@ -431,17 +437,95 @@ def validate_request(data: dict, *, internal: bool = False,
     return data
 
 
-def resolve_request(source_root: Path, explicit: dict | None = None) -> dict:
-    """要求を既定値で解決し、``value_sources``/``effective_target``を付けて返す。
+def read_request_file(source_root: Path) -> dict:
+    """元フォルダ直下の``analysis-request.json``を読む（無ければ空dict、spec §7.1）。
 
-    ``source_root``はTask 13/14以降が相対パス（method_file・sample_manifest等）
-    を実解決する基準として持ち回るためだけに受け取る——このtask自体は
-    パス脱出検証をsource_root基準では行わない（comparison_idを除く各パス系
-    フィールドは、相対と絶対のどちらも許す。spec §10.1の例で``method_file``に
-    ラボ共有フォルダの絶対パスが使われている通り、source_rootの外を指す
-    正当なケースがあるため）。
+    存在するのに読めない・JSONとして壊れている・オブジェクトでない・未知キーを
+    持つ場合は``PIPELINE_REQUEST_INVALID``。「置いてあるのに黙って無視された」
+    が一番危ない失敗——利用者は自分が書いた条件で走ったと思い込む。
+
+    値そのものの検証（型・範囲・列挙値）はここではしない。明示値と重ねた
+    あとに``validate_request``が1か所で行う。
     """
-    source_root = Path(source_root)  # 型を揃えるだけ（未使用に見えるが公開契約）。
+    path = Path(source_root) / REQUEST_FILE_NAME
+    if not path.is_file():
+        return {}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _fail(f"{REQUEST_FILE_NAME}を読めません: {exc}", path=str(path))
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        _fail(f"{REQUEST_FILE_NAME}がJSONとして壊れています: {exc}", path=str(path))
+    if not isinstance(data, dict):
+        _fail(f"{REQUEST_FILE_NAME}はオブジェクトである必要があります。",
+              path=str(path), value=data)
+    unknown = set(data) - _TOP_LEVEL_KEYS
+    if unknown:
+        _fail(f"{REQUEST_FILE_NAME}に未知のキーがあります: {sorted(unknown)}",
+              path=str(path), unknown_keys=sorted(unknown))
+    _reject_disallowed_explicit_null(data, _NULL_REJECTED_TOP_LEVEL_KEYS)
+    return data
+
+
+def _layer_sources(explicit: dict, from_file: dict) -> dict:
+    """トップレベル各キーの出所（explicit/request_file/default）を返す。"""
+    sources = {}
+    for key in _TOP_LEVEL_KEYS:
+        if key in explicit:
+            sources[key] = "explicit"
+        elif key in from_file:
+            sources[key] = "request_file"
+        else:
+            sources[key] = "default"
+    return sources
+
+
+def _layer_preprocess(explicit: dict, from_file: dict) -> tuple:
+    """preprocessを子キー単位で重ね、(値, 子キーごとの出所)を返す。
+
+    どちらか一方でもdictでなければ重ねずに優先順位だけで選ぶ——不正な型は
+    ``_validate_preprocess``が1か所で拒否する。
+    """
+    explicit_pp = explicit.get("preprocess")
+    file_pp = from_file.get("preprocess")
+    if isinstance(explicit_pp, dict) and isinstance(file_pp, dict):
+        merged = {**file_pp, **explicit_pp}
+    elif "preprocess" in explicit:
+        merged = explicit_pp
+    else:
+        merged = file_pp
+
+    explicit_keys = explicit_pp if isinstance(explicit_pp, dict) else {}
+    file_keys = file_pp if isinstance(file_pp, dict) else {}
+    sources = {}
+    for key in _PREPROCESS_KEYS:
+        if key in explicit_keys:
+            sources[key] = "explicit"
+        elif key in file_keys:
+            sources[key] = "request_file"
+        else:
+            sources[key] = "default"
+    return merged, sources
+
+
+def resolve_request(source_root: Path, explicit: dict | None = None) -> dict:
+    """要求を解決し、``value_sources``/``effective_target``を付けて返す。
+
+    優先順位は「MCPで明示した値 > 元フォルダ直下の``analysis-request.json``
+    > 本specの既定」（spec §7.1）。``preprocess``だけは子キー単位で重ねる
+    ——ファイルで``normalize``を決め、MCPでは``min_detection_rate``だけを
+    上書きする、という現実的な使い方で、片方が丸ごと消える形にしない。
+
+    ``source_root``は``analysis-request.json``の探索基準であり、Task 13/14以降が
+    相対パス（method_file・sample_manifest等）を実解決する基準として持ち回る
+    値でもある——このtask自体はパス脱出検証をsource_root基準では行わない
+    （comparison_idを除く各パス系フィールドは、相対と絶対のどちらも許す。
+    spec §10.1の例で``method_file``にラボ共有フォルダの絶対パスが使われている
+    通り、source_rootの外を指す正当なケースがあるため）。
+    """
+    source_root = Path(source_root)
     explicit = explicit if explicit is not None else {}
     if not isinstance(explicit, dict):
         _fail("requestはオブジェクトである必要があります。", value=explicit)
@@ -454,28 +538,35 @@ def resolve_request(source_root: Path, explicit: dict | None = None) -> dict:
     # ——このあとdataを組み立てる時点で両者は同じNoneへ潰れる(R13)。
     _reject_disallowed_explicit_null(explicit, _NULL_REJECTED_TOP_LEVEL_KEYS)
 
+    from_file = read_request_file(source_root)
+
+    def _pick(key: str, default=None):
+        """明示値 > ファイル値 > 既定値。キーの有無で選ぶ（値がNoneでも明示は明示）。"""
+        if key in explicit:
+            return explicit[key]
+        if key in from_file:
+            return from_file[key]
+        return default
+
+    preprocess, preprocess_sources = _layer_preprocess(explicit, from_file)
     data = {
-        "schema": explicit.get("schema", SCHEMA),
-        "target": explicit.get("target", "auto"),
-        "method_file": explicit.get("method_file"),
-        "lbm_file": explicit.get("lbm_file"),
-        "polarity": explicit.get("polarity"),
-        "measure": explicit.get("measure", "peak_height"),
-        "keep_extension": explicit.get("keep_extension"),
-        "timeout_s": explicit.get("timeout_s", _DEFAULT_TIMEOUT_S),
-        "save_project": explicit.get("save_project", True),
-        "output_root": explicit.get("output_root"),
-        "sample_manifest": explicit.get("sample_manifest"),
-        "preprocess": explicit.get("preprocess"),
-        "comparisons": explicit.get("comparisons"),
+        "schema": _pick("schema", SCHEMA),
+        "target": _pick("target", "auto"),
+        "method_file": _pick("method_file"),
+        "lbm_file": _pick("lbm_file"),
+        "polarity": _pick("polarity"),
+        "measure": _pick("measure", "peak_height"),
+        "keep_extension": _pick("keep_extension"),
+        "timeout_s": _pick("timeout_s", _DEFAULT_TIMEOUT_S),
+        "save_project": _pick("save_project", True),
+        "output_root": _pick("output_root"),
+        "sample_manifest": _pick("sample_manifest"),
+        "preprocess": preprocess,
+        "comparisons": _pick("comparisons"),
     }
 
-    value_sources = {
-        key: ("explicit" if key in explicit else "default")
-        for key in _TOP_LEVEL_KEYS if key not in ("preprocess", "comparisons")
-    }
-    value_sources["preprocess"] = _preprocess_sources(explicit.get("preprocess"))
-    value_sources["comparisons"] = "explicit" if "comparisons" in explicit else "default"
+    value_sources = _layer_sources(explicit, from_file)
+    value_sources["preprocess"] = preprocess_sources
 
     validated = validate_request(data, internal=False)
     validated["value_sources"] = value_sources

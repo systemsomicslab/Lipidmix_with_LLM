@@ -782,3 +782,65 @@ def test_two_processes_different_output_root_still_serialize_index_writes(tmp_pa
     # （非アトミックなread-modify-writeで負けた側のentryが失われていないか）。
     recorded_paths = {e["pipeline_root"] for e in index_data["entries"]}
     assert recorded_paths == paths
+
+
+# ---------- 訂正で上書きされた旧成果物を「破損」と読まない（レビュー指摘6） ----------
+
+def _append_recomputed_result(pipeline_root, *, output_name: str, content: str):
+    """同じ出力先を上書きする再計算を1回分、追記専用のresultsへ積む。
+
+    正当な訂正→再開はこの形になる: 成果物パスはoutput_nameごとに固定なので
+    ファイルは上書きされ、`results`は追記専用なので旧hashの要素が残る。
+    """
+    import hashlib
+
+    from lipidmix.pipeline.store import load_run, save_run
+
+    record = load_run(pipeline_root)
+    result_path = pipeline_root / "results" / "r1.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(content, encoding="utf-8")
+    record["results"].append({
+        "output_name": output_name, "result_id": f"r1-{len(record['results'])}",
+        "kind": "pca", "relative_path": "results/r1.json",
+        "hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "parent_ids": [], "request_revision": len(record["results"]) + 1,
+    })
+    record["status"] = "completed"
+    save_run(pipeline_root, record, expected_revision=record["state_revision"])
+
+
+def test_a_superseded_result_ref_is_not_reported_as_corruption(tmp_path):
+    """訂正で作り直した成果物のせいで、同じrequest_idの再送が偽の破損を報告しない。
+
+    旧refのhashは上書き後のファイルとは当然一致しない。それを履歴ごと検証すると
+    `RESULT_INTEGRITY_MISMATCH`——実際には壊れていないのに壊れたという報告——が
+    出る（`report._achieved_ref`は同じoutput_nameの最後の1件しか見ないのに、
+    成果物検証だけが全件を見ていた非対称が原因）。
+    """
+    root = tmp_path / "source"
+    root.mkdir()
+    req = resolve_request(root)
+    inputs = _minimal_inputs(root)
+    first = find_or_create_run(root, req, inputs, request_id="req-fix")
+
+    _append_recomputed_result(first, output_name="pca", content="revision-1")
+    _append_recomputed_result(first, output_name="pca", content="revision-2")
+
+    assert find_or_create_run(root, req, inputs, request_id="req-fix") == first
+
+
+def test_a_broken_current_result_is_still_reported_as_corruption(tmp_path):
+    """最新refが実ファイルと合わないなら、履歴に何があっても破損として止める。"""
+    root = tmp_path / "source"
+    root.mkdir()
+    req = resolve_request(root)
+    inputs = _minimal_inputs(root)
+    first = find_or_create_run(root, req, inputs, request_id="req-broken")
+
+    _append_recomputed_result(first, output_name="pca", content="revision-1")
+    _append_recomputed_result(first, output_name="pca", content="revision-2")
+    (first / "results" / "r1.json").write_text("tampered", encoding="utf-8")
+
+    with pytest.raises(DomainError, match="RESULT_INTEGRITY_MISMATCH"):
+        find_or_create_run(root, req, inputs, request_id="req-broken")

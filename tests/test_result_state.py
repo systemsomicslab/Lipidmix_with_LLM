@@ -318,3 +318,97 @@ def test_a_result_without_provenance_is_not_called_stale():
     ds = make_dataset()
     assert is_current(ds, {"scores": []}) is True
     assert_current(ds, {"scores": []})
+
+
+# ---------- 群の訂正で差次的結果が古くなる（レビュー指摘3） ----------
+
+def _dataset_with_groups(first_half: str, second_half: str):
+    """8 検体すべて role=sample・include=true で、前半後半を別群に割った ds。"""
+    from lipidmix.analysis.sample_manifest import apply_metadata
+    from tests.pipeline_fixtures import metadata_rows
+
+    ds = make_dataset()
+    rows = metadata_rows(ds, n_qc=0)
+    for i, row in enumerate(rows):
+        row["group"] = first_half if i < 4 else second_half
+    apply_metadata(ds, rows)
+    return ds, rows
+
+
+def _regroup(ds, rows, groups: list[str]):
+    from lipidmix.analysis.sample_manifest import apply_metadata
+
+    updated = [dict(row) for row in rows]
+    for row, group in zip(updated, groups):
+        row["group"] = group
+    apply_metadata(ds, updated)
+    return updated
+
+
+def test_a_differential_result_goes_stale_when_the_groups_are_corrected():
+    """群だけを直しても前処理は生きる。だからこそ、旧群の結果は自分で古くなる。
+
+    前処理・データセットの一致しか見ないと、群の訂正後も旧結果の
+    parent_ids/dataset_id は一致したままで「現在の結果」として通ってしまう。
+    """
+    from lipidmix.analysis.result_state import is_current
+
+    ds, rows = _dataset_with_groups("control", "treated")
+    preprocess_dataset(ds, _BASE_RECIPE)
+    stale = compare_dataset(ds, ds.sample_names[:4], ds.sample_names[4:],
+                            group_a_label="control", group_b_label="treated")
+    preprocess_id = ds.preprocess_id
+
+    # 群だけの訂正（1 検体の割当を直す）。前処理はそのまま生きる。
+    _regroup(ds, rows, ["control"] * 3 + ["treated"] * 5)
+
+    assert ds.preprocess_id == preprocess_id      # 前処理は無効化されていない
+    assert is_current(ds, stale) is False
+    with pytest.raises(DomainError) as excinfo:
+        assert_current(ds, stale)
+    assert excinfo.value.code == "STALE_ANALYSIS_RESULT"
+
+
+def test_exporting_a_result_from_the_old_groups_is_refused(tmp_path):
+    """`dataset_export_differential`が約束している拒否を、実際の書き出しで確かめる。"""
+    from lipidmix.analysis.dataset_export import export_dataset_result
+
+    ds, rows = _dataset_with_groups("control", "treated")
+    preprocess_dataset(ds, _BASE_RECIPE)
+    stale = compare_dataset(ds, ds.sample_names[:4], ds.sample_names[4:],
+                            group_a_label="control", group_b_label="treated")
+    _regroup(ds, rows, ["control"] * 3 + ["treated"] * 5)
+
+    out = tmp_path / "differential.tsv"
+    with pytest.raises(DomainError) as excinfo:
+        export_dataset_result(ds, stale, out)
+    assert excinfo.value.code == "STALE_ANALYSIS_RESULT"
+    assert not out.exists()
+
+
+def test_a_freshly_recomputed_comparison_is_current_again():
+    """訂正後に計算し直した結果は当然通る（拒否が広すぎないことの確認）。"""
+    from lipidmix.analysis.result_state import is_current
+
+    ds, rows = _dataset_with_groups("control", "treated")
+    preprocess_dataset(ds, _BASE_RECIPE)
+    compare_dataset(ds, ds.sample_names[:4], ds.sample_names[4:],
+                    group_a_label="control", group_b_label="treated")
+    _regroup(ds, rows, ["control"] * 3 + ["treated"] * 5)
+
+    fresh = compare_dataset(ds, ds.sample_names[:3], ds.sample_names[3:],
+                            group_a_label="control", group_b_label="treated")
+    assert is_current(ds, fresh) is True
+
+
+def test_a_differential_result_without_group_fingerprint_is_not_called_stale():
+    """群の指紋を持たない結果（この検査より前の結果）は材料不足として通す。"""
+    from lipidmix.analysis.result_state import is_current
+
+    ds, rows = _dataset_with_groups("control", "treated")
+    preprocess_dataset(ds, _BASE_RECIPE)
+    legacy = compare_dataset(ds, ds.sample_names[:4], ds.sample_names[4:])
+    legacy["provenance"].pop("group_fingerprint", None)
+    _regroup(ds, rows, ["control"] * 3 + ["treated"] * 5)
+
+    assert is_current(ds, legacy) is True

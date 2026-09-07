@@ -480,3 +480,129 @@ def test_reserved_names_are_limited_to_files_something_actually_writes(tmp_path)
     _mztab_entries, other_artifacts = collect_artifacts({"run_dir": run_dir}, befores)
 
     assert "control.json" in {a.path for a in other_artifacts}
+
+
+# ---------- 定量列とassay対応の突き合わせ（レビュー指摘5） ----------
+
+def test_validate_outputs_fails_when_a_declared_assay_has_no_abundance_column(tmp_path):
+    """MTDがassay[2]を宣言しているのにSMFへabundance_assay[2]列が無い。
+
+    その検体の定量値はどこにも無いのに、残りの列だけで行列は非空・有限になる
+    ——MTDだけで対応表を作ると、定量列が欠けたmzTabがcompletedとして通る。
+    """
+    from lipidmix.console.validation import validate_outputs
+
+    raws = [tmp_path / "raw" / "S1.raw", tmp_path / "raw" / "S2.raw"]
+    for r in raws:
+        r.parent.mkdir(parents=True, exist_ok=True)
+        r.write_bytes(b"\x00")
+    job = _job(tmp_path)
+    mztab_path = Path(job.run_dir) / "AlignResult-1.mzTab"
+    uris = [r.resolve().as_uri() for r in raws]
+    content = textwrap.dedent(f"""\
+        MTD\tmzTab-version\t2.0.0-M
+        MTD\tmzTab-mode\tComplete
+        MTD\tmzTab-type\tQuantification
+        MTD\tms_run[1]-location\t{uris[0]}
+        MTD\tms_run[2]-location\t{uris[1]}
+        MTD\tassay[1]-ms_run_ref\tms_run[1]
+        MTD\tassay[2]-ms_run_ref\tms_run[2]
+        SFH\tSMF_ID\tSML_ID_REFS\tdatabase_identifier\tchemical_name\tsmiles\tinchi\tabundance_assay[1]
+        SMF\t1\tSML:1\tIPCSVZSSVZVIGE-UHFFFAOYSA-N\tPC 36:2\tnull\tnull\t100.0
+        SMF\t2\tSML:2\tXKMRRTOUMJRJIA-UHFFFAOYSA-N\tPE 36:2\tnull\tnull\t200.0
+        SMF\t3\tSML:3\tDGGXCMYPQAOAJC-UHFFFAOYSA-N\tTG 52:3\tnull\tnull\t300.0
+    """)
+    mztab_path.write_text(content, encoding="utf-8")
+
+    result = validate_outputs(job, execution_record(), [str(r) for r in raws])
+
+    assert result["ok"] is False
+    assert "ABUNDANCE_COLUMN_MISSING" in result["errors"]
+
+
+def test_validate_outputs_fails_on_an_abundance_column_without_an_assay(tmp_path):
+    """どのassay対応にもぶら下がらない定量列は、どのrawの値か言えない。"""
+    from lipidmix.console.validation import validate_outputs
+
+    raw = tmp_path / "raw" / "S1.raw"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_bytes(b"\x00")
+    job = _job(tmp_path)
+    mztab_path = Path(job.run_dir) / "AlignResult-1.mzTab"
+    uri = raw.resolve().as_uri()
+    content = textwrap.dedent(f"""\
+        MTD\tmzTab-version\t2.0.0-M
+        MTD\tmzTab-mode\tComplete
+        MTD\tmzTab-type\tQuantification
+        MTD\tms_run[1]-location\t{uri}
+        MTD\tassay[1]-ms_run_ref\tms_run[1]
+        SFH\tSMF_ID\tSML_ID_REFS\tdatabase_identifier\tchemical_name\tsmiles\tinchi\tabundance_assay[1]\tabundance_assay[2]
+        SMF\t1\tSML:1\tIPCSVZSSVZVIGE-UHFFFAOYSA-N\tPC 36:2\tnull\tnull\t100.0\t110.0
+        SMF\t2\tSML:2\tXKMRRTOUMJRJIA-UHFFFAOYSA-N\tPE 36:2\tnull\tnull\t200.0\t210.0
+        SMF\t3\tSML:3\tDGGXCMYPQAOAJC-UHFFFAOYSA-N\tTG 52:3\tnull\tnull\t300.0\t310.0
+    """)
+    mztab_path.write_text(content, encoding="utf-8")
+
+    result = validate_outputs(job, execution_record(), [str(raw)])
+
+    assert result["ok"] is False
+    assert "ABUNDANCE_COLUMN_UNMAPPED" in result["errors"]
+
+
+def test_validate_outputs_accepts_a_one_to_one_assay_and_column_mapping(tmp_path):
+    """正常な出力（assayと定量列が1対1）はそのまま通る。"""
+    from lipidmix.console.validation import validate_outputs
+
+    raws = [tmp_path / "raw" / "S1.raw", tmp_path / "raw" / "S2.raw"]
+    for r in raws:
+        r.parent.mkdir(parents=True, exist_ok=True)
+        r.write_bytes(b"\x00")
+    job = _job(tmp_path)
+    write_mztab(Path(job.run_dir) / "AlignResult-1.mzTab", raws)
+
+    result = validate_outputs(job, execution_record(), [str(r) for r in raws])
+
+    assert result["ok"] is True, result["errors"]
+
+
+# ---------- entryとjobの宣言の食い違いを完了ゲートで捕まえる（レビュー指摘P2） ----------
+
+def test_validate_outputs_fails_when_the_entry_measure_differs_from_the_job(tmp_path):
+    """ファイル名側を採用したentryがjobの宣言と食い違うなら、完了にしない。
+
+    下流の`select_primary_entry`は**jobの宣言**で候補を選ぶので、この食い違いを
+    通すと「completedなのに読めない」出力ができる。
+    """
+    from lipidmix.console.validation import validate_outputs
+
+    raw = tmp_path / "raw" / "S1.raw"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_bytes(b"\x00")
+    job = _job(tmp_path)
+    write_mztab(Path(job.run_dir) / "AlignResult-1.mzTab", [raw])
+    # collect_artifactsがファイル名から作ったentryが、jobの宣言と食い違った状態。
+    job.primary_mztab_files[0].measure = "peak_area_above_zero"
+    job.primary_mztab_files[0].validation = {
+        "conflicts": {"measure": {"filename": "peak_area_above_zero",
+                                  "job_declared": "peak_height"}}}
+
+    result = validate_outputs(job, execution_record(), [str(raw)])
+
+    assert result["ok"] is False
+    assert "MEASURE_MISMATCH" in result["errors"]
+
+
+def test_validate_outputs_fails_when_the_entry_polarity_differs_from_the_job(tmp_path):
+    from lipidmix.console.validation import validate_outputs
+
+    raw = tmp_path / "raw" / "S1.raw"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_bytes(b"\x00")
+    job = _job(tmp_path, polarity="negative")
+    write_mztab(Path(job.run_dir) / "AlignResult-1.mzTab", [raw])
+    job.primary_mztab_files[0].polarity = "positive"
+
+    result = validate_outputs(job, execution_record(), [str(raw)])
+
+    assert result["ok"] is False
+    assert "POLARITY_MISMATCH" in result["errors"]

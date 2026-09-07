@@ -613,3 +613,60 @@ def test_worker_run_worker_completes_a_real_exploratory_pipeline(tmp_path, monke
     # 偽陽性警告が出ない。
     codes = {w["code"] for w in result.get("warnings") or []}
     assert "REPORT_INCOMPLETE_AT_WRITE_TIME" not in codes
+
+
+# ---------- PreconditionErrorはneeds_inputへ（レビュー指摘P2） ----------
+
+def test_a_precondition_error_from_any_handler_becomes_needs_input(monkeypatch):
+    """数値層の`PreconditionError`は`DomainError`ではないので、素通りさせると
+    engineの汎用例外分岐に落ち、`error.code`がPythonのクラス名のまま`failed`に
+    なる——入力を直せば再開できる停止なのに「回復不能な失敗」に見える。
+    """
+    from lipidmix.analysis.dataset_analysis import PreconditionError
+    from lipidmix.pipeline import service as service_mod
+
+    def _boom(context):
+        raise PreconditionError(
+            "bad_request",
+            "この DatasetState は検出状態を持たないため min_detection_rate を適用できません。",
+            {"min_detection_rate": 1.0})
+
+    monkeypatch.setattr(service_mod, "_handle_preprocess", _boom)
+    outcome = service_mod.build_handlers()["preprocess"]({"stage_id": "preprocess"})
+
+    assert outcome["status"] == "needs_input"
+    assert outcome["error"]["code"] == "ANALYSIS_PRECONDITION_INVALID"
+    assert outcome["error"]["details"]["min_detection_rate"] == 1.0
+
+
+def test_a_missing_state_precondition_carries_the_missing_state_name(monkeypatch):
+    from lipidmix.analysis.dataset_analysis import PreconditionError
+    from lipidmix.pipeline import service as service_mod
+
+    def _boom(context):
+        raise PreconditionError("missing_state", "前処理済み行列がありません。",
+                                state="dataset_preprocessed")
+
+    monkeypatch.setattr(service_mod, "_handle_pca", _boom)
+    outcome = service_mod.build_handlers()["pca"]({"stage_id": "pca"})
+
+    assert outcome["status"] == "needs_input"
+    assert outcome["error"]["code"] == "ANALYSIS_PRECONDITION_MISSING"
+    assert outcome["error"]["details"]["state"] == "dataset_preprocessed"
+
+
+def test_a_precondition_error_stops_the_engine_as_needs_input_not_failed(tmp_path, monkeypatch):
+    """engine経由でも`failed`にならないこと（`_invoke_handler`の汎用分岐を通さない）。"""
+    from lipidmix.analysis.dataset_analysis import PreconditionError
+    from lipidmix.pipeline import service as service_mod
+    from lipidmix.pipeline.engine import _invoke_handler
+
+    def _boom(context):
+        raise PreconditionError("bad_request", "レシピが不正です。", {"recipe": {}})
+
+    monkeypatch.setattr(service_mod, "_handle_preprocess", _boom)
+    outcome = _invoke_handler(service_mod.build_handlers()["preprocess"],
+                              {"stage_id": "preprocess"})
+
+    assert outcome["status"] == "needs_input"
+    assert outcome["error"]["code"] != "PreconditionError"

@@ -158,6 +158,17 @@ resume時に「recordに無いstage_id」を末尾へ追記するので、比較
 比較を1件も実行していない時点で書かれる。計画に無いstage_id(exploratory目標の
 `resolve_comparisons`)だけが計画順のあとに回り、`_mark_out_of_scope` が畳む。
 
+`_run_stage_loop`は**各stageの直前に最新のrun recordを読み直す**。要求版
+(`_request_identity`＝revision/content_hash/saved_path)が変わっているか、
+このpassで既に通過したstageが外から`pending`へ戻されている
+(`_resume_reset_seen`)場合は、その場でstage計画を組み直してpassをやり直し、
+`runtime`(DatasetStateと比較結果のキャッシュ)を捨てる。走っている最中に届いた
+`pipeline_resume`は——`prepare_resume`が稼働中workerのstatusを動かさないため
+`resume_pipeline`が新しいworkerを起こさない——このworkerが取り込むしかなく、
+取り込まなければ旧revisionの条件で計算した結果が新revisionの結果として
+completedになる。組み直しは有限回(`_REQUEST_RELOAD_MAX_PASSES`)までで、
+超えたら`REQUEST_REVISION_CHURN`で止める。
+
 `_handle_upstream`は`lipidmix.console.worker`（単体Console用の監視ワーカー）を
 一切呼ばない——`execution.supervise`を直接呼ぶことで、pipeline用worker自身が
 「起動して見張る」役を兼ねる(Console用workerの二重起動を避ける)。
@@ -171,7 +182,11 @@ resume時に「recordに無いstage_id」を末尾へ追記するので、比較
 (`console_job_path`＝job.json、`run_dir`＝その親)は変わらない。
 
 `_handle_resolve_metadata`は解決した行(role/group/batch/injection_order/qc_pool)を
-`record_updates`で`record["inputs"]["manifest"]`へ残す。ここが唯一の書き手で、
+`record_updates`で`record["inputs"]["manifest"]`へ、読んだシート自体の内容hashを
+`record["inputs"]["manifest_source"]`(`inputs.manifest_source_record`)へ残す。
+後者は`recovery.prepare_resume`が「同じパスのシートを書き直した訂正」を
+検出するための基準で、これが無いと要求の`sample_manifest`(パス文字列)は
+同じままなので、書き直しは変更として現れず旧群割当のまま`completed`が保たれる。ここが唯一の書き手で、
 読み手は品質レポートのサンプル来歴セクション(`report._section_sample_provenance`)・
 再開時の絶対化(`recovery._absolutize_inputs_paths`、既に絶対ならno-op)の2つ。
 明示シートでも自動生成でも同じ形の行を書く。
@@ -186,6 +201,14 @@ dataset_analysis.run_dataset_pca`が送出。`DomainError`の派生ではない�
 `engine._invoke_handler`の`_NEEDS_INPUT_CODES`whitelistでは検出できない）を
 handler自身が捕らえ、`needs_input`のStageResultへ直接変換する。これにより
 `_invoke_handler`の汎用`except Exception`分岐（`failed`扱い）を経由させない。
+
+同じ穴を他のhandlerが開け直さないよう、`build_handlers`は全handlerを
+`_as_needs_input`で包む——handlerから漏れた`PreconditionError`は
+`ANALYSIS_PRECONDITION_MISSING`(kind=missing_state)/
+`ANALYSIS_PRECONDITION_INVALID`(kind=bad_request)の`needs_input`になる。
+包まないと`error.code`がPythonのクラス名(`PreconditionError`)のまま`failed`に
+なり、入力を直せば再開できる停止が「回復不能な失敗」に見える(例:
+検出状態を持たないmzTab-Mへ`min_detection_rate>0`を指定した場合)。
 
 `finish_success`は全stageがsucceeded/skippedで止まらずに終えた時点で
 `report.evaluate_target(record)`を呼び、その判定(`completed`/`partial`/

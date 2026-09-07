@@ -362,13 +362,42 @@ def _diff_comparisons(old: list, new: list) -> set:
     return changed
 
 
+def _manifest_content_changed(record: dict, request: dict) -> bool:
+    """実験情報シートの**中身**が、前回解決したときから変わったかを返す。
+
+    要求の`sample_manifest`はパス文字列でしかないため、同じ`sample-manifest.tsv`を
+    書き直して`pipeline_resume`しても、要求の比較では「変更なし」に見える
+    ——群の訂正が下流へ一切波及せず、旧群割当のまま`completed`になり、
+    訂正が無視されたことすら利用者に伝わらない。
+
+    比較の基準は`resolve_metadata` handlerが記録した
+    `record["inputs"]["manifest_source"]["sha256"]`（そのとき実際に読んだ
+    シートの内容hash）。記録が無い版のrun・自動一覧生成（シート無し）では
+    比較材料が無いので`False`——「判定できない」を「変わった」と読み替えて
+    下流を無条件にやり直させない。
+    """
+    recorded = (record.get("inputs") or {}).get("manifest_source") or {}
+    previous = recorded.get("sha256")
+    if not previous:
+        return False
+    source_root = Path(record["identity"]["source_root"])
+    current = inputs_mod.manifest_source_record(source_root, request)
+    return current.get("sha256") != previous
+
+
 def _stages_to_reset(current_request: dict, merged_request: dict, *,
-                     rerun_upstream: bool, stage_ids: set) -> set:
+                     rerun_upstream: bool, stage_ids: set,
+                     manifest_content_changed: bool = False) -> set:
     """Task 6の依存区分に倣い、更新内容からどのstageを`pending`へ戻すかを返す。
 
     `load_dataset`/`resolve_metadata`/`preprocess`/`pca`は対象にしない——
     `engine._ALWAYS_RECONSTRUCT_STAGE_IDS`により、resumeのたびに無条件で
     handlerを呼び直すため、明示的にpendingへ戻す必要が無い。
+
+    `manifest_content_changed`は「同じパスのシートを書き直した訂正」
+    （`_manifest_content_changed`）。要求の値としては何も変わっていないが、
+    群・バッチ・include が変わりうる以上、`sample_manifest`を差し替えたときと
+    同じ範囲を差し戻す。
     """
     if rerun_upstream:
         # 上流のやり直しは下流すべてに波及する（Consoleの出力自体が変わりうる）。
@@ -376,7 +405,8 @@ def _stages_to_reset(current_request: dict, merged_request: dict, *,
 
     reset: set = set()
     metadata_or_preprocess_changed = (
-        current_request.get("sample_manifest") != merged_request.get("sample_manifest")
+        manifest_content_changed
+        or current_request.get("sample_manifest") != merged_request.get("sample_manifest")
         or current_request.get("preprocess") != merged_request.get("preprocess")
     )
     target_changed = current_request.get("target") != merged_request.get("target")
@@ -523,9 +553,11 @@ def prepare_resume(path: Path, *, updates: dict | None = None,
             if sid not in record["stages"]:
                 record["stages"][sid] = store.initial_stage(sid)
 
+        manifest_changed = _manifest_content_changed(record, merged_request)
         reset_ids = _stages_to_reset(
             current_request, merged_request, rerun_upstream=rerun_upstream,
-            stage_ids=set(record["stages"].keys()))
+            stage_ids=set(record["stages"].keys()),
+            manifest_content_changed=manifest_changed)
         for sid in reset_ids:
             record["stages"][sid] = _reset_stage_for_resume(record["stages"][sid])
 
@@ -539,7 +571,8 @@ def prepare_resume(path: Path, *, updates: dict | None = None,
         # ことを観測できたときだけ**同じ扱いにする（A06/§9.3。`read_status`が
         # `PIPELINE_INTERRUPTED`で案内する再開経路の実体）。判定不能
         # （`observed_health="unknown"`）は「死んでいる」ではないので動かさない。
-        made_changes = request_changed or bool(reset_ids) or rerun_upstream
+        made_changes = (request_changed or bool(reset_ids) or rerun_upstream
+                        or manifest_changed)
         worker_health = _worker_health(record)
         prior_status = record["status"]
         interrupted = (prior_status in _INTERRUPTED_STATUSES

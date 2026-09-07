@@ -53,6 +53,7 @@ __all__ = [
     "STAGE_IDS",
     "TERMINAL_STATUSES",
     "create_run",
+    "current_result_refs",
     "find_or_create_run",
     "initial_stage",
     "load_run",
@@ -494,14 +495,43 @@ def verify_result_refs(pipeline_root: Path, result_refs: list) -> list[dict]:
     return failures
 
 
+def current_result_refs(record: dict) -> list[dict]:
+    """`record["results"]`から「今そのrunが指している成果物」だけを取り出す。
+
+    `results`は追記専用の履歴で、同じ`output_name`が複数revisionにまたがって
+    並ぶ（正当な訂正→再開のたびに新しいrefが積まれる）。一方で成果物の
+    書き出し先パスはoutput_nameごとに固定なので、再計算は同じファイルを
+    上書きする——**古いrefのhashはもうどのファイルとも一致しない**。
+
+    ここでの選び方は`report._achieved_ref`（同じoutput_nameの最後の1件を
+    「現在の成果物」とする）と同じでなければならない。片方が最後の1件だけを見て、
+    もう片方が履歴を全件検証すると、正当な訂正のあとで
+    `RESULT_INTEGRITY_MISMATCH`——実際には壊れていないのに壊れたという報告——
+    が出る（`find_or_create_run`の同一request_id再送がこれを踏んだ）。
+
+    `output_name`を持たない古いrefは、代わりに`relative_path`で畳む
+    （同じ出力先を指す最後の1件が現在の成果物、という規則は同じ）。
+    """
+    current: dict = {}
+    for result in record.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        key = result.get("output_name") or result.get("relative_path") or result.get("result_id")
+        current[key] = result
+    return list(current.values())
+
+
 def _artifacts_verify(record: dict, pipeline_root: Path) -> list[dict]:
-    """record["results"]（run全体）の各成果物hashを実ファイルと照合する。
+    """record["results"]が今指している成果物のhashを実ファイルと照合する。
 
     戻り値は不一致（またはファイル自体を読めない）entryのリスト。空リストは
     全件一致（resultsが空——探索・比較のいずれもまだ結果を持たないcompleted、
     通常は起こらないが安全側で許す——場合も同様に空虚に真とする）。
+
+    検証対象は履歴全件ではなく`current_result_refs`が選ぶ現行ref
+    （上書きされた旧revisionの成果物を「壊れている」と読まないため）。
     """
-    return verify_result_refs(pipeline_root, record.get("results", []))
+    return verify_result_refs(pipeline_root, current_result_refs(record))
 
 
 def _resolve_reusable(pipeline_root_str: str, *, explicit_request_id: bool):
