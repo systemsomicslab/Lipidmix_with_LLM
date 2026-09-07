@@ -177,6 +177,9 @@ class TestBlankFilter(unittest.TestCase):
         mask, report = pp.blank_filter(m, {"s1": "sample"}, ["s1"])
         self.assertTrue(mask.all())
         self.assertIn("caveat", report)
+        # Task 11: caveatだけでなくstatusでも「未実施」を機械可読にする
+        # （呼び出し側のpreprocess()がcaveatの文面をパースせずに済むように）。
+        self.assertEqual(report["status"], "skipped")
 
 
 class TestDriftCorrect(unittest.TestCase):
@@ -223,6 +226,8 @@ class TestQcRsdFilter(unittest.TestCase):
         mask, report = pp.qc_rsd_filter(m, {"s1": "sample"}, ["s1"])
         self.assertTrue(mask.all())
         self.assertIn("caveat", report)
+        # Task 11: blank_filterと対称にstatus="skipped"を持つ（同じ理由）。
+        self.assertEqual(report["status"], "skipped")
 
 
 class TestImpute(unittest.TestCase):
@@ -424,6 +429,27 @@ class TestRecipeHonesty(unittest.TestCase):
                                   {n: None for n in names}, {})
         self.assertEqual(report["recipe_skipped"], [])
 
+    def test_requested_blank_filter_without_blank_is_reported_as_skipped(self):
+        """Task 11: blank_filterがcaveatだけ返す（statusが無い）と、ここで
+        誤って recipe_applied に数えられていた（QCが無いバッチでblank_min_foldを
+        要求したのに「適用した」ことになる）。"""
+        names = ["s1", "s2", "s3", "s4"]
+        roles = {n: "sample" for n in names}
+        run_order = {n: i + 1 for i, n in enumerate(names)}
+        _, _, report = pp.preprocess(self._matrix(), names, roles, run_order,
+                                  {"blank_min_fold": 3.0})
+        self.assertNotIn("blank_filter", report["recipe_applied"])
+        self.assertIn("blank_filter", report["recipe_skipped"])
+
+    def test_requested_qc_rsd_filter_without_qc_is_reported_as_skipped(self):
+        names = ["s1", "s2", "s3", "s4"]
+        roles = {n: "sample" for n in names}
+        run_order = {n: i + 1 for i, n in enumerate(names)}
+        _, _, report = pp.preprocess(self._matrix(), names, roles, run_order,
+                                  {"max_qc_rsd": 0.30})
+        self.assertNotIn("qc_rsd_filter", report["recipe_applied"])
+        self.assertIn("qc_rsd_filter", report["recipe_skipped"])
+
 
 class TestNoQcNoBlankBatch(unittest.TestCase):
     """QC もブランクも無いバッチでは、前処理の大半が原理的に効かない。
@@ -456,3 +482,21 @@ class TestNoQcNoBlankBatch(unittest.TestCase):
         report = self._run(roles)
         self.assertFalse(any("いずれも適用できません" in c for c in report["caveats"]),
                          report["caveats"])
+
+    def test_caveat_ignores_role_entry_not_in_sample_names(self):
+        """rolesに残る評価対象外のエントリで、注意書きの判定を誤らせない。
+
+        呼び出し側（dataset_analysis.build_dataset_pp_inputs）はinclude=falseの
+        試料をmatrix/sample_namesから落とす一方、roles辞書は監査・表示用に
+        全件分（除外分込み）のまま渡す設計にしている。present_rolesが
+        `set(roles.values())`のようにroles辞書の全件を見ると、実際には
+        渡されていない（=sample_namesに無い）"qc_stale"のroleを拾って
+        しまい、実評価対象にQCが無いのに「QCがある」と誤認する。
+        """
+        names = [f"s{i}" for i in range(4)]
+        roles = {n: "sample" for n in names}
+        roles["qc_stale"] = "qc"  # sample_names には含まれない、除外済みQCの残骸
+        m = np.arange(len(names) * 3, dtype=float).reshape(len(names), 3) + 1.0
+        _, _, report = pp.preprocess(m, names, roles, {n: None for n in names}, {})
+        self.assertTrue(any("QC" in c and "ブランク" in c for c in report["caveats"]),
+                        report["caveats"])

@@ -40,7 +40,11 @@ IN_SCOPE: dict[str, tuple[str, ...]] = {
     "mztab.md": ("dataset_load", "dataset_status"),
     "dataset_analysis.md": (
         "dataset_preprocess", "dataset_pca", "dataset_differential",
-        "dataset_export_differential",
+        "dataset_export_differential", "dataset_set_sample_metadata",
+    ),
+    "pipeline.md": (
+        "pipeline_plan", "pipeline_run", "pipeline_status",
+        "pipeline_resume", "pipeline_cancel",
     ),
 }
 
@@ -172,4 +176,4 @@ class TestScopeBoundary(unittest.TestCase):
             registered,
             "対象範囲の分類と登録済みツールが一致しない",
         )
-        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 35)
+        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 41)

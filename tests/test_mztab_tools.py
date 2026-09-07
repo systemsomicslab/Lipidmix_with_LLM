@@ -263,8 +263,11 @@ def test_dataset_load_via_job_path_no_mztab_files(tmp_path):
     job_p = run_dir / "analysis-job.json"
     job_p.write_text(_json.dumps(job_data), encoding="utf-8")
 
-    result = dataset_load(job_path=str(job_p))
-    parsed = json.loads(result)
+    # planned は「まだ実行していない」。生成物が無いのは結果であって原因ではないので、
+    # 未完了そのものを名指しする（allow_incomplete で読もうとすれば不在が出る）。
+    parsed = json.loads(dataset_load(job_path=str(job_p)))
+    assert parsed["error"]["code"] == "INCOMPLETE_ANALYSIS_JOB"
+    parsed = json.loads(dataset_load(job_path=str(job_p), allow_incomplete=True))
     assert parsed["error"]["code"] == "MZTAB_NOT_FOUND"
 
 
@@ -406,16 +409,43 @@ def _job_with_mztab(tmp_path, status: str):
     return job_path
 
 
-def test_dataset_load_warns_when_job_did_not_complete(tmp_path):
-    """partial は「MS-DIAL が途中で止まった」の意味。黙って完了扱いにしない。"""
+def test_dataset_load_refuses_an_incomplete_job_by_default(tmp_path):
+    """partial は「MS-DIAL が途中で止まった」の意味。既定では読ませない。
+
+    中断時点の生成物を完了品として下流へ流すと、欠けた検体が「その群には無い」
+    ように見え、2 群比較がその欠落ごと結論にしてしまう。
+    """
     from lipidmix.tools.mztab_tools import dataset_load
     job_path = _job_with_mztab(tmp_path, "partial")
 
-    result = dataset_load(job_path=str(job_path))
+    parsed = json.loads(dataset_load(job_path=str(job_path)))
+
+    assert parsed["error"]["code"] == "INCOMPLETE_ANALYSIS_JOB"
+    assert parsed["error"]["details"]["status"] == "partial"
+    assert session_state.session.dataset is None
+
+
+def test_dataset_load_reads_an_incomplete_job_only_when_asked(tmp_path):
+    """明示すれば探索目的で読める。ただし探索専用であることを状態に残す。"""
+    from lipidmix.tools.mztab_tools import dataset_load
+    job_path = _job_with_mztab(tmp_path, "partial")
+
+    result = dataset_load(job_path=str(job_path), allow_incomplete=True)
 
     assert "partial" in result
     ds = session_state.session.dataset
+    assert ds.exploratory_only is True
     assert "partial" in ds.validation_result["warnings"][0]
+
+
+def test_allow_incomplete_rejects_non_boolean(tmp_path):
+    """"false" という文字列が True になる事故を防ぐ。"""
+    from lipidmix.tools.mztab_tools import dataset_load
+    job_path = _job_with_mztab(tmp_path, "partial")
+
+    parsed = json.loads(dataset_load(job_path=str(job_path), allow_incomplete="false"))
+
+    assert parsed["error"]["code"] == "DATASET_BAD_REQUEST"
 
 
 def test_dataset_load_does_not_warn_for_completed_job(tmp_path):

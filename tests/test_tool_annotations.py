@@ -51,6 +51,10 @@ EXPECTED_ANNOTATIONS = {
     "dataset_differential": READ_ONLY,
     # ファイルを書き、同じ引数なら同じ内容で上書きする → 冪等
     "dataset_export_differential": LOCAL_WRITE,
+    # シートを読み検証してからセッション状態を一括反映する。外部副作用はセッション
+    # 状態の更新のみ（ファイル書き込みは無い）が、同じシートの再送は同じ状態に
+    # 落ち着く → destructive ではなく idempotent。
+    "dataset_set_sample_metadata": LOCAL_WRITE,
     # --- Console 実行層（console_plan/run はジョブ状態・ファイルを生成する） ---
     "console_plan": LOCAL_WRITE_APPEND,
     "console_run": LOCAL_WRITE_APPEND,
@@ -63,6 +67,13 @@ EXPECTED_ANNOTATIONS = {
     # ジョブが記録した生成物を消す。破壊的だが、二度目は何も残っていない → 冪等
     "console_cleanup": LOCAL_DELETE,
     "job_list": READ_ONLY,
+    # --- pipeline系（生データフォルダ起点、Task18）。statusだけ読取専用。
+    # 他4件は同一request_idの再送・二重cancelが同じ結果に落ち着くためidempotent。
+    "pipeline_plan": LOCAL_WRITE,
+    "pipeline_run": LOCAL_WRITE,
+    "pipeline_status": READ_ONLY,
+    "pipeline_resume": LOCAL_WRITE,
+    "pipeline_cancel": LOCAL_WRITE,
     # --- DCL / PAI2 / EIC ---
     "dcl_parser": READ_ONLY,
     "dcl_find_msms": READ_ONLY,

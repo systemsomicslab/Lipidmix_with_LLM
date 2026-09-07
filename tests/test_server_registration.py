@@ -15,6 +15,7 @@ import server
 # （pai2_get_top_metabolites / pai2_update_analysis_filter）は撤去。
 # arf_re_pca は arf_parser（min_intensity/annotation_keyword を吸収）へ統合し撤去。
 # pai2_inspect_metabolite_details は peak 語彙へ統一し pai2_inspect_peak に改称。
+# Task18: 生データフォルダ起点の pipeline_plan/run/status/resume/cancel を追加(56→61)。
 EXPECTED_TOOLS = sorted([
     "arf2_annotate_identities",
     "arf2_parser",
@@ -44,6 +45,11 @@ EXPECTED_TOOLS = sorted([
     "load_dataset",
     "log_search",
     "pai2_inspect_peak",
+    "pipeline_cancel",
+    "pipeline_plan",
+    "pipeline_resume",
+    "pipeline_run",
+    "pipeline_status",
     "console_cleanup",
     "console_method_candidates",
     "console_method_template",
@@ -58,6 +64,7 @@ EXPECTED_TOOLS = sorted([
     "dataset_export_differential",
     "dataset_pca",
     "dataset_preprocess",
+    "dataset_set_sample_metadata",
     "dcl_find_msms",
     "dcl_parser",
     "pai2_parser",

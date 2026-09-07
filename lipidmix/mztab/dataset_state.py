@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -91,6 +92,40 @@ class DatasetState:
         # DatasetState 経路には未対応（次フェーズ）。
         self.last_pca = None
         self.last_differential = None
+
+        # --- 同一性と来歴（lipidmix/analysis/result_state.py が読み書きする） ---
+        # dataset_id: この DatasetState 実体の ID。結果の provenance が指す先で、
+        # 「別のデータセットで計算した結果」を持ち込ませないための鍵になる。
+        self.dataset_id: str = f"ds_{uuid.uuid4().hex}"
+        # metadata_revision: 実験情報（サンプルメタデータ）を適用するたびに増える。
+        self.metadata_revision: int = 0
+        # sample_metadata_rows: 明示的に与えられた実験情報シートの行（Task 9）。
+        # 無いうちは None で、役割・バッチはサンプル名からの推定に頼る。
+        self.sample_metadata_rows = None
+        # sample_ids: sample_metadata_rowsのsample_id列を、sample_namesと同じ順で
+        # 保持する安定ID。apply_metadataだけが書く。表示名（sample_names）は
+        # 上書きしない——比較定義・出力はsample_idsを、表示・群選択の見た目は
+        # 引き続きsample_namesを使い分けられるようにするための別スロット。
+        self.sample_ids: list[str] = []
+        # preprocess_id / preprocess_metadata_hash: 現在の前処理済み行列がどの計算から
+        # 出たか。派生結果（PCA・差次的解析）はこの ID を parent_ids に持つ。
+        self.preprocess_id: str | None = None
+        self.preprocess_metadata_hash: str | None = None
+        # results: result_id -> 結果全量。図・エクスポートが「どの結果か」を
+        # 名指しで選べるようにする（last_* は現在の既定を指すだけの別名）。
+        self.results: dict = {}
+
+        # --- 出所の信用度（lipidmix/mztab/loading.py が設定する） ---
+        # source_verification: verified（終了証跡と hash で裏取り済み）/
+        # legacy_unverified（ジョブ経由だが証跡が無い・一致しない）/
+        # direct_unverified（.mzTab を直接読んだ）。pipeline は verified だけを受ける。
+        self.source_verification: str = "direct_unverified"
+        # exploratory_only: 完了していない実行の出力。探索はできるが、2 群比較と
+        # 差次的エクスポートは拒否する（欠けた検体を「その群に無い」と読み違えるため）。
+        self.exploratory_only: bool = False
+        # assay_sources: {abundance 列名: 実行時に予定した raw のパス}。
+        # 完了ゲート（console/validation.map_assays）と同じ対応関係。
+        self.assay_sources: dict = {}
 
 
 def _sha256(path: str | Path) -> str:

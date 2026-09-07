@@ -101,7 +101,7 @@ def blank_filter(matrix, roles, sample_names, min_fold=3.0):
     samples = _rows_for_role(matrix, roles, sample_names, "sample")
     if blanks is None or samples is None:
         return np.ones(n_features, dtype=bool), {
-            "removed": 0,
+            "removed": 0, "status": "skipped",
             "caveat": "ブランクまたは生体試料が無いため背景除去は未実施。",
         }
     blank_mean = np.nanmean(blanks, axis=0)
@@ -306,7 +306,7 @@ def qc_rsd_filter(matrix, roles, sample_names, max_rsd=0.30):
     qc = _rows_for_role(matrix, roles, sample_names, "qc")
     if qc is None or qc.shape[0] < 2:
         return np.ones(n_features, dtype=bool), {
-            "removed": 0,
+            "removed": 0, "status": "skipped",
             "caveat": "QC が無い/不足のため RSD フィルタは未実施。",
         }
     mean = np.nanmean(qc, axis=0)
@@ -451,7 +451,17 @@ def preprocess(matrix, sample_names, roles, run_order, recipe):
     # QC もブランクも無いバッチでは、前処理レシピの大半が原理的に効かない。
     # それでも preprocess は成功を返すので、要求の有無によらず先に明示する
     # （要求していないだけなのか、できないのかを呼び出し側が区別できるように）。
-    present_roles = set(roles.values()) if roles else set()
+    # present_roles は `sample_names`（この関数が実際に評価する試料の集合）
+    # を起点に roles.get() で引く——他の全消費者（_rows_for_role/
+    # detect_failed_qc/_qc_interspersion 等）と同じ組み立て方に揃える。
+    # `set(roles.values())` のように roles 辞書そのものを走査すると、
+    # 呼び出し側（dataset_analysis.build_dataset_pp_inputs）が監査・表示用に
+    # 維持している「include=false で除外済みの試料も含む全件分」の roles から
+    # stale な role を拾ってしまい、実際には評価していない QC/blank の存在を
+    # 誤認する（controller裁定 round2 のregression: include=false のQCが
+    # matrix/sample_names からは正しく落ちているのに、この注意書きだけは
+    # 「QC がある」と誤判定して出なくなっていた）。
+    present_roles = {roles.get(n) for n in sample_names} if roles else set()
     if not present_roles & {"qc", "blank"}:
         caveats.append(
             "この試料群には QC もブランクも含まれていないため、"

@@ -39,7 +39,39 @@ gap-fill だけの特徴を実測として数えた行列が黙って下流に�
 
 ## dataset_export_differential
 
+書き出す前に 2 つ確かめる。**その結果が今の前処理から出たものか**（手順 3。前処理を
+やり直した後の古い結果を書くと、TSV の数字と現在の前処理条件が並んだファイルができ、
+どちらも正しく見えてずれが分からない）と、**探索専用のデータセットでないか**
+（中断された実行の出力では、欠けた検体が「その群には無い」ようにしか見えない）。
+メタ行の前処理条件は `ds.preprocessing_recipe`（今の状態）ではなく、その結果が親に
+持つ前処理の `provenance.effective_parameters` から取る。出力は一時ファイルへ書いてから
+置換するので、途中で落ちた出力が「新しい完成品」として残らない。
+
 1. lipidmix/tools/dataset_analysis_tools.py  dataset_export_differential()
-2. └─ lipidmix/analysis/export_contract.py  is_significant()
-3. └─ lipidmix/analysis/export_contract.py  build_meta()
-4. └─ lipidmix/analysis/export_contract.py  format_row()
+2. └─ lipidmix/analysis/dataset_export.py  export_dataset_result()
+3. │  └─ lipidmix/analysis/result_state.py  assert_current()
+4. │  └─ lipidmix/analysis/export_contract.py  is_significant()
+5. │  └─ lipidmix/analysis/dataset_export.py  _meta_lines()
+6. │  │  └─ lipidmix/analysis/dataset_export.py  _preprocess_parameters()
+7. │  │  └─ lipidmix/analysis/export_contract.py  build_meta()
+8. │  └─ lipidmix/analysis/export_contract.py  format_row()
+9. │  └─ lipidmix/analysis/dataset_export.py  _atomic_write_text()
+
+## dataset_set_sample_metadata
+
+実験情報シート(sample-manifest.v1)を読み、全件検証してから一括反映する。検証で
+1件でも落ちれば `apply_metadata` の契約により `session.dataset` は一切変更しない。
+
+1. lipidmix/tools/dataset_analysis_tools.py  dataset_set_sample_metadata()
+2. └─ lipidmix/analysis/dataset_service.py  apply_sample_manifest()
+3.    └─ lipidmix/analysis/dataset_service.py  _raw_manifest_layout()
+4.    └─ lipidmix/analysis/sample_manifest.py  parse_manifest()
+5.    └─ lipidmix/analysis/sample_manifest.py  resolve_metadata()
+6.    └─ lipidmix/analysis/sample_manifest.py  apply_metadata()
+7.       └─ lipidmix/analysis/result_state.py  invalidate_results()
+
+pipeline が比較を明示するときに使う `resolve_comparison`/`run_comparison`
+（`lipidmix/analysis/dataset_service.py`）は、群名だけで対照/処置の向きを決めない・
+QC/blank/unknown・`include=false` を混ぜない・完全交絡を `allow_confounded=true` の
+明示なしには通さない、という前提検証を `compare_dataset()` の前に挟む。単体ツール
+`dataset_differential` はこの前提検証を経ない汎用呼び出し（USAGE.md 参照）。

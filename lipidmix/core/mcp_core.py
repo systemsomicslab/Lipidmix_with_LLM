@@ -139,11 +139,34 @@ spectrum was seen, `FLAG_ONLY` means only the flag was set — never treat the t
 as equivalent. A `not_found` from `dcl_find_msms` means no MS/MS was acquired for
 that precursor, NOT that the expected fragments are absent.
 
-ENTRY POINT — when the user gives you a data folder, call `load_dataset(directory)`
-first. It runs the standard initial analysis (arf2 overview -> arf PCA, auto-
-selecting PeakProperties.arf over DriftSpots.arf) and primes the session. Its
-output (group structure, lipid classes, polarity) is exactly the material for
-GATEWAY step 1 below.
+ENTRY POINT — distinguish which of the following the user's folder actually is
+before picking a tool:
+
+1. RAW DATA (a folder of unprocessed instrument files, e.g. .wiff/.raw, with no
+   existing MS-DIAL output). Call `pipeline_run(dataset_root)` — a request to
+   "analyze this raw data" IS the launch request itself; you normally do not
+   need a separate confirmation call. It inspects inputs, plans, and starts an
+   independent worker that carries the run through upstream execution,
+   metadata resolution, preprocessing, PCA, and (if comparisons are given or
+   confirmed) differential analysis and reporting, returning a compact
+   dispatch receipt (`pipeline_id`/`pipeline_path`) — not the results
+   themselves. Poll with `pipeline_status(pipeline_path)` and, once it reports
+   `needs_input`, resolve ONLY the missing items with `pipeline_resume`
+   (never re-ask about items already confirmed). Use `pipeline_plan` instead
+   of `pipeline_run` only if the user explicitly wants to confirm resolved
+   settings (method file, LBM, polarity) before anything launches.
+2. EXISTING MS-DIAL OUTPUT (a folder that already contains .arf/.arf2/.pai2/
+   .dcl/.EIC.aef or a completed analysis-job.json). Call
+   `load_dataset(directory)` (or `dataset_load` for an mzTab-M path). It runs
+   the standard initial analysis (arf2 overview -> arf PCA, auto-selecting
+   PeakProperties.arf over DriftSpots.arf) and primes the session. Its output
+   (group structure, lipid classes, polarity) is exactly the material for
+   GATEWAY step 1 below.
+3. MIXED / AMBIGUOUS (raw files and existing MS-DIAL output both present, and
+   it is not clear which the user wants). Do NOT guess from the folder's mere
+   existence and do NOT launch a heavy re-analysis silently — ask the user
+   whether they want to read the existing results or re-run the analysis from
+   raw data, then follow branch 1 or 2 accordingly.
 
 MIXED-DATE FOLDERS ARE FINE — a folder may contain files from several MS-DIAL
 processing runs (multiple dates/batches). This is NOT a blocker and must not be

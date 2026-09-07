@@ -194,11 +194,20 @@ def _remember_arf_pca_plot(
         if group is not None:
             point["group"] = group
         points.append(point)
-    session_state.session.arf.last_pca_plot = {
+    from lipidmix.analysis.result_state import array_fingerprint, new_provenance
+
+    arf = session_state.session.arf
+    arf.last_pca_plot = {
         "title": title,
         "x_label": x_label,
         "y_label": y_label,
         "points": points,
+        # どのデータのどの計算から出た点列かを、点列自身に持たせる。図の保存が
+        # 「今のセッションに載っているから」ではなく「この結果だから」で選べる。
+        "provenance": new_provenance(
+            arf, kind="pca",
+            input_fingerprint=array_fingerprint(getattr(arf, "feature_matrix", None)),
+            effective_parameters=dict(getattr(arf, "preprocessing_recipe", None) or {})),
     }
 
 

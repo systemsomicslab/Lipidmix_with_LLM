@@ -29,32 +29,83 @@ __all__ = [
 # --- 図の入力元の選択（ARF 経路 / mzTab-M 経路） ---
 #
 # 図の描画は 2 つのセッションスロットから来る。ARF 経路は session.arf に、
-# mzTab-M 経路は session.dataset（DatasetState）に結果を置く。描画側に経路別の
-# 分岐を持たせず、ここで「どちらを使うか」と「どちらを使ったか」を決める。
-# 両方載っている場合は ARF を優先し、戻り値に source を書いて混同を防ぐ。
+# mzTab-M 経路は session.dataset（DatasetState）に結果を置く。
+#
+# **どちらかを優先しない**。旧実装は両方あるとき黙って ARF を採っていたので、
+# 新しく読み込んだ mzTab の解析をしているつもりでも前のデータの図が保存され得た。
+# 候補を並べて select_result に決めさせ、決まらなければ描かずに止める。
 
-def _select_pca_plot() -> tuple[dict | None, str | None]:
+def _pca_candidates() -> list[dict]:
+    from lipidmix.analysis.result_state import is_current
+
+    candidates: list[dict] = []
     plot = getattr(session_state.session.arf, "last_pca_plot", None)
     if plot and plot.get("points"):
-        return plot, "arf"
+        prov = plot.get("provenance") or {}
+        candidates.append({
+            "source": "arf", "result_id": prov.get("result_id"),
+            "dataset_id": prov.get("dataset_id"), "valid": True,
+            "result": plot, "ds": None})
     ds = getattr(session_state.session, "dataset", None)
     ds_pca = getattr(ds, "last_pca", None) if ds is not None else None
     if ds_pca:
         projected = dataset_pca_plot(ds_pca)
         if projected:
-            return projected, "mztab"
-    return None, None
+            prov = ds_pca.get("provenance") or {}
+            candidates.append({
+                "source": "mztab", "result_id": prov.get("result_id"),
+                "dataset_id": prov.get("dataset_id"),
+                "valid": is_current(ds, ds_pca), "result": projected, "ds": ds})
+    return candidates
 
 
-def _select_differential() -> tuple[dict | None, str | None]:
+def _differential_candidates() -> list[dict]:
+    from lipidmix.analysis.result_state import is_current
+
+    candidates: list[dict] = []
     last = getattr(session_state.session.arf, "last_differential", None)
     if last and last.get("volcano"):
-        return last, "arf"
+        prov = last.get("provenance") or {}
+        candidates.append({
+            "source": "arf", "result_id": prov.get("result_id"),
+            "dataset_id": prov.get("dataset_id"), "valid": True,
+            "result": last, "ds": None})
     ds = getattr(session_state.session, "dataset", None)
     ds_diff = getattr(ds, "last_differential", None) if ds is not None else None
     if ds_diff and ds_diff.get("volcano"):
-        return ds_diff, "mztab"
-    return None, None
+        prov = ds_diff.get("provenance") or {}
+        candidates.append({
+            "source": "mztab", "result_id": prov.get("result_id"),
+            "dataset_id": prov.get("dataset_id"),
+            "valid": is_current(ds, ds_diff), "result": ds_diff, "ds": ds})
+    return candidates
+
+
+def _figure_missing_state(kind: str) -> str:
+    if kind == "pca":
+        return mcp_errors.missing_state(
+            "pca_result",
+            ["arf_parser", "arf_pca_preprocessed", "load_dataset", "dataset_pca"],
+            "先に arf_parser / arf_pca_preprocessed / load_dataset 等でPCAを実行してください"
+            "（PCA結果がありません）。")
+    return mcp_errors.missing_state(
+        "differential_result", ["arf_differential", "dataset_differential"],
+        "[error] 直近の差次的解析（volcano データ）がありません。"
+        "先に arf_differential または dataset_differential を実行してください。")
+
+
+def _choose_figure_result(kind: str, source: str, result_id: str | None):
+    """候補から 1 件選ぶ。選べないときはエラーエンベロープ文字列を返す。"""
+    from lipidmix.core.atomic_io import DomainError
+    from lipidmix.plots.result_output import select_result
+
+    candidates = (_pca_candidates() if kind == "pca" else _differential_candidates())
+    if not candidates:
+        return _figure_missing_state(kind)
+    try:
+        return select_result(candidates, source=source, result_id=result_id)
+    except DomainError as exc:
+        return mcp_errors.mztab_error(exc.code, exc.message, exc.details or None)
 
 
 # --- 解析・解釈レポート（reports/<analysis_id>.md） ---
@@ -145,81 +196,64 @@ def list_reports() -> str:
 
 @mcp.tool(annotations=ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=True), structured_output=False)
-def save_pca_figure(analysis_id: str, title: str | None = None) -> str:
-    """明示的なユーザー要求時だけ、直近のセッションPCA結果をPNGとして保存する。
+def save_pca_figure(analysis_id: str, title: str | None = None,
+                    source: str = "auto", result_id: str | None = None) -> str:
+    """明示的なユーザー要求時だけ、指定したPCA結果をPNGとして保存する。
 
     先に arf_parser / arf_pca_preprocessed / load_dataset 等でPCAを実行する。通常の
     対話描画ではこのツールを呼ばず、各MCPクライアントのUIへ描画を任せる（PCA座標は
     解析ツールの返り値に同梱されている）。返り値の相対パスは write_report の本文に
     `![PCA](figures/<analysis_id>_pca.png)` として埋め込める。
+
+    source: "auto"（既定）/ "arf" / "mztab"。**auto はどちらかを優先しません**。
+        有効な結果が 2 つ以上あると `AMBIGUOUS_RESULT_SOURCE` で止まるので、
+        どちらを描くか指定してください（どの結果を描くかは図の数字そのものを変えます）。
+    result_id: 特定の結果を名指しする場合に指定する（解析ツールの戻り値に入っています）。
     """
-    plot, source = _select_pca_plot()
-    if plot is None:
-        return mcp_errors.missing_state(
-            "pca_result",
-            ["arf_parser", "arf_pca_preprocessed", "load_dataset", "dataset_pca"],
-            "先に arf_parser / arf_pca_preprocessed / load_dataset 等でPCAを実行してください"
-            "（PCA結果がありません）。")
-
-    slug = knowledge_store.make_slug(analysis_id)
-    reports_dir = _resolve_report_dir()
-    figures_dir = reports_dir / "figures"
-    figures_dir.mkdir(parents=True, exist_ok=True)
-
-    xs, ys, labels, x_label, y_label, plot_title = _pca_scatter_arrays(plot)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(xs, ys, alpha=0.6)
-    for x, y, label in zip(xs, ys, labels):
-        if label:
-            ax.annotate(str(label), (x, y), fontsize=8)
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.set_title(title or plot_title)
-    out_path = figures_dir / f"{slug}_pca.png"
-    try:
-        fig.savefig(out_path, format="png", bbox_inches="tight")
-    finally:
-        plt.close(fig)
-
-    rel = f"figures/{out_path.name}"
-    return f"PCA図を保存: {out_path}（source={source}）\n本文に ![PCA]({rel}) で埋め込めます。"
+    chosen = _choose_figure_result("pca", source, result_id)
+    if isinstance(chosen, str):
+        return chosen  # error envelope
+    return _save_figure(chosen, analysis_id, title, kind="pca", label="PCA")
 
 
 @mcp.tool(annotations=ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=True), structured_output=False)
-def save_volcano_figure(analysis_id: str, title: str | None = None) -> str:
-    """明示的なユーザー要求時だけ、直近の差次的解析を volcano プロットのPNGとして
+def save_volcano_figure(analysis_id: str, title: str | None = None,
+                        source: str = "auto", result_id: str | None = None) -> str:
+    """明示的なユーザー要求時だけ、指定した差次的解析を volcano プロットのPNGとして
     reports/figures/<analysis_id>_volcano.png に保存し、相対パスを返す。
 
-    先に arf_differential（2群比較）を実行する。通常の対話描画ではこのツールを呼ばず、
-    arf_plot_volcano で構造化した点列を返して各MCPクライアントのUIへ描画を任せる。
-    なお本PNGは間引き前の全特徴を描く（arf_plot_volcano は ns 点を間引くことがある）。
-    返り値の相対パスは write_report の本文に
+    先に arf_differential / dataset_differential（2群比較）を実行する。通常の対話描画では
+    このツールを呼ばず、arf_plot_volcano で構造化した点列を返して各MCPクライアントのUIへ
+    描画を任せる。なお本PNGは間引き前の全特徴を描く（arf_plot_volcano は ns 点を
+    間引くことがある）。返り値の相対パスは write_report の本文に
     `![volcano](figures/<analysis_id>_volcano.png)` として埋め込める。
+
+    source / result_id: save_pca_figure と同じ。**auto はどちらかを優先しません**。
     """
-    last, source = _select_differential()
-    if last is None:
-        return mcp_errors.missing_state(
-            "differential_result", ["arf_differential", "dataset_differential"],
-            "[error] 直近の差次的解析（volcano データ）がありません。"
-            "先に arf_differential を実行してください。")
+    chosen = _choose_figure_result("differential", source, result_id)
+    if isinstance(chosen, str):
+        return chosen  # error envelope
+    return _save_figure(chosen, analysis_id, title, kind="volcano", label="volcano")
+
+
+def _save_figure(chosen: dict, analysis_id: str, title: str | None, *,
+                 kind: str, label: str) -> str:
+    """選ばれた結果を PNG にして、どの結果から描いたかを添えて返す。"""
+    from lipidmix.plots.result_output import save_result_figure
 
     slug = knowledge_store.make_slug(analysis_id)
-    reports_dir = _resolve_report_dir()
-    figures_dir = reports_dir / "figures"
-    figures_dir.mkdir(parents=True, exist_ok=True)
-
-    # 描画は arf_plot_volcano（画像返し）と共有する。色や軸がツール間でずれると
-    # 「画面で見た図」と「レポートに貼った図」が別物になるため。
-    fig = render_volcano_plot(last, title=title)
-    out_path = figures_dir / f"{slug}_volcano.png"
-    try:
-        fig.savefig(out_path, dpi=120, bbox_inches="tight")
-    finally:
-        plt.close(fig)
+    figures_dir = _resolve_report_dir() / "figures"
+    out_path = save_result_figure(
+        chosen.get("ds"), chosen["result"],
+        figures_dir / f"{slug}_{kind if kind != 'volcano' else 'volcano'}.png",
+        kind=kind, title=title)
 
     rel = f"figures/{out_path.name}"
-    return f"volcano図を保存: {out_path}（source={source}）\n本文に ![volcano]({rel}) で埋め込めます。"
+    result_id = chosen.get("result_id") or "(なし)"
+    return (f"{label}図を保存: {out_path}"
+            f"（source={chosen['source']} result_id={result_id}）\n"
+            f"本文に ![{label}]({rel}) で埋め込めます。")
 
 
 @mcp.tool(annotations=ToolAnnotations(

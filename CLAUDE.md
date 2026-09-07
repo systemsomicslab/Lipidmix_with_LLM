@@ -5,7 +5,7 @@
 ## このリポジトリは何か
 
 MS-DIAL（リピドミクス LC-MS 解析ソフト）のバイナリ出力を読み、LLM から使える形で公開する
-**MCP サーバ `ms-data-parser`**。ツール 55・リソース 4・リソーステンプレート 3。
+**MCP サーバ `ms-data-parser`**。ツール 61・リソース 4・リソーステンプレート 3。
 対象形式は `.arf`（アライン後・サンプル別ピーク）/ `.arf2`（スポット代表）/ `.pai2`（個別測定）/
 `.dcl`（デコンボリューション済み MS/MS、独自バイナリ）/ `.EIC.aef`（クロマトグラム）。
 解析（PCA・前処理/QC・差次的解析）に加え、文献知識と再利用手順の蓄積層（`knowledge/` `playbook/`
@@ -48,6 +48,8 @@ lipidmix/plots/     描画 payload の組み立てと matplotlib 描画（volcan
 lipidmix/{arf,arf2,pai2,dcl,eic}/   形式ごとの reader.py（パーサ）と tools.py（MCP ツール）
 lipidmix/mztab/     mzTab-M リーダ・DatasetState 構築
 lipidmix/console/   MS-DIAL Console 実行層（job_manager / runner / output_collector）
+lipidmix/pipeline/  生データフォルダ起点の統括（受付 request/inputs/store・独立 worker が回す engine・
+                    工程 handler の service・再開/取消の recovery・必須出力判定と品質レポートの report）
 lipidmix/handoff/   Console 成果物の受け渡しスキーマ（analysis-job.json）
 lipidmix/corpus/    蓄積ノートの純ロジック（knowledge_store / paper_ingest）
 lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプル検索・目的・レポート・リソース）
@@ -92,6 +94,28 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
   - 図は座標を LLM に渡すより**サーバで描いて画像で返す**ほうが 2 桁安い
     （volcano 実測: 点列 183,578 字 ≒数万トークン → PNG 327 画像トークン）。
     画像トークンは `幅×高さ/750` なので dpi は上げない（`plots/render.py`）。
+- **`lipidmix/pipeline/` は独立 worker プロセスが回す層**。守るべき決まりごと:
+  - **`pipeline/{engine,worker,service,recovery,store}.py` はグローバル session を import しない**
+    （`lipidmix.core.session_state` / `lipidmix.core.mcp_core` / `lipidmix.tools.*`。
+    `tests/test_pipeline_engine.py` の AST テストが固定している）。進行状況は
+    `pipeline-run.json` と、そのプロセスだけが持つ `runtime` dict に住む。
+  - **`core/atomic_io.py` と `core/process_control.py` は stdlib だけの leaf**。
+    別プロセスの worker が最初に import するので、重い依存を持ち込まない。
+  - **run record の `results` は追記専用**（`store._assert_results_append_only` が
+    既存要素の書換えを拒否する）。永続化する pipeline 内のパスは `pipeline_root` 相対。
+  - **`pipeline_status` は読取専用**。生存確認 probe の失敗を「死んでいる」と読まない。
+  - **Console の自動再試行は行わない**。やり直しは `rerun_upstream=true` の明示が要り、
+    そのときは新しい attempt ディレクトリを作る（前回の終了証跡・ログを上書きしない）。
+  - 工程の実行順の正準は `engine.build_stages` の計画順（`record["stages"]` の挿入順ではない）。
+    report は必ず最後。
+  - `store`（`_patch_request_id_with_retry`）と `recovery`（`prepare_resume`）は
+    それぞれ自分の保存経路を `STATE_REVISION_CONFLICT` の有限回リトライで覆う。
+    `engine` は長い区間を跨ぐ保存（`mark_stage_running` /
+    `commit_stage_outcome`、`_save_with_retry`）だけをリトライで覆い、
+    それ以外の `save_run` 直呼び出しは読み直しを挟まずコンフリクトを
+    そのまま伝播する——ただしいずれも load してすぐ save するだけの
+    短い区間なので、伝播した先は worker が死に、次の resume が状態を
+    作り直すことで自己修復する。
 
 ## ドキュメントの地図（用途別に読み分ける）
 

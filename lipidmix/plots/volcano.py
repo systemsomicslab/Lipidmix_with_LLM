@@ -171,6 +171,16 @@ def build_volcano_plot_payload(
         "（q と p は別量なので破線位置と有意判定は厳密には一致しません）。"
     )
 
+    # spec §7.4(R16): allow_confounded=true で継続した比較は、その旨をこの図にも
+    # 残す。run_comparison が `provenance.comparison.unadjusted_confounded` へ
+    # 記録する事実を読むだけで、ここで独自に交絡を判定はしない。
+    comparison_prov = ((last_differential.get("provenance") or {}).get("comparison") or {})
+    if comparison_prov.get("unadjusted_confounded"):
+        caveats.append(
+            "allow_confounded=true が明示されたため、群とバッチの完全交絡を"
+            "未調整のまま解析を継続した比較です（この図はその補正前の結果です）。"
+        )
+
     # 座標は 4 桁で丸める。float の既定 repr は 17 桁まで出す（-0.17092926812859943）
     # ため、数百〜数千点の payload では桁の大半が図にも解釈にも寄与しない尾数で
     # 埋まる。実測で 1 点あたり 104 字 → 約 70 字。

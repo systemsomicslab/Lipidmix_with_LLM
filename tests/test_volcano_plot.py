@@ -110,6 +110,24 @@ class TestBuildVolcanoPlotPayload(unittest.TestCase):
             _differential([_point("PC 34:1", 1.8, 3.4, "up")]))
         self.assertTrue(any("-log10(q" in note for note in payload["caveats"]))
 
+    def test_unadjusted_confounded_status_is_carried_from_provenance(self):
+        """spec 7.4(R16): allow_confounded=trueで継続した比較は、payloadのcaveatsにも
+        その旨が要る——run_comparisonが`provenance.comparison.unadjusted_confounded`へ
+        残す事実を、build_volcano_plot_payload自身の独立したcaveatsリストが
+        これまで一度も読んでいなかった（Task17のcontroller ruling R16）。"""
+        last = _differential(
+            [_point("PC 34:1", 1.8, 3.4, "up")],
+            provenance={"comparison": {"unadjusted_confounded": True}})
+        payload = volcano_plot.build_volcano_plot_payload(last)
+        self.assertTrue(any("未調整" in note for note in payload["caveats"]))
+
+    def test_adjusted_comparisons_get_no_confounding_caveat(self):
+        last = _differential(
+            [_point("PC 34:1", 1.8, 3.4, "up")],
+            provenance={"comparison": {"unadjusted_confounded": False}})
+        payload = volcano_plot.build_volcano_plot_payload(last)
+        self.assertFalse(any("未調整" in note for note in payload["caveats"]))
+
     def test_missing_thresholds_fall_back_to_defaults(self):
         last = {"kind": "two_group", "a": "A", "b": "B",
                 "volcano": [_point("PC 34:1", 1.8, 3.4, "up")]}

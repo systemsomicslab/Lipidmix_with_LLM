@@ -10,155 +10,62 @@ from lipidmix.core.serialization import json_payload
 from lipidmix.mztab.reader import parse_mztab
 from lipidmix.mztab import evidence as mztab_evidence
 from lipidmix.mztab.dataset_state import build_dataset_state
+# 生成物パスの解決は loading.py が正準。console_cleanup など既存の呼び出しが
+# ここを参照しているため、名前だけ再エクスポートする（実装は 1 か所）。
+from lipidmix.mztab.loading import artifact_abs_path as _artifact_abs_path
 
 __all__ = ["dataset_load", "dataset_status"]
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
           structured_output=False)
-def dataset_load(mztab_path: str | None = None, job_path: str | None = None) -> str:
+def dataset_load(mztab_path: str | None = None, job_path: str | None = None,
+                 allow_incomplete: bool = False) -> str:
     """mzTab-M 2.0 ファイルを読み込んで正準状態（DatasetState）を作る。
 
     呼び出し方:
       - mztab_path: .mzTab ファイルへの絶対パスを直接指定する場合。
-      - job_path: analysis-job.json へのパスを指定する場合。ジョブの
-        primary_mztab_files[0] から mzTab-M を自動選択する。
-        console_run 完了後はこちらを推奨（polarity・measure が確定済み）。
+      - job_path: analysis-job.json へのパスを指定する場合。ジョブの宣言
+        （polarity・measure）で正準エントリを一意に選ぶ。console_run 完了後は
+        こちらを推奨。
 
     両方省略するとエラー、両方指定するとエラー。
+
+    allow_incomplete: **完了していない実行**（partial / failed / running）の出力を
+        読み込みます（既定 False）。中断時点の生成物なので、既定では拒否します
+        （`INCOMPLETE_ANALYSIS_JOB`）。True で読んだデータセットは探索専用になり、
+        2 群比較（dataset_differential）と差次的エクスポートは拒否されます——
+        欠けた検体を「その群には無い」と読み違えたまま結論が出てしまうためです。
+
     成功すると session.dataset に DatasetState が格納され、
     dataset_status で内容を確認できる。
     既存の session.arf / .arf2 / .pai2 / .eic は変更しない。
     """
-    if mztab_path and job_path:
-        return mztab_error(
-            "DATASET_BAD_REQUEST",
-            "mztab_path と job_path を同時に指定できません。どちらか一方だけを"
-            "使ってください（mztab_path: .mzTab への直接パス。job_path:"
-            " analysis-job.json のパス。console_run 完了後は job_path を推奨）。",
-        )
-
-    if job_path:
-        return _load_from_job(job_path)
-
-    if not mztab_path:
-        # missing_state ではない: 「前提状態が無いので別ツールを実行すれば直る」
-        # 復旧可能な状態不足ではなく、引数を直して呼び直すしかない確定エラー。
-        # required_tools に dataset_load 自身を挙げると、契約どおりに動く
-        # クライアントが同じ呼び出しを再実行して無限ループする。
-        return mztab_error(
-            "DATASET_BAD_REQUEST",
-            "mztab_path または job_path のどちらか一方を指定してください"
-            "（mztab_path: .mzTab への直接パス。job_path: analysis-job.json の"
-            "パス。console_run 完了後は job_path を推奨）。",
-        )
-
-    # mztab_path 経路（既存動作）
-    p = Path(mztab_path)
-    if not p.is_file():
-        return mztab_error(
-            "MZTAB_NOT_FOUND",
-            f"mzTab-M ファイルが見つかりません: {mztab_path}",
-        )
-
-    parse_result = parse_mztab(p)
-    validation = _validate_or_error(parse_result, p.name)
-    if isinstance(validation, str):
-        return validation
-
-    ds = build_dataset_state(parse_result, p.name, p)
-    # 検出状態（gap-fill）は mzTab-M に無い。隣接 `.arf` から補えるかを試す。
-    # 取り込めなくても解析は続けられるので、封筒ではなく warning で伝える。
-    mztab_evidence.attach_to_dataset(ds, p)
-    session_state.session.dataset = ds
-
-    return _summary_text(ds, p.name)
-
-
-def _load_from_job(job_path_str: str) -> str:
-    """analysis-job.json を読み、primary_mztab_files[0] から DatasetState を構築する。"""
-    job_p = Path(job_path_str).expanduser()
-    if not job_p.is_file():
-        return mztab_error(
-            "MZTAB_NOT_FOUND",
-            f"analysis-job.json が見つかりません: {job_path_str}",
-        )
+    from lipidmix.core.atomic_io import DomainError
+    from lipidmix.mztab.loading import load_dataset_state
 
     try:
-        from lipidmix.handoff.schema import AnalysisJob
-        job = AnalysisJob.load(job_p)
-    except (ValueError, KeyError) as exc:
-        return mztab_error(
-            "MZTAB_NOT_FOUND",
-            f"analysis-job.json の読み込みに失敗しました: {exc}",
-        )
+        ds = load_dataset_state(
+            mztab_path=Path(mztab_path) if mztab_path else None,
+            job_path=Path(job_path) if job_path else None,
+            allow_incomplete=allow_incomplete)
+    except DomainError as exc:
+        return mztab_error(exc.code, exc.message, exc.details or None)
 
-    if not job.primary_mztab_files:
-        return mztab_error(
-            "MZTAB_NOT_FOUND",
-            f"ジョブ {job.job_id} に primary_mztab_files がありません。"
-            "console_run を先に実行してください。",
-        )
-
-    # ジョブが宣言した polarity + measure で正準エントリを選ぶ。
-    # **[0] を暗黙に採ってはいけない**——エントリは相対パスの辞書順に並ぶので、
-    # 実データ（Area_ / Height_ / Normalized* が同居する MS-DIAL 出力）では
-    # Area_ が先頭に来る。console_plan が peak_area_above_zero を
-    # UNSUPPORTED_AREA_CONSOLE で拒否しているのに、ここで黙って読んでしまう。
-    selected = _select_primary_entry(job)
-    if isinstance(selected, str):
-        return selected  # error envelope
-    entry = selected
-    mztab_abs = _artifact_abs_path(job, getattr(entry, "root", "run_dir"), entry.path)
-
-    if not mztab_abs.is_file():
-        return mztab_error(
-            "MZTAB_NOT_FOUND",
-            f"mzTab-M ファイルが見つかりません: {mztab_abs}  "
-            f"（job_id={job.job_id}, entry.path={entry.path}）",
-        )
-
-    parse_result = parse_mztab(mztab_abs)
-    validation = _validate_or_error(parse_result, mztab_abs.name)
-    if isinstance(validation, str):
-        return validation
-
-    ds = build_dataset_state(parse_result, mztab_abs.name, mztab_abs)
-
-    # 終端状態が completed でないジョブ（タイムアウト後の partial など）は、
-    # MS-DIAL が途中で止まった実行の生成物を指している。mzTab 単体は構文検証を
-    # 通ってしまうため、ここで言わないと下流（前処理・PCA・差次的解析・
-    # エクスポート）が中断された実行の結果を完了品として扱う。**先頭に差す**。
-    if job.status != "completed":
-        ds.validation_result.setdefault("warnings", []).insert(0, (
-            f"このジョブは status={job.status} です（completed ではありません）。"
-            "MS-DIAL Console の実行は最後まで到達しておらず、読み込んだ mzTab-M は"
-            "中断時点の生成物です。特徴量・サンプルが欠けている可能性があるため、"
-            "console_status の error と msdial.log を確認してください。"))
-
-    # ジョブ由来フィールドを設定
-    ds.job_path = str(job_p)
-    for art in job.artifacts:
-        abs_p = str(_artifact_abs_path(job, getattr(art, "root", "run_dir"), art.path))
-        ds.artifact_paths.setdefault(art.role, []).append(abs_p)
-
-    # artifact_paths を入れ終えてから呼ぶ。handoff が記録した peak_matrix_source を
-    # 候補の先頭に使えるのは、この時点以降だけ。
-    mztab_evidence.attach_to_dataset(ds, mztab_abs)
-
+    # 成功したときだけ session を差し替える。途中で失敗した読み込みが
+    # 現在のデータセットを壊さない。
     session_state.session.dataset = ds
 
-    lines = [_summary_text(ds, mztab_abs.name)]
-    if len(job.primary_mztab_files) > 1:
-        others = [e.path for e in job.primary_mztab_files if e is not entry]
-        lines.append(
-            f"- ※ ジョブには他に {len(others)} 件の mzTab-M があります: "
-            + ", ".join(others)
-            + "  別ファイルを読むには mztab_path で直接指定してください。"
-        )
-    artifact_summary = {role: len(paths) for role, paths in ds.artifact_paths.items()}
-    if artifact_summary:
-        lines.append(f"- 付随アーティファクト: {artifact_summary}")
+    filename = Path(ds.source_files and list(ds.source_files)[-1]
+                    or (mztab_path or "")).name or "mzTab-M"
+    lines = [_summary_text(ds, filename)]
+    lines.append(f"- 出所の裏取り: {ds.source_verification}"
+                 + ("（探索専用: 2 群比較と差次的エクスポートは拒否されます）"
+                    if ds.exploratory_only else ""))
+    if ds.artifact_paths:
+        lines.append("- 付随アーティファクト: "
+                     + str({role: len(paths)
+                            for role, paths in ds.artifact_paths.items()}))
     return "\n".join(lines)
 
 
@@ -229,15 +136,6 @@ def _detection_summary(ds) -> dict:
             "n_detected": qc.get("n_detected"),
             "gap_filled_rate": qc.get("gap_filled_rate")}
 
-def _artifact_abs_path(job, root: str, rel: str) -> Path:
-    """生成物の相対パスを、記録された出所ルートから絶対パスへ戻す。
-
-    MS-DIAL Console は run_dir と生データフォルダの両方へ生成物を出すため、
-    analysis-job.v2 の root に応じて解決する。
-    """
-    base = Path(job.dataset_root) if root == "dataset_root" else Path(job.run_dir)
-    return (base / rel).resolve()
-
 def _samples_tsv(ds) -> str:
     """サンプル名と役割を TSV で返す（列名 1 回 + 1 行 1 サンプル）。
 
@@ -251,49 +149,6 @@ def _samples_tsv(ds) -> str:
     lines = ["name\trole"]
     lines += [f"{n}\t{roles.get(n, 'sample')}" for n in names]
     return "\n".join(lines)
-
-
-def _select_primary_entry(job):
-    """ジョブの宣言（polarity + measure）で正準 mzTab エントリを一意に選ぶ。
-
-    一意に決まらないときは選ばずに停止する（spec §7「暗黙の単数選択と
-    newest_modified_time は廃止する」）。どれを読むかは解析結果そのものを
-    変えるので、LLM にもファイル名の辞書順にも決めさせない。
-    成功なら MztabEntry、失敗ならエラーエンベロープ文字列を返す。
-    """
-    candidates = job.primary_mztab_files
-    by_measure = [e for e in candidates if e.measure == job.measure]
-    if not by_measure:
-        return mztab_error(
-            "QUANTIFICATION_CONFLICT",
-            f"ジョブは measure={job.measure} を宣言していますが、"
-            "その定量種別の mzTab-M が生成物にありません。"
-            "別種別のファイルを代わりに読むと、宣言と違う数値で解析することになります。"
-            "意図的に別種別を読むなら mztab_path で明示してください。",
-            {"declared_measure": job.measure, "candidates": _describe(candidates)},
-        )
-
-    matched = [e for e in by_measure if e.polarity == job.polarity]
-    if not matched:
-        return mztab_error(
-            "POLARITY_MISMATCH",
-            f"ジョブは polarity={job.polarity} を宣言していますが、"
-            f"measure={job.measure} の候補にその極性がありません。"
-            "極性が違えば検出される脂質クラスが変わるため、代替で読みません。"
-            "意図的に別極性を読むなら mztab_path で明示してください。",
-            {"declared_polarity": job.polarity, "declared_measure": job.measure,
-             "candidates": _describe(candidates)},
-        )
-
-    if len(matched) > 1:
-        return mztab_error(
-            "AMBIGUOUS_PRIMARY_MZTAB",
-            f"polarity={job.polarity} / measure={job.measure} の候補が "
-            f"{len(matched)} 件あり、一意に決まりません。"
-            "mztab_path でどれを読むか明示してください。",
-            {"candidates": _describe(matched)},
-        )
-    return matched[0]
 
 
 def _describe(entries) -> list[dict]:

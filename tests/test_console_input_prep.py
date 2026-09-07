@@ -125,6 +125,25 @@ def test_refuses_to_write_into_the_source_folder(tmp_path):
         prepare_single_format_input(src, "wiff", src)
 
 
+def test_same_stem_analysis_artifacts_are_not_pulled_in_as_companions(tmp_path):
+    """PAI2/タグ等、同じstemの既存解析出力を随伴ファイルとして誤って拾わない。
+
+    旧実装は「primaryの先頭トークンで始まり、計測拡張子でないもの」を随伴と
+    見なしていたため、同じstemのPAI2やタグXMLまで拾ってしまっていた
+    （lipidmix/console/input_prep.py の COMPANION_RULES 導入前の欠陥）。
+    """
+    src = tmp_path / "raw"
+    src.mkdir()
+    _sciex_pair(src, "sample_a")
+    (src / "sample_a.pai2").write_bytes(b"\x00pai2-binary")
+    (src / "sample_a_tags.xml").write_text("<tags/>", encoding="ascii")
+    result = prepare_single_format_input(src, "wiff", tmp_path / "out")
+    names = {p.name for p in Path(result.out_dir).iterdir()}
+    assert "sample_a.pai2" not in names
+    assert "sample_a_tags.xml" not in names
+    assert result.companions == 2  # .wiff.scan と .timeseries.data だけ
+
+
 def test_directories_in_source_are_ignored(tmp_path):
     src = tmp_path / "raw"
     src.mkdir()

@@ -1,7 +1,14 @@
 # tests/test_console_runner.py
+#
+# Console の実行は `lipidmix.console.execution.supervise` が唯一の経路で、
+# `console_run` は監視ワーカー（lipidmix.console.worker）を通してそこへ入る。
+# ここでの実行系テストは **subprocess をモックしない** —— 監視・停止・収集の
+# どれが壊れても緑のままになるため、実際に子プロセスを起こし、その終了コードと
+# 生成物で判定する（`_fake_console`）。
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,10 +16,8 @@ import pytest
 
 from lipidmix.console.runner import (
     MsdialExeNotFoundError,
-    MsdialNonZeroExitError,
-    MsdialTimeoutError,
+    build_msdial_cmd,
     get_exe_path,
-    run_msdial,
 )
 from lipidmix.console.output_collector import (
     collect_artifacts,
@@ -63,131 +68,25 @@ def test_is_console_exe_rejects_missing_file():
         assert is_console_exe("nope.exe") is False
 
 
-def test_run_msdial_success(tmp_path):
-    method = tmp_path / "params.msdial"
-    method.touch()
-    run_dir = tmp_path / "run1"
-
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-
-    with patch("subprocess.run", return_value=mock_result) as mock_run:
-        rc = run_msdial(
-            method_file=method,
-            dataset_root=tmp_path,
-            run_dir=run_dir,
-            exe_path="fake_msdial.exe",
-        )
-
-    assert rc == 0
-    assert mock_run.called
-    cmd = mock_run.call_args[0][0]
-    assert "fake_msdial.exe" in cmd
-    assert str(method) in cmd
-    assert (run_dir / "msdial.log").exists()
+def test_build_msdial_cmd_passes_project_flag(tmp_path):
+    """save_project=True のとき -p を渡す（GUI で開ける .mdproject を出させる）。"""
+    cmd = build_msdial_cmd("fake.exe", tmp_path, tmp_path / "out",
+                           tmp_path / "params.txt", save_project=True)
+    assert cmd[-1] == "-p"
 
 
-def test_run_msdial_closes_stdin(tmp_path):
-    """MCP stdio サーバの JSON-RPC 入力を子プロセスに継承させない。
-
-    MS-DIAL Console は入力フォルダに複数フォーマットが混在すると
-    Console.ReadLine() で対話する。stdin を継承したままだと子が
-    プロトコルのバイト列を食うか、応答が来ずタイムアウトまでブロックする。
-    """
-    method = tmp_path / "params.txt"
-    method.touch()
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    with patch("subprocess.run", return_value=mock_result) as mock_run:
-        run_msdial(method_file=method, dataset_root=tmp_path,
-                   run_dir=tmp_path / "run1", exe_path="fake.exe")
-    assert mock_run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+def test_build_msdial_cmd_omits_project_flag_by_default(tmp_path):
+    cmd = build_msdial_cmd("fake.exe", tmp_path, tmp_path / "out",
+                           tmp_path / "params.txt")
+    assert "-p" not in cmd
 
 
-def test_run_msdial_flushes_cmd_header_before_child_writes(tmp_path):
-    """CMD 行を flush してから子に fd を渡す。"""
-    method = tmp_path / "params.txt"
-    method.touch()
-    run_dir = tmp_path / "run1"
-
-    def fake_run(cmd, stdout=None, stderr=None, timeout=None, stdin=None):
-        os.write(stdout.fileno(), b"CHILD OUTPUT\n")
-        result = MagicMock()
-        result.returncode = 0
-        return result
-
-    with patch("subprocess.run", side_effect=fake_run):
-        run_msdial(method_file=method, dataset_root=tmp_path,
-                   run_dir=run_dir, exe_path="fake.exe")
-    lines = (run_dir / "msdial.log").read_text(encoding="utf-8").splitlines()
-    assert lines[0].startswith("CMD: ")
-
-
-def test_run_msdial_passes_project_flag(tmp_path):
-    """save_project=True のとき -p を渡す。"""
-    method = tmp_path / "params.txt"
-    method.touch()
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    with patch("subprocess.run", return_value=mock_result) as mock_run:
-        run_msdial(method_file=method, dataset_root=tmp_path,
-                   run_dir=tmp_path / "run1", exe_path="fake.exe",
-                   save_project=True)
-    assert mock_run.call_args.args[0][-1] == "-p"
-
-
-def test_run_msdial_omits_project_flag_by_default(tmp_path):
-    method = tmp_path / "params.txt"
-    method.touch()
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    with patch("subprocess.run", return_value=mock_result) as mock_run:
-        run_msdial(method_file=method, dataset_root=tmp_path,
-                   run_dir=tmp_path / "run1", exe_path="fake.exe")
-    assert "-p" not in mock_run.call_args.args[0]
-
-
-def test_run_msdial_nonzero_exit(tmp_path):
-    method = tmp_path / "params.msdial"
-    method.touch()
-    run_dir = tmp_path / "run2"
-
-    mock_result = MagicMock()
-    mock_result.returncode = 1
-
-    with patch("subprocess.run", return_value=mock_result):
-        with pytest.raises(MsdialNonZeroExitError) as exc_info:
-            run_msdial(method_file=method, dataset_root=tmp_path, run_dir=run_dir,
-                       exe_path="fake.exe")
-    assert exc_info.value.returncode == 1
-
-
-def test_run_msdial_timeout(tmp_path):
-    method = tmp_path / "params.msdial"
-    method.touch()
-    run_dir = tmp_path / "run3"
-
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("fake.exe", 1)):
-        with pytest.raises(MsdialTimeoutError):
-            run_msdial(method_file=method, dataset_root=tmp_path, run_dir=run_dir,
-                       exe_path="fake.exe", timeout_s=1)
-
-
-def test_run_msdial_writes_log(tmp_path):
-    method = tmp_path / "params.msdial"
-    method.touch()
-    run_dir = tmp_path / "run_log"
-
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    with patch("subprocess.run", return_value=mock_result):
-        run_msdial(method_file=method, dataset_root=tmp_path, run_dir=run_dir,
-                   exe_path="fake.exe")
-
-    log = run_dir / "msdial.log"
-    assert log.exists()
-    content = log.read_text(encoding="utf-8")
-    assert "CMD:" in content
+def test_build_msdial_cmd_is_the_only_argument_layout(tmp_path):
+    """-i / -o / -m の並びはここ 1 か所でしか組まない（経路で分裂させない）。"""
+    cmd = build_msdial_cmd("fake.exe", tmp_path / "raw", tmp_path / "out",
+                           tmp_path / "params.txt")
+    assert cmd[:2] == ["fake.exe", "lcms"]
+    assert cmd[2::2] == ["-i", "-o", "-m"]
 
 
 # ---------- output_collector ----------
@@ -419,6 +318,14 @@ def _stub_lbm(tmp_path, monkeypatch):
     lbm.touch()
     monkeypatch.setenv("MSDIAL_LBM", str(lbm))
     return lbm
+
+
+# 偽 Console のヘルパの正準は tests/pipeline_fixtures.py（他のテストと共有する）。
+from tests.pipeline_fixtures import (  # noqa: E402
+    fake_console_command as _fake_console,
+    mztab_text as _mztab_text,
+    use_fake_console as _use_console,
+)
 
 
 # ---------- console_tools ----------
@@ -738,9 +645,8 @@ def test_collect_artifacts_excludes_operational_files(tmp_path):
 
 
 def test_console_run_reports_no_output(tmp_path, monkeypatch):
-    """MS-DIAL が終了コード 0 で何も出力しなければ NO_JOB_OUTPUT になる。"""
+    """終了コード 0 でも生成物が 1 件も無ければ NO_JOB_OUTPUT になる。"""
     import json as _json
-    from unittest.mock import MagicMock, patch
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
@@ -749,50 +655,50 @@ def test_console_run_reports_no_output(tmp_path, monkeypatch):
     method = tmp_path / "params.msdial"
     method.touch()
     _, job_path = create_job(dataset_root=tmp_path, method_file=method,
-                            polarity="positive", measure="peak_height")
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    with patch("subprocess.run", return_value=mock_result):
-        result = console_run(str(job_path))
-    parsed = _json.loads(result)
+                             polarity="positive", measure="peak_height")
+    _use_console(monkeypatch, _fake_console())
+
+    parsed = _json.loads(console_run(str(job_path)))
+
     assert parsed["error"]["code"] == "NO_JOB_OUTPUT"
     assert load_job(job_path).status == "failed"
 
 
-def test_console_run_unexpected_exception_marks_failed(tmp_path, monkeypatch):
-    """exe が実在しない等の想定外例外でも封筒を返し、running に固着させない。"""
+def test_console_run_marks_failed_when_the_executable_cannot_be_started(tmp_path, monkeypatch):
+    """実在しない exe で起動に失敗しても封筒を返し、running に固着させない。
+
+    `is_console_exe` の事前確認をすり抜けた場合（計画後に exe が消える等）の
+    最後の砦。起動できなかった事実は終了証跡に termination=launch_failed として残る。
+    """
     import json as _json
-    from unittest.mock import patch
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
-    monkeypatch.setenv("MSDIAL_EXE", "definitely_not_here.exe")
+    monkeypatch.setenv("MSDIAL_EXE", str(tmp_path / "definitely_not_here.exe"))
     _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
     method = tmp_path / "params.msdial"
     method.touch()
     _, job_path = create_job(dataset_root=tmp_path, method_file=method,
-                            polarity="positive", measure="peak_height")
-    with patch("subprocess.run", side_effect=FileNotFoundError("exe not found")):
-        result = console_run(str(job_path))
-    parsed = _json.loads(result)
+                             polarity="positive", measure="peak_height")
+
+    parsed = _json.loads(console_run(str(job_path)))
+
     assert parsed["error"]["code"] == "MSDIAL_EXE_NOT_FOUND"
+    assert parsed["error"]["details"]["termination"] == "launch_failed"
     assert load_job(job_path).status == "failed"
 
 
 # ---------- F1: 実行後処理（collect_artifacts 以降）のガード ----------
 
 def test_console_run_post_run_failure_marks_job_failed_not_running(tmp_path, monkeypatch):
-    """run_msdial 自体は成功しても、その後の生成物ハッシュ計算で例外が出たら
-    running に固着させず failed で機械可読エンベロープを返す。
+    """Console 自体は成功しても、収集で例外が出たら running に固着させない。
 
     Windows でウイルススキャナ等が生成直後のファイルをロックしていると
-    collect_artifacts 内の sha256_file が PermissionError を投げる実運用の
-    再現。ここが無防備だと analysis-job.json は running のまま残り、以降の
-    console_run は全部 JOB_NOT_PLANNED で拒否されて誰も直せなくなる
-    （Task 0 で潰したはずの症状の再発）。
+    `sha256_file` が PermissionError を投げる実運用の再現。ここが無防備だと
+    analysis-job.json は running のまま残り、以降の console_run は全部
+    JOB_NOT_PLANNED で拒否されて誰も直せなくなる。
     """
     import json as _json
-    from unittest.mock import MagicMock, patch
     from lipidmix.console.job_manager import create_job, load_job
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
@@ -802,26 +708,18 @@ def test_console_run_post_run_failure_marks_job_failed_not_running(tmp_path, mon
     method.touch()
     job, job_path = create_job(dataset_root=tmp_path, method_file=method,
                                polarity="positive", measure="peak_height")
-    run_dir = Path(job.run_dir)
+    out = Path(job.run_dir) / "msdial"
+    _use_console(monkeypatch, _fake_console(
+        {out / "Height_AlignmentResult_ctrl_1.mzTab": "MTD\t"}))
+    monkeypatch.setattr("lipidmix.console.output_collector.sha256_file",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            PermissionError("locked by AV scanner")))
 
-    def _fake_run(cmd, **kwargs):
-        out = run_dir / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "Height_AlignmentResult_ctrl_1.mzTab").write_text("MTD\t")
-        result = MagicMock()
-        result.returncode = 0
-        return result
+    parsed = _json.loads(console_run(str(job_path)))
 
-    with patch("subprocess.run", side_effect=_fake_run), \
-         patch("lipidmix.console.output_collector.sha256_file",
-               side_effect=PermissionError("locked by AV scanner")):
-        result = console_run(str(job_path))
-
-    parsed = _json.loads(result)
     assert parsed["error"]["code"] == "JOB_POST_RUN_FAILED"
     reloaded = load_job(job_path)
     assert reloaded.status == "failed"
-    assert reloaded.status != "running"
     assert reloaded.error
 
 
@@ -878,18 +776,6 @@ def test_collect_artifacts_excludes_normalized_mztab_from_primary_candidates(tmp
     assert [a.role for a in others] == ["unsupported_mztab"]
 
 
-def _fake_msdial_producing(run_dir: Path, filename: str):
-    """subprocess.run の代わりに、指定名のファイルを msdial/ に置いて成功を返す。"""
-    def fake_run(cmd, **kwargs):
-        out = run_dir / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / filename).write_text("x", encoding="utf-8")
-        result = MagicMock()
-        result.returncode = 0
-        return result
-    return fake_run
-
-
 def test_console_run_records_declared_polarity_on_mztab_entries(tmp_path, monkeypatch):
     """極性トークンを持たない出力名でも、宣言した negative が記録される。"""
     from lipidmix.console.job_manager import create_job, load_job
@@ -897,15 +783,17 @@ def test_console_run_records_declared_polarity_on_mztab_entries(tmp_path, monkey
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
     _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    (tmp_path / "S1.abf").write_bytes(b"raw")
     method = tmp_path / "params.msdial"
     method.touch()
     _, job_path = create_job(dataset_root=tmp_path, method_file=method,
                              polarity="negative", measure="peak_height")
-    run_dir = Path(load_job(job_path).run_dir)
+    out = Path(load_job(job_path).run_dir) / "msdial"
+    _use_console(monkeypatch, _fake_console({
+        out / "Height_AlignmentResult_2026.mzTab":
+            _mztab_text(tmp_path, [tmp_path / "S1.abf"])}))
 
-    with patch("subprocess.run",
-               side_effect=_fake_msdial_producing(run_dir, "Height_AlignmentResult_2026.mzTab")):
-        console_run(str(job_path))
+    console_run(str(job_path))
 
     saved = load_job(job_path)
     assert saved.status == "completed"
@@ -919,15 +807,17 @@ def test_console_run_warns_when_filename_contradicts_declared_polarity(tmp_path,
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
     _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    (tmp_path / "S1.abf").write_bytes(b"raw")
     method = tmp_path / "params.msdial"
     method.touch()
     _, job_path = create_job(dataset_root=tmp_path, method_file=method,
                              polarity="negative", measure="peak_height")
-    run_dir = Path(load_job(job_path).run_dir)
+    out = Path(load_job(job_path).run_dir) / "msdial"
+    _use_console(monkeypatch, _fake_console({
+        out / "Height_AlignmentResult_Pos.mzTab":
+            _mztab_text(tmp_path, [tmp_path / "S1.abf"])}))
 
-    with patch("subprocess.run",
-               side_effect=_fake_msdial_producing(run_dir, "Height_AlignmentResult_Pos.mzTab")):
-        console_run(str(job_path))
+    console_run(str(job_path))
 
     saved = load_job(job_path)
     assert [e.polarity for e in saved.primary_mztab_files] == ["positive"]
@@ -948,15 +838,18 @@ def test_console_run_writes_no_sidecar_files(tmp_path, monkeypatch):
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
     _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    (tmp_path / "S1.abf").write_bytes(b"raw")
     method = tmp_path / "params.msdial"
     method.touch()
     job, job_path = create_job(dataset_root=tmp_path, method_file=method,
                                polarity="positive", measure="peak_height")
     run_dir = Path(job.run_dir)
+    _use_console(monkeypatch, _fake_console({
+        run_dir / "msdial" / "Height_AlignmentResult_1.mzTab":
+            _mztab_text(tmp_path, [tmp_path / "S1.abf"]),
+        tmp_path / "ctrl_1.pai2": "peaks"}))
 
-    with patch("subprocess.run",
-               side_effect=_fake_msdial_producing(run_dir, "ctrl_1.pai2")):
-        assert json.loads(console_run(str(job_path)))["status"] == "completed"
+    assert json.loads(console_run(str(job_path)))["status"] == "completed"
 
     assert not (run_dir / "sidecars").exists()
     assert "sample_qc_sidecar" not in {a.role for a in load_job(job_path).artifacts}
@@ -974,15 +867,16 @@ def test_console_run_warns_when_no_per_sample_pai2(tmp_path, monkeypatch):
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
     _stub_lbm(tmp_path, monkeypatch)
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    (tmp_path / "S1.abf").write_bytes(b"raw")
     method = tmp_path / "params.msdial"
     method.touch()
     job, job_path = create_job(dataset_root=tmp_path, method_file=method,
                                polarity="positive", measure="peak_height")
-    run_dir = Path(job.run_dir)
+    _use_console(monkeypatch, _fake_console({
+        Path(job.run_dir) / "msdial" / "Height_Alignment.mzTab":
+            _mztab_text(tmp_path, [tmp_path / "S1.abf"])}))
 
-    with patch("subprocess.run",
-               side_effect=_fake_msdial_producing(run_dir, "Height_Alignment.mzTab")):
-        assert json.loads(console_run(str(job_path)))["status"] == "completed"
+    assert json.loads(console_run(str(job_path)))["status"] == "completed"
 
     warnings = load_job(job_path).warnings
     assert any(".pai2" in w for w in warnings)
@@ -995,15 +889,18 @@ def test_console_run_no_pai2_warning_when_pai2_present(tmp_path, monkeypatch):
     from lipidmix.tools.console_tools import console_run
     monkeypatch.setenv("MSDIAL_EXE", "fake.exe")
     _stub_lbm(tmp_path, monkeypatch)
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+    (tmp_path / "S1.abf").write_bytes(b"raw")
     method = tmp_path / "params.msdial"
     method.touch()
     job, job_path = create_job(dataset_root=tmp_path, method_file=method,
                                polarity="positive", measure="peak_height")
-    run_dir = Path(job.run_dir)
+    _use_console(monkeypatch, _fake_console({
+        Path(job.run_dir) / "msdial" / "Height_Alignment.mzTab":
+            _mztab_text(tmp_path, [tmp_path / "S1.abf"]),
+        tmp_path / "ctrl_1.pai2": "peaks"}))
 
-    with patch("subprocess.run",
-               side_effect=_fake_msdial_producing(run_dir, "ctrl_1.pai2")):
-        console_run(str(job_path))
+    console_run(str(job_path))
 
     assert not any(".pai2" in w for w in load_job(job_path).warnings)
 
@@ -1037,18 +934,13 @@ def test_console_run_collects_dataset_root_outputs(tmp_path, monkeypatch):
     from lipidmix.tools.console_tools import console_run
 
     job_path = _planned_task8_job(tmp_path, monkeypatch)
+    out = Path(load_job(job_path).run_dir) / "msdial"
+    _use_console(monkeypatch, _fake_console({
+        out / "Height_AlignResult-1.mzTab": _mztab_text(tmp_path, [tmp_path / "S1.wiff"]),
+        out / "S1.mdpeak": "a",
+        tmp_path / "S1_1.pai2": "b",
+        tmp_path / "S1_1.dcl": "c"}))
 
-    def fake_run_msdial(method_file, dataset_root, run_dir, timeout_s=3600,
-                        exe_path=None, save_project=False):
-        out = Path(run_dir) / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
-        (out / "S1.mdpeak").write_bytes(b"a")
-        Path(dataset_root, "S1_1.pai2").write_bytes(b"b")
-        Path(dataset_root, "S1_1.dcl").write_bytes(b"c")
-        return 0
-
-    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
     parsed = _json.loads(console_run(str(job_path)))
 
     assert parsed["status"] == "completed"
@@ -1064,45 +956,50 @@ def test_console_run_collects_dataset_root_outputs(tmp_path, monkeypatch):
 def test_console_run_warns_when_no_dataset_root_sample_files(tmp_path, monkeypatch):
     """両ルートに .pai2 がなければ初めて MS/MS 根拠不足を警告する。"""
     import json as _json
+    from lipidmix.console.job_manager import load_job
     from lipidmix.tools.console_tools import console_run
 
     job_path = _planned_task8_job(tmp_path, monkeypatch)
+    out = Path(load_job(job_path).run_dir) / "msdial"
+    _use_console(monkeypatch, _fake_console({
+        out / "Height_AlignResult-1.mzTab": _mztab_text(tmp_path, [tmp_path / "S1.wiff"])}))
 
-    def fake_run_msdial(method_file, dataset_root, run_dir, timeout_s=3600,
-                        exe_path=None, save_project=False):
-        out = Path(run_dir) / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
-        return 0
-
-    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
     parsed = _json.loads(console_run(str(job_path)))
     assert any(".pai2" in warning for warning in parsed["warnings"])
 
 
 def test_console_plan_persists_and_console_run_passes_execution_options(tmp_path, monkeypatch):
-    """計画時の timeout/save_project が永続化され、実行へそのまま渡る。"""
+    """計画時の timeout/save_project が永続化され、実行へそのまま渡る。
+
+    timeout は Console のコマンドラインではなく監視側の期限なので、渡ったことは
+    終了証跡の `timeout_s` で確かめる（証跡は監視が実際に使った値を書く）。
+    """
     import json as _json
     from lipidmix.console.job_manager import load_job
     from lipidmix.tools.console_tools import console_run
 
     job_path = _planned_task8_job(tmp_path, monkeypatch, save_project=True, timeout_s=1234)
+    out = Path(load_job(job_path).run_dir) / "msdial"
+    command = _fake_console({
+        out / "Height_AlignResult-1.mzTab": _mztab_text(tmp_path, [tmp_path / "S1.wiff"])})
     seen = {}
 
-    def fake_run_msdial(method_file, dataset_root, run_dir, timeout_s=3600,
-                        exe_path=None, save_project=False):
-        seen.update(timeout_s=timeout_s, save_project=save_project, exe_path=exe_path)
-        out = Path(run_dir) / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
-        return 0
+    def _capture(exe, dataset_root, msdial_out_dir, method_file, save_project=False):
+        seen.update(exe=exe, save_project=save_project,
+                    dataset_root=str(dataset_root), out=str(msdial_out_dir))
+        return command
 
-    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    monkeypatch.setattr("lipidmix.console.runner.build_msdial_cmd", _capture)
     console_run(str(job_path))
 
     saved = load_job(job_path)
     assert (saved.save_project, saved.timeout_s) == (True, 1234)
-    assert seen == {"timeout_s": 1234, "save_project": True, "exe_path": "fake.exe"}
+    assert seen["exe"] == "fake.exe"
+    assert seen["save_project"] is True
+    assert seen["dataset_root"] == str(tmp_path)
+    receipt = _json.loads(
+        (Path(saved.run_dir) / "execution-result.json").read_text(encoding="utf-8"))
+    assert receipt["timeout_s"] == 1234
 
 
 @pytest.mark.parametrize("save_project, timeout_s", [
@@ -1132,7 +1029,7 @@ def test_console_plan_rejects_invalid_execution_options_before_job_side_effects(
 
 
 def test_console_run_rejects_invalid_loaded_execution_options_before_running(tmp_path, monkeypatch):
-    """手編集された不正ジョブは runner を起動せず planned のまま拒否する。"""
+    """手編集された不正ジョブは Console を起動せず planned のまま拒否する。"""
     import json as _json
     from lipidmix.console.job_manager import load_job, save_job
     from lipidmix.tools.console_tools import console_run
@@ -1142,8 +1039,8 @@ def test_console_run_rejects_invalid_loaded_execution_options_before_running(tmp
     job.timeout_s = 0
     save_job(job, job_path)
     monkeypatch.setattr(
-        "lipidmix.console.runner.run_msdial",
-        lambda *args, **kwargs: pytest.fail("不正な実行オプションで runner を起動した"),
+        "lipidmix.console.execution.start_owned_process",
+        lambda *args, **kwargs: pytest.fail("不正な実行オプションで Console を起動した"),
     )
 
     parsed = _json.loads(console_run(str(job_path)))
@@ -1154,27 +1051,26 @@ def test_console_run_rejects_invalid_loaded_execution_options_before_running(tmp
 def test_console_run_timeout_persists_partial_outputs_from_both_roots(tmp_path, monkeypatch):
     """タイムアウト後も既出力は partial ジョブに保存し、根を失わない。"""
     import json as _json
-    from lipidmix.console.job_manager import load_job
-    from lipidmix.console.runner import MsdialTimeoutError
+    from lipidmix.console.job_manager import load_job, save_job
     from lipidmix.tools.console_tools import console_run
 
     job_path = _planned_task8_job(tmp_path, monkeypatch)
+    job = load_job(job_path)
+    job.timeout_s = 1
+    save_job(job, job_path)
+    out = Path(job.run_dir) / "msdial"
+    _use_console(monkeypatch, _fake_console(
+        {out / "Height_AlignResult-1.mzTab": _mztab_text(tmp_path, [tmp_path / "S1.wiff"]),
+         tmp_path / "S1_1.pai2": "partial"},
+        sleep_s=30))
 
-    def fake_run_msdial(method_file, dataset_root, run_dir, **kwargs):
-        out = Path(run_dir) / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
-        Path(dataset_root, "S1_1.pai2").write_bytes(b"partial")
-        raise MsdialTimeoutError("timed out after fake work")
-
-    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
     parsed = _json.loads(console_run(str(job_path)))
     saved = load_job(job_path)
 
     assert parsed["error"]["code"] == "MSDIAL_TIMEOUT"
     assert parsed["error"]["details"]["status"] == "partial"
     assert saved.status == "partial"
-    assert saved.error == "timed out after fake work"
+    assert "termination=timeout" in (saved.error or "")
     assert {entry.root for entry in saved.primary_mztab_files} == {"run_dir"}
     assert {artifact.root for artifact in saved.artifacts} == {"dataset_root"}
 
@@ -1182,15 +1078,14 @@ def test_console_run_timeout_persists_partial_outputs_from_both_roots(tmp_path, 
 def test_console_run_timeout_without_outputs_fails(tmp_path, monkeypatch):
     """タイムアウト時に出力ゼロなら partial と偽らず failed にする。"""
     import json as _json
-    from lipidmix.console.job_manager import load_job
-    from lipidmix.console.runner import MsdialTimeoutError
+    from lipidmix.console.job_manager import load_job, save_job
     from lipidmix.tools.console_tools import console_run
 
     job_path = _planned_task8_job(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "lipidmix.console.runner.run_msdial",
-        lambda *args, **kwargs: (_ for _ in ()).throw(MsdialTimeoutError("timed out empty")),
-    )
+    job = load_job(job_path)
+    job.timeout_s = 1
+    save_job(job, job_path)
+    _use_console(monkeypatch, _fake_console(sleep_s=30))
 
     parsed = _json.loads(console_run(str(job_path)))
     assert parsed["error"]["code"] == "MSDIAL_TIMEOUT"
@@ -1199,49 +1094,51 @@ def test_console_run_timeout_without_outputs_fails(tmp_path, monkeypatch):
 
 
 def test_console_run_timeout_collection_failure_marks_failed_with_timeout_context(tmp_path, monkeypatch):
-    """タイムアウト後の収集例外でも running を残さず原因を保存する。"""
+    """タイムアウト後の収集例外でも running を残さず、両方の原因を保存する。
+
+    封筒は timeout（Console がどう終わったか）を名乗り、収集が落ちた事実は
+    終了証跡の collection と job の error に残る。**どちらか一方だけを記録して
+    もう一方を消さない**。
+    """
     import json as _json
-    from lipidmix.console.job_manager import load_job
-    from lipidmix.console.runner import MsdialTimeoutError
+    from lipidmix.console.job_manager import load_job, save_job
     from lipidmix.tools.console_tools import console_run
 
     job_path = _planned_task8_job(tmp_path, monkeypatch)
+    job = load_job(job_path)
+    job.timeout_s = 1
+    save_job(job, job_path)
+    _use_console(monkeypatch, _fake_console(sleep_s=30))
     monkeypatch.setattr(
-        "lipidmix.console.runner.run_msdial",
-        lambda *args, **kwargs: (_ for _ in ()).throw(MsdialTimeoutError("timed out before collect")),
-    )
-    monkeypatch.setattr(
-        "lipidmix.console.output_collector.collect_artifacts",
+        "lipidmix.console.execution.collect_artifacts",
         lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("locked")),
     )
 
     parsed = _json.loads(console_run(str(job_path)))
     saved = load_job(job_path)
+    receipt = _json.loads(
+        (Path(saved.run_dir) / "execution-result.json").read_text(encoding="utf-8"))
+
     assert parsed["error"]["code"] == "MSDIAL_TIMEOUT"
     assert parsed["error"]["details"]["status"] == "failed"
     assert saved.status == "failed"
-    assert "timed out before collect" in (saved.error or "")
-    assert "locked" in (saved.error or "")
+    assert "termination=timeout" in (saved.error or "")
+    assert "COLLECTION_FAILED" in (saved.error or "")
+    assert "locked" in receipt["collection"]["error"]
 
 
 def test_console_run_persistence_failure_marks_successful_run_failed(tmp_path, monkeypatch):
     """収集済み成果物の保存に失敗しても running を残さず封筒を返す。"""
     import json as _json
-    from lipidmix.console import job_manager
     from lipidmix.console.job_manager import load_job
     from lipidmix.tools.console_tools import console_run
 
     job_path = _planned_task8_job(tmp_path, monkeypatch)
-
-    def fake_run_msdial(method_file, dataset_root, run_dir, **kwargs):
-        out = Path(run_dir) / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
-        return 0
-
-    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    out = Path(load_job(job_path).run_dir) / "msdial"
+    _use_console(monkeypatch, _fake_console({
+        out / "Height_AlignResult-1.mzTab": _mztab_text(tmp_path, [tmp_path / "S1.wiff"])}))
     monkeypatch.setattr(
-        job_manager, "save_job",
+        "lipidmix.console.execution.save_job",
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("save locked")),
     )
 
@@ -1249,29 +1146,27 @@ def test_console_run_persistence_failure_marks_successful_run_failed(tmp_path, m
     saved = load_job(job_path)
     assert parsed["error"]["code"] == "JOB_POST_RUN_FAILED"
     assert saved.status == "failed"
-    assert saved.status != "running"
     assert "save locked" in (saved.error or "")
+    # 保存できなくても復旧できるだけの情報を封筒に残す。
+    assert parsed["error"]["details"]["recovery"]["intended_status"] == "completed"
 
 
 def test_console_run_timeout_persistence_failure_preserves_timeout_context(tmp_path, monkeypatch):
     """timeout 後の保存失敗も timeout 封筒と failed 状態に収束させる。"""
     import json as _json
-    from lipidmix.console import job_manager
-    from lipidmix.console.job_manager import load_job
-    from lipidmix.console.runner import MsdialTimeoutError
+    from lipidmix.console.job_manager import load_job, save_job
     from lipidmix.tools.console_tools import console_run
 
     job_path = _planned_task8_job(tmp_path, monkeypatch)
-
-    def fake_run_msdial(method_file, dataset_root, run_dir, **kwargs):
-        out = Path(run_dir) / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
-        raise MsdialTimeoutError("timed out before save")
-
-    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    job = load_job(job_path)
+    job.timeout_s = 1
+    save_job(job, job_path)
+    out = Path(job.run_dir) / "msdial"
+    _use_console(monkeypatch, _fake_console(
+        {out / "Height_AlignResult-1.mzTab": _mztab_text(tmp_path, [tmp_path / "S1.wiff"])},
+        sleep_s=30))
     monkeypatch.setattr(
-        job_manager, "save_job",
+        "lipidmix.console.execution.save_job",
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("save locked")),
     )
 
@@ -1280,26 +1175,22 @@ def test_console_run_timeout_persistence_failure_preserves_timeout_context(tmp_p
     assert parsed["error"]["code"] == "MSDIAL_TIMEOUT"
     assert parsed["error"]["details"]["status"] == "failed"
     assert saved.status == "failed"
-    assert "timed out before save" in (saved.error or "")
     assert "save locked" in (saved.error or "")
 
 
 def test_console_status_exposes_roots_artifacts_and_execution_options(tmp_path, monkeypatch):
     """状態照会だけで生成物の由来と実行設定を追跡できる。"""
     import json as _json
+    from lipidmix.console.job_manager import load_job
     from lipidmix.tools.console_tools import console_run, console_status
 
     job_path = _planned_task8_job(tmp_path, monkeypatch, save_project=True, timeout_s=456)
-
-    def fake_run_msdial(method_file, dataset_root, run_dir, **kwargs):
-        out = Path(run_dir) / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
-        Path(dataset_root, "S1_1.pai2").write_bytes(b"x")
-        return 0
-
-    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    out = Path(load_job(job_path).run_dir) / "msdial"
+    _use_console(monkeypatch, _fake_console({
+        out / "Height_AlignResult-1.mzTab": _mztab_text(tmp_path, [tmp_path / "S1.wiff"]),
+        tmp_path / "S1_1.pai2": "x"}))
     console_run(str(job_path))
+
     parsed = _json.loads(console_status(str(job_path), include_artifacts=True))
 
     assert parsed["dataset_root"] == str(tmp_path)
@@ -1309,6 +1200,9 @@ def test_console_status_exposes_roots_artifacts_and_execution_options(tmp_path, 
         "path\trole\tformat\troot\n"
         "S1_1.pai2\tsample_peaks\tpai2\tdataset_root"
     )
+    # 状態照会は保存済みの証跡を読むだけ。終わり方は execution_receipt に出る。
+    assert parsed["execution_receipt"]["termination"] == "exited"
+    assert parsed["execution_receipt"]["exit_code"] == 0
 
 
 def test_method_text_check_reads_only_the_head(tmp_path, monkeypatch):
@@ -1327,20 +1221,17 @@ def test_method_text_check_reads_only_the_head(tmp_path, monkeypatch):
 def test_console_status_returns_artifacts_as_tsv(tmp_path, monkeypatch):
     """生成物の全文は行が並ぶ一覧なので TSV（列名 1 回）で返す（include_artifacts=True 時）。"""
     import json as _json
+    from lipidmix.console.job_manager import load_job
     from lipidmix.tools.console_tools import console_run, console_status
 
     job_path = _planned_task8_job(tmp_path, monkeypatch)
-
-    def fake_run_msdial(method_file, dataset_root, run_dir, **kwargs):
-        out = Path(run_dir) / "msdial"
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "AlignResult-1.mzTab").write_text("MTD\n", encoding="utf-8")
-        (out / "S1.mdpeak").write_bytes(b"a")
-        Path(dataset_root, "S1_1.pai2").write_bytes(b"x")
-        return 0
-
-    monkeypatch.setattr("lipidmix.console.runner.run_msdial", fake_run_msdial)
+    out = Path(load_job(job_path).run_dir) / "msdial"
+    _use_console(monkeypatch, _fake_console({
+        out / "Height_AlignResult-1.mzTab": _mztab_text(tmp_path, [tmp_path / "S1.wiff"]),
+        out / "S1.mdpeak": "a",
+        tmp_path / "S1_1.pai2": "x"}))
     console_run(str(job_path))
+
     parsed = _json.loads(console_status(str(job_path), include_artifacts=True))
 
     tsv = parsed["artifacts"]

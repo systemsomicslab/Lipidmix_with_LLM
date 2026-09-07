@@ -24,10 +24,13 @@ MS-DIAL 5 の GUI と Console は、脂質ライブラリ（LBM）の持ち方�
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+from lipidmix.core.atomic_io import DomainError
 
 # GUI の DataBaseSettingViewModel が使う判定と同じ（`@"\.lbm\d*"`）。
 # .NET の `GetFiles(dir, "*.lbm?")` が拾う .lbm / .lbm2 に一致し、.lbmx は拾わない。
@@ -518,3 +521,68 @@ def discover_method_candidates(
 
     annotated.sort(key=lambda c: (c.usable != "direct", -c.mtime))
     return annotated, searched
+
+
+# ---------- pipeline専用: 既知の参照キー登録（spec §4.3） ----------
+
+#: pipeline（Task13以降）が原本（method_file）基準で絶対解決する既知の参照キー。
+#: ここに無いキーの値はパスと決め付けて解決・コピーしない
+#: （spec §4.3「未知キーの値をパスと決め付けてコピーしない」）。
+#: LBM自体は既存の resolve_lbm（build_tree/env/exe_dir へのフォールバックを持つ）
+#: が別途解決するが、「宣言されているのに解決できない」場合の検出はここが担う。
+REFERENCE_KEYS: frozenset[str] = frozenset({LBM_KEY.lower()})
+
+
+def method_reference_fingerprint(
+    method_keys: dict[str, str], method_file: Path,
+) -> dict[str, dict]:
+    """既知の参照キーごとに宣言値の解決結果を返す（副作用なし・例外を投げない弱い版）。
+
+    select_method の候補グルーピングに使う。値が空、またはキー自体が
+    `REFERENCE_KEYS` に無ければそのキーは結果に含めない。解決できた場合は
+    参照先の内容ハッシュ（`sha256`）を持ち、できなければ `resolved=False` と
+    宣言値だけを持つ——「同じ相対パス文字列でも解決元ディレクトリが違えば
+    実効参照が異なりうる」ことを、この関数の呼び出し元（`method_file`引数に
+    候補ごとの実ファイルパスを渡す）が自然に表現する。
+    """
+    out: dict[str, dict] = {}
+    for key in REFERENCE_KEYS:
+        declared = (method_keys.get(key) or "").strip()
+        if not declared:
+            continue
+        candidate = Path(declared)
+        if not candidate.is_absolute():
+            candidate = method_file.parent / candidate
+        if candidate.is_file():
+            digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            out[key] = {"declared": declared, "resolved_path": str(candidate.resolve()),
+                        "sha256": digest, "resolved": True}
+        else:
+            out[key] = {"declared": declared, "resolved_path": str(candidate),
+                        "sha256": None, "resolved": False}
+    return out
+
+
+def resolve_method_references(
+    method_keys: dict[str, str], method_file: Path,
+) -> dict[str, Path]:
+    """既知の参照キーを原本(method_file)基準で絶対解決する（pipeline専用・厳格版）。
+
+    未対応（宣言されているのに解決できない）の参照キーがあれば
+    `DomainError("METHOD_REFERENCE_UNRESOLVED", ...)` を送出し、元のまま実行しない
+    （spec §4.3）。呼び出し側は「最終的に採用したメソッドファイル」に対して
+    これを呼ぶ想定——候補選別段階では弱い版（`method_reference_fingerprint`）を使う。
+    """
+    fingerprint = method_reference_fingerprint(method_keys, method_file)
+    resolved: dict[str, Path] = {}
+    for key, info in fingerprint.items():
+        if not info["resolved"]:
+            raise DomainError(
+                "METHOD_REFERENCE_UNRESOLVED",
+                f"メソッドの参照キー {key!r} が指すファイルが見つかりません: "
+                f"{info['declared']}（{method_file} 基準で解決: {info['resolved_path']}）",
+                {"key": key, "declared": info["declared"],
+                 "resolved_path": info["resolved_path"]},
+            )
+        resolved[key] = Path(info["resolved_path"])
+    return resolved

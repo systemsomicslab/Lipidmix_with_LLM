@@ -33,19 +33,29 @@
 状態変更: PNG ファイルを書き出す。
 
 入力元は 2 つある。ARF 経路は `session.arf.last_pca_plot`、mzTab-M 経路は
-`session.dataset.last_pca`。手順 2 が選び、**両方あるときは ARF を優先**して
-どちらを使ったかを戻り値の `source=` に書く。生行列 PCA と前処理後 PCA は
-ARF 側の同じスロットを使うので、保存されるのは**直近に実行したほう**の図になる。
+`session.dataset.last_pca`。手順 2 が候補を並べ、手順 3 が 1 件に決める。
+**どちらも優先しない**——有効な結果が 2 つ以上あれば `AMBIGUOUS_RESULT_SOURCE` で
+止まり、`source`（`arf` / `mztab`）か `result_id` の指定を求める。どちらを描くかは
+図の数字そのものを変えるので、優先順位を決め打ちすると「なぜこの図なのか」を
+説明できなくなる。前処理をやり直して古くなった結果は候補にならない（`valid=False`）。
+生行列 PCA と前処理後 PCA は ARF 側の同じスロットを使うので、ARF 経路で保存されるのは
+**直近に実行したほう**の図になる。
 
 1. lipidmix/tools/reports.py  save_pca_figure()
-2. └─ lipidmix/tools/reports.py  _select_pca_plot()
+2. └─ lipidmix/tools/reports.py  _pca_candidates()
 3. │  └─ lipidmix/core/tool_helpers.py  dataset_pca_plot()
-4. └─ lipidmix/core/mcp_errors.py  missing_state()
-5. └─ lipidmix/corpus/knowledge_store.py  make_slug()
-6. └─ lipidmix/core/mcp_core.py  _resolve_report_dir()
-7. │  └─ lipidmix/core/mcp_core.py  _report_dir_candidates()
-8. │  └─ lipidmix/core/mcp_core.py  _first_writable_dir()
-9. └─ lipidmix/core/tool_helpers.py  _pca_scatter_arrays()
+4. │  └─ lipidmix/analysis/result_state.py  is_current()
+5. └─ lipidmix/tools/reports.py  _choose_figure_result()
+6. │  └─ lipidmix/plots/result_output.py  select_result()
+7. └─ lipidmix/core/mcp_errors.py  missing_state()
+8. └─ lipidmix/tools/reports.py  _save_figure()
+9. │  └─ lipidmix/corpus/knowledge_store.py  make_slug()
+10.│  └─ lipidmix/core/mcp_core.py  _resolve_report_dir()
+11.│  │  └─ lipidmix/core/mcp_core.py  _report_dir_candidates()
+12.│  │  └─ lipidmix/core/mcp_core.py  _first_writable_dir()
+13.│  └─ lipidmix/plots/result_output.py  save_result_figure()
+14.│     └─ lipidmix/plots/result_output.py  figure_annotations()
+15.│     └─ lipidmix/core/tool_helpers.py  _pca_scatter_arrays()
 
 ## save_volcano_figure
 
@@ -57,16 +67,22 @@ ARF 側の同じスロットを使うので、保存されるのは**直近に�
 `session.dataset.last_differential` に保持された全量 volcano を直接描く
 （`arf_plot_volcano` の画像モードと同じ描画関数）。両経路が
 `differential.volcano_data()` の点列を共有しているので、描画関数は 1 つで足りる。
-手順 2 が入力元を選び、戻り値の `source=` にどちらを使ったかを書く。
+入力元の決め方は save_pca_figure と同じ（優先せず、曖昧なら止める）。戻り値には
+選ばれた `source=` と `result_id=` を書く。
 
 1. lipidmix/tools/reports.py  save_volcano_figure()
-2. └─ lipidmix/tools/reports.py  _select_differential()
-3. └─ lipidmix/core/mcp_errors.py  missing_state()
-4. └─ lipidmix/corpus/knowledge_store.py  make_slug()
-5. └─ lipidmix/core/mcp_core.py  _resolve_report_dir()
-6. │  └─ lipidmix/core/mcp_core.py  _report_dir_candidates()
-7. │  └─ lipidmix/core/mcp_core.py  _first_writable_dir()
-8. └─ lipidmix/plots/volcano.py  render_volcano_plot()
+2. └─ lipidmix/tools/reports.py  _differential_candidates()
+3. │  └─ lipidmix/analysis/result_state.py  is_current()
+4. └─ lipidmix/tools/reports.py  _choose_figure_result()
+5. │  └─ lipidmix/plots/result_output.py  select_result()
+6. └─ lipidmix/core/mcp_errors.py  missing_state()
+7. └─ lipidmix/tools/reports.py  _save_figure()
+8. │  └─ lipidmix/corpus/knowledge_store.py  make_slug()
+9. │  └─ lipidmix/core/mcp_core.py  _resolve_report_dir()
+10.│  │  └─ lipidmix/core/mcp_core.py  _report_dir_candidates()
+11.│  │  └─ lipidmix/core/mcp_core.py  _first_writable_dir()
+12.│  └─ lipidmix/plots/result_output.py  save_result_figure()
+13.│     └─ lipidmix/plots/volcano.py  render_volcano_plot()
 
 ## save_eic_figure
 
