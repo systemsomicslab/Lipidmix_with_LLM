@@ -44,7 +44,14 @@ from lipidmix.console import runner as console_runner
 from lipidmix.console.input_prep import _companions_of
 from lipidmix.core.atomic_io import DomainError, canonical_hash
 
-__all__ = ["inspect_inputs", "select_method", "stage_inputs", "verify_inputs"]
+__all__ = ["DEFAULT_MANIFEST_NAME", "inspect_inputs", "manifest_source_record",
+           "resolve_manifest_path", "select_method", "stage_inputs", "verify_inputs"]
+
+#: request.sample_manifest省略時に探す既定シート名（spec §7.1「元フォルダ直下の
+#: `analysis-request.json`と`sample-manifest.tsv`を既定名として探索する」）。
+#: 受付（`service.start_pipeline`の事前検査）・`resolve_metadata` handler・
+#: 再開時のシート内容照合（`recovery.prepare_resume`）が同じ1つの定数を共有する。
+DEFAULT_MANIFEST_NAME = "sample-manifest.tsv"
 
 #: 初期版はlipidomics固定（Global Constraints）。pipeline-request.v1にomicsは無い。
 _OMICS = "lipidomics"
@@ -58,6 +65,45 @@ _EFFECTIVE_METHOD_NAME = "effective-method.txt"
 
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def resolve_manifest_path(source_root: Path, request: dict) -> Path | None:
+    """`request["sample_manifest"]`を実パスへ解決する。相対はsource_root基準（spec §7.1）。
+
+    省略時は既定名（`DEFAULT_MANIFEST_NAME`）を探し、無ければ`None`
+    （＝自動一覧生成へ回す）。明示された値は存在しなくてもそのまま返す
+    ——「指定したシートが無い」ことは呼び出し側が
+    `SAMPLE_MANIFEST_NOT_FOUND`として報告すべき事実で、ここで既定名へ
+    黙って落とすと誤記入が別のシートで走ってしまう。
+    """
+    manifest_arg = request.get("sample_manifest")
+    if manifest_arg is not None:
+        candidate = Path(manifest_arg)
+        return candidate if candidate.is_absolute() else Path(source_root) / candidate
+    default_candidate = Path(source_root) / DEFAULT_MANIFEST_NAME
+    return default_candidate if default_candidate.is_file() else None
+
+
+def manifest_source_record(source_root: Path, request: dict) -> dict:
+    """実験情報シートの「今の中身」を表す小さな記録を返す。
+
+    `{"path": <str|None>, "sha256": <str|None>}`。パスが解決できない
+    （自動一覧生成）ときは両方None、解決できても読めないときはsha256だけNone。
+
+    **パス文字列だけでは訂正を検出できない**のがこの関数の存在理由。同じ
+    `sample-manifest.tsv`を書き直して`pipeline_resume`しても、要求の
+    `sample_manifest`は同じ文字列のままなので「変更なし」に見え、旧群割当の
+    まま再開してしまう（`recovery._stages_to_reset`が読む側）。内容hashで
+    比べれば、書き直しはそれだけで下流の差し戻しになる。
+    """
+    path = resolve_manifest_path(source_root, request)
+    if path is None:
+        return {"path": None, "sha256": None}
+    try:
+        digest = _sha256_file(path)
+    except OSError:
+        digest = None
+    return {"path": str(path), "sha256": digest}
 
 
 def _resolves_outside_root(path: Path, root: Path) -> bool:

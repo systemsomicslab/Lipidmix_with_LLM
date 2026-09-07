@@ -377,24 +377,36 @@ def console_run(job_path: str | None = None, detach: bool = False) -> str:
                  "worker_log": str(console_worker.worker_log_path(run_dir))})
         # 起動できてから running にする。起動前に書くと、失敗したときに
         # 誰も走っていないジョブが running のまま残る。
-        update_status(resolved, "running")
+        #
+        # ただし**無条件には書かない**。ワーカーは切り離して起動しており、
+        # ここへ来るまでに自分で running を書き、走り切って completed まで
+        # 書き終えていることがある（短い実行・偽 Console）。そこへ親が
+        # running を上書きすると、終わった実行が永久に running のまま残る
+        # ——`console_status` は読取専用なので、あとから誰も直せない。
+        # 所有記録も同じ理由で、ワーカーが自分の identity を書いていたら
+        # 触らない（親が知っているのはワーカーの pid だけで、そちらのほうが
+        # 情報が古い）。
         warnings: list[str] = []
+        current = load_job(resolved)
+        if current.status == "planned":
+            update_status(resolved, "running")
         try:
-            # 起動できた事実を先に記録する。ここで失敗しても走り出した
-            # ワーカーは取り消せないので、応答では必ず pid を返す。
-            console_worker.write_owner(run_dir, {
-                "kind": console_worker.OWNER_KIND_CONSOLE,
-                "pid": launched["pid"],
-                "identity": launched["identity"],
-                "job_path": str(resolved),
-                "status": "running",
-            })
+            if console_worker.read_owner(run_dir) is None:
+                # 起動できた事実を先に記録する。ここで失敗しても走り出した
+                # ワーカーは取り消せないので、応答では必ず pid を返す。
+                console_worker.write_owner(run_dir, {
+                    "kind": console_worker.OWNER_KIND_CONSOLE,
+                    "pid": launched["pid"],
+                    "identity": launched["identity"],
+                    "job_path": str(resolved),
+                    "status": "running",
+                })
         except OSError as exc:
             warnings.append(
                 f"監視ワーカー（pid={launched['pid']}）は起動しましたが、"
                 f"所有記録を worker.json へ書けませんでした: {exc!r}")
         return json_payload({
-            "status": "running",
+            "status": load_job(resolved).status,
             "job_id": job.job_id,
             "job_path": str(resolved),
             "pid": launched["pid"],
@@ -421,6 +433,14 @@ def console_run(job_path: str | None = None, detach: bool = False) -> str:
                 "console_status で進行を確認してください。",
                 {"job_path": str(resolved), "run_dir": job.run_dir,
                  "owner": console_worker.owner_summary(run_dir)},
+                required_tools=["console_status"])
+        if exc.code == "JOB_ALREADY_FINISHED":
+            # ロック待ちの間に別プロセスが走り切っていた。状態は書き換えない
+            # ——勝者が書いた終端状態を敗者が壊してはいけない（LOCK_TIMEOUT と
+            # 同じ理由）。二度目の MS-DIAL 起動は worker 側で止まっている。
+            return console_error(
+                "JOB_NOT_PLANNED", exc.message,
+                {"job_id": job.job_id, **(exc.details or {})},
                 required_tools=["console_status"])
         _record_finalization_failure(resolved, repr(exc))
         return console_error("JOB_POST_RUN_FAILED", str(exc),

@@ -71,10 +71,11 @@ __all__ = [
 #: （`lipidmix/console/worker.py::_repo_root`と同じ流儀）。
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: request.sample_manifest省略時に探す既定ファイル名（spec §10.1「既定名を
-#: 探索。存在しなければ自動一覧生成」）。`start_pipeline`の事前検査と
-#: `resolve_metadata` handlerの両方がこの1つの定数を共有する。
-_DEFAULT_MANIFEST_NAME = "sample-manifest.tsv"
+#: request.sample_manifest省略時に探す既定ファイル名（spec §7.1/§10.1「既定名を
+#: 探索。存在しなければ自動一覧生成」）。実体は`lipidmix.pipeline.inputs`にあり、
+#: 受付の事前検査・`resolve_metadata` handler・再開時のシート内容照合
+#: （`recovery.prepare_resume`）が同じ1つの定数と解決規則を共有する。
+_DEFAULT_MANIFEST_NAME = inputs_mod.DEFAULT_MANIFEST_NAME
 
 #: pipeline_root配下の各種書込み先。
 _CONSOLE_RUN_SUBDIR = "console"
@@ -122,17 +123,8 @@ def _plan_fingerprint(plan: dict) -> str:
 
 
 def _resolve_manifest_path(source_root: Path, request: dict) -> Path | None:
-    """`request["sample_manifest"]`を解決する。相対はsource_root基準（spec §10.1）。
-
-    省略時は既定名を探し、無ければNone（自動一覧生成へ回す——`resolve_metadata`
-    へ`rows=None`として伝わる）。
-    """
-    manifest_arg = request.get("sample_manifest")
-    if manifest_arg is not None:
-        candidate = Path(manifest_arg)
-        return candidate if candidate.is_absolute() else source_root / candidate
-    default_candidate = source_root / _DEFAULT_MANIFEST_NAME
-    return default_candidate if default_candidate.is_file() else None
+    """`inputs.resolve_manifest_path`への薄い委譲（解決規則を二重に持たない）。"""
+    return inputs_mod.resolve_manifest_path(source_root, request)
 
 
 def _precheck_manifest(source_root: Path, request: dict, plan: dict) -> DomainError | None:
@@ -390,13 +382,59 @@ def _await_launch_handshake(pipeline_path: Path, *, baseline_identity, baseline_
 # build_handlers: 工程handler一式
 # ---------------------------------------------------------------------------
 
+#: `PreconditionError.kind` → StageResultのerror code。どちらも「入力を
+#: 与え直せば先へ進める」種類の停止で、needs_inputとして扱う
+#: （`missing_state`は前提状態の不足、`bad_request`はその入力では成立しない
+#: 指定——`min_detection_rate>0`を検出状態の無いmzTabへ指定する、等）。
+_PRECONDITION_CODES = {
+    "missing_state": "ANALYSIS_PRECONDITION_MISSING",
+    "bad_request": "ANALYSIS_PRECONDITION_INVALID",
+}
+
+
+def _as_needs_input(handler):
+    """handlerの`PreconditionError`をneeds_inputのStageResultへ変換して包む。
+
+    `PreconditionError`は`DomainError`ではないので、素通りさせると
+    `engine._invoke_handler`の汎用`except Exception`分岐に落ち、
+    `error.code`がPythonのクラス名（`"PreconditionError"`）のまま`failed`に
+    なる——実際には入力を直せば再開できる停止なのに、機械可読なcodeを持たない
+    「回復不能な失敗」に見える。R18が`pca`だけに個別に施した回避を、handler
+    境界の共通の規則へ引き上げる（新しいhandlerが同じ穴を開け直さないように、
+    包む場所は`build_handlers`の1か所だけにする）。
+
+    `_handle_pca`のように自分でPreconditionErrorを捕らえて固有のcodeを返す
+    handlerはそのまま——ここへは到達しない。
+    """
+    def wrapped(context: dict) -> dict:
+        try:
+            return handler(context)
+        except PreconditionError as exc:
+            details = dict(exc.details or {})
+            if exc.state:
+                details.setdefault("state", exc.state)
+            return {"status": "needs_input", "result_refs": [], "warnings": [],
+                    "error": {
+                        "code": _PRECONDITION_CODES.get(
+                            exc.kind, "ANALYSIS_PRECONDITION_INVALID"),
+                        "message": exc.message,
+                        "details": details}}
+    wrapped.__name__ = getattr(handler, "__name__", "handler")
+    wrapped.__doc__ = handler.__doc__
+    return wrapped
+
+
 def build_handlers() -> dict:
     """`lipidmix.pipeline.engine.run_engine`へ渡すhandler一式を組み立てる。
 
     キーはhandlerキー（stage_idではない。`differential`/`export`は
     `comparison_id`ごとの複数stageで1つのhandlerキーを共有する）。
+
+    全handlerを`_as_needs_input`で包む——数値層が投げる`PreconditionError`
+    （`DomainError`ではない）を、engineの汎用例外分岐へ落とさずneeds_inputへ
+    変換するため。
     """
-    return {
+    handlers = {
         "prepare_input": _handle_prepare_input,
         "upstream": _handle_upstream,
         "validate_outputs": _handle_validate_outputs,
@@ -409,6 +447,7 @@ def build_handlers() -> dict:
         "export": _handle_export,
         "report": _handle_report,
     }
+    return {key: _as_needs_input(handler) for key, handler in handlers.items()}
 
 
 # ---------- prepare_input（Task13） ----------
@@ -608,7 +647,14 @@ def _handle_resolve_metadata(context: dict) -> dict:
         rows = parse_manifest(manifest_path, source_root=raw_root, expected_sources=expected_sources)
     metadata = resolve_sample_metadata(ds, rows)
     context["runtime"]["metadata"] = metadata
-    inputs_update = {**(context.get("inputs") or {}), "manifest": metadata}
+    # シートの**中身**の指紋も残す。`recovery.prepare_resume`はこれを今の
+    # ファイルと突き合わせて「同じパスのシートを書き直した訂正」を検出する
+    # ——パス文字列の比較だけでは、書き直しは変更として現れない。
+    inputs_update = {
+        **(context.get("inputs") or {}),
+        "manifest": metadata,
+        "manifest_source": inputs_mod.manifest_source_record(source_root, request),
+    }
     return {"status": "succeeded", "result_refs": [], "warnings": [], "error": None,
             "record_updates": {"inputs": inputs_update}}
 

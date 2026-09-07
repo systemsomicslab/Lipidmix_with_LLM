@@ -126,9 +126,12 @@ def validate_outputs(job: AnalysisJob, receipt: dict, expected_sources: list[str
       - mzTab-Mの構造検証（validate_mztab）が失敗（`MZTAB_STRUCTURE_INVALID`）
       - 定量行列が空、または有限値が1件もない
       - ファイル名/MTDから読める定量種別がjob宣言と致命的に矛盾する
-      - アダクト多数決の極性がjob宣言と矛盾する
+        （採用したentryとjobの宣言が食い違う場合を含む）
+      - アダクト多数決の極性がjob宣言と矛盾する（同上）
       - 予定した準備済みraw(`expected_sources`)とassayの対応が1対1でない
         （欠落・重複・予期しない追加）
+      - MTDのassay対応とSMFの`abundance_assay[N]`列が対応しない
+        （定量列の欠落・どのassayにも紐づかない定量列）
 
     `errors`は常にSCREAMING_SNAKE_CASEの安定コードのみを持つ（Task 4の
     `supervise()`/Task 7の`load_dataset_state`が`"CODE" in result["errors"]`で
@@ -166,18 +169,27 @@ def validate_outputs(job: AnalysisJob, receipt: dict, expected_sources: list[str
         errors.append("MZTAB_STRUCTURE_INVALID")
     warnings.extend(structure["warnings"])
 
-    matrix, _sample_names, _feature_ids = extract_abundance_matrix(parsed)
+    matrix, abundance_columns, _feature_ids = extract_abundance_matrix(parsed)
     if matrix.size == 0:
         errors.append("EMPTY_ABUNDANCE_MATRIX")
     elif not np.isfinite(matrix).any():
         errors.append("NO_FINITE_ABUNDANCE_VALUES")
 
+    # 定量種別・極性は「ファイル名から作ったentry」と「jobの宣言」の両方と
+    # 比べる。entryだけを見ると、ファイル名側を採用した食い違い
+    # （`output_collector._resolve_mztab_meta`が`validation["conflicts"]`へ
+    # 記録するもの）を誰も読まないまま completed になり、しかし下流の
+    # `mztab.loading.select_primary_entry`は**jobの宣言**で候補を選ぶため
+    # `QUANTIFICATION_CONFLICT`/`POLARITY_MISMATCH`で硬く落ちる
+    # ——「completedなのに読めない」出力ができあがる。
     measure, measure_confidence = detect_quantification_measure(parsed, abs_path.name)
-    if measure_confidence == "conflict" or (measure is not None and measure != entry.measure):
+    if (measure_confidence == "conflict"
+            or (measure is not None and measure != entry.measure)
+            or entry.measure != job.measure):
         errors.append("MEASURE_MISMATCH")
 
     majority = read_adduct_polarity(abs_path)["adduct_majority"]
-    if majority is not None and majority != entry.polarity:
+    if (majority is not None and majority != entry.polarity) or entry.polarity != job.polarity:
         errors.append("POLARITY_MISMATCH")
 
     sample_map = map_assays(parsed, expected_sources)
@@ -193,6 +205,19 @@ def validate_outputs(job: AnalysisJob, receipt: dict, expected_sources: list[str
         errors.append("SAMPLE_MAPPING_EXTRA")
     if duplicated:
         errors.append("SAMPLE_MAPPING_DUPLICATE")
+
+    # MTDのassay対応と、SMFに実在する定量列を突き合わせる。MTDだけで対応表を
+    # 作ると、`assay[N]`は宣言されているのに`abundance_assay[N]`列が無い
+    # mzTab——つまり**その検体の定量値がどこにも無い**出力——が
+    # completedとして通ってしまう（行列は残りの列だけで非空・有限になるため、
+    # EMPTY_ABUNDANCE_MATRIX等では捕まらない）。逆に、どのassay対応にも
+    # ぶら下がらない定量列は、どのrawの値なのかを言えない列なので同じく拒否する。
+    present_columns = set(abundance_columns)
+    mapped_columns = set(sample_map)
+    if mapped_columns - present_columns:
+        errors.append("ABUNDANCE_COLUMN_MISSING")
+    if present_columns - mapped_columns:
+        errors.append("ABUNDANCE_COLUMN_UNMAPPED")
 
     return _envelope(errors, warnings, primary_path, sample_map, structure_errors)
 

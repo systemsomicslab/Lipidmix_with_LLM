@@ -442,6 +442,103 @@ def test_a_concurrent_state_revision_bump_does_not_kill_the_worker(tmp_path):
     assert result["state_revision"] > 0
 
 
+
+# ---------- 稼働中workerが要求の訂正を取り違えない（レビュー指摘1） ----------
+
+def test_a_resume_during_the_run_is_picked_up_by_the_running_worker(tmp_path):
+    """stage実行中に届いた要求の訂正を、走っているworkerが取り込んでから終える。
+
+    `prepare_resume`は稼働中workerがいる間statusを動かさない（`running`のまま）ので、
+    `resume_pipeline`は新しいworkerを起こさない——訂正を反映できるのは、今まさに
+    走っているこのworkerだけ。stage計画を1回しか組まないと、旧revisionの条件で
+    計算した結果が新revisionの結果としてcompletedになる。
+    """
+    from lipidmix.pipeline.recovery import prepare_resume
+
+    path, handlers, calls = _build_pipeline(tmp_path, target="exploratory")
+    real_pca = handlers["pca"]
+    resumed = {"count": 0}
+
+    def pca_then_correct_the_request(context: dict) -> dict:
+        outcome = real_pca(context)
+        if resumed["count"] == 0:
+            resumed["count"] += 1
+            # 走っている最中に「やはり2群比較がしたい」という訂正が届く。
+            prepare_resume(path, updates={
+                "target": "differential",
+                "comparisons": [{"comparison_id": "cmp1", "reference_group": "control",
+                                 "test_group": "treated"}]})
+        return outcome
+
+    handlers["pca"] = pca_then_correct_the_request
+
+    result = run_engine(path, handlers)
+
+    assert resumed["count"] == 1
+    # 新しい要求の工程が、このworkerの中で実際に走っている。
+    assert "differential:cmp1" in calls
+    assert "export:cmp1" in calls
+    # 訂正後の必須出力が揃ったうえでのcompleted（旧計画のままなら差次的出力が
+    # 欠けたままpartialになる）。
+    assert result["status"] == "completed"
+    assert result["request"]["revision"] == 2
+    assert result["stages"]["differential:cmp1"]["status"] == "succeeded"
+    # レポートは必ず最後（訂正後の比較結果を含んだうえで書き直す）。
+    assert calls[-1] == "report"
+
+
+def test_a_stage_reset_during_the_run_is_re_executed_before_finishing(tmp_path):
+    """要求内容が変わらない差し戻し（rerun_upstream）も、走行中に取り込む。
+
+    `rerun_upstream=True`のresumeは要求の内容を1文字も変えずに全stageを
+    `pending`へ戻す。要求版の変化だけを見ていると、既に通過したstageの
+    差し戻しに気付かないままcompletedを書いてしまう。
+    """
+    from lipidmix.pipeline.recovery import prepare_resume
+
+    path, handlers, calls = _build_pipeline(tmp_path, target="exploratory")
+    real_report = handlers["report"]
+    reset = {"count": 0}
+
+    def report_then_request_rerun(context: dict) -> dict:
+        if reset["count"] == 0:
+            reset["count"] += 1
+            prepare_resume(path, rerun_upstream=True)
+        return real_report(context)
+
+    handlers["report"] = report_then_request_rerun
+
+    result = run_engine(path, handlers)
+
+    assert reset["count"] == 1
+    assert calls.count("upstream") == 2  # 差し戻された上流をやり直している
+    assert result["status"] == "completed"
+    assert result["request"]["revision"] == 1  # 要求そのものは変わっていない
+
+
+def test_endless_request_updates_stop_the_worker_instead_of_spinning(tmp_path):
+    """要求の更新が途切れず届き続ける場合は、有限回で止めて知らせる。"""
+    from lipidmix.pipeline.engine import _REQUEST_RELOAD_MAX_PASSES
+    from lipidmix.pipeline.recovery import prepare_resume
+
+    path, handlers, _calls = _build_pipeline(tmp_path, target="exploratory")
+    real_pca = handlers["pca"]
+    bumps = {"count": 0}
+
+    def pca_then_always_correct(context: dict) -> dict:
+        outcome = real_pca(context)
+        bumps["count"] += 1
+        prepare_resume(path, updates={"preprocess": {"min_detection_rate": bumps["count"] / 100}})
+        return outcome
+
+    handlers["pca"] = pca_then_always_correct
+
+    with pytest.raises(DomainError) as excinfo:
+        run_engine(path, handlers)
+    assert excinfo.value.code == "REQUEST_REVISION_CHURN"
+    assert bumps["count"] <= _REQUEST_RELOAD_MAX_PASSES
+
+
 # ---------- 試験harness: 実プロセスとしてrun_engineを起動する ----------
 
 def test_worker_harness_runs_pipeline_as_real_subprocess(tmp_path):

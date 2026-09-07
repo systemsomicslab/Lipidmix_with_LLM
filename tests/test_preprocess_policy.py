@@ -396,6 +396,58 @@ def test_preprocess_auto_raises_on_degenerate_normalization_and_stays_uncommitte
     assert ds.preprocess_id is None
 
 
+
+def test_preprocess_auto_computes_the_matrix_only_once(monkeypatch):
+    """検査用とcommit用で同じ行列を2回計算しない（レビュー指摘P3）。
+
+    `run_dataset_preprocess`の呼出しの間に``ds``の入力は何も変わらないので、
+    2度目は結果まで同じ——検体数×特徴量数の全量に対する重複計算で、
+    得られるものが無い。
+    """
+    from lipidmix.analysis import dataset_service
+    from lipidmix.analysis.dataset_analysis import run_dataset_preprocess
+
+    calls = {"count": 0}
+
+    def _counting(ds_arg, recipe):
+        calls["count"] += 1
+        return run_dataset_preprocess(ds_arg, recipe)
+
+    monkeypatch.setattr(dataset_service, "run_dataset_preprocess", _counting)
+
+    ds = make_dataset()
+    plan = preprocess_auto(ds, {"policy": "conservative-v1"}, metadata_rows(ds))
+
+    assert calls["count"] == 1
+    # 1回に畳んでも、commitされた結果と検査は従来どおり成立している。
+    assert ds.pp_matrix is not None
+    assert plan["result"]["provenance"]["result_id"] == ds.preprocess_id
+    assert plan["applied_steps"] == list(plan["result"].get("recipe_applied", []))
+
+
+def test_preprocess_auto_reuses_an_identical_preprocessing_without_recomputing(monkeypatch):
+    """同じ入力・同じレシピの再実行では、計算そのものを1回も行わない。"""
+    from lipidmix.analysis import dataset_service
+    from lipidmix.analysis.dataset_analysis import run_dataset_preprocess
+
+    ds = make_dataset()
+    rows = metadata_rows(ds)
+    first = preprocess_auto(ds, {"policy": "conservative-v1"}, rows)
+
+    calls = {"count": 0}
+
+    def _counting(ds_arg, recipe):
+        calls["count"] += 1
+        return run_dataset_preprocess(ds_arg, recipe)
+
+    monkeypatch.setattr(dataset_service, "run_dataset_preprocess", _counting)
+    second = preprocess_auto(ds, {"policy": "conservative-v1"}, rows)
+
+    assert calls["count"] == 0
+    assert (second["result"]["provenance"]["result_id"]
+            == first["result"]["provenance"]["result_id"])
+
+
 def test_dataset_preprocess_default_arguments_are_unchanged():
     """通常のdataset_preprocess(単体ツール経路)の既定引数はpipeline由来のautoで変えない。"""
     import inspect

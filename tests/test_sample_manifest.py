@@ -647,3 +647,40 @@ def test_run_dataset_preprocess_ignores_excluded_qc_when_deciding_no_qc_blank_ca
     # 実評価対象にQCもブランクも無いのだから、注意書きは出るべき。
     assert any("QC もブランクも含まれていない" in c for c in report["caveats"]), \
         report["caveats"]
+
+
+def test_detection_rate_ignores_samples_excluded_by_include_false():
+    """include=falseの試料の未検出が、検出率フィルタの分母に残らない。
+
+    `build_dataset_pp_inputs`はinclude=falseの行を行列から落とすのに、
+    検出マスク（`ds.detected_mask`）は全試料のままだった——除外した試料でだけ
+    未検出だった特徴量が、min_detection_rate=1.0で削られる。解析に残す試料では
+    全件検出されている、正当な特徴量が黙って消える。
+    """
+    import numpy as np
+
+    from lipidmix.analysis.dataset_analysis import run_dataset_preprocess
+
+    ds = make_dataset()
+    rows = metadata_rows(ds, n_qc=0)
+    excluded_index = 7
+    rows[excluded_index]["include"] = False
+    rows[excluded_index]["provenance"]["include"] = {
+        "value": False, "source": "user_manifest", "confidence": "confirmed"}
+    apply_metadata(ds, rows)
+
+    # 6特徴 × 8検体。特徴F0は「除外した1検体でだけ」未検出、F1は残す検体でも未検出。
+    mask = np.ones((6, 8), dtype=bool)
+    mask[0, excluded_index] = False
+    mask[1, 0] = False
+    ds.detected_mask = mask
+    ds.feature_qc = {"source": "arf"}
+
+    _, pp_sample_names, feature_names, _, _, report = run_dataset_preprocess(
+        ds, {"impute": "none", "min_detection_rate": 1.0})
+
+    assert len(pp_sample_names) == 7
+    assert "F0" in feature_names          # 残す7検体では全件検出されている
+    assert "F1" not in feature_names      # 残す検体で未検出のものは従来どおり落ちる
+    assert report["detection"]["n_samples"] == 7
+    assert report["detection"]["n_cells"] == 6 * 7

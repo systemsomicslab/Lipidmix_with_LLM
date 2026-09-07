@@ -672,6 +672,70 @@ def test_untampered_result_artifact_is_skipped_on_second_run(tmp_path):
     assert "pca" in calls
 
 
+
+# ---------- 同じシートを書き直した訂正を検出する（レビュー指摘2） ----------
+
+def _completed_run_with_manifest(tmp_path):
+    """比較まで完走したrunと、`resolve_metadata`が記録するシート指紋を用意する。
+
+    本番では`service._handle_resolve_metadata`が
+    `record["inputs"]["manifest_source"]`を書く。ここではその形だけを合成する
+    （このファイルの流儀どおり、handlerは注入fixtureのまま）。
+    """
+    from lipidmix.pipeline import inputs as inputs_mod
+
+    comparisons = [{"comparison_id": "cmp1", "reference_group": "control",
+                    "test_group": "treated"}]
+    path, handlers, calls = _build_pipeline(tmp_path, target="differential",
+                                            comparisons=comparisons)
+    source_root = tmp_path / "source"
+    manifest = source_root / inputs_mod.DEFAULT_MANIFEST_NAME
+    manifest.write_text("# schema = sample-manifest.v1\nsample_id\tgroup\nS0\tcontrol\n",
+                        encoding="utf-8", newline="\n")
+
+    assert run_engine(path, handlers)["status"] == "completed"
+
+    record = load_run(path)
+    record["inputs"] = {**(record.get("inputs") or {}),
+                        "manifest_source": inputs_mod.manifest_source_record(
+                            source_root, {"sample_manifest": None})}
+    save_run(path, record, expected_revision=record["state_revision"])
+    calls.clear()
+    return path, handlers, calls, manifest
+
+
+def test_rewriting_the_same_manifest_resets_the_downstream_stages(tmp_path):
+    """パスは同じまま中身だけ直したシートを、無視せず差し戻す。
+
+    要求の`sample_manifest`はパス文字列でしかないので、パスの比較だけでは
+    「書き直した」が変更として現れない——旧群割当のまま`completed`が保たれ、
+    訂正が無視されたことすら利用者に伝わらない。
+    """
+    path, handlers, calls, manifest = _completed_run_with_manifest(tmp_path)
+
+    manifest.write_text("# schema = sample-manifest.v1\nsample_id\tgroup\nS0\ttreated\n",
+                        encoding="utf-8", newline="\n")
+    receipt = prepare_resume(path)
+
+    assert receipt["status"] == "planned"          # 再開待ちへ戻っている
+    assert "differential:cmp1" in receipt["reset_stage_ids"]
+    assert "export:cmp1" in receipt["reset_stage_ids"]
+    assert "report" in receipt["reset_stage_ids"]
+    # 実際に再開すると、その3工程がやり直される。
+    assert run_engine(path, handlers)["status"] == "completed"
+    assert "differential:cmp1" in calls and "export:cmp1" in calls
+
+
+def test_an_untouched_manifest_keeps_the_completed_run_as_is(tmp_path):
+    """内容が変わっていないシートでは、no-op resumeをcompletedのままにする。"""
+    path, _handlers, _calls, _manifest = _completed_run_with_manifest(tmp_path)
+
+    receipt = prepare_resume(path)
+
+    assert receipt["status"] == "completed"
+    assert receipt["reset_stage_ids"] == []
+
+
 # ---------- make_context (R19) ----------
 
 def test_make_context_carries_full_request_and_upstream_identity(tmp_path):

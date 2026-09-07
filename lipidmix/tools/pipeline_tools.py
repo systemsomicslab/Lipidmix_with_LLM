@@ -55,6 +55,14 @@ def pipeline_plan(dataset_root: str, request: dict | None = None,
     request_id:
         冪等性キー。同一内容の再送は同じ結果を返し、別内容は `IDEMPOTENCY_CONFLICT`。
 
+    `dataset_root` 直下に `analysis-request.json`（同じトップレベル項目を持つ
+    JSON）と `sample-manifest.tsv` があれば既定名として読む。要求値の優先順位は
+    **`request` で明示した値 > `analysis-request.json` > 既定値**（spec §7.1)で、
+    `preprocess` だけは子キー単位で重なる。どの値がどこから来たかは保存された
+    要求の `value_sources`（`explicit` / `request_file` / `default`）で確認できる。
+    置いてあるファイルが壊れている・未知キーを持つ場合は黙って無視せず
+    `PIPELINE_REQUEST_INVALID` にする。
+
     receiptの `resolved` に、解決済みの実行条件——`method`（`source_path` /
     `sha256`）・`lbm`・`polarity`（`value` とその `source`）——が入る。何も
     起動しないうちにこの3項目を確認するのがこのツールの用途。

@@ -66,6 +66,11 @@ OWNER_KIND_CONSOLE = "console_worker"
 #: ロック取得の待ち時間（秒）。ここを超えるなら別のプロセスが本当に走っている。
 LOCK_TIMEOUT_S = 2.0
 
+#: 「もう実行し終えた」と読むジョブ状態。ロック取得後の再確認（`run_job`）で
+#: これに当たれば MS-DIAL は起動しない。`planned`（未実行）と`running`
+#: （切り離し起動の親が先に印を付けた状態）だけが実行してよい入口。
+_FINISHED_STATUSES = frozenset({"completed", "partial", "failed", "cleaned"})
+
 
 def lock_path(run_dir: Path) -> Path:
     return Path(run_dir) / LOCK_FILENAME
@@ -131,9 +136,18 @@ def owner_is_active(run_dir: Path) -> bool:
     identity を確認できない環境（Windows 以外）では、記録上 running のままの
     ものを active として扱う——分からないものを「終わっている」と読み替えて
     実行中の生成物を消させないため。
+
+    **記録された status を identity より先に見る。** `clear_owner` は所有を
+    解いたことを `status="finished"` で表すだけで、identity は「誰が最後に
+    走らせたか」として残す。同期実行（`console_run` の detach=False）の所有者は
+    MCP サーバ自身なので、identity だけで判定すると `same_process` は
+    サーバが生きている限り真を返し続ける——実行はとっくに終わっているのに
+    `console_cleanup` が永久に JOB_BUSY になる。
     """
     owner = read_owner(run_dir)
     if owner is None:
+        return False
+    if owner.get("status") != "running":
         return False
     identity = owner.get("identity")
     if not isinstance(identity, dict):
@@ -175,6 +189,8 @@ def run_job(job_path: Path, *, console_command: list[str] | None = None) -> dict
     ロックを保持したまま監視・収集・保存・所見付与までを終える。ロックを
     取れなければ `DomainError("LOCK_TIMEOUT")`——別のプロセスが同じジョブを
     走らせている状態で二重に起動すると、同じ出力先へ 2 つの Console が書く。
+    ロックを取れても、待っている間に別プロセスが走り切っていれば
+    `DomainError("JOB_ALREADY_FINISHED")`（先行の結果を上書きしない）。
 
     `console_command` は試験用の注入口（`supervise` の `command` と同じ）。
     """
@@ -183,6 +199,19 @@ def run_job(job_path: Path, *, console_command: list[str] | None = None) -> dict
     run_dir.mkdir(parents=True, exist_ok=True)
 
     with file_lock(lock_path(run_dir), timeout=LOCK_TIMEOUT_S):
+        # ロックを取ってから、もう一度ジョブの状態を見る。ロック待ちの間に
+        # 先行プロセスが同じジョブを走らせ切っていることがあり（同時に届いた
+        # 2 つの console_run は、どちらも status=planned を見てからここへ来る）、
+        # そのまま進むと MS-DIAL が同じ出力先へ二度走る。終端状態に達した
+        # ジョブは実行し直さない——やり直すなら計画からやり直す。
+        current = load_job(job_path)
+        if current.status in _FINISHED_STATUSES:
+            raise DomainError(
+                "JOB_ALREADY_FINISHED",
+                f"このジョブは既に実行を終えています（status={current.status}）。"
+                "再実行が必要なら console_plan からやり直してください。",
+                {"job_path": str(job_path), "status": current.status})
+
         identity = _current_identity()
         write_owner(run_dir, {
             "kind": OWNER_KIND_CONSOLE,
