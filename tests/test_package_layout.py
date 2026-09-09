@@ -4,6 +4,7 @@ BASE_DIR 系は解決先を間違えても例外を出さず、空のディレ�
 黙って動く。既存テストは全部緑のまま蓄積ノートだけ見えなくなるため、
 リポジトリルートを指し続けることをここで固定する。
 """
+import os
 import unittest
 from pathlib import Path
 
@@ -79,3 +80,36 @@ class TestReferenceTables(unittest.TestCase):
         tables = tool_helpers._identity_tables()
         self.assertEqual(len(tables["lipidmaps"]), 16)
         self.assertEqual(len(tables["refmet"]), 16)
+
+
+class TestStateDirsAreNotCreatedOnImport(unittest.TestCase):
+    """`lipidmix.core.mcp_core` の import が置き場ディレクトリを作らないことを縛る。
+
+    KNOWLEDGE_DIR / PLAYBOOK_DIR / ANALYSES_DIR はパス解決の時点で mkdir していた
+    ため、`analyses/` を消しても import のたび（＝pytest を回すたび、MCP サーバを
+    起動するたび）に空ディレクトリが復活していた。置き場は書き込み時に作られれば
+    十分で、解決は副作用を持ってはならない。
+    """
+
+    def test_import_does_not_create_state_dirs(self):
+        import subprocess
+        import sys
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env = dict(os.environ)
+            env["LIPIDMIX_KNOWLEDGE_DIR"] = str(base / "knowledge")
+            env["LIPIDMIX_PLAYBOOK_DIR"] = str(base / "playbook")
+            env["LIPIDMIX_ANALYSES_DIR"] = str(base / "analyses")
+            proc = subprocess.run(
+                [sys.executable, "-c", "import lipidmix.core.mcp_core"],
+                cwd=str(REPO_ROOT), env=env,
+                capture_output=True, text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            created = sorted(p.name for p in base.iterdir())
+            self.assertEqual(
+                created, [],
+                f"import だけで置き場が作られた: {created}",
+            )

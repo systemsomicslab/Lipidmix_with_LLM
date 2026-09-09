@@ -414,8 +414,15 @@ def _write_note_unlocked(directory: str | Path, slug: str, meta: dict, body: str
 
 
 def write_note(directory: str | Path, slug: str, meta: dict, body: str) -> Path:
-    """frontmatter 付きノートを書き出す（ディレクトリは必要なら作成）。"""
+    """frontmatter 付きノートを書き出す（ディレクトリは必要なら作成）。
+
+    slug の検証はロック取得より**前**に行う（promote / reject と同じ順序）。
+    _directory_lock は mkdir を伴うので、あとで検証すると拒否した呼び出しが
+    空の置き場だけを残す——ユーザが消した analyses/ が pytest のたびに
+    復活していた経路がこれ。
+    """
     directory = Path(directory)
+    note_path(directory, slug)
     with _directory_lock(directory):
         return _write_note_unlocked(directory, slug, meta, body)
 

@@ -60,11 +60,14 @@ def _state_dir(env_var: str, default_name: str) -> Path:
     環境変数があればそのパスを、無ければ <project>/<default_name> を使う
     （data_config.get_data_dir と同じ流儀）。NAS常駐運用では共有ボリューム上の
     パスを指すことで、ローカル開発のコードと蓄積された知識を分離できる。
+
+    **ここで mkdir はしない**。この関数は import 時に評価されるので、作ってしまうと
+    ユーザが消した `analyses/` が pytest やサーバ起動のたびに空で復活する。
+    置き場は書き込み側（knowledge_store の write_note / _directory_lock）が
+    必要になった時点で作る。読み取り側は不在を空として扱う契約。
     """
     override = os.environ.get(env_var)
-    target = Path(override).expanduser() if override else BASE_DIR / default_name
-    target.mkdir(parents=True, exist_ok=True)
-    return target
+    return Path(override).expanduser() if override else BASE_DIR / default_name
 
 
 def _dir_is_writable(directory: Path) -> bool:

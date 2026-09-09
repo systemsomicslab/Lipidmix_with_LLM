@@ -327,6 +327,20 @@ class SlugContainmentTests(unittest.TestCase):
                 with self.subTest(slug=bad), self.assertRaises(ValueError):
                     ks_write_note(directory, bad, {"type": "knowledge"}, "body")
 
+    def test_write_note_rejects_before_creating_directory(self):
+        """拒否される slug では置き場そのものを作らない。
+
+        write_note は検証より先にディレクトリロック（= mkdir）を取っていたため、
+        traversal を弾いたあとに空の置き場だけが残った。ユーザが消した analyses/ が
+        pytest のたびに復活する経路がこれ。promote / reject は先に note_path で
+        検証しており、write_note だけが例外だった。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "notes"
+            with self.assertRaises(ValueError):
+                ks_write_note(directory, "../escaped", {"type": "knowledge"}, "body")
+            self.assertFalse(directory.exists(), f"拒否したのに置き場が作られた: {directory}")
+
     def test_normal_slug_still_writes(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp) / "notes"
