@@ -2,7 +2,7 @@ import os
 import io
 from lipidmix.arf import reader as arf_reader
 
-os.chdir(r'C:\Users\yuu18\Lipidmix_with_LLM')
+os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 path = r'data\AlignmentResult_2026_04_07_14_07_25_PeakProperties.arf'
 with open(path, 'rb') as f:
     data = f.read()

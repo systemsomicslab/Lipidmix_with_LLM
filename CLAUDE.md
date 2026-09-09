@@ -26,9 +26,10 @@ C:/Python314/python.exe -m pytest tests -q
 - MCP サーバ起動: `C:/Python314/python.exe server.py`（既定 stdio）。
 - パーサ単体の CLI: `python -m lipidmix.arf.reader --file <path> --pca` など（README「Command-line examples」）。
 
-**Python は `C:/Python314/python.exe` を使う**。`.mcp.json` / `.vscode/mcp.json` がこれを絶対パスで
-指しており、依存もここに入っている。`.venv/` は存在しない。`.venv-1/` は 2026-07 のローカル LLM 検証用に
-残っている別環境で、通常の開発・テストでは使わない。
+**Python は `C:/Python314/python.exe` を使う**（PATH 上の `python` も同じ実体で、依存はここに入っている）。
+Claude Code 用の `.mcp.json` はこれを絶対パスで指すが、`.git/info/exclude` でローカル除外されており
+追跡されない。追跡されている `.vscode/mcp.json` は PATH 上の `python` を使う。`.venv/` は存在しない。
+`.venv-1/` は 2026-07 のローカル LLM 検証用に残っている別環境で、通常の開発・テストでは使わない。
 
 環境変数（すべて任意・上書き用）: `LIPIDMIX_DATA_DIR`（データ探索先。既定 `<project>/data`）/
 `LIPIDMIX_KNOWLEDGE_DIR` `LIPIDMIX_PLAYBOOK_DIR` `LIPIDMIX_ANALYSES_DIR` `LIPIDMIX_REPORTS_DIR`（蓄積先。
@@ -176,6 +177,6 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 
 ## 関連リポジトリ
 
-`C:\Users\yuu18\Use-LLLM` — このサーバをローカル LLM ＋ WebUI から操作する**別リポの独立システム**。
+`Use-LLLM`（本リポジトリと同じ親ディレクトリに置く別クローン） — このサーバをローカル LLM ＋ WebUI から操作する**別リポの独立システム**。
 本体の変更では基本的に触らない。往復（`missing_state` 封筒の解釈やツールカタログ）を疑うときだけ、
 そちらのメモリ（`use-lllm-*`）を参照する。
