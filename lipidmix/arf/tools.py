@@ -28,6 +28,7 @@ from lipidmix.plots import render as plot_render
 from lipidmix.plots import volcano as volcano_plot
 from mcp.server.fastmcp import Image
 from mcp.types import ToolAnnotations
+from pydantic import StrictInt
 from lipidmix.core.mcp_core import mcp
 from lipidmix.core.serialization import json_payload
 from lipidmix.arf2.reader import format_spots_as_table
@@ -466,6 +467,8 @@ def arf_parser(
     group_levels: list[str] | None = None,
     group_factors: list[list[str]] | None = None,
     include_roles: list[str] | None = None,
+    spot_ids: list[StrictInt] | None = None,
+    ontologies: list[str] | None = None,
 ) -> str:
     """.arf（サンプル別強度）を読み込み、フィルタを適用して PCA を実行する。
 
@@ -484,7 +487,14 @@ def arf_parser(
     - log_transform: [任意] PCA前に log10 変換を適用する（強度の歪みを抑え条件分離が向上しやすい。既定 False）
     - min_detection_rate: [任意] 特徴量の実検出率(非ギャップフィル)による足切り 0.0-1.0（既定 0.0=無効）
     - min_intensity: [任意] スポット平均強度(HeightAverage)の最小閾値（既定 0.0=無効）
-    - annotation_keyword: [任意] 脂質クラス/化合物名の部分一致キーワード（例: "PC", "LPC", "TG"）
+    - annotation_keyword: [任意] 同一バッチARF2の名前を優先した部分一致検索。
+      ARF2が無い/未注釈ならARF名を使う。PCはLPCにも部分一致するため、クラス限定はontologiesを使う。
+    - spot_ids: [任意] MasterAlignmentIDの完全一致リスト（0以上、空リスト不可）。
+    - ontologies: [任意] 脂質クラスの完全一致リスト（大文字小文字を区別しない）。
+      spot_ids、キーワード、他のフィルタとはAND。元のピーク値は変更しない。
+      これは生スポットの選択であり、選択変更後はarf_preprocessを再実行する。
+      部分集合でTIC正規化すると分母が変わる。全体の正規化/FDRを維持する用途では
+      全体で解析・エクスポートしてから対象を参照し、部分集合で再計算しない。
     - tag_labels: [任意] MS-DIALタグ名またはタグIDのリスト
     - tag_mode: any/all/none/not_all のいずれか
     - tag_scope: sample_peak（サンプル別Peak ID）または alignment_spot（MasterAlignmentID）
@@ -515,6 +525,8 @@ def arf_parser(
     from lipidmix.arf.reader import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
 
     try:
+        # 不正な選択引数でファイルや既存の解析状態を切り替えない。
+        path_resolvers._filter_arf_spots([], spot_ids=spot_ids, ontologies=ontologies)
         deserialized_and_formatted_data = session_state.session.arf.load_data(file_path, tag_directory=tag_directory)
         if not isinstance(deserialized_and_formatted_data, list):
             return "デシリアライズ結果がリストではありません。"
@@ -540,14 +552,22 @@ def arf_parser(
         if not analysis_data:
             return "指定されたClass IDに一致するARFサンプルが見つかりませんでした。arf_list_classes で利用可能なClass IDと件数を確認してください。"
 
-        # 強度閾値/アノテーションキーワードによる軽量フィルタ（既定は恒等）
-        analysis_data = path_resolvers._filter_arf_spots(analysis_data, min_intensity, annotation_keyword)
+        # 統合注釈を用いる際も他バッチのARF2や別セッションのカタログは参照しない。
+        selection_requested = bool(annotation_keyword) or spot_ids is not None or ontologies is not None
+        catalog = None
+        sibling = _sibling_arf2_path() if selection_requested else None
+        if sibling:
+            from lipidmix.arf2.reader import load_catalog
+            catalog = load_catalog(sibling)
+        analysis_data = path_resolvers._filter_arf_spots(
+            analysis_data, min_intensity, annotation_keyword,
+            catalog=catalog, spot_ids=spot_ids, ontologies=ontologies)
         if not analysis_data:
             return (
-                f"指定された条件（強度 >= {min_intensity}, キーワード: '{annotation_keyword or '指定なし'}'）"
+                f"指定された条件（強度 >= {min_intensity}, キーワード: '{annotation_keyword or '指定なし'}', "
+                f"spot_ids={spot_ids}, ontologies={ontologies}）"
                 "に一致するARFピークが見つかりませんでした。"
             )
-        session_state.session.arf.filtered_features = analysis_data
 
         # 手動除外（PCA 外れサンプル / 特定ピーク）を PCA 前に適用（非破壊）
         active_data = exclusions.prune_spots(
@@ -567,11 +587,25 @@ def arf_parser(
             min_detection_rate=min_detection_rate,
         )
 
-        if matrix.size == 0:
+        if matrix.size == 0 and not (selection_requested and sample_names):
             return "[ERROR] PCA 用データを構築できませんでした（フィルタ・除外が過度な可能性があります）。"
+
+        selection_note = _arf_selection_note(analysis_data, sibling, spot_ids, ontologies) if selection_requested else ""
+        if selection_requested and min(matrix.shape) < 2:
+            _commit_arf_selection(analysis_data, selection_requested)
+            return session_state.session.maybe_prepend_caveat(
+                f"### ARF脂質選択完了: {Path(file_path).name}\n{selection_note}"
+                f"- **適用フィルタ条件**: 強度最小値=`{min_intensity}`, アノテーションキーワード=`'{annotation_keyword or '指定なし'}'`\n"
+                f"{_format_arf_class_filter(class_filter_stats)}"
+                f"{_format_arf_tag_filter(tag_filter_stats)}"
+                f"- **PCA入力行列の形状**: {matrix.shape} (サンプル数 x 特徴量数)\n"
+                f"- PCAはスキップ: 分散・検出率フィルタ後に2サンプル・2特徴以上が必要です（行列形状: {matrix.shape}）。\n"
+                "- 選択は保存済みです。必要ならarf_preprocessで後続処理へ進めます。\n", topic="arf")
 
         # PCA実行（log_transform は任意のlog10変換）
         pca_result = run_pca(matrix, n_components=components, log_transform=log_transform)
+
+        _commit_arf_selection(analysis_data, selection_requested)
 
         # サンプル別の群ラベル（既定=完全Class ID、group_levels 指定時はその因子で統合）
         sample_groups = assign_sample_groups(
@@ -599,7 +633,7 @@ def arf_parser(
 
         # Loadings 寄与上位（arf_reader の構造化関数 + 共通整形ヘルパー）
         loading_features = get_pca_loading_features(
-            pca_result, session_state.session.arf.features, feature_names, top_n=top_features,
+            pca_result, analysis_data, feature_names, top_n=top_features,
         )
         loadings_summary_text = _format_pca_loadings_md(
             loading_features, header="#### 📊 PCA Loadings 寄与度分析 (各極値トップ件数)\n",
@@ -615,6 +649,7 @@ def arf_parser(
             f"- **適用フィルタ条件**: 強度最小値=`{min_intensity}`, アノテーションキーワード=`'{annotation_keyword or '指定なし'}'`\n"
             if (min_intensity or annotation_keyword) else ""
         )
+        filter_note += selection_note
 
         # 基本的な要約テキストの作成
         output_text = (
@@ -640,6 +675,37 @@ def arf_parser(
 
     except Exception as e:
         return f"[ERROR] ARF解析に失敗しました: {str(e)}"
+
+
+def _commit_arf_selection(spots: list[dict], selection_requested: bool) -> None:
+    """選択確定時に、異なるサンプル・注釈に由来する解析結果を無効化する。"""
+    def signature(items):
+        return [(s.get("MasterAlignmentID"), exclusions.roster([s])[0],
+                 s.get("Name"), s.get("Ontology"), s.get("annotation_source")) for s in items]
+
+    state = session_state.session.arf
+    if selection_requested or signature(state.filtered_features or []) != signature(spots):
+        state.feature_matrix = None
+        state.pp_sample_names = None
+        state.pp_feature_names = None
+        state.sample_meta = {}
+        state.preprocessing_recipe = {}
+        state.last_differential = None
+    state.last_pca_plot = None
+    state.pca_result = None
+    state.filtered_features = spots
+
+
+def _arf_selection_note(spots, sibling, spot_ids, ontologies) -> str:
+    """選択に使った統合注釈の出所と正規化の注意を表示する。"""
+    sources = {s.get("annotation_source", "arf") for s in spots}
+    conflicts = [s.get("MasterAlignmentID") for s in spots if s.get("annotation_conflict")]
+    return (
+        f"- **脂質選択**: spot_ids={spot_ids}, ontologies={ontologies}; 採用 {len(spots)} 件\n"
+        f"- **注釈の出所**: {', '.join(sorted(sources))}; 同一バッチARF2={sibling or 'なし'}\n"
+        f"- **ARF/ARF2名前の不一致**: {len(conflicts)} 件（ID先頭10件: {conflicts[:10]}）\n"
+        "- 生スポットを選択しました。前処理・差次解析は再実行が必要です。"
+        "部分集合でのTIC正規化やFDRは全体解析と分母・対象数が変わります。\n")
 
 
 _SPOT_ID_RE = re.compile(r"^Spot_(\d+)")
@@ -718,14 +784,16 @@ def _sibling_arf2_path() -> Path | None:
     """読み込み中の ARF と同一アラインメント実行の .arf2 を返す。
 
     MasterAlignmentID はアラインメント実行ごとに振り直されるため、別バッチの
-    .arf2 を引くと ID 対応が黙って崩れる。`AlignmentResult_<timestamp>` の語幹が
-    一致する兄弟ファイルだけを許し、無ければ None（注釈は諦める）。
+    .arf2 を引くと ID 対応が黙って崩れる。GUI/Consoleの既知の語幹が
+    完全一致する兄弟だけを許し、無ければ None（注釈は諦める）。
     """
     current = getattr(session_state.session.arf, "current_file_path", None)
     if not current:
         return None
     path = Path(current)
-    match = re.match(r"(AlignmentResult_\d{4}(?:_\d{2}){5})", path.name)
+    match = re.fullmatch(
+        r"(AlignmentResult_\d{4}(?:_\d{2}){5}|AlignResult-\d+)"
+        r"(?:_(?:PeakProperties|DriftSpots|DriftSopts))?\.arf", path.name)
     if not match:
         return None
     sibling = path.with_name(f"{match.group(1)}.arf2")

@@ -78,7 +78,7 @@ class ReportToolTests(unittest.TestCase):
 
     def test_write_report_creates_file_with_frontmatter_and_body(self):
         msg = server.write_report("a-1", "NEG / DS", "## 目的\nグループ比較")
-        path = self.tmp / "reports" / "a-1.md"
+        path = self.tmp / "reports_fallback" / "a-1.md"
         self.assertTrue(path.is_file())
         self.assertIn("reports", msg)
         meta, body = knowledge_store.parse_frontmatter(path.read_text(encoding="utf-8"))
@@ -90,7 +90,7 @@ class ReportToolTests(unittest.TestCase):
     def test_write_report_overwrites_on_second_call(self):
         server.write_report("a-1", "DS", "## 目的\n古い本文")
         server.write_report("a-1", "DS", "## 目的\n新しい本文", status="final")
-        path = self.tmp / "reports" / "a-1.md"
+        path = self.tmp / "reports_fallback" / "a-1.md"
         meta, body = knowledge_store.parse_frontmatter(path.read_text(encoding="utf-8"))
         self.assertEqual(meta["status"], "final")
         self.assertIn("新しい本文", body)
@@ -223,7 +223,7 @@ class SavePcaFigureTests(unittest.TestCase):
             ],
         }
         msg = server.save_pca_figure("a-1")
-        png = self.tmp / "reports" / "figures" / "a-1_pca.png"
+        png = self.tmp / "reports_fallback" / "figures" / "a-1_pca.png"
         self.assertTrue(png.is_file())
         self.assertIn("figures/a-1_pca.png", msg)
 
@@ -231,7 +231,7 @@ class SavePcaFigureTests(unittest.TestCase):
         session_state.session.arf.last_pca_plot = None
         msg = server.save_pca_figure("a-1")
         self.assertIn("PCA", msg)
-        self.assertFalse((self.tmp / "reports" / "figures").exists())
+        self.assertFalse((self.tmp / "reports_fallback" / "figures").exists())
 
 
 class ReportEdgeCaseTests(unittest.TestCase):
@@ -262,7 +262,7 @@ class ReportEdgeCaseTests(unittest.TestCase):
 
         self.assertIn("衝突", msg)
         # The original report must be intact (not overwritten).
-        path = self.tmp / "reports" / f"{slug}.md"
+        path = self.tmp / "reports_fallback" / f"{slug}.md"
         meta, body = knowledge_store.parse_frontmatter(path.read_text(encoding="utf-8"))
         self.assertEqual(meta["analysis_id"], "Group A vs B")
         self.assertIn("first", body)
@@ -273,7 +273,7 @@ class ReportEdgeCaseTests(unittest.TestCase):
         server.write_report("a-1", "DS", "## 目的\n古い")
         msg = server.write_report("a-1", "DS", "## 目的\n新しい", status="final")
         self.assertIn("保存", msg)
-        path = self.tmp / "reports" / "a-1.md"
+        path = self.tmp / "reports_fallback" / "a-1.md"
         meta, body = knowledge_store.parse_frontmatter(path.read_text(encoding="utf-8"))
         self.assertEqual(meta["status"], "final")
         self.assertIn("新しい", body)
@@ -357,7 +357,7 @@ class DatasetFigureFallbackTests(unittest.TestCase):
             "n_samples": 2, "n_features": 10, "log_transform": False,
         }
         msg = server.save_pca_figure("ds-1")
-        png = self.tmp / "reports" / "figures" / "ds-1_pca.png"
+        png = self.tmp / "reports_fallback" / "figures" / "ds-1_pca.png"
         self.assertTrue(png.is_file())
         self.assertIn("figures/ds-1_pca.png", msg)
         # どちらの経路で描いたかを明示する（ARF と混同させない）
@@ -375,7 +375,7 @@ class DatasetFigureFallbackTests(unittest.TestCase):
             ],
         }
         msg = server.save_volcano_figure("ds-2")
-        png = self.tmp / "reports" / "figures" / "ds-2_volcano.png"
+        png = self.tmp / "reports_fallback" / "figures" / "ds-2_volcano.png"
         self.assertTrue(png.is_file())
         self.assertIn("figures/ds-2_volcano.png", msg)
         self.assertIn("mztab", msg)
@@ -403,13 +403,13 @@ class DatasetFigureFallbackTests(unittest.TestCase):
         self.assertEqual(
             sorted(c["source"] for c in parsed["error"]["details"]["candidates"]),
             ["arf", "mztab"])
-        self.assertFalse((self.tmp / "reports" / "figures" / "both-1_pca.png").exists())
+        self.assertFalse((self.tmp / "reports_fallback" / "figures" / "both-1_pca.png").exists())
 
     def test_an_explicit_source_resolves_the_ambiguity(self):
         self._both_paths_have_pca()
         msg = server.save_pca_figure("both-2", source="mztab")
         self.assertIn("source=mztab", msg)
-        self.assertTrue((self.tmp / "reports" / "figures" / "both-2_pca.png").is_file())
+        self.assertTrue((self.tmp / "reports_fallback" / "figures" / "both-2_pca.png").is_file())
 
     def test_guidance_mentions_dataset_tools_when_nothing_available(self):
         session_state.session.dataset = None

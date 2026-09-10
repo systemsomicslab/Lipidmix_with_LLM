@@ -37,12 +37,18 @@ _ASSAY_REF_RE = re.compile(r"^assay\[(\d+)\]-ms_run_ref$")
 def _decode_file_uri(value: str) -> str:
     """mzTabのfile URIをローカルパス文字列へdecodeする（%XXを実文字へ戻す）。
 
-    `file:///C:/...`（Windows）と `file:///data/...`（POSIX）の両方を扱う。
+    MS-DIALの`file://C:/...`、標準file URI、UNCのホスト名を区別する。
     file: スキームでない値はそのままURL decodeだけ行う（保守的なフォールバック）。
     """
     value = value.strip()
-    if value.startswith("file:"):
-        path = unquote(urlsplit(value).path)
+    if value.lower().startswith("file:"):
+        uri = urlsplit(value)
+        path = unquote(uri.path)
+        # MS-DIALの出力ではドライブがnetloc側に入る。UNCのホストも落とさない。
+        if re.fullmatch(r"[A-Za-z]:", uri.netloc):
+            path = uri.netloc + path
+        elif uri.netloc and uri.netloc.lower() != "localhost":
+            path = "//" + uri.netloc + path
         if re.match(r"^/[A-Za-z]:", path):
             path = path[1:]  # "/C:/..." の先頭スラッシュを落とす
     else:

@@ -124,7 +124,8 @@ def write_report(
     `## 目的` / `## 実施した解析` / `## 主要な所見` / `## 解釈` /
     `## 注意点・コンフリクト` / `## 結論`。所見が増えたら本文を作り直して再度呼ぶ
     （ファイルは毎回上書き）。引用した knowledge/playbook の slug を knowledge_refs に渡す。
-    書き込み先は解析フォルダ配下 reports/、不可なら LIPIDMIX_REPORTS_DIR（既定 <project>/reports）。
+    LIPIDMIX_REPORTS_DIRの明示先を優先し、書込不可なら解析フォルダ配下reports/。
+    未指定時は解析フォルダ配下reports/を優先し、不可なら<project>/reports。
 
     analysis_id はファイル名 slug の元になるため ASCII で一意に。別IDが同一slugに潰れて既存
     レポートを上書きしそうな場合は保存を中止して通知する（objectiveレコードと同じIDを推奨）。

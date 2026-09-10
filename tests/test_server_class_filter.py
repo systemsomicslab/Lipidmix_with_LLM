@@ -11,6 +11,8 @@ import server
 from lipidmix.core import session_state
 from lipidmix.core import path_resolvers
 
+REAL_BUILD_PCA_MATRIX = server.arf_reader.build_pca_matrix
+
 
 def make_class_index() -> dict:
     control = {"file_id": 0, "file_name": "sample_control", "class_id": "control"}
@@ -123,6 +125,76 @@ class ServerClassFilterTests(unittest.TestCase):
         self.assertIn("適用フィルタ条件", result)
         rows = self.session.arf.filtered_features[0]["AlignedPeakProperties"]
         self.assertEqual([row[1] for row in rows], ["sample_treated"])
+
+    def test_arf_parser_uses_sibling_annotation_and_invalidates_old_preprocessing(self):
+        """注釈検索で選んだ結果へ、別の選択で作った差次結果を持ち越さない。"""
+        self.session.arf.features[0]['Name'] = 'Unknown'
+        self.session.arf.feature_matrix = np.ones((2, 2))
+        self.session.arf.last_differential = {'kind': 'two_group'}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'AlignResult-2026981258_PeakProperties.arf'
+            path.touch()
+            path.with_name('AlignResult-2026981258.arf2').touch()
+            with patch('lipidmix.arf2.reader.load_catalog', return_value=[
+                    {'MasterAlignmentID':10,'Name':'SL 33:0;O','Ontology':'SL'}]):
+                result = server.arf_parser(str(path), annotation_keyword='SL', spot_ids=[10], ontologies=['SL'])
+        self.assertNotIn('[ERROR]', result)
+        self.assertEqual(self.session.arf.filtered_features[0]['Name'], 'SL 33:0;O')
+        self.assertEqual(self.session.arf.features[0]['Name'], 'Unknown')
+        self.assertIsNone(self.session.arf.feature_matrix)
+        self.assertIsNone(self.session.arf.last_differential)
+        self.assertIn('ARF2', result)
+
+    def test_single_spot_selection_succeeds_without_fake_two_feature_pca(self):
+        from lipidmix.analysis.pca import run_pca
+        self.session.arf.filtered_features = self.session.arf.features
+        self.session.arf.last_pca_plot = {'old': True}
+        self.session.arf.last_differential = {'old': True}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'test.arf'
+            path.touch()
+            with patch.object(server.arf_reader, 'build_pca_matrix', return_value=(
+                    np.array([[1.0], [2.0]]), ['sample_control','sample_treated'], ['Spot_10_height'])), \
+                 patch.object(server.arf_reader, 'run_pca', run_pca):
+                result = server.arf_parser(str(path), spot_ids=[10])
+        self.assertNotIn('[ERROR]', result)
+        self.assertIn('PCA', result)
+        self.assertIn('スキップ', result)
+        self.assertEqual([s['MasterAlignmentID'] for s in self.session.arf.filtered_features], [10])
+        self.assertIsNone(self.session.arf.last_differential)
+        self.assertIsNone(self.session.arf.last_pca_plot)
+
+    def test_changing_samples_with_same_spot_ids_invalidates_preprocessing(self):
+        # 本物の AlignmentChromPeakFeature 配列でサンプル識別を検証する。
+        for row in self.session.arf.features[0]['AlignedPeakProperties']:
+            row.extend([0] * (26 - len(row)))
+            row[18] = 100.0
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'test.arf'
+            path.touch()
+            server.arf_parser(str(path), class_ids=['control'])
+            self.session.arf.feature_matrix = np.ones((1, 2))
+            self.session.arf.last_differential = {'old': True}
+            result = server.arf_parser(str(path), class_ids=['treated'])
+        self.assertNotIn('[ERROR]', result)
+        self.assertIsNone(self.session.arf.feature_matrix)
+        self.assertIsNone(self.session.arf.last_differential)
+
+    def test_constant_spot_selection_survives_pca_variance_filter(self):
+        from lipidmix.arf.reader import _convert_to_alignment_feature
+        # setUp のパッチ前の実関数は別名で保持して使用する。
+        for row in self.session.arf.features[0]['AlignedPeakProperties']:
+            row.extend([0] * (26 - len(row)))
+            row[18] = 100.0
+            self.assertEqual(_convert_to_alignment_feature(row)['height'], 100.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'test.arf'
+            path.touch()
+            with patch.object(server.arf_reader, 'build_pca_matrix', REAL_BUILD_PCA_MATRIX):
+                result = server.arf_parser(str(path), spot_ids=[10])
+        self.assertNotIn('[ERROR]', result)
+        self.assertIn('スキップ', result)
+        self.assertEqual(len(self.session.arf.filtered_features), 1)
 
     def test_arf_list_classes_returns_counts(self):
         self.session.arf.current_file_path = "test.arf"

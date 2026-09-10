@@ -229,11 +229,43 @@ def _filter_arf_spots(
     features: list[dict],
     min_intensity: float = 0.0,
     annotation_keyword: str | None = None,
+    *,
+    catalog: list[dict] | None = None,
+    spot_ids: list[int] | None = None,
+    ontologies: list[str] | None = None,
 ) -> list[dict]:
-    """Apply the same lightweight ARF filters used by arf_parser."""
+    """同一バッチの統合注釈で選択する。元スポットとピーク値は変更しない。"""
+    if spot_ids is not None and (not spot_ids or any(type(i) is not int or i < 0 for i in spot_ids)):
+        raise ValueError("spot_idsには0以上の整数を1件以上指定してください。")
+    if ontologies is not None and (not ontologies or any(not isinstance(v, str) or not v.strip() for v in ontologies)):
+        raise ValueError("ontologiesには空でない脂質クラス名を1件以上指定してください。")
+    ids = set(spot_ids) if spot_ids is not None else None
+    classes = {v.strip().casefold() for v in ontologies} if ontologies is not None else None
+    by_id = {}
+    for entry in catalog or []:
+        sid = entry.get("MasterAlignmentID")
+        if sid in by_id:
+            raise ValueError(f"ARF2のMasterAlignmentIDが重複しています: {sid}")
+        by_id[sid] = entry
     filtered_spots = []
     keyword = annotation_keyword.lower() if annotation_keyword else None
     for spot in features:
+        if ids is not None and spot.get("MasterAlignmentID") not in ids:
+            continue
+        if catalog is not None:
+            spot = dict(spot)
+            entry = by_id.get(spot.get("MasterAlignmentID"), {})
+            arf_name = spot.get("Name") or ""
+            arf2_name = entry.get("Name") or ""
+            has_name = bool(arf2_name.strip()) and arf2_name.strip().lower() != "unknown"
+            spot["Name"] = arf2_name if has_name else arf_name
+            spot["Ontology"] = entry.get("Ontology") or spot.get("Ontology")
+            spot["arf_name"] = arf_name
+            spot["arf2_name"] = arf2_name
+            spot["annotation_source"] = "arf2" if has_name else "arf"
+            spot["annotation_conflict"] = bool(has_name and arf_name != arf2_name)
+        if classes is not None and (spot.get("Ontology") or "").strip().casefold() not in classes:
+            continue
         height = spot.get("HeightAverage")
         if height is not None and height < min_intensity:
             continue

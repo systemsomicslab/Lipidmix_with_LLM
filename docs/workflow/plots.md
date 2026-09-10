@@ -22,8 +22,9 @@
 画像返しと PNG 保存が同じ関数を通るので、画面の図とレポートに貼る図がずれない。
 `save_pca_figure` だけは `tools/reports.py` 内で直接 matplotlib を呼ぶ。
 
-保存先は `_resolve_report_dir()` が解決する。解析フォルダ配下の `reports/` を優先し、
-書き込めなければ `LIPIDMIX_REPORTS_DIR` またはリポジトリ内の `reports/` に退避する
+保存先は `_resolve_report_dir()` が解決する。`LIPIDMIX_REPORTS_DIR` の明示先を優先し、
+書き込めなければ解析フォルダ配下の `reports/` に退避する。未指定時は解析フォルダの
+`reports/` を優先し、不可ならリポジトリ内の `reports/` に退避する
 （候補列挙と可否判定が分かれているのは、退避したこと自体を返り値で開示するため）。
 
 ## save_pca_figure

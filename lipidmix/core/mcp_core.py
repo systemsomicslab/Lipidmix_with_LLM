@@ -243,12 +243,14 @@ DATA_DIR = get_data_dir()
 
 
 def _report_dir_candidates() -> list[Path]:
-    """レポート書き込み先候補。解析フォルダ配下 reports/ を優先、次に退避先。"""
+    """明示された保存先を優先し、未指定時は解析フォルダ配下を使う。"""
     override = os.environ.get("LIPIDMIX_REPORTS_DIR")
     fallback = Path(override).expanduser() if override else BASE_DIR / "reports"
+    if override:
+        return [fallback, DATA_DIR / "reports"]
     return [DATA_DIR / "reports", fallback]
 
 
 def _resolve_report_dir() -> Path:
-    """書き込み可能なレポートディレクトリを返す（解析フォルダ→退避先）。"""
+    """候補順に書き込み可能なレポートディレクトリを返す。"""
     return _first_writable_dir(_report_dir_candidates())

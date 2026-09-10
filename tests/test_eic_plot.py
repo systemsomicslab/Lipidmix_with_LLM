@@ -225,7 +225,7 @@ class EicPlotToolTests(unittest.TestCase):
     def test_png_is_written_only_by_explicit_save_tool(self):
         server.eic_plot_chromatograms(0, file_path=str(self.path), file_ids=[7])
         message = server.save_eic_figure("sample-eic")
-        png = self.tmp / "reports" / "figures" / "sample-eic_eic.png"
+        png = self.tmp / "fallback" / "figures" / "sample-eic_eic.png"
         self.assertTrue(png.is_file())
         self.assertIn("figures/sample-eic_eic.png", message)
 

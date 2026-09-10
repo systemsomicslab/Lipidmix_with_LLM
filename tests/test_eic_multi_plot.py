@@ -424,7 +424,7 @@ class EicPlotCompoundsToolTests(unittest.TestCase):
             file_path=str(self.path), arf2_path=str(self.arf2),
         )
         message = server.save_eic_figure("overlay-eic")
-        png = self.tmp / "reports" / "figures" / "overlay-eic_eic.png"
+        png = self.tmp / "fallback" / "figures" / "overlay-eic_eic.png"
         self.assertTrue(png.is_file())
         self.assertIn("figures/overlay-eic_eic.png", message)
 
