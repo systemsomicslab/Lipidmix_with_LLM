@@ -86,6 +86,12 @@ from lipidmix.tools.pipeline_tools import *  # pipeline_plan, pipeline_run, pipe
 
 
 if __name__ == "__main__":
+    # origin/main からの遅れを裏で 1 回だけ確認する（通知のみ・自動 pull はしない）。
+    # import 副作用にしないのは、テストが server を import しただけで
+    # ネットワークを叩き始めないようにするため。
+    from lipidmix.core.version import start_update_check
+    start_update_check()
+
     # 既定は stdio（ローカル開発: Claude がサブプロセスとして起動）。
     # NAS常駐では LIPIDMIX_TRANSPORT=streamable-http を設定し HTTP で待受ける。
     transport = os.environ.get("LIPIDMIX_TRANSPORT", "stdio")
