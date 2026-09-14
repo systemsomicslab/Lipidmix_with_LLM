@@ -531,9 +531,12 @@ def console_status(job_path: str | None = None, include_artifacts: bool = False)
     if isinstance(legacy, str):
         return legacy  # error envelope（旧 detach の終了が未解決）
 
-    from lipidmix.core.version import server_version
+    from lipidmix.core import version
+    update = version.update_status()
     return json_payload({
-        "server_version": server_version(),
+        "server_version": version.server_version(),
+        # 最新なら鍵ごと出さない（戻り値は LLM の文脈をそのまま食う）。
+        **({"update_available": update} if update else {}),
         "job_id": job.job_id,
         "status": job.status,
         **({"detached": legacy} if legacy else {}),

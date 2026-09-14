@@ -71,6 +71,32 @@ transport is `stdio`.
 }
 ```
 
+## Receiving Updates
+
+Each member's clone is checked against `origin/main` once per server start. The
+check runs in a background thread, so it never delays a tool call, and it only
+fetches — **the server never pulls on its own**. A running MCP server keeps its
+already-imported modules in memory, so swapping code underneath a live process
+leaves it half-old and half-new; applying an update is therefore an explicit
+user action.
+
+When the clone is behind, the notice appears in `load_dataset` (as a line at the
+top of its output) and in the `dataset_status` / `console_status` payloads (as an
+`update_available` key). Up to date, nothing is added.
+
+To apply an update:
+
+```powershell
+git pull
+```
+
+Then **restart the MCP client**. `git pull` alone leaves the old server process
+running; the notice says so for the same reason.
+
+The check stays silent whenever it cannot be sure: no network, no credentials,
+no `git` on PATH, or a checkout that is not on `main`. Silence means "no news",
+not "up to date".
+
 ## Operational Notes
 
 - `knowledge/` is the only shared mutable state in the standard setup.

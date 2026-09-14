@@ -112,6 +112,13 @@ def load_dataset(directory: str | None = None) -> str:
     # no-op になり、ダイジェストが arf2 ブロック内へ埋没するのを防げる。
     blocks[0] = session_state.session.maybe_prepend_caveat(blocks[0])
 
+    # 配布先のクローンが origin/main より遅れているときだけ 1 行を前置する。
+    # 入口ツールは Markdown を返すので、鍵ではなくブロックとして差す。
+    from lipidmix.core import version
+    update = version.update_status()
+    if update:
+        blocks.append(f"🔄 **{update['message']}**")
+
     batch_note = _describe_batch_selection(mcp_core.DATA_DIR)
     if batch_note:
         blocks.append(batch_note)
