@@ -313,6 +313,56 @@ def test_resolve_profile_inputs_rejects_msp_in_lbm_slot(tmp_path):
         profiles.resolve_profile_inputs(profile, root)
 
 
+# ---------- RED: 依存の method_key 衝突（同じ枠を2件が取り合う） ----------
+
+def test_resolve_profile_inputs_rejects_two_dependencies_same_method_key(tmp_path):
+    """methodファイルの1つのキーは1行しか書けない。2つのdependencyが同じ
+    method_key（ここではkindも同じ`msp`）を宣言したら、後勝ちで片方を黙って
+    捨てるのではなく、一意に決まらないこと自体をエラーにする。
+
+    schema側（`validate_profile`）は`dependency_id`の重複だけを拒否し、`kind`や
+    `method_key`の重複は禁止していない（`lipidmix/console/profile_schema.py`の
+    `_validate_dependency`参照）——ここでの衝突検出はTask 2（`resolve_profile_inputs`）
+    が新たに持つべき責務であり、Task 1のスキーマ検証を重複させるものではない。
+    """
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp_a = _write(root / "library" / "lib_a.msp", "msp-content-a")
+    msp_b = _write(root / "library" / "lib_b.msp", "msp-content-b")
+    dep_a = _msp_dependency(msp_a)
+    dep_a["dependency_id"] = "msp-lib-a"
+    dep_b = _msp_dependency(msp_b)
+    dep_b["dependency_id"] = "msp-lib-b"
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[dep_a, dep_b], exe=exe)
+
+    with pytest.raises(DomainError, match="PROFILE_METHOD_CONFLICT"):
+        profiles.resolve_profile_inputs(profile, root)
+
+
+def test_resolve_profile_inputs_allows_two_dependencies_different_kind(tmp_path):
+    """`kind`の重複そのものは禁止しない（spec §5.1・schemaのどちらも`kind`の
+    重複を禁じていない）。衝突判定の基準は`kind`ではなく`method_key`——
+    2件が実際に異なるmethodファイルの行（method_key）を占めるなら共存できる。
+
+    msdial5アダプタは`kind`→`method_key`が1対1（`profile_adapter.py`の
+    `dependency_keys`）なので、「`kind`が同じで`method_key`が異なる」組み合わせは
+    このアダプタでは構成できない——衝突判定を`kind`単位ではなく`method_key`単位に
+    した設計そのものが、この1対1の下では「`kind`が異なれば必ず`method_key`も
+    異なり、同じ`kind`なら必ず`method_key`も同じ」という関係を素直に反映する。
+    """
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp = _write(root / "library" / "lib1.msp", "msp-content")
+    text_db = _write(root / "library" / "text1.txt", "text-db-content")
+    dependencies = [_msp_dependency(msp), _text_dependency(text_db)]
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=dependencies, exe=exe)
+
+    plan = profiles.resolve_profile_inputs(profile, root)
+    assert {d["kind"] for d in plan["dependencies"]} == {"msp", "text_identification"}
+
+
 # ---------- RED: DDA/極性矛盾 ----------
 
 def test_resolve_profile_inputs_rejects_polarity_conflict(tmp_path):

@@ -277,6 +277,41 @@ def _resolve_dependency(dep: dict, base_dir: Path, dependency_keys: dict[str, st
     return {**dep, "source_path": str(resolved_path), "present": True}
 
 
+def _check_no_duplicate_method_keys(dependencies: list[dict]) -> None:
+    """2件以上のdependencyが同じmethod_keyを取り合っていないことを確認する。
+
+    methodファイルの1つのキーには1行しか書けない（`write_effective_method_file`の
+    overridesは`{method_key: path}`という単一値の辞書）。schema側
+    （`profile_schema._validate_dependency`）は`dependency_id`の重複だけを拒否し、
+    `method_key`（や`kind`）の重複は禁止していない——ここでの衝突検出はTask 2
+    固有の責務であり、Task 1のスキーマ検証を重複させるものではない（controller
+    裁定: fix round 1）。
+
+    `kind`ではなく`method_key`で衝突を判定する。`kind`の重複それ自体は禁止しない
+    ——spec §5.1・schemaのどちらも`kind`の重複を禁じておらず、2つの依存が
+    実際に異なるmethodファイルの行（method_key）を占めるなら共存できる
+    （例: 将来のアダプタが同じ`kind`に複数のmethod_keyスロットを持つ場合）。
+    ただし`_resolve_dependency`が`kind`→`method_key`をadapterのallowlistで
+    1対1に固定しているため、現行の`msdial5`アダプタでは「`kind`が同じなら
+    `method_key`も必ず同じ」になる——つまり`method_key`基準の判定は、今のところ
+    「同じ`kind`の重複」も自動的に含む形で検出する。
+    """
+    seen: dict[str, str] = {}
+    for dep in dependencies:
+        method_key = dep["method_key"]
+        if method_key in seen:
+            raise DomainError(
+                "PROFILE_METHOD_CONFLICT",
+                f"依存 {seen[method_key]!r} と {dep['dependency_id']!r} が同じ"
+                f"method_key {method_key!r} を取り合っています（1つのmethodファイル"
+                "の1つのキーには1行しか書けないため、どちらを実効メソッドへ反映する"
+                "か一意に決まりません）。",
+                {"method_key": method_key,
+                 "dependency_ids": [seen[method_key], dep["dependency_id"]]},
+            )
+        seen[method_key] = dep["dependency_id"]
+
+
 def resolve_profile_inputs(profile: dict, source_root: Path) -> dict:
     """profileの外部参照を`source_root`（profileファイルの親）基準で解決する。
 
@@ -306,6 +341,7 @@ def resolve_profile_inputs(profile: dict, source_root: Path) -> dict:
         _resolve_dependency(dep, source_root, capabilities["dependency_keys"])
         for dep in profile["processing"]["dependencies"]
     ]
+    _check_no_duplicate_method_keys(dependencies)
 
     execution_environment = _build_execution_environment(
         profile["software"], adapter_id, source_root)
