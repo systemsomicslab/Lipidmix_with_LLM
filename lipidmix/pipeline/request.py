@@ -51,6 +51,7 @@ import re
 from pathlib import Path
 
 from lipidmix.core.atomic_io import DomainError, canonical_hash
+from lipidmix.pipeline import request_v2
 
 __all__ = [
     "REQUEST_FILE_NAME",
@@ -510,7 +511,8 @@ def _layer_preprocess(explicit: dict, from_file: dict) -> tuple:
     return merged, sources
 
 
-def resolve_request(source_root: Path, explicit: dict | None = None) -> dict:
+def resolve_request(source_root: Path, explicit: dict | None = None, *,
+                     profile: dict | None = None) -> dict:
     """要求を解決し、``value_sources``/``effective_target``を付けて返す。
 
     優先順位は「MCPで明示した値 > 元フォルダ直下の``analysis-request.json``
@@ -524,11 +526,25 @@ def resolve_request(source_root: Path, explicit: dict | None = None) -> dict:
     （comparison_idを除く各パス系フィールドは、相対と絶対のどちらも許す。
     spec §10.1の例で``method_file``にラボ共有フォルダの絶対パスが使われている
     通り、source_rootの外を指す正当なケースがあるため）。
+
+    ``explicit["schema"] == "pipeline-request.v2"``のときは
+    ``lipidmix.pipeline.request_v2.resolve``へ丸ごと委譲する（spec §6の
+    schema dispatch）。schemaが省略された場合は従来どおりv1のまま
+    解決する——v2を暗黙に推測しない（**このディスパッチは``explicit``だけを
+    見る**。``analysis-request.json``がv2形状を宣言していても、v1の
+    ``read_request_file``はv1のキー集合しか知らないため、そちらの層での
+    v2 schema省略は検出しない。v2の``analysis-request.json``層は本task未配線
+    ——task-3-report.mdの既知の限界を参照）。v2解決には検証済みprofile dict
+    （``profile``引数、``lipidmix.console.profile_schema.validate_profile``の
+    戻り値相当）が要る——読み込み自体はこの関数の責務ではない。
     """
     source_root = Path(source_root)
     explicit = explicit if explicit is not None else {}
     if not isinstance(explicit, dict):
         _fail("requestはオブジェクトである必要があります。", value=explicit)
+
+    if explicit.get("schema") == request_v2.SCHEMA:
+        return request_v2.resolve(explicit, profile)
 
     unknown = set(explicit) - _TOP_LEVEL_KEYS
     if unknown:
@@ -573,7 +589,7 @@ def resolve_request(source_root: Path, explicit: dict | None = None) -> dict:
     return validated
 
 
-def merge_updates(request: dict, updates: dict) -> dict:
+def merge_updates(request: dict, updates: dict, *, profile: dict | None = None) -> dict:
     """resumeの入力訂正を反映し、再検証した要求を返す（spec §9/§10.1）。
 
     ``UPDATABLE``（target・sample_manifest・preprocess・comparisons）以外の
@@ -582,7 +598,14 @@ def merge_updates(request: dict, updates: dict) -> dict:
     内部キーも``UPDATABLE``に含まれないため、ここで同じ扱いになる
     （updates自身に内部キーを許可しないという契約を、UPDATABLEの外側として
     自然に満たす）。
+
+    ``request["schema"] == "pipeline-request.v2"``のときは
+    ``lipidmix.pipeline.request_v2.merge_updates``へ丸ごと委譲する（spec §6の
+    schema dispatch）。v2解決同様、検証済みprofile dictは呼び出し側が渡す。
     """
+    if request.get("schema") == request_v2.SCHEMA:
+        return request_v2.merge_updates(request, updates, profile)
+
     if set(updates) - UPDATABLE:
         raise DomainError("NEW_PIPELINE_REQUIRED", "上流条件の変更には新しい解析が必要です")
     # UPDATABLE個の中で明示nullが不許可なのはcomparisonsだけ(R13)——
