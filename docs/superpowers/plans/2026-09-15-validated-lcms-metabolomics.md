@@ -311,7 +311,7 @@ overrideはqualified候補の選択に限定し、理由必須。0候補で無�
 
 **Interfaces:** `ratio(target: np.ndarray, standard: np.ndarray, standard_detected: np.ndarray | None) -> tuple[np.ndarray,np.ndarray]`（値、補完禁止mask）をinternal_standardsへ追加。`make_matrix(ds, recipe: dict, bindings: dict, evidence: dict, eligibility: np.ndarray) -> dict`（補完前）、`finalize_matrix(matrix: dict, eligibility: np.ndarray, impute: str) -> dict`（QC後filterと補完）、`save_matrix(result: dict, directory: Path) -> dict`、`load_matrix(reference: dict, directory: Path) -> dict`をmatrix_stateへ追加する。
 
-- [ ] RED: 0分母、欠損/非有限、検出要件、元値不変、support保持、rawと補正後の区別、hash改変を検査する。
+- [x] RED: 0分母、欠損/非有限、検出要件、元値不変、support保持、rawと補正後の区別、hash改変を検査する。
 
 ```python
 import numpy as np
@@ -323,8 +323,8 @@ def test_invalid_denominator_is_locked_missing():
     assert locked.tolist() == [False, True]
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_internal_standards.py tests/test_analysis_matrix.py -q`。
-- [ ] Implement: ratio計算を元行列のコピーで実施する。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_internal_standards.py tests/test_analysis_matrix.py -q`。
+- [x] Implement: ratio計算を元行列のコピーで実施する。
 
 ```python
 valid = np.isfinite(standard) & (standard > 0)
@@ -336,8 +336,8 @@ locked = ~valid
 ```
 
 npz（allow_pickle=False）＋JSON metaをatomic保存する。matrix IDはdataset、recipe、binding、evidence、metadata、eligibilityを含む内容hashで生成。axis順・値hash・mask形状をload時に確認する。統計対象filterはsupport列を削除しない。補完後にもlocked maskを復元し、補完不能の理由を残す。make_matrixは補完を行わず、finalize_matrixだけがQC後の補完を行う。両結果は別IDと親参照を持つ。recipeごとにmatrixを作り、同一ds.pp_matrixへ異なるrecipeを上書きしない。
-- [ ] GREEN: 上記と`tests/test_preprocessing.py tests/test_result_state.py`。
-- [ ] Commit: 対象6ファイル、`git commit -m "feat: 内部標準比と解析行列を永続化"`。
+- [x] GREEN: 上記と`tests/test_preprocessing.py tests/test_result_state.py`。
+- [x] Commit: 対象6ファイル、`git commit -m "feat: 内部標準比と解析行列を永続化"`。
 
 ## Task 9: 固定母集団のQCとfilter分離
 

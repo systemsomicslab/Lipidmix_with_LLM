@@ -55,10 +55,12 @@ STAT_FIELDS = frozenset({"group", "biological_sample_id"})
 _STAT_INVALIDATING = STAT_FIELDS | {"comparison"}
 
 #: 前処理そのものをやり直す必要がある変更。`standard_assays`（内部標準の
-#: 分母に使う標準品注入）を含めるのは、これが変われば内部標準比の行列が
-#: そのまま変わるため——比だけ作り直して古い行列を残すと、次の解析が
-#: 新しい設定の顔をした古い数字で走る。
-_PP_INVALIDATING = PP_FIELDS | {"dataset", "detection", "recipe", "standard_assays"}
+#: 分母に使う標準品注入）・`bindings`（どのfeatureがその標準か）・
+#: `matrix_recipe` を含めるのは、これらが変われば解析行列の値そのものが
+#: 変わるため——行列を作り直さずに結果だけ残すと、次の解析が新しい設定の
+#: 顔をした古い数字で走る。
+_PP_INVALIDATING = PP_FIELDS | {"dataset", "detection", "recipe",
+                                "standard_assays", "bindings", "matrix_recipe"}
 
 
 def array_fingerprint(array) -> str:
