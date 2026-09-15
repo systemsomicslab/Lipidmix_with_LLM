@@ -415,7 +415,7 @@ def arithmetic_log2fc(a, b):
 
 **Interfaces:** `export_features(ds, matrices: list[dict], path: Path) -> dict`、`export_statistic(result: dict, path: Path) -> dict`、`report.analysis_status(results: list[dict]) -> str`。全feature量はlong TSVでdataset_id/feature_id/assay_id/matrix_result_id/value/unit/detected/gap_filled/imputed/exclusion_reasonを出し、annotation/evidenceはfeature_idで別表へ接続。
 
-- [ ] RED: 全未同定、QC fail+統計ready、全不能、最新result不一致、hash破損、ANOVA専用出力を検査。
+- [x] RED: 全未同定、QC fail+統計ready、全不能、最新result不一致、hash破損、ANOVA専用出力を検査。
 
 ```python
 from lipidmix.pipeline.report import analysis_status
@@ -424,8 +424,8 @@ def test_computable_and_uncomputable_are_limited():
     assert analysis_status([{"status": "ready"}, {"status": "not_evaluable"}]) == "limited"
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_report.py tests/test_pipeline_report.py -q`。
-- [ ] Implement:
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_report.py tests/test_pipeline_report.py -q`。
+- [x] Implement:
 
 ```python
 def analysis_status(results):
@@ -434,8 +434,8 @@ def analysis_status(results):
 ```
 
 必須出力はspec §11のmanifest/evidence/binding/matrix/QC/stat/report。pathway15列TSVは任意、NO_ANNOTATED_FEATURESはnot_applicable。欠損/±infを有意値にしない。注釈がない行を落とさず、rawとnormalized単位を表示する。既存report.evaluate_targetはv1分岐を維持し、v2必須成果物を別関数で列挙する。
-- [ ] GREEN: 同テストと既存export契約tests。
-- [ ] Commit: 4ファイル、`git commit -m "feat: 全feature出力とQC判定レポートを追加"`。
+- [x] GREEN: 同テストと既存export契約tests。
+- [x] Commit: 4ファイル、`git commit -m "feat: 全feature出力とQC判定レポートを追加"`。
 
 **Review C:** A14〜A17、A27。v1のpseudocount/15列契約が不変、v2の数値が独立期待値に一致し、全未同定でも出力が完成することを確認する。
 

@@ -146,6 +146,18 @@ def _unadjusted_confounded_lines(prov: dict) -> list[str]:
     return lines
 
 
+def _effect_size_lines(result: dict) -> list[str]:
+    """v2の効果量定義を付随メタへ継承する（spec §10）。
+
+    15列そのものは変えない（別リポジトリとの契約）。v1 の log2FC は
+    `log2(x + pseudo_count)` 空間の平均差、v2 は統計変換前の算術平均比で、
+    **同じ列名のまま定義だけが違う**。定義を書かずに出すと、どちらの数字かを
+    後から言えない。v1 の結果（この欄を持たない）には何も足さない。
+    """
+    definition = result.get("effect_size_definition")
+    return [] if not definition else [f"# effect_size_definition = {definition}"]
+
+
 def _meta_lines(ds, result, rows, n_total, n_unannotated) -> list[str]:
     prov = result["provenance"]
     return export_contract.build_meta(
@@ -167,6 +179,7 @@ def _meta_lines(ds, result, rows, n_total, n_unannotated) -> list[str]:
             f"# preprocess_id = {'; '.join(prov.get('parent_ids') or [])}",
             f"# source_verification = {getattr(ds, 'source_verification', '')}",
             *_unadjusted_confounded_lines(prov),
+            *_effect_size_lines(result),
         ],
         preprocess_line=f"# preprocess = {_preprocess_parameters(ds, result)}",
     )
