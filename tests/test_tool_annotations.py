@@ -55,6 +55,9 @@ EXPECTED_ANNOTATIONS = {
     # 状態の更新のみ（ファイル書き込みは無い）が、同じシートの再送は同じ状態に
     # 落ち着く → destructive ではなく idempotent。
     "dataset_set_sample_metadata": LOCAL_WRITE,
+    # v2統計は名指しした解析行列を読むだけ（行列も session も書き換えない。
+    # 結果全量の保持は session.dataset.results への追加で、外界へは書かない）。
+    "dataset_statistic": READ_ONLY,
     # --- Console 実行層（console_plan/run はジョブ状態・ファイルを生成する） ---
     "console_plan": LOCAL_WRITE_APPEND,
     "console_run": LOCAL_WRITE_APPEND,

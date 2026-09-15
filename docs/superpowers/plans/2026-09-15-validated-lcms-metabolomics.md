@@ -445,7 +445,7 @@ def analysis_status(results):
 
 **Interfaces:** `metabolomics_handlers.build_handlers() -> dict[str, Callable]`。各handlerは既存contextを受け、既存outcome envelopeへ結果を返す。`restore_results(record: dict, root: Path, ds) -> dict`はcurrentなevidence/binding/matrixをhash検査して復元する。
 
-- [ ] RED: binding待ち→再開、standard_assays変更、二つのmatrix recipe、統計追加/削除、古い結果、restartをpytestのfake handlerで試験する。
+- [x] RED: binding待ち→再開、standard_assays変更、二つのmatrix recipe、統計追加/削除、古い結果、restartをpytestのfake handlerで試験する。
 
 ```python
 from lipidmix.pipeline.stage_plan import invalidated_v2
@@ -457,8 +457,8 @@ def test_binding_change_does_not_restart_console():
     assert "execute_console" not in dirty
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_engine.py tests/test_pipeline_recovery.py -q`。
-- [ ] Implement: v2 prepare/execute/validateは既存serviceの上流関数を共通部品として呼び、v1のLBM必須アクセスだけをprofile adapterへ移す。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_engine.py tests/test_pipeline_recovery.py -q`。
+- [x] Implement: v2 prepare/execute/validateは既存serviceの上流関数を共通部品として呼び、v1のLBM必須アクセスだけをprofile adapterへ移す。
 
 ```python
 # service.build_handlersのschema別dispatch。既存v1ハンドラは維持する。
@@ -469,8 +469,8 @@ if request["schema"] == "pipeline-request.v2":
 handler実装でTask 6→7→9(raw)→8→9(processed)→10→11を接続する。preprocess handlerはmake_matrixで補完前値を保存する。qc_processed handlerはその値でQCを評価してからfinalize_matrixを呼び、QC結果と最終matrixを一つのstage outcomeで確定する。統計は最終matrixだけを参照する。needs_inputはstage outcomeに保存し、同じ未解決条件で自動再試行しない。比較群変更は該当統計だけ、recipe変更はmatrix以降、metadataはresolve_metadata以降へ伝播する。QC集合を変えるmetadataではqc_rawも再生成する。
 
 resultの保存はappend-onlyの既存仕組みを使い、runtime復元時に再計算した値で古いresult IDを上書きしない。Console終了証跡・入力不変・sample照合の成功前に下流へ進まない。
-- [ ] GREEN: 新テストと既存engine/recovery/service tests。
-- [ ] Commit: 上記7ファイル、`git commit -m "feat: メタボロミクスstageをworkerへ接続"`。
+- [x] GREEN: 新テストと既存engine/recovery/service tests。
+- [x] Commit: 上記7ファイル、`git commit -m "feat: メタボロミクスstageをworkerへ接続"`。
 
 ## Task 13: MCP公開経路と操作docs
 
@@ -478,7 +478,7 @@ resultの保存はappend-onlyの既存仕組みを使い、runtime復元時に�
 
 **Interfaces:** 既存pipeline_*の引数は維持しrequest v2を受ける。追加`dataset_statistic(specification: dict, matrix_result_id: str) -> str`はTask 10を呼ぶ薄いMCP入口。workerはこのtoolを呼ばない。
 
-- [ ] RED: registration、read-only plan、routine拒否、needs_input詳細、status三軸、MCPでのmatrix ID不一致を検査する。
+- [x] RED: registration、read-only plan、routine拒否、needs_input詳細、status三軸、MCPでのmatrix ID不一致を検査する。
 
 ```python
 from lipidmix.pipeline.metabolomics_handlers import build_handlers
@@ -487,8 +487,8 @@ def test_worker_handlers_cover_new_stages():
     assert {"load_assay_evidence", "resolve_feature_bindings", "statistics"} <= set(build_handlers())
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_tools.py tests/test_pipeline_tools.py tests/test_server_registration.py -q`。
-- [ ] Implement: dataset_serviceに`statistic_dataset(ds, specification, matrix_result_id)`を追加し、current matrixを検索してTask 10へ渡す。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_tools.py tests/test_pipeline_tools.py tests/test_server_registration.py -q`。
+- [x] Implement: dataset_serviceに`statistic_dataset(ds, specification, matrix_result_id)`を追加し、current matrixを検索してTask 10へ渡す。
 
 ```python
 # MCP側では数値を再実装せず、既存JSON envelopeへ変換する。
@@ -496,8 +496,8 @@ result = dataset_service.statistic_dataset(ds, specification, matrix_result_id)
 ```
 
 profile不足、標準候補、任意QC不能を利用者が区別できる説明を返す。docsへ合成profile/request/manifest、plan→run→status→binding resume、失敗・未検証の意味を記載する。既存ARF/dataset API既定値を変更しない。
-- [ ] GREEN: 上記とreadme/workflow文書tests。
-- [ ] Commit: 6ファイル、`git commit -m "feat: MCPからv2メタボロミクス解析を公開"`。
+- [x] GREEN: 上記とreadme/workflow文書tests。
+- [x] Commit: 6ファイル、`git commit -m "feat: MCPからv2メタボロミクス解析を公開"`。
 
 ## Task 14: 合成E2Eと互換性・プロセス回帰
 

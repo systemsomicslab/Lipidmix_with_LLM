@@ -434,18 +434,36 @@ def build_handlers() -> dict:
     （`DomainError`ではない）を、engineの汎用例外分岐へ落とさずneeds_inputへ
     変換するため。
     """
+    from lipidmix.pipeline import metabolomics_handlers
+
+    v2 = metabolomics_handlers.build_handlers()
     handlers = {
+        # v1 の stage 名
         "prepare_input": _handle_prepare_input,
         "upstream": _handle_upstream,
-        "validate_outputs": _handle_validate_outputs,
-        "load_dataset": _handle_load_dataset,
-        "resolve_metadata": _handle_resolve_metadata,
-        "preprocess": _handle_preprocess,
         "pca": _handle_pca,
         "resolve_comparisons": _handle_resolve_comparisons,
         "differential": _handle_differential,
-        "export": _handle_export,
-        "report": _handle_report,
+        # v1/v2 で同じ計算をする工程（v2 の stage 名も同じ）
+        "validate_outputs": _handle_validate_outputs,
+        "load_dataset": _handle_load_dataset,
+        "resolve_metadata": _handle_resolve_metadata,
+        # v2 だけの stage 名（v1 の計画には現れない）
+        "prepare_inputs": _handle_prepare_input,
+        "execute_console": _handle_upstream,
+        "load_assay_evidence": v2["load_assay_evidence"],
+        "resolve_feature_bindings": v2["resolve_feature_bindings"],
+        "qc_raw": v2["qc_raw"],
+        "qc_processed": v2["qc_processed"],
+        "statistics": v2["statistics"],
+        # 名前は同じだが計算が違う工程。要求の schema で選ぶ——後勝ちで1つに
+        # すると、片方の pipeline がもう片方の計算を黙って走らせる。
+        "preprocess": metabolomics_handlers.by_schema(
+            _handle_preprocess, v2["preprocess"]),
+        "export": metabolomics_handlers.by_schema(
+            _handle_export, v2["export"]),
+        "report": metabolomics_handlers.by_schema(
+            _handle_report, v2["report"]),
     }
     return {key: _as_needs_input(handler) for key, handler in handlers.items()}
 

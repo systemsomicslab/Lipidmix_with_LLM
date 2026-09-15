@@ -120,6 +120,11 @@ class DatasetState:
         # results: result_id -> 結果全量。図・エクスポートが「どの結果か」を
         # 名指しで選べるようにする（last_* は現在の既定を指すだけの別名）。
         self.results: dict = {}
+        # analysis_matrices: matrix_id -> analysis-matrix.v1（Task 8）。
+        # v2 は recipe ごとに行列を持つので、`pp_matrix` のような単一スロットへは
+        # 置けない——2本目の recipe が1本目を黙って上書きする。統計は
+        # matrix_id で名指しして参照する。
+        self.analysis_matrices: dict = {}
 
         # --- 出所の信用度（lipidmix/mztab/loading.py が設定する） ---
         # source_verification: verified（終了証跡と hash で裏取り済み）/

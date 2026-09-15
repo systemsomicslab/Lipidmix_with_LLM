@@ -29,6 +29,7 @@ __all__ = [
     "dataset_differential",
     "dataset_export_differential",
     "dataset_set_sample_metadata",
+    "dataset_statistic",
 ]
 
 # 欠けている状態 → それを作れるツール。missing_state の required_tools になる。
@@ -37,6 +38,10 @@ _RECOVERY_TOOLS = {
     "dataset": ["dataset_load"],
     "dataset_preprocessed": ["dataset_preprocess"],
     "dataset_differential_result": ["dataset_differential"],
+    # v2 の解析行列は pipeline（preprocess / qc_processed）が作る。単体ツールで
+    # 行列を組み立てる入口は意図的に置いていない——recipe・binding・証拠の
+    # 突き合わせが揃って初めて意味のある行列になるため。
+    "analysis_matrix": ["pipeline_run", "pipeline_status"],
 }
 
 
@@ -329,3 +334,50 @@ def _count_roles(roles: dict, sample_names: list[str]) -> dict:
         role = roles.get(name, "sample")
         counts[role] = counts.get(role, 0) + 1
     return counts
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
+def dataset_statistic(specification: dict, matrix_result_id: str) -> str:
+    """v2 の統計（welch / anova_tukey / pca）を、名指しした解析行列に実行する。
+
+    specification: `analysis_recipe.statistics` の1要素と同じ形
+      （`statistic_id` / `kind` / `transform` / `feature_scope` と、kind別の
+      `reference_group`+`test_group`、`groups`+`alpha`、`scaling`+`n_components`）。
+    matrix_result_id: `analysis-matrix.v1` の ID。pipeline の preprocess /
+      qc_processed が作った行列を名指しする。**直近の前処理を暗黙に使わない**
+      ——recipe 違いの行列が2本ある前提の設計で、どちらの数字かを結果に残す。
+
+    v1 の `dataset_differential` とは別物: 効果量は統計変換前の算術平均比の log2
+    （`effect_size_definition`）、log2 変換に pseudocount を足さない、BH の母集団は
+    検定できた feature だけ。v1 の既定値・数値契約は変更していない。
+
+    全量（feature ごとの結果）は戻り値に載せず session に保持する。
+    """
+    ds = session_state.session.dataset
+    if ds is None:
+        return _missing("dataset", "DatasetState がありません。先に dataset_load を実行してください。")
+    if not getattr(ds, "analysis_matrices", None):
+        return _missing(
+            "analysis_matrix",
+            "解析行列（analysis-matrix.v1）がありません。"
+            "pipeline_run で v2 要求を実行し、preprocess/qc_processed が作った"
+            "matrix_result_id を指定してください。")
+
+    from lipidmix.analysis.dataset_service import statistic_dataset
+    from lipidmix.core.atomic_io import DomainError
+
+    try:
+        result = statistic_dataset(ds, specification, matrix_result_id)
+    except DomainError as exc:
+        return json_payload({"error": {"code": exc.code, "message": str(exc.message),
+                                       "details": exc.details}})
+
+    session_state.session.dataset.results[
+        f"stat_{result.get('statistic_id')}"] = result
+    payload = {k: v for k, v in result.items() if k != "features"}
+    payload["status"] = "success"
+    payload["n_features"] = len(result.get("features") or [])
+    payload["features_note"] = (
+        "feature ごとの結果全量は本要約に非同梱（セッションに保持）。"
+        "TSV が必要なら pipeline の export 工程を使ってください。")
+    return json_payload(payload)

@@ -226,6 +226,12 @@ def build_stages(request: dict) -> list[dict]:
 #: （R20/spec §9.3「下流の再開は…DatasetStateと必要結果を再構築できることを必須とする」）。
 _ALWAYS_RECONSTRUCT_STAGE_IDS = frozenset({
     "load_dataset", "resolve_metadata", "preprocess", "pca",
+    # v2（spec §6.2）の解析鎖。成果物JSONには行列の**値**を入れていない
+    # （数十MBになるうえ、記録の意味は「どの入力から出たか」であって数値の
+    # 保管庫ではない）ので、runtimeは再計算でしか復元できない。skipすると
+    # 下流のstatisticsが「行列が無い」で止まる。どれも決定論的で、Consoleは
+    # 起動しない。
+    "load_assay_evidence", "resolve_feature_bindings", "qc_raw", "qc_processed",
 })
 
 #: 永続状態がsucceeded/skippedのままなら無条件に信頼してskipするstage。
