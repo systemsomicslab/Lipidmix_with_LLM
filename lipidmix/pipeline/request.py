@@ -511,6 +511,33 @@ def _layer_preprocess(explicit: dict, from_file: dict) -> tuple:
     return merged, sources
 
 
+def _peek_schema_declared_by_request_file(source_root: Path) -> object:
+    """``analysis-request.json``の``schema``フィールドだけを覗く。
+
+    v1/v2どちらのkey setで本読込・検証すべきかを、内容を検証する前に決める
+    ための最小限の先読み——本読み込み（v1の``read_request_file``、または
+    v2の``request_v2.read_request_file``）が正しいkey setで担当する前に、
+    このファイル自体をv1のkey setで一度でも検証してしまうと、v2形状の
+    ファイルが「未知のキー」として誤って拒否される。
+
+    ファイルが無い・JSONとして壊れている・オブジェクトでない場合は例外に
+    せず``None``を返す——実際のエラー報告は、schemaが確定した後にどのみち
+    同じファイルを読み直す本読み込み関数（v1なら``read_request_file``、v2
+    なら``request_v2.read_request_file``）に一本化する。ここで二重にエラーを
+    出さない。
+    """
+    path = Path(source_root) / REQUEST_FILE_NAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data.get("schema")
+
+
 def resolve_request(source_root: Path, explicit: dict | None = None, *,
                      profile: dict | None = None) -> dict:
     """要求を解決し、``value_sources``/``effective_target``を付けて返す。
@@ -527,24 +554,26 @@ def resolve_request(source_root: Path, explicit: dict | None = None, *,
     spec §10.1の例で``method_file``にラボ共有フォルダの絶対パスが使われている
     通り、source_rootの外を指す正当なケースがあるため）。
 
-    ``explicit["schema"] == "pipeline-request.v2"``のときは
+    ``explicit["schema"]``（省略時は``analysis-request.json``自身が宣言する
+    ``schema``、それも無ければv1）が``"pipeline-request.v2"``のときは
     ``lipidmix.pipeline.request_v2.resolve``へ丸ごと委譲する（spec §6の
-    schema dispatch）。schemaが省略された場合は従来どおりv1のまま
-    解決する——v2を暗黙に推測しない（**このディスパッチは``explicit``だけを
-    見る**。``analysis-request.json``がv2形状を宣言していても、v1の
-    ``read_request_file``はv1のキー集合しか知らないため、そちらの層での
-    v2 schema省略は検出しない。v2の``analysis-request.json``層は本task未配線
-    ——task-3-report.mdの既知の限界を参照）。v2解決には検証済みprofile dict
-    （``profile``引数、``lipidmix.console.profile_schema.validate_profile``の
-    戻り値相当）が要る——読み込み自体はこの関数の責務ではない。
+    schema dispatch）。**explicit/file双方がschemaを省略したときだけがv1**
+    ——ファイル自身がv2を宣言している場合はそれ自体が明示的な指定であり、
+    「省略」ではない（`docs/schema/pipeline-request-v2.md`「schema dispatch」
+    節）。v2解決には検証済みprofile dict（``profile``引数、
+    ``lipidmix.console.profile_schema.validate_profile``の戻り値相当）が要る
+    ——読み込み自体はこの関数の責務ではない。
     """
     source_root = Path(source_root)
     explicit = explicit if explicit is not None else {}
     if not isinstance(explicit, dict):
         _fail("requestはオブジェクトである必要があります。", value=explicit)
 
-    if explicit.get("schema") == request_v2.SCHEMA:
-        return request_v2.resolve(explicit, profile)
+    schema = explicit["schema"] if "schema" in explicit \
+        else _peek_schema_declared_by_request_file(source_root)
+    if schema == request_v2.SCHEMA:
+        from_file = request_v2.read_request_file(source_root)
+        return request_v2.resolve(explicit, profile, from_file=from_file)
 
     unknown = set(explicit) - _TOP_LEVEL_KEYS
     if unknown:

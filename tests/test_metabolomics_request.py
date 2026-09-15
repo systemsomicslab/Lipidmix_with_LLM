@@ -12,6 +12,7 @@ feature_targets・analysis_recipe.statistics）だけを持つ最小dictで足�
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
@@ -214,37 +215,29 @@ def _profile_with_two_recipes():
     })
 
 
-def test_routine_preprocess_override_outside_certified_scope_rejected():
+def test_preprocess_override_scope_is_not_yet_enforced_by_execution_purpose():
+    """既知のgap（task-3-report.md「Concern 2」参照）。
+
+    spec §6・docs/schema/lcms-profile-v1.mdは「routineでは証明書の明示許容
+    集合の外に出る上書きをPROFILE_SCOPE_MISMATCHで拒否する」と述べるが、
+    その「明示許容集合」を表す構造化フィールドはTask1のcertificate schema
+    （lipidmix/console/profile_schema.py の _CERTIFICATE_KEYS）にもprofile
+    schemaにも存在しない——Task1自身がこの実装をrequest v2（本モジュール）
+    へ明示的に委譲した「将来指針」の域を出ない。担当が未確定なものを
+    ここで独自ルールとして発明しない、というcontroller裁定に従い、
+    execution_purposeによる差別化は現状実装しない：routine/validationの
+    どちらでも、同じ構造的に妥当な上書きは通る。将来この判定が実装されたら
+    このtestは意図的に更新されるべき（放置して壊れたまま緑にしない）。
+    """
     profile = _profile_with_two_recipes()
-    with pytest.raises(DomainError, match="PROFILE_SCOPE_MISMATCH"):
-        resolve(
-            {"profile_file": "profile.json",
+    for purpose in ("routine", "validation"):
+        resolved = resolve(
+            {"profile_file": "profile.json", "execution_purpose": purpose,
              "preprocess": {"default": {"normalize": "median"}},
              "statistics": [_pca()]},
             profile,
         )
-
-
-def test_routine_preprocess_override_within_certified_scope_allowed():
-    profile = _profile_with_two_recipes()
-    resolved = resolve(
-        {"profile_file": "profile.json",
-         "preprocess": {"default": {"normalize": "tic"}},
-         "statistics": [_pca()]},
-        profile,
-    )
-    assert resolved["preprocess"]["default"]["normalize"] == "tic"
-
-
-def test_validation_purpose_allows_out_of_scope_override():
-    profile = _profile_with_two_recipes()
-    resolved = resolve(
-        {"profile_file": "profile.json", "execution_purpose": "validation",
-         "preprocess": {"default": {"normalize": "median"}},
-         "statistics": [_pca()]},
-        profile,
-    )
-    assert resolved["preprocess"]["default"]["normalize"] == "median"
+        assert resolved["preprocess"]["default"]["normalize"] == "median"
 
 
 def test_preprocess_override_unknown_recipe_rejected():
@@ -439,3 +432,206 @@ def test_resolve_does_not_mutate_input_profile_or_data():
     resolve(data, profile)
     assert profile == profile_copy
     assert data == data_copy
+
+
+# ---------- Concern 1: analysis-request.json の4段優先順位 ----------
+# spec §6「値の優先順位はMCP明示値 > analysis-request.json > profile既定値 >
+# v2既定値」。lipidmix.pipeline.request.resolve_request が v1 と同じ場所
+# （request層自身）でファイルを読むので、v2でもここで読む。
+
+def _write_request_file(root, payload):
+    (root / "analysis-request.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_request_file_fills_gaps_left_by_explicit(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    _write_request_file(root, {
+        "schema": "pipeline-request.v2",
+        "profile_file": "profile-from-file.json",
+        "sample_manifest": "manifest-from-file.tsv",
+    })
+    profile = _profile()
+    resolved = request_v1.resolve_request(root, {"statistics": [_pca()]}, profile=profile)
+    assert resolved["schema"] == request_v2.SCHEMA
+    assert resolved["profile_file"] == "profile-from-file.json"
+    assert resolved["value_sources"]["profile_file"] == "request_file"
+    assert resolved["sample_manifest"] == "manifest-from-file.tsv"
+    assert resolved["value_sources"]["sample_manifest"] == "request_file"
+    # explicitで渡したstatisticsはfileより優先(そもそもfile側に無い)
+    assert resolved["value_sources"]["statistics"] == "explicit"
+
+
+def test_explicit_value_beats_request_file_for_v2(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    _write_request_file(root, {
+        "schema": "pipeline-request.v2", "profile_file": "profile-from-file.json",
+    })
+    profile = _profile()
+    resolved = request_v1.resolve_request(
+        root,
+        {"schema": "pipeline-request.v2", "profile_file": "profile-from-explicit.json",
+         "statistics": [_pca()]},
+        profile=profile,
+    )
+    assert resolved["profile_file"] == "profile-from-explicit.json"
+    assert resolved["value_sources"]["profile_file"] == "explicit"
+
+
+def test_request_file_schema_v2_dispatches_without_explicit_schema_key(tmp_path):
+    """schemaをexplicit側で省略しても、analysis-request.json自身がv2を宣言して
+    いればv2として解決する——explicit/file双方が省略したときだけがA01の
+    「schema省略はv1」に該当する。"""
+    root = tmp_path / "source"
+    root.mkdir()
+    _write_request_file(root, {
+        "schema": "pipeline-request.v2", "profile_file": "profile-from-file.json",
+    })
+    profile = _profile()
+    resolved = request_v1.resolve_request(root, {"statistics": [_pca()]}, profile=profile)
+    assert resolved["schema"] == request_v2.SCHEMA
+
+
+def test_request_file_v2_shape_rejects_v1_only_keys(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    _write_request_file(root, {
+        "schema": "pipeline-request.v2", "profile_file": "profile.json",
+        "method_file": "method.txt",
+    })
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        request_v1.resolve_request(root, {"statistics": [_pca()]}, profile=_profile())
+
+
+def test_no_request_file_v2_behaves_as_before(tmp_path):
+    """ファイルが無い場合の既存の3段（explicit > profile既定 > v2既定）は
+    そのまま——回帰していないことを確認する。"""
+    root = tmp_path / "source"
+    root.mkdir()
+    profile = _profile()
+    resolved = request_v1.resolve_request(
+        root,
+        {"schema": "pipeline-request.v2", "profile_file": "profile.json",
+         "statistics": [_pca()]},
+        profile=profile,
+    )
+    assert resolved["value_sources"]["sample_manifest"] == "default"
+
+
+def test_broken_request_file_still_rejected_when_schema_omitted_everywhere(tmp_path):
+    """壊れたJSONを黙ってv1既定へフォールバックしない
+    （v1の既存挙動: test_a_broken_request_file_is_rejected_not_ignored と同じ
+    不変条件をv2追加後も保つことを確認する）。"""
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "analysis-request.json").write_text("{ not json", encoding="utf-8")
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        request_v1.resolve_request(root)
+
+
+# ---------- Concern 3: feature_bindings（spec §6.2） ----------
+# 「更新payloadはdataset hash、target_idごとのfeature_id、選択理由」の構造検証
+# だけがこのモジュールの責務。候補解決・許容規則との突合（実データ照合）は
+# 後続task（resolve_feature_bindings stage）が担う——ここでは実装しない。
+
+_DATASET_HASH = "a" * 64
+
+
+def _feature_bindings(target_id="gaba", feature_id="F00123", reason="single candidate"):
+    return {
+        "dataset_hash": _DATASET_HASH,
+        "selections": {target_id: {"feature_id": feature_id, "reason": reason}},
+    }
+
+
+def test_feature_bindings_valid_structure_accepted_on_initial_resolve():
+    profile = _profile(feature_targets={"gaba": {}})
+    resolved = resolve(
+        {"profile_file": "profile.json", "statistics": [_pca()],
+         "feature_bindings": _feature_bindings()},
+        profile,
+    )
+    assert resolved["feature_bindings"]["dataset_hash"] == _DATASET_HASH
+    assert resolved["feature_bindings"]["selections"]["gaba"]["feature_id"] == "F00123"
+
+
+def test_feature_bindings_omitted_defaults_to_none():
+    profile = _profile()
+    resolved = resolve({"profile_file": "profile.json", "statistics": [_pca()]}, profile)
+    assert resolved["feature_bindings"] is None
+
+
+def test_feature_bindings_explicit_null_rejected():
+    profile = _profile()
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve(
+            {"profile_file": "profile.json", "statistics": [_pca()],
+             "feature_bindings": None},
+            profile,
+        )
+
+
+def test_feature_bindings_unknown_target_id_rejected_on_initial_resolve():
+    profile = _profile(feature_targets={"gaba": {}})
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve(
+            {"profile_file": "profile.json", "statistics": [_pca()],
+             "feature_bindings": _feature_bindings(target_id="not_gaba")},
+            profile,
+        )
+
+
+def test_feature_bindings_bad_dataset_hash_rejected():
+    profile = _profile(feature_targets={"gaba": {}})
+    bindings = _feature_bindings()
+    bindings["dataset_hash"] = "not-a-sha256"
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve(
+            {"profile_file": "profile.json", "statistics": [_pca()],
+             "feature_bindings": bindings},
+            profile,
+        )
+
+
+def test_feature_bindings_missing_reason_rejected():
+    profile = _profile(feature_targets={"gaba": {}})
+    bindings = {"dataset_hash": _DATASET_HASH, "selections": {"gaba": {"feature_id": "F1"}}}
+    with pytest.raises(DomainError, match="PIPELINE_REQUEST_INVALID"):
+        resolve(
+            {"profile_file": "profile.json", "statistics": [_pca()],
+             "feature_bindings": bindings},
+            profile,
+        )
+
+
+def test_feature_bindings_is_updatable_via_resume():
+    profile = _profile(feature_targets={"gaba": {}})
+    resolved = resolve({"profile_file": "profile.json", "statistics": [_pca()]}, profile)
+    assert resolved["feature_bindings"] is None
+    updated = merge_updates(resolved, {"feature_bindings": _feature_bindings()}, profile)
+    assert updated["feature_bindings"]["selections"]["gaba"]["feature_id"] == "F00123"
+    assert updated["value_sources"]["feature_bindings"] == "explicit_update"
+
+
+def test_feature_bindings_initial_and_resume_go_through_identical_validation():
+    """初回指定とresumeが同じ検査関数を通ることをピン留めする
+    （brief「feature_bindingsは初回指定もresumeも同じ検査を通す」）。同じ
+    不正payload（存在しないtarget_id参照）が、初回resolveでもresumeの
+    merge_updatesでも同一のDomainError codeで拒否されることを確認する。
+    """
+    profile = _profile(feature_targets={"gaba": {}})
+    bad_bindings = _feature_bindings(target_id="not_gaba")
+
+    with pytest.raises(DomainError) as initial_exc:
+        resolve(
+            {"profile_file": "profile.json", "statistics": [_pca()],
+             "feature_bindings": bad_bindings},
+            profile,
+        )
+
+    resolved = resolve({"profile_file": "profile.json", "statistics": [_pca()]}, profile)
+    with pytest.raises(DomainError) as resume_exc:
+        merge_updates(resolved, {"feature_bindings": bad_bindings}, profile)
+
+    assert initial_exc.value.code == resume_exc.value.code == "PIPELINE_REQUEST_INVALID"

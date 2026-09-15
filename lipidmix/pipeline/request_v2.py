@@ -7,71 +7,102 @@ v1（`lipidmix.pipeline.request`）が生データ由来の`method_file`/`lbm_fi
 requestへ直接指定できない。
 
 **このモジュールはファイルを読まない**（`lipidmix.console.profile_schema`と
-同じ規約）。`profile_file`が指す実体の読込・検証・hash計算は呼び出し側の
-責務——ここでは既に検証済みのprofile dict（`profile_schema.validate_profile`の
-戻り値と同じ形）を受け取るだけ。呼び出し側の解決経路（`profile_file`の実パス
-解決・`load_profile`呼び出し）は本タスクの範囲外（後続タスクで
-`pipeline_plan`/`pipeline_run`側が担う）。同様に、`analysis-request.json`に
-よるファイル層の読込みもここでは行わない——v1の`resolve_request`が
-`explicit["schema"] == SCHEMA`を検出した時点で`resolve(explicit, profile)`へ
-委譲する（`lipidmix/pipeline/request.py`参照）。
+同じ規約）——ただし1つだけ例外がある。`analysis-request.json`（v1と同じ
+`REQUEST_FILE_NAME`）の実体読込・JSON解析・v2としての構造検証は、v1の
+`read_request_file`と対になる`read_request_file`関数としてここに持つ
+（v1がファイル読込を「request層自身」で行っているため、同じ層に置く——
+`lipidmix/pipeline/request.py`のdispatch側docstring参照）。`profile_file`が
+指す実体（profile本体）の読込・検証・hash計算はそれとは別で、呼び出し側の
+責務のまま（後続タスクの`pipeline_plan`/`pipeline_run`側が担う）。
 
-## 3段ではなく4段の優先順位
+## 4段の優先順位
 
-v1は「明示値 > analysis-request.json > 既定値」の3段だが、v2は
-`statistics`に限り「MCP明示値 > analysis-request.json > profile既定値 >
-v2既定値」の4段になる（spec §6）。analysis-request.jsonの層は前述のとおり
-本タスクでは未配線なので、実際に効くのは「明示値 > profile既定値 >
-v2既定値」の3段——`value_sources["statistics"]`にどの段が採用されたかを
-`"explicit"` / `"profile_default"` / `"v2_default"` として記録する。
+spec §6「値の優先順位はMCP明示値 > analysis-request.json > profile既定値 >
+v2既定値」。`statistics`だけがこの4段すべてに乗る（他フィールドはprofile
+既定値を持たないので実質3段: 明示値 > ファイル > v2既定値）。
+`value_sources`の各キーには採用段を記録する——`statistics`は
+`"explicit"` / `"request_file"` / `"profile_default"` / `"v2_default"`の
+4値、他は`"explicit"` / `"request_file"` / `"default"`の3値。
 
-## routine許容範囲の解釈（controller裁定が必要な曖昧箇所への対応）
+## routine許容範囲の未実装（既知のgap。実装しない理由）
 
 spec §6「routineで証明書の許容範囲外になる場合は`PROFILE_SCOPE_MISMATCH`」・
-`docs/schema/lcms-profile-v1.md`「routine実行が上書きできる範囲」は、
-`matrix_recipes`/`feature_targets`/`analysis_recipe`/`qc_policy`をprofileの
-固定契約と位置づけ、routineが実行時に選べるのは既存recipe/statisticの
-「選択」と`preprocess`の明示上書きに限る、とだけ述べる——だが「許容範囲」を
-機械的に判定する具体的な集合は、証明書schema（`profile_schema._CERTIFICATE_KEYS`）
-にも profile schema にも存在しない。Task 1の報告書・schema文書はこの実装を
-明示的に本タスク（request v2）へ委譲している。
+`docs/schema/lcms-profile-v1.md`「routine実行が上書きできる範囲」・
+task-1-report.md（該当節を「将来指針」と明記）はいずれも、routineの
+`preprocess`上書き許容範囲を判定する具体的でmachine-checkableな集合を
+**定義していない**——「証明書の明示許容集合」という言葉だけがあり、
+`lcms-profile-validation.v1`の証明書schema（`profile_schema._CERTIFICATE_KEYS`:
+`schema` / `profile_content_sha256` / `dependency_hashes` /
+`fixed_input_hashes` / `reference_file_hashes` / `validation_output_hashes` /
+`criteria` / `performed_by` / `performed_at` / `scope`）にはそれを表す
+フィールドが存在しない。`scope`は自由記述文字列であり、上書き値の許容判定に
+機械的に使える構造を持たない。
 
-ここで採る解釈: **routine実行では、`preprocess`上書きの各フィールド値は
-profile自身が持ついずれかの`matrix_recipes`エントリに既に現れる値でなければ
-ならない**（そのフィールドについて、profile内のどのrecipeも使っていない
-値への上書きは、証明書が検証した範囲の外に出るとみなす）。`execution_purpose
-="validation"`ではこの制限を外す——validation目的は新しい条件を検証する
-ためのものであり、まだprofileに無い値を試すことこそが目的だからである。
+このモジュールは以前の実装で「profile自身が持ついずれかのmatrix_recipes
+エントリに既に現れる値」という代替規則を独自に発明していたが、controller
+裁定によりこれは差し戻された——存在しない契約を肩代わりして実装すると、
+後から見て「これが仕様だ」と誤読される。したがって**現状、
+`execution_purpose`による`preprocess`上書きの差別化は実装しない**
+（routine/validationのどちらでも同じ構造検証だけを課す）。`PROFILE_SCOPE_MISMATCH`
+はこのモジュールからは送出されない——実データに対する`feature_bindings`
+選択の許容判定（§6.2「選択はprofileの許容規則内に限定し、外れれば
+PROFILE_SCOPE_MISMATCH」）も同様の理由で未実装（後述）。担当モジュール・
+具体的な集合の形は、task-3-report.mdの「Concern 2」としてcontrollerへ
+報告し、裁定を仰ぐ。
+
+## feature_bindings（spec §6.2）の扱い
+
+「statistics、feature_bindings、standard_assaysはresumeの更新対象とし、
+元のrequestと同じ厳密検証を行う」——これはrequest **validation**の話であり、
+実際に候補を解決する`resolve_feature_bindings`stage（後続task）とは別。
+このモジュールが持つのは「更新payload（dataset hash・target_idごとの
+feature_id・選択理由）」の**構造検証**だけ——候補一覧との突合・許容誤差・
+証拠条件の判定は実データ（dataset）へのアクセスを要し、この層の責務外
+（後続taskが担う）。初回`resolve`とresumeの`merge_updates`の両方が同じ
+`_validate_feature_bindings`を通ることで、brief「feature_bindingsは初回指定も
+resumeも同じ検査を通す」を満たす。
 """
 from __future__ import annotations
 
 import copy
+import json
 import math
 import re
+from pathlib import Path
 
 from lipidmix.core.atomic_io import DomainError
 
 __all__ = [
+    "REQUEST_FILE_NAME",
     "SCHEMA",
     "UPDATABLE",
     "merge_updates",
+    "read_request_file",
     "resolve",
     "validate_statistics",
 ]
 
 SCHEMA = "pipeline-request.v2"
 
+#: v1と同じファイル名・同じ場所（source_root直下）。v1の
+#: `lipidmix.pipeline.request.REQUEST_FILE_NAME`と値は同一だが、循環import
+#: を避けるためここでも定数として独立に持つ（`request.py`がこちらをimportする
+#: 側であり、逆向きの依存は作らない）。
+REQUEST_FILE_NAME = "analysis-request.json"
+
 #: resumeで変更可能なトップレベルキー（spec §6.1「sample manifest・許可された
 #: 前処理・統計定義・§8.1のバッチ固有対応付けの修正は新request revisionで
-#: 再開する」）。feature_bindings自体はrequestの一部ではない別の仕組み
-#: （§6.2の`resolve_feature_bindings`stageとpipeline_resumeの専用payload）
-#: なのでここには含めない。
-UPDATABLE = {"target", "sample_manifest", "preprocess", "statistics", "standard_assays"}
+#: 再開する」、spec §6.2「statistics、feature_bindings、standard_assaysは
+#: resumeの更新対象とし、元のrequestと同じ厳密検証を行う」）。
+UPDATABLE = {
+    "target", "sample_manifest", "preprocess", "statistics", "standard_assays",
+    "feature_bindings",
+}
 
 _TOP_LEVEL_KEYS = frozenset({
     "schema", "omics", "profile_file", "execution_purpose", "target",
     "sample_manifest", "standard_assays", "preprocess", "statistics",
-    "timeout_s", "save_project", "output_root", "keep_extension",
+    "feature_bindings", "timeout_s", "save_project", "output_root", "keep_extension",
 })
 
 #: 内部専用（merge_updates内部でのみ現れる。外部入力には許可しない）。
@@ -98,6 +129,7 @@ _IMPUTE_VALUES = frozenset({"none", "half_min", "knn", "column_mean"})
 _FILTER_KEYS = frozenset({"min_detection_rate"})
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 _DEFAULT_TIMEOUT_S = 21600
 
@@ -110,6 +142,11 @@ _DEFAULT_PCA_STATISTIC = {
     "scaling": "autoscale", "n_components": 2,
 }
 
+#: feature_bindings更新payloadが受け付ける2キーちょうど（spec §6.2「更新payload
+#: はdataset hash、target_idごとのfeature_id、選択理由」）。
+_FEATURE_BINDINGS_KEYS = frozenset({"dataset_hash", "selections"})
+_FEATURE_BINDING_SELECTION_KEYS = frozenset({"feature_id", "reason"})
+
 #: 明示nullを拒否するトップレベルキー（v1の`_NULL_REJECTED_TOP_LEVEL_KEYS`と
 #: 同じ規約——「無効化」を意味しない設定に明示nullを許すと未指定と区別が
 #: つかなくなる）。`sample_manifest`だけがv1同様に例外（明示解除の語彙）。
@@ -117,16 +154,12 @@ _DEFAULT_PCA_STATISTIC = {
 #: 同義であり、無効化ではなく単なる省略の言い換えとして扱う。
 _NULL_REJECTED_TOP_LEVEL_KEYS = frozenset({
     "schema", "omics", "profile_file", "execution_purpose", "target",
-    "standard_assays", "statistics", "output_root", "keep_extension",
+    "standard_assays", "statistics", "feature_bindings", "output_root", "keep_extension",
 })
 
 
 def _fail(message: str, **details) -> None:
     raise DomainError("PIPELINE_REQUEST_INVALID", message, details)
-
-
-def _fail_scope(message: str, **details) -> None:
-    raise DomainError("PROFILE_SCOPE_MISMATCH", message, details)
 
 
 def _reject_disallowed_explicit_null(source: dict, keys) -> None:
@@ -365,6 +398,71 @@ def _validate_standard_assays(value: object, feature_target_ids: frozenset) -> d
     return out
 
 
+# ---------- feature_bindings（spec §6.2 resume payload、構造検証のみ） ----------
+
+def _validate_feature_bindings(value: object, feature_target_ids: frozenset) -> dict | None:
+    """resume/初回共通の``feature_bindings``payloadを構造検証する。
+
+    spec §6.2「更新payloadはdataset hash、target_idごとのfeature_id、選択
+    理由」。ここで確認するのはこの3つの**形**だけ——選択されたfeature_idが
+    実際にそのdataset上で許容誤差・証拠条件を満たすかどうかの判定
+    （§6.2「選択はprofileの許容規則内に限定し、外れればPROFILE_SCOPE_MISMATCH」）
+    は実データ（当該datasetの`assay-feature-evidence.v1`等）へのアクセスを
+    要する``resolve_feature_bindings``stage（後続task）の責務であり、ここでは
+    実装しない（このモジュールはprofileだけを受け取り、datasetを受け取らない）。
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        _fail("feature_bindingsはオブジェクトである必要があります。", value=value)
+    unknown = set(value) - _FEATURE_BINDINGS_KEYS
+    if unknown:
+        _fail(f"feature_bindingsに未知のキーがあります: {sorted(unknown)}",
+              unknown_keys=sorted(unknown))
+    missing = _FEATURE_BINDINGS_KEYS - set(value)
+    if missing:
+        _fail(f"feature_bindingsに必須キーが不足しています: {sorted(missing)}",
+              missing_keys=sorted(missing))
+
+    dataset_hash = value["dataset_hash"]
+    if not isinstance(dataset_hash, str) or not _SHA256_RE.fullmatch(dataset_hash):
+        _fail(f"feature_bindings.dataset_hashは64桁小文字16進のSHA-256文字列で"
+              f"ある必要があります: {dataset_hash!r}", dataset_hash=dataset_hash)
+
+    selections = value["selections"]
+    if not isinstance(selections, dict) or not selections:
+        _fail(f"feature_bindings.selectionsは空でないオブジェクトである必要が"
+              f"あります: {selections!r}", selections=selections)
+
+    normalized_selections: dict = {}
+    for target_id, selection in selections.items():
+        if target_id not in feature_target_ids:
+            _fail(f"feature_bindings.selectionsが存在しないtarget_idを参照して"
+                  f"います: {target_id!r}", target_id=target_id)
+        label = f"feature_bindings.selections[{target_id!r}]"
+        if not isinstance(selection, dict):
+            _fail(f"{label}はオブジェクトである必要があります: {selection!r}")
+        unknown_sel = set(selection) - _FEATURE_BINDING_SELECTION_KEYS
+        if unknown_sel:
+            _fail(f"{label}に未知のキーがあります: {sorted(unknown_sel)}",
+                  unknown_keys=sorted(unknown_sel))
+        missing_sel = _FEATURE_BINDING_SELECTION_KEYS - set(selection)
+        if missing_sel:
+            _fail(f"{label}に必須キーが不足しています: {sorted(missing_sel)}",
+                  missing_keys=sorted(missing_sel))
+
+        feature_id = selection["feature_id"]
+        if not isinstance(feature_id, str) or not feature_id:
+            _fail(f"{label}.feature_idは空でない文字列である必要があります: "
+                  f"{feature_id!r}")
+        reason = selection["reason"]
+        if not isinstance(reason, str) or not reason:
+            _fail(f"{label}.reasonは空でない文字列である必要があります: {reason!r}")
+        normalized_selections[target_id] = {"feature_id": feature_id, "reason": reason}
+
+    return {"dataset_hash": dataset_hash, "selections": normalized_selections}
+
+
 # ---------- preprocess（matrix_recipe override） ----------
 
 def _validate_matrix_recipe_override(value: object, label: str, recipe: dict) -> dict:
@@ -406,7 +504,9 @@ def _validate_matrix_recipe_override(value: object, label: str, recipe: dict) ->
     # base='internal_standard_ratio'のrecipeに対するnormalize上書きは、
     # 上書き後も二重正規化禁止（spec §8）を満たす必要がある
     # （profile_schema._validate_matrix_recipeと同じ規則をoverride後の
-    # 実効値に対しても適用する）。
+    # 実効値に対しても適用する）。この規則はexecution_purposeに関わらず
+    # 常に適用する——routine/validationの区別が要る話ではなく、profile自身の
+    # 契約（base×normalizeの組合せ）を破らないという構造的な制約だから。
     effective_normalize = out.get("normalize", recipe.get("normalize"))
     effective_base = recipe.get("base")
     if effective_base == "internal_standard_ratio" and effective_normalize != "none":
@@ -418,26 +518,13 @@ def _validate_matrix_recipe_override(value: object, label: str, recipe: dict) ->
     return out
 
 
-def _check_routine_scope(recipe_id: str, override: dict, matrix_recipes: dict) -> None:
-    """routine実行での上書きを、profile自身が既に持つ値の範囲内に限定する。
+def _validate_preprocess(value: object, matrix_recipes: dict) -> dict:
+    """spec §6「preprocess: profileの既定値を明示指定で上書き可能」。
 
-    このモジュールのdocstring「routine許容範囲の解釈」を参照。証明書の
-    「明示許容集合」に相当する機械可読なフィールドが現行schemaに無いため、
-    「profile内のいずれかのrecipeが既にその値を使っている」ことを許容の
-    根拠とする。
+    ``execution_purpose``による差別化（routineの許容範囲制限）は現状実装
+    しない——このモジュールのdocstring「routine許容範囲の未実装」を参照
+    （task-3-report.md Concern 2）。
     """
-    for field, value in override.items():
-        allowed_values = [recipe[field] for recipe in matrix_recipes.values() if field in recipe]
-        if value not in allowed_values:
-            _fail_scope(
-                f"execution_purpose='routine'ではpreprocess[{recipe_id!r}].{field}を"
-                "profileが検証済みの値以外へ上書きできません"
-                "（validationとして再検証してください）。",
-                recipe_id=recipe_id, field=field, value=value, allowed_values=allowed_values,
-            )
-
-
-def _validate_preprocess(value: object, matrix_recipes: dict, execution_purpose: str) -> dict:
     if value is None:
         return {}
     if not isinstance(value, dict):
@@ -448,61 +535,138 @@ def _validate_preprocess(value: object, matrix_recipes: dict, execution_purpose:
         if recipe_id not in matrix_recipes:
             _fail(f"preprocessが存在しないrecipeを参照しています: {recipe_id!r}",
                   recipe_id=recipe_id)
-        normalized_override = _validate_matrix_recipe_override(
+        out[recipe_id] = _validate_matrix_recipe_override(
             override, f"preprocess[{recipe_id!r}]", matrix_recipes[recipe_id])
-        if execution_purpose == "routine":
-            _check_routine_scope(recipe_id, normalized_override, matrix_recipes)
-        out[recipe_id] = normalized_override
     return out
+
+
+# ---------- analysis-request.json（v1と同じ場所・同じファイル名） ----------
+
+def read_request_file(source_root: Path) -> dict:
+    """元フォルダ直下の``analysis-request.json``をv2 shapeとして読む（spec §6）。
+
+    無ければ空dict。schemaキーの整合性はここでは検証しない（呼び出し側の
+    ``lipidmix.pipeline.request.resolve_request``が、explicit/fileどちらの
+    schemaを採用するかを既に決定した上でこの関数を呼ぶ——「v2として読む」と
+    決まった後の構造検証だけがここの責務）。不正JSON・非オブジェクト・v2に
+    存在しないキー・許可されない明示nullは、v1の``read_request_file``と同じ
+    考え方で即座に``PIPELINE_REQUEST_INVALID``にする——「置いてあるのに
+    黙って無視された」を避ける。
+    """
+    path = Path(source_root) / REQUEST_FILE_NAME
+    if not path.is_file():
+        return {}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _fail(f"{REQUEST_FILE_NAME}を読めません: {exc}", path=str(path))
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        _fail(f"{REQUEST_FILE_NAME}がJSONとして壊れています: {exc}", path=str(path))
+    if not isinstance(data, dict):
+        _fail(f"{REQUEST_FILE_NAME}はオブジェクトである必要があります。",
+              path=str(path), value=data)
+    _check_known_keys(data)
+    _reject_disallowed_explicit_null(data, _NULL_REJECTED_TOP_LEVEL_KEYS)
+    return data
+
+
+def _check_known_keys(source: dict) -> None:
+    """``_TOP_LEVEL_KEYS``にないキーを、v1からの移行者向けの案内つきで拒否する。"""
+    unknown = set(source) - _TOP_LEVEL_KEYS
+    if not unknown:
+        return
+    if {"method_file", "lbm_file"} & unknown:
+        _fail(
+            "pipeline-request.v2ではmethod_file/lbm_fileを直接指定できません"
+            "（profile_fileから解決してください）。", unknown_keys=sorted(unknown),
+        )
+    if "comparisons" in unknown:
+        _fail(
+            "pipeline-request.v2ではcomparisonsではなくstatisticsを指定して"
+            "ください。", unknown_keys=sorted(unknown),
+        )
+    _fail(f"未知のキーがあります: {sorted(unknown)}", unknown_keys=sorted(unknown))
+
+
+def _layer_top_level(explicit: dict, from_file: dict) -> tuple[dict, dict]:
+    """トップレベル各キーを「explicit > from_file > (欠落のまま)」で重ね、
+    (merged, sources) を返す。``sources``はここで決着済み——``merged``に
+    キーが無ければ、``_resolve_core``が既定値で埋める（そのケースの出所は
+    ``"default"``、または``statistics``だけ``_resolve_core``がprofile既定値/
+    v2既定値のどちらかへさらに解決する）。
+    """
+    merged: dict = {}
+    sources: dict = {}
+    for key in _TOP_LEVEL_KEYS:
+        if key in explicit:
+            merged[key] = explicit[key]
+            sources[key] = "explicit"
+        elif key in from_file:
+            merged[key] = from_file[key]
+            sources[key] = "request_file"
+        else:
+            sources[key] = "default"
+    return merged, sources
 
 
 # ---------- 公開API ----------
 
-def resolve(data: dict, profile: dict) -> dict:
+def resolve(data: dict, profile: dict, *, from_file: dict | None = None) -> dict:
     """`pipeline-request.v2`を検証・解決する（spec §6, §6.2）。
 
-    ``data``は「MCP明示値 > profile既定値 > v2既定値」の階層で解決する対象
-    そのもの（``analysis-request.json``の層はここでは扱わない——
-    ``lipidmix.pipeline.request.resolve_request``がschemaディスパッチの時点で
-    ``explicit``をそのまま渡す）。``profile``は既に検証済みの
-    ``lcms-profile.v1``相当のdict（このモジュールが実際に参照するのは
-    ``matrix_recipes`` / ``feature_targets`` / ``analysis_recipe.statistics``
-    の3つだけ）。
+    ``data``は「MCP明示値」の層そのもの。``from_file``（省略可）は
+    ``source_root``直下の``analysis-request.json``の内容（``read_request_file``
+    で既にv2 shapeとして検証済み）——渡すと優先順位は「``data`` >
+    ``from_file`` > profile既定値（statisticsのみ） > v2既定値」の4段
+    （spec §6）になる。省略時（``None``、既定）は「``data`` > profile既定値 >
+    v2既定値」の3段——既存の呼び出し・テストはこちらの経路のまま。
 
-    未指定と明示nullの区別（``_NULL_REJECTED_TOP_LEVEL_KEYS``）はここ
-    ――**新規の明示入力に対してだけ**行う。``merge_updates``が
-    ``_resolve_core``を直接呼ぶのはこのため：既に解決済みの要求
-    （``sample_manifest``省略なら``keep_extension``等の未指定フィールドが
-    素の``None``で埋まっている）を丸ごと``resolve``へ再度通すと、
-    「省略していた」という事実が失われ、すべてのNoneが「明示null」に
-    見えてしまう（v1の``resolve_request`` vs ``validate_request``と同じ
-    区別）。
+    ``profile``は既に検証済みの``lcms-profile.v1``相当のdict（このモジュール
+    が実際に参照するのは``matrix_recipes`` / ``feature_targets`` /
+    ``analysis_recipe.statistics``の3つだけ）。
+
+    未指定と明示nullの区別（``_NULL_REJECTED_TOP_LEVEL_KEYS``）は**新規の
+    明示入力に対してだけ**行う——``data``と``from_file``それぞれに対して
+    個別に検査する。``merge_updates``が``_resolve_core``を直接呼ぶのは
+    このため：既に解決済みの要求（``keep_extension``等の未指定フィールドが
+    素の``None``で埋まっている）を丸ごとここへ再度通すと、「省略していた」
+    という事実が失われ、すべてのNoneが「明示null」に見えてしまう（v1の
+    ``resolve_request`` vs ``validate_request``と同じ区別）。
     """
     if not isinstance(data, dict):
         _fail("requestはオブジェクトである必要があります。", value=data)
+    _check_known_keys(data)
     _reject_disallowed_explicit_null(data, _NULL_REJECTED_TOP_LEVEL_KEYS)
-    return _resolve_core(data, profile)
+
+    if from_file is None:
+        from_file = {}
+    elif not isinstance(from_file, dict):
+        _fail("analysis-request.jsonの内容はオブジェクトである必要があります。",
+              value=from_file)
+
+    merged, sources = _layer_top_level(data, from_file)
+    resolved, statistics_fallback_source = _resolve_core(merged, profile)
+    resolved["value_sources"] = sources
+    if "statistics" not in merged:
+        resolved["value_sources"]["statistics"] = statistics_fallback_source
+    return resolved
 
 
-def _resolve_core(data: dict, profile: dict) -> dict:
-    """``resolve``/``merge_updates``が共有する検証本体（明示null拒否を含まない）。"""
+def _resolve_core(data: dict, profile: dict) -> tuple[dict, str | None]:
+    """``resolve``/``merge_updates``が共有する検証本体（明示null拒否を含まない）。
+
+    戻り値は``(解決済みdict（value_sourcesを含まない）, statisticsが
+    dataに無かった場合のfallback出所（"profile_default"/"v2_default"）
+    ——dataに"statistics"があれば``None``)``の2要素タプル。呼び出し側
+    （``resolve``/``merge_updates``）がそれぞれの流儀で``value_sources``を
+    組み立てる。
+    """
     if not isinstance(profile, dict):
         _fail("profileはオブジェクトである必要があります"
               "（v2はprofileの解決結果が必須です）。", value=profile)
-
-    unknown = set(data) - _TOP_LEVEL_KEYS
-    if unknown:
-        if {"method_file", "lbm_file"} & unknown:
-            _fail(
-                "pipeline-request.v2ではmethod_file/lbm_fileを直接指定できません"
-                "（profile_fileから解決してください）。", unknown_keys=sorted(unknown),
-            )
-        if "comparisons" in unknown:
-            _fail(
-                "pipeline-request.v2ではcomparisonsではなくstatisticsを指定して"
-                "ください。", unknown_keys=sorted(unknown),
-            )
-        _fail(f"未知のキーがあります: {sorted(unknown)}", unknown_keys=sorted(unknown))
+    _check_known_keys(data)
 
     matrix_recipes = profile.get("matrix_recipes") or {}
     feature_target_ids = frozenset((profile.get("feature_targets") or {}).keys())
@@ -548,30 +712,27 @@ def _resolve_core(data: dict, profile: dict) -> dict:
         _fail(f"save_projectはboolのみ許可されます: {save_project!r}",
               save_project=save_project)
 
+    statistics_fallback_source = None
     if "statistics" in data:
-        statistics_source = "explicit"
         statistics_input = data["statistics"]
     else:
         profile_statistics = (profile.get("analysis_recipe") or {}).get("statistics") or []
         if profile_statistics:
-            statistics_source = "profile_default"
+            statistics_fallback_source = "profile_default"
             statistics_input = profile_statistics
         else:
-            statistics_source = "v2_default"
+            statistics_fallback_source = "v2_default"
             statistics_input = [copy.deepcopy(_DEFAULT_PCA_STATISTIC)]
     statistics = validate_statistics(statistics_input, profile)
     _validate_target_consistency(target, statistics)
     effective_target = _compute_effective_target(target, statistics)
 
     standard_assays = _validate_standard_assays(data.get("standard_assays"), feature_target_ids)
-    preprocess = _validate_preprocess(data.get("preprocess"), matrix_recipes, execution_purpose)
+    feature_bindings = _validate_feature_bindings(
+        data.get("feature_bindings"), feature_target_ids)
+    preprocess = _validate_preprocess(data.get("preprocess"), matrix_recipes)
 
-    value_sources = {
-        key: ("explicit" if key in data else "default") for key in _TOP_LEVEL_KEYS
-    }
-    value_sources["statistics"] = statistics_source
-
-    return {
+    resolved = {
         "schema": SCHEMA,
         "omics": omics,
         "profile_file": profile_file,
@@ -579,6 +740,7 @@ def _resolve_core(data: dict, profile: dict) -> dict:
         "target": target,
         "sample_manifest": sample_manifest,
         "standard_assays": standard_assays,
+        "feature_bindings": feature_bindings,
         "preprocess": preprocess,
         "statistics": statistics,
         "timeout_s": timeout_s,
@@ -586,18 +748,23 @@ def _resolve_core(data: dict, profile: dict) -> dict:
         "output_root": output_root,
         "keep_extension": keep_extension,
         "effective_target": effective_target,
-        "value_sources": value_sources,
     }
+    return resolved, statistics_fallback_source
 
 
 def merge_updates(current: dict, updates: dict, profile: dict) -> dict:
     """resumeの入力訂正を反映し、再検証した v2 request を返す（spec §6.1, §6.2）。
 
     ``UPDATABLE``（target・sample_manifest・preprocess・statistics・
-    standard_assays）以外のキーを変えようとした場合は``NEW_PIPELINE_REQUIRED``
-    にする——profile_file・execution_purpose・omics等の変更は上流条件その
-    ものの変更であり、新しいpipelineが要る（spec §6.1「profile・method・
-    library・raw・実行環境・極性・measureの変更はNEW_PIPELINE_REQUIRED」）。
+    standard_assays・feature_bindings）以外のキーを変えようとした場合は
+    ``NEW_PIPELINE_REQUIRED``にする——profile_file・execution_purpose・omics等
+    の変更は上流条件そのものの変更であり、新しいpipelineが要る（spec §6.1
+    「profile・method・library・raw・実行環境・極性・measureの変更は
+    NEW_PIPELINE_REQUIRED」）。
+
+    ``feature_bindings``の更新は初回``resolve``と全く同じ``_validate_feature_bindings``
+    を通る（``_resolve_core``経由）——brief「feature_bindingsは初回指定も
+    resumeも同じ検査を通す」はこの共有によって満たされる。
     """
     if not isinstance(current, dict):
         _fail("requestはオブジェクトである必要があります。", value=current)
@@ -617,14 +784,13 @@ def merge_updates(current: dict, updates: dict, profile: dict) -> dict:
     for key, value in updates.items():
         merged[key] = copy.deepcopy(value)
 
-    resolved = _resolve_core(merged, profile)
+    resolved, _fallback_source = _resolve_core(merged, profile)
 
     # 出所は「保存済みの既存値」を土台に、updatesへ挙がったキーだけを
-    # explicit_updateへ格上げする——resolve()が計算したexplicit/defaultの
-    # 区別（merged自体は常に全キー揃っているので常に"explicit"寄りに見える）
-    # をそのまま使うと、更新していないフィールドの出所情報が失われる。
-    resolved["value_sources"] = copy.deepcopy(
-        current.get("value_sources", resolved["value_sources"]))
+    # explicit_updateへ格上げする——merged自体は常に全キー揃っているため、
+    # _resolve_coreの出力だけからは「更新していないフィールドの元の出所」が
+    # 再現できない。
+    resolved["value_sources"] = copy.deepcopy(current.get("value_sources", {}))
     for key in updates:
         resolved["value_sources"][key] = "explicit_update"
     return resolved

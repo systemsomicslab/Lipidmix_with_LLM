@@ -11,31 +11,37 @@ requestへ直接指定するが、v2は検証済み
 [`lcms-profile.v1`](lcms-profile-v1.md)（`profile_file`）から上流条件を解決し、
 `method_file`/`lbm_file`の直接指定を拒否する。
 
-> このモジュールもprofile_schema同様にファイルを読まない。`profile_file`が指す
-> 実体（profile本体）の読込・検証・hash計算・`analysis-request.json`の読込は
-> 呼び出し側（`lipidmix.pipeline.request.resolve_request`のschema dispatch、
-> または後続タスクの`pipeline_plan`/`pipeline_run`）の責務で、ここでは
-> 既に検証済みのprofile dict（`profile_schema.validate_profile`の戻り値相当）を
-> 受け取って構造的に検証するだけ。
+> このモジュールも`profile_file`が指す実体（profile本体）についてはprofile_schema
+> 同様にファイルを読まない——読込・検証・hash計算は呼び出し側（後続タスクの
+> `pipeline_plan`/`pipeline_run`）の責務で、ここでは既に検証済みのprofile dict
+> （`profile_schema.validate_profile`の戻り値相当）を受け取って構造的に検証
+> するだけ。ただし`analysis-request.json`（v1と同じファイル）だけは例外——
+> v1が同じ場所（request層自身）でファイルを読むのに合わせ、
+> `request_v2.read_request_file`がv2 shapeとして自ら読む。
 
 ## schema dispatch（v1との共存）
 
 `lipidmix.pipeline.request.resolve_request(source_root, explicit, *, profile=None)`が
-`explicit["schema"] == "pipeline-request.v2"`を検出した時点で
-`request_v2.resolve(explicit, profile)`へ丸ごと委譲する。同様に
+実効schema（下記）を判定し、`"pipeline-request.v2"`なら
+`request_v2.read_request_file(source_root)`で`analysis-request.json`を読んだ上で
+`request_v2.resolve(explicit, profile, from_file=...)`へ委譲する。同様に
 `lipidmix.pipeline.request.merge_updates(request, updates, *, profile=None)`は
-`request["schema"] == "pipeline-request.v2"`で`request_v2.merge_updates`へ委譲する。
+`request["schema"] == "pipeline-request.v2"`で`request_v2.merge_updates`へ委譲する
+（resumeは`analysis-request.json`を読み直さない——§6.1が定める更新経路は
+明示`updates`だけ）。
 
-**schemaを省略した入力は常にv1として解決する**（`explicit`に`schema`キーが
-無ければv1のまま——v2を暗黙に推測しない。この不変条件はA01としてテストで
-固定されている）。
-
-**既知の限界（本モジュールの範囲外）**: このdispatchは`explicit`（MCPが直接
-渡した値）だけを見る。`source_root`直下の`analysis-request.json`がv2形状を
-宣言していても、v1の`read_request_file`はv1のキー集合しか知らないため
-そちらの層でv2 schemaは検出されない——v2の`analysis-request.json`層
-（spec §6の4段優先順位のうち「analysis-request.json」の段）は本タスクでは
-未配線。実際に効くのは「MCP明示値 > profile既定値 > v2既定値」の3段。
+実効schemaは「`explicit["schema"]`（あれば）、無ければ`analysis-request.json`
+自身が宣言する`schema`（あれば）、どちらにも無ければv1」の順で決まる
+（`request.py`の`_peek_schema_declared_by_request_file`）。**explicit/file
+双方がschemaを省略したときだけがv1**——v1のkey setで一度でも先に検証して
+しまうとv2形状のファイルが「未知のキー」として誤って拒否されるため、
+このpeekはschemaフィールドの値だけを見て、他のキーの検証は行わない
+（不正JSON・非オブジェクトも例外にせず`None`を返し、エラー報告はschema確定後
+の本読み込みに一本化する）。ファイル自身がv2を宣言している場合はそれ自体が
+明示的な指定であり「省略」ではない——この不変条件はA01としてテストで
+固定されている（`test_schema_omission_defaults_to_v1`は明示にもファイルにも
+schemaが無い場合、`test_request_file_schema_v2_dispatches_without_explicit_schema_key`
+はファイル側だけがv2を宣言する場合をそれぞれ固定する）。
 
 ## トップレベル
 
@@ -54,6 +60,7 @@ requestへ直接指定するが、v2は検証済み
 | `target` | str | `"auto"` | 不可 | `auto` / `exploratory` / `differential`。`auto`は`statistics`から算出（下記） |
 | `sample_manifest` | str | `null` | **可**（明示解除） | v1と同じ語彙——明示nullは「既定探索を解除し自動一覧生成へ切り替える」 |
 | `standard_assays` | object | `{}` | 不可 | `target_id`（`profile.feature_targets`参照）→ 非空のsample_id配列 |
+| `feature_bindings` | object | `null` | 不可 | dataset hash・target_idごとの選択。下記「feature_bindings」 |
 | `preprocess` | object | `{}` | 可（省略と同義） | `recipe_id`（`profile.matrix_recipes`参照）→ 上書き部分dict。下記 |
 | `statistics` | list | 下記フォールバック | 不可 | spec §6.2。下記 |
 | `timeout_s` | int | `21600` | 不可（型検査で拒否） | v1と同じ |
@@ -68,17 +75,27 @@ requestへ直接指定するが、v2は検証済み
 ## 値の優先順位
 
 spec §6「値の優先順位はMCP明示値 > analysis-request.json > profile既定値 >
-v2既定値」。前述の既知の限界により、実際に働くのは次の3段:
+v2既定値」。実際に働くのは次の段:
 
 1. **MCP明示値**（`explicit`にキーがある）
-2. **profile既定値**（`statistics`のみ。`profile.analysis_recipe.statistics`が
+2. **analysis-request.json**（`source_root`直下のファイル。`request_v2.read_request_file`
+   がv2 shapeとして検証する——v1の`_TOP_LEVEL_KEYS`ではなくv2自身のキー集合・
+   null規則を適用する）
+3. **profile既定値**（`statistics`のみ。`profile.analysis_recipe.statistics`が
    非空ならそれを使う）
-3. **v2既定値**（本文書の「既定」列、および`statistics`の大域既定PCA）
+4. **v2既定値**（本文書の「既定」列、および`statistics`の大域既定PCA）
 
 各実効値の出所は`value_sources`（トップレベルキーごとの辞書）に保存する。
-値は`"explicit"` / `"default"` のいずれか（`statistics`だけは
-`"explicit"` / `"profile_default"` / `"v2_default"`の3値）。`resolve`の結果に
-`effective_target`（下記）も付与される。
+値は`"explicit"` / `"request_file"` / `"default"`のいずれか（`statistics`だけは
+`"explicit"` / `"request_file"` / `"profile_default"` / `"v2_default"`の4値）。
+`resolve`の結果に`effective_target`（下記）も付与される。
+
+`preprocess`（および他の全トップレベルキー）はv1の`_layer_preprocess`のような
+子キー単位の重ね合わせをしない——`explicit`にキーがあればその値を**丸ごと**
+採用し、無ければファイルの値を丸ごと採用する（`recipe_id`単位・
+`normalize`/`drift_correct`等のフィールド単位のどちらの粒度でも部分マージは
+しない）。`explicit`が`preprocess`を1つでも指定したら、ファイル側の
+`preprocess`は（別の`recipe_id`を持っていても）丸ごと無視される。
 
 ## `statistics`（spec §6.2の discriminated schema）
 
@@ -101,6 +118,8 @@ v2既定値」。前述の既知の限界により、実際に働くのは次の
 | `anova_tukey` | `groups`（重複のない3群以上・必須）, `alpha`（0<x<1） | `alpha=0.05` |
 
 ### `statistics`省略時のフォールバック
+
+`explicit`にも`analysis-request.json`にも`statistics`が無い場合:
 
 1. `profile.analysis_recipe.statistics`が非空ならそれを検証して使う
    （`value_sources["statistics"] = "profile_default"`）。
@@ -142,40 +161,55 @@ v2既定値」。前述の既知の限界により、実際に働くのは次の
 
 `base`はrecipeの固定値であり上書き対象ではない。上書き後の実効`normalize`が
 `base="internal_standard_ratio"`のrecipeで`"none"`以外になる場合は
-（`profile_schema`の二重正規化禁止規則と同じ理由で）`PIPELINE_REQUEST_INVALID`。
+（`profile_schema`の二重正規化禁止規則と同じ理由で、`execution_purpose`に
+関わらず常に）`PIPELINE_REQUEST_INVALID`。
 
-### `execution_purpose`によるroutine許容範囲
+### `execution_purpose`によるroutine許容範囲は未実装（既知のgap）
 
-`execution_purpose="routine"`（既定）では、上書き後の各フィールド値は
-**`profile`自身が持ついずれかの`matrix_recipes`エントリに既に現れる値**
-でなければならない。そうでない場合は`PROFILE_SCOPE_MISMATCH`。
-`execution_purpose="validation"`ではこの制限を外す（新しい条件を検証する
-ための目的だから）。
+spec §6・[`lcms-profile-v1.md`](lcms-profile-v1.md)「routine実行が上書き
+できる範囲」は、routineの`preprocess`上書きが「証明書の明示許容集合」の
+外に出れば`PROFILE_SCOPE_MISMATCH`にすると述べるが、その「明示許容集合」を
+表す構造化フィールドは`lcms-profile-validation.v1`証明書schema
+（`profile_schema._CERTIFICATE_KEYS`）にもprofile schemaにも存在しない——
+Task 1自身がこの節を「将来指針」（未実装の設計メモ）と明記し、実装を
+request v2（このモジュール）へ委譲していた。
 
-> **この解釈はcontroller裁定を要する未確定事項として実装した。** spec §6・
-> [`lcms-profile-v1.md`](lcms-profile-v1.md)「routine実行が上書きできる範囲」は
-> 「証明書の明示許容集合」でroutineの許容範囲を判定すると述べるが、
-> `lcms-profile-validation.v1`（証明書schema。`profile_schema._CERTIFICATE_KEYS`）
-> にはそのような許容集合を表すフィールドが存在せず、Task 1もこの実装を
-> 明示的に本タスク（request v2）へ委譲していた。ここでは「profile自身が
-> 既に使っている値の外に出ない」ことを機械的な代替基準として採用した——
-> 妥当性は`docs/task.md`/`docs/HISTRY.md`（コントローラの記録層）で再確認
-> されたい。実際の証明書ベースの許容判定が別途必要になった場合、この関数
-> （`request_v2._check_routine_scope`）を差し替える。
+存在しない契約を肩代わりする独自ルールを発明しない、というcontroller裁定に
+従い、**`execution_purpose`による`preprocess`上書きの差別化は現状実装しない**
+——`routine`/`validation`のどちらでも同じ構造検証だけを課す。`PROFILE_SCOPE_MISMATCH`
+はこのモジュールからは送出されない。担当モジュール・具体的な集合の形は
+`task-3-report.md`「Concern 2」としてcontrollerへ報告済み。
+
+## `feature_bindings`（spec §6.2、構造検証のみ）
+
+`{"dataset_hash": <sha256>, "selections": {<target_id>: {"feature_id": <str非空>, "reason": <str非空>}}}`。
+
+| フィールド | 型 | 内容 |
+|---|---|---|
+| `dataset_hash` | str | 64桁小文字16進のSHA-256 |
+| `selections` | object | 非空。`target_id`（`profile.feature_targets`参照）→ `{feature_id, reason}` |
+
+ここで検証するのは**構造だけ**——選択された`feature_id`が実際にそのdatasetで
+許容誤差・証拠条件（profileの`feature_targets[target_id].required_evidence`等）
+を満たすかどうかの判定（spec §6.2「選択はprofileの許容規則内に限定し、
+外れればPROFILE_SCOPE_MISMATCH」）は実データ（`assay-feature-evidence.v1`等）
+へのアクセスを要する`resolve_feature_bindings`stage（後続task）の責務であり、
+このモジュールは実装しない（`resolve`/`merge_updates`はprofileだけを受け取り、
+datasetを受け取らないため判定しようがない）。
+
+初回`resolve`とresumeの`merge_updates`は同じ`_validate_feature_bindings`を
+通る——初回指定・resumeで検査の抜け道はない。
 
 ## resume（`merge_updates`）
 
-`UPDATABLE = {target, sample_manifest, preprocess, statistics, standard_assays}`。
+`UPDATABLE = {target, sample_manifest, preprocess, statistics, standard_assays, feature_bindings}`。
 これ以外のキー（`profile_file` / `execution_purpose` / `omics` / `schema` /
 `timeout_s` / `save_project` / `output_root` / `keep_extension`）を変えようと
 すると`NEW_PIPELINE_REQUIRED`——profile・実行目的・上流条件の変更は新しい
 pipelineが要る（spec §6.1）。
 
 更新後は`resolve`と同じ検証を通す（`statistics`の重複・target整合・
-preprocessのrecipe存在・routine許容範囲を含め、初回指定とresumeで
+preprocessのrecipe存在・`feature_bindings`の構造を含め、初回指定とresumeで
 検査の抜け道を作らない）。更新していないフィールドの`value_sources`は
 元の出所を保持し、`updates`に挙げたキーだけ`"explicit_update"`へ格上げする。
-
-`feature_bindings`（`resolve_feature_bindings`stageの候補選択・理由。spec
-§6.2）は`pipeline-request.v2`自体のフィールドではない——専用のresume payload
-としてTask 8以降が扱う別の仕組みであり、本契約の対象外。
+resumeは`analysis-request.json`を読み直さない（更新経路は明示`updates`のみ）。
