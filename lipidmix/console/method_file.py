@@ -69,7 +69,10 @@ LBM_KEY = "Lbm file path"
 #: 検出専用（同定ではなく検出）で、同定用の`text_identification`とは役割が違うため
 #: 別扱いのまま残す。
 MSP_KEY = "Msp file path"
-TEXT_DB_KEY = "Text db file path"
+#: 表示名は`ParameterBase.ParameterToString()`の`"Text DB file path"`
+#: （`ParameterBase.cs:535`）に合わせる。`ConfigParser`の読込は
+#: `.lower()`後の比較なので大文字小文字は実害がないが、証拠に合わせておく。
+TEXT_DB_KEY = "Text DB file path"
 RT_REFERENCE_KEY = "Compounds library file path for RT correction"
 
 ION_MODE_KEY = "Ion mode"
@@ -562,41 +565,44 @@ def discover_method_candidates(
 #: LBM自体は既存の resolve_lbm（build_tree/env/exe_dir へのフォールバックを持つ）
 #: が別途解決するが、「宣言されているのに解決できない」場合の検出はここが担う。
 #:
-#: metabolomicsプロファイル（spec §5.1）が使う msp/text_identification/
-#: rt_reference の3キーもここに含める——lipidomics/metabolomicsを問わず、
-#: 「宣言されたら実在確認する」という既知参照キーの性質は同じであるため
-#: （個々のkindがどのadapterで実際に使えるかは`profile_adapter`のallowlistが
-#: 別途検証する。ここでの登録は「構造的に既知の参照キーである」ことだけを示す）。
-REFERENCE_KEYS: frozenset[str] = frozenset({
+#: **既存lipidomics v1経路（`pipeline/inputs.py`の`inspect_inputs`）が使う既定値は
+#: 変えない**（controller裁定 fix round 2 finding 3, A01「既存lipidomics実行が
+#: 変わらない」）。metabolomics向けの3キーを黙って混ぜると、GUIが書き出した
+#: lipidomicsのメソッドファイルが偶然（無関係の理由で）`Msp file path`等に
+#: 古い/無効な値を持っているだけで、これまで無視されていたものが突然
+#: `METHOD_REFERENCE_UNRESOLVED`で落ちるようになる——既存lipidomics実行への
+#: 無言の副作用であり、避ける。metabolomics側で広い集合を使いたい呼び出し元は
+#: `METABOLOMICS_REFERENCE_KEYS`を明示的に渡す（`lipidmix/console/profiles.py`の
+#: `resolve_profile_inputs`参照）。
+REFERENCE_KEYS: frozenset[str] = frozenset({LBM_KEY.lower()})
+
+#: metabolomicsプロファイル（spec §5.1）が使う既知参照キーの広い集合。
+#: `resolve_method_references`/`method_reference_fingerprint`へ明示的に
+#: `reference_keys=METABOLOMICS_REFERENCE_KEYS`として渡したときだけ有効になる
+#: ——`REFERENCE_KEYS`（既定値・lipidomics v1が暗黙に使う）とは別の集合に
+#: しておくことで、v1呼び出し側のコードを一切変更せずに済む。
+METABOLOMICS_REFERENCE_KEYS: frozenset[str] = frozenset({
     LBM_KEY.lower(), MSP_KEY.lower(), TEXT_DB_KEY.lower(), RT_REFERENCE_KEY.lower(),
 })
 
-#: REFERENCE_KEYSの小文字キー→表示用の元の大文字小文字混じり表記。
-#: `write_effective_method_file`のoverridesへ書き戻すときの見出しに使う
-#: （Console自身はconfig読込時に小文字化するので機能的には無関係だが、
-#: 実効メソッドファイルの可読性のため既存の表記に揃える）。
-REFERENCE_KEY_DISPLAY: dict[str, str] = {
-    LBM_KEY.lower(): LBM_KEY,
-    MSP_KEY.lower(): MSP_KEY,
-    TEXT_DB_KEY.lower(): TEXT_DB_KEY,
-    RT_REFERENCE_KEY.lower(): RT_REFERENCE_KEY,
-}
-
 
 def method_reference_fingerprint(
-    method_keys: dict[str, str], method_file: Path,
+    method_keys: dict[str, str], method_file: Path, *,
+    reference_keys: frozenset[str] | None = None,
 ) -> dict[str, dict]:
     """既知の参照キーごとに宣言値の解決結果を返す（副作用なし・例外を投げない弱い版）。
 
     select_method の候補グルーピングに使う。値が空、またはキー自体が
-    `REFERENCE_KEYS` に無ければそのキーは結果に含めない。解決できた場合は
+    `reference_keys`（省略時は`REFERENCE_KEYS`——既存lipidomics v1呼び出し側の
+    挙動を変えない既定値）に無ければそのキーは結果に含めない。解決できた場合は
     参照先の内容ハッシュ（`sha256`）を持ち、できなければ `resolved=False` と
     宣言値だけを持つ——「同じ相対パス文字列でも解決元ディレクトリが違えば
     実効参照が異なりうる」ことを、この関数の呼び出し元（`method_file`引数に
     候補ごとの実ファイルパスを渡す）が自然に表現する。
     """
+    keys = REFERENCE_KEYS if reference_keys is None else reference_keys
     out: dict[str, dict] = {}
-    for key in REFERENCE_KEYS:
+    for key in keys:
         declared = (method_keys.get(key) or "").strip()
         if not declared:
             continue
@@ -614,7 +620,8 @@ def method_reference_fingerprint(
 
 
 def resolve_method_references(
-    method_keys: dict[str, str], method_file: Path,
+    method_keys: dict[str, str], method_file: Path, *,
+    reference_keys: frozenset[str] | None = None,
 ) -> dict[str, Path]:
     """既知の参照キーを原本(method_file)基準で絶対解決する（pipeline専用・厳格版）。
 
@@ -622,8 +629,11 @@ def resolve_method_references(
     `DomainError("METHOD_REFERENCE_UNRESOLVED", ...)` を送出し、元のまま実行しない
     （spec §4.3）。呼び出し側は「最終的に採用したメソッドファイル」に対して
     これを呼ぶ想定——候補選別段階では弱い版（`method_reference_fingerprint`）を使う。
+    `reference_keys`は`method_reference_fingerprint`と同じ意味（省略時は
+    `REFERENCE_KEYS`＝lipidomics v1の既定挙動）。
     """
-    fingerprint = method_reference_fingerprint(method_keys, method_file)
+    fingerprint = method_reference_fingerprint(method_keys, method_file,
+                                               reference_keys=reference_keys)
     resolved: dict[str, Path] = {}
     for key, info in fingerprint.items():
         if not info["resolved"]:

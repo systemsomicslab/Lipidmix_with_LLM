@@ -48,6 +48,7 @@ from lipidmix.console import method_file as method_file_mod
 from lipidmix.console import profile_adapter
 from lipidmix.console.profile_schema import profile_content_hash, validate_profile
 from lipidmix.core.atomic_io import DomainError, canonical_hash
+from lipidmix.pipeline import inputs as pipeline_inputs_mod
 
 __all__ = ["hash_files", "load_profile", "resolve_profile_inputs", "snapshot_profile"]
 
@@ -210,6 +211,37 @@ def _build_execution_environment(software: dict, adapter_id: str, base_dir: Path
     return {**manifest, "manifest_hash": canonical_hash(manifest)}
 
 
+def _build_raw_fingerprint(source_root: Path) -> dict:
+    """`source_root`直下の生データ（主+随伴）を列挙し、全ファイルの内容hashを
+    付ける（spec §6.1「上流指紋にraw全構成ファイルSHA-256、採用形式...を含める」・
+    controller裁定 fix round 2 finding 1 / A06）。
+
+    形式選択・sidecar列挙は`pipeline.inputs.resolve_raw_inventory`（既存の
+    `_resolve_raw_format` / `_collect_primaries_and_companions` /
+    `_build_entries_and_stat`をそのまま再利用する新規の公開関数）に委譲する
+    ——lipidomics v1と別の選択規則を作らない。ここで新たに追加するのは
+    「全ファイルの内容SHA-256」（`hash_files`）だけで、既存のstat（size/
+    mtime_ns）はraw_stat由来のまま残す（監査で両方使えるようにする）。
+
+    rawファイルは実測でGB級になりうる（コスト面の懸念は報告書に記載）。
+    サンプリングや一部省略はしない——「全構成ファイルSHA-256」という要件どおり
+    全件を計算する。
+    """
+    selected_format, raw_stat = pipeline_inputs_mod.resolve_raw_inventory(source_root)
+    paths = [source_root / entry["relative_path"] for entry in raw_stat]
+    digests = hash_files(paths) if paths else {}
+    files = [
+        {
+            "relative_path": entry["relative_path"],
+            "size": entry["size"],
+            "role": entry["role"],
+            "sha256": digests[str(source_root / entry["relative_path"])],
+        }
+        for entry in raw_stat
+    ]
+    return {"selected_format": selected_format, "files": files}
+
+
 def _check_method_conflicts(method_keys: dict[str, str], acquisition: dict, omics: str) -> None:
     declared_ion_mode = (method_keys.get(method_file_mod.ION_MODE_KEY.lower()) or "").strip().lower()
     if declared_ion_mode and declared_ion_mode != acquisition["polarity"]:
@@ -349,6 +381,19 @@ def resolve_profile_inputs(profile: dict, source_root: Path) -> dict:
     method_keys = method_file_mod.read_method_keys(method_path)
     _check_method_conflicts(method_keys, profile["acquisition"], profile["omics"])
 
+    # method原本自体が既知の参照キー（lbm/msp/text_identification/rt_reference）を
+    # 宣言していれば、それ自体が解決できることも確認する（profileのdependency
+    # 宣言が正しくても、method原本に別の壊れた宣言が残っている可能性がある）。
+    # 広い集合`METABOLOMICS_REFERENCE_KEYS`はここでだけ明示的に渡す——lipidomics
+    # v1の`pipeline.inputs.inspect_inputs`は既定の`REFERENCE_KEYS`（LBMのみ）の
+    # ままで、ここでの拡張の影響を一切受けない（controller裁定 fix round 2
+    # finding 3, A01）。
+    method_file_mod.resolve_method_references(
+        method_keys, method_path,
+        reference_keys=method_file_mod.METABOLOMICS_REFERENCE_KEYS)
+
+    raw_files = _build_raw_fingerprint(source_root)
+
     return {
         "profile_id": profile["profile_id"],
         "profile_revision": profile["revision"],
@@ -361,6 +406,7 @@ def resolve_profile_inputs(profile: dict, source_root: Path) -> dict:
         "method": {"source_path": str(method_path), "sha256": method_sha256},
         "dependencies": dependencies,
         "execution_environment": execution_environment,
+        "raw_files": raw_files,
         "source_root": str(source_root),
     }
 
@@ -374,6 +420,12 @@ def snapshot_profile(plan: dict, run_dir: Path) -> dict:
     出力先だけが違う2回の呼び出しは常に同じ`plan_identity_hash`を返す
     （spec §6.1）。実行コピーの絶対pathを含む`effective_method_sha256`は
     別キーに分離する。
+
+    `method_overrides`は method_key ごとの原本宣言値（before）→実効値（after）の
+    差分を記録する（spec §5.1「原本hash、書換え後hash、差分を記録する」・
+    controller裁定 fix round 2 finding 2）。`original_value`はmethod原本に
+    そのキーの行自体が無ければ`None`（存在したが空文字だった場合の`""`とは
+    区別する——`method_file.read_method_keys`が返す辞書の`.get()`と同じ規約）。
     """
     run_dir = Path(run_dir)
     snapshot_dir = run_dir / _SNAPSHOT_SUBDIR
@@ -383,6 +435,16 @@ def snapshot_profile(plan: dict, run_dir: Path) -> dict:
         dep["method_key"]: dep["source_path"]
         for dep in plan["dependencies"] if dep["present"]
     }
+    original_method_keys = method_file_mod.read_method_keys(Path(plan["method"]["source_path"]))
+    method_overrides = [
+        {
+            "method_key": method_key,
+            "original_value": original_method_keys.get(method_key.lower()),
+            "new_value": new_value,
+        }
+        for method_key, new_value in sorted(overrides.items())
+    ]
+
     try:
         method_file_mod.write_effective_method_file(
             Path(plan["method"]["source_path"]), effective_path, overrides)
@@ -401,4 +463,5 @@ def snapshot_profile(plan: dict, run_dir: Path) -> dict:
     snapshot["effective_method_relative_path"] = f"{_SNAPSHOT_SUBDIR}/{_EFFECTIVE_METHOD_NAME}"
     snapshot["effective_method_sha256"] = effective_sha256
     snapshot["plan_identity_hash"] = plan_identity_hash
+    snapshot["method_overrides"] = method_overrides
     return snapshot

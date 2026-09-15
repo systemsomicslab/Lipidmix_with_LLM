@@ -45,7 +45,8 @@ from lipidmix.console.input_prep import _companions_of
 from lipidmix.core.atomic_io import DomainError, canonical_hash
 
 __all__ = ["DEFAULT_MANIFEST_NAME", "inspect_inputs", "manifest_source_record",
-           "resolve_manifest_path", "select_method", "stage_inputs", "verify_inputs"]
+           "resolve_manifest_path", "resolve_raw_inventory", "select_method",
+           "stage_inputs", "verify_inputs"]
 
 #: request.sample_manifest省略時に探す既定シート名（spec §7.1「元フォルダ直下の
 #: `analysis-request.json`と`sample-manifest.tsv`を既定名として探索する」）。
@@ -267,6 +268,30 @@ def _build_entries_and_stat(
     return entries, raw_stat
 
 
+def resolve_raw_inventory(
+    source_root: Path, requested_extension: str | None = None,
+) -> tuple[str, list[dict]]:
+    """1フォルダ直下の計測ファイル（主+随伴）を列挙する（新規・純粋関数）。
+
+    既存の形式選択（`_resolve_raw_format`）とsidecar列挙
+    （`_collect_primaries_and_companions` / `_build_entries_and_stat`）を
+    そのまま再利用する——lipidomics v1（`inspect_inputs`）と別の選択規則を
+    metabolomics側だけに新設しない。`inspect_inputs`自身は呼ばない・呼ばれない
+    （既存関数は一切変更しない、純粋な追加）。
+
+    戻り値は`(選択した拡張子, raw_stat一覧)`。raw_stat各要素は
+    `{"relative_path", "size", "mtime_ns", "role"}`——内容hashはここでは
+    計算しない（呼び出し側の責務。`lipidmix.console.profiles.hash_files`が担う。
+    rawファイルは巨大なことがあるため、全量hashを要求する側だけがそのコストを
+    負う設計にする）。
+    """
+    source_root = Path(source_root)
+    ext, _formats = _resolve_raw_format(source_root, requested_extension)
+    primaries, companions_map = _collect_primaries_and_companions(source_root, ext)
+    _entries, raw_stat = _build_entries_and_stat(source_root, primaries, companions_map)
+    return ext, raw_stat
+
+
 # ---------- メソッド選択 ----------
 
 def _method_candidate_dict(path: Path, ion_mode: str | None, mtime: float) -> dict:
@@ -416,7 +441,7 @@ def inspect_inputs(source_root: Path, request: dict, *, exe_path: Path) -> dict:
     method_keys = method_file_mod.read_method_keys(method_path)
 
     # 最終選択後にだけ厳格な参照解決を行う（select_methodのグルーピングは弱い版）。
-    resolved_references = method_file_mod.resolve_method_references(method_keys, method_path)
+    method_file_mod.resolve_method_references(method_keys, method_path)
 
     polarity = _resolve_polarity(request, method_path)
     exe_info = _resolve_exe(Path(exe_path))
@@ -442,19 +467,6 @@ def inspect_inputs(source_root: Path, request: dict, *, exe_path: Path) -> dict:
             # 原本に宣言が無く、build_tree/env/exe_dirへフォールバックした場合は
             # 元々そのキーの行自体が無いので、そのまま新規追加する。
             overrides[method_file_mod.LBM_KEY] = lbm_info["path"]
-
-    # LBM以外の既知参照キー（Msp file path等、method_file.REFERENCE_KEYS参照）も、
-    # 実効コピーはpipeline_root配下の別ディレクトリに置かれるため、宣言値が相対
-    # 参照だとLBMと同じ理由でコピー後に意味が変わる（Consoleは実効コピー自身の
-    # 場所を基準に相対参照を解決する）。resolve_method_referencesがここまでに
-    # 原本基準で解決済みの絶対パスへ、LBM同様に書き換える（spec §4.3・§5.1）。
-    for lower_key, resolved_path in resolved_references.items():
-        if lower_key == method_file_mod.LBM_KEY.lower():
-            continue  # LBMは上のbuild_tree/env/exe_dirフォールバックを含む専用ロジックが扱う
-        declared_value = (method_keys.get(lower_key) or "").strip()
-        if declared_value and not Path(declared_value).is_absolute():
-            display_key = method_file_mod.REFERENCE_KEY_DISPLAY[lower_key]
-            overrides[display_key] = str(resolved_path)
 
     return {
         "source_root": str(source_root.resolve()),

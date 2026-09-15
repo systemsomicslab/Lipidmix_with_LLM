@@ -1,11 +1,14 @@
 """`lipidmix.console.profiles` / `profile_adapter` の統合テスト（spec §5, §5.1, §6.1）。
 
 `lipidmix.console.profile_schema` の構造検証は `tests/test_lcms_profile_schema.py`。
-ここは実ファイル（method・依存・実行体）を使う統合層: `load_profile` →
-`resolve_profile_inputs` → `snapshot_profile` の一気通貫と、`method_file.py`の
-既知参照キー拡張が`lipidmix.pipeline.inputs.inspect_inputs`（LBM以外の相対参照の
-絶対化）へ正しく波及することを検証する。fixtureはこのテスト自身が全て
-`tmp_path`配下に組み立てる。
+ここは実ファイル（method・依存・実行体・raw）を使う統合層: `load_profile` →
+`resolve_profile_inputs` → `snapshot_profile` の一気通貫、raw構成ファイルの
+hash（§6.1）、method_key単位の原本→実効値の差分記録（§5.1）を検証する。
+`method_file.METABOLOMICS_REFERENCE_KEYS`はmetabolomics/adapter経路
+（`resolve_profile_inputs`）だけが使う拡張キー集合で、lipidomics v1経路
+（`pipeline.inputs.inspect_inputs`）の既定挙動（`REFERENCE_KEYS`＝LBMのみ）は
+本タスクで変えていない——それを固定するテストもここに含む。fixtureはこの
+テスト自身が全て`tmp_path`配下に組み立てる。
 """
 from __future__ import annotations
 
@@ -13,6 +16,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -155,9 +159,18 @@ def _build_profile(tmp_path, *, method_lines: str, dependencies: list[dict],
 
 def _nested_root(tmp_path: Path) -> Path:
     """profile/依存/実行体を tmp_path 直下ではなく1段ネストして置く（他テストとの
-    兄弟フォルダ混在事故を避ける既存の流儀 — tests/test_console_plan_method.py参照）。"""
+    兄弟フォルダ混在事故を避ける既存の流儀 — tests/test_console_plan_method.py参照）。
+
+    直下に生データ（`.wiff`）を1件置く——`resolve_profile_inputs`が
+    `pipeline.inputs`の既存raw形式選択を再利用するため、raw構成ファイルが
+    ちょうど1形式・1件無いと形式選択自体が失敗する（`DATASET_SELECTION_REQUIRED`
+    等）。method/依存/実行体はすべて`method/` `library/` `msdial_app/`という
+    サブフォルダの下に置くため（`_build_profile`/`_write_fake_exe`参照）、
+    直下形式選択（非再帰）とは衝突しない。
+    """
     root = tmp_path / "fixture"
     root.mkdir(exist_ok=True)
+    (root / "sample1.wiff").write_bytes(b"raw-instrument-data-v1")
     return root
 
 
@@ -180,6 +193,37 @@ def test_hash_files_matches_plain_sha256(tmp_path):
     assert profiles.hash_files([p])[str(p)] == hashlib.sha256(b"hello world").hexdigest()
 
 
+def test_hash_files_detects_mutation_during_single_call(tmp_path, monkeypatch):
+    """brief「二回のstatが異なるhash計算はINPUT_CHANGEDとして拒否する」の、
+    単一呼び出し内での実際の検出経路（読み込みの前後でstatを比較する分岐）を
+    直接確認する（controller裁定 fix round 2 minor 1）。
+
+    2回の`hash_files`呼び出しを比べるだけの既存テスト（
+    `test_hash_detects_stat_preserving_change`）は、内容が変わればhashも
+    当然変わるので、この前後stat比較の分岐が無くても通ってしまう——ここでは
+    `Path.stat`をモックし、`hash_files`内の1回の呼び出しの最中に
+    （読み込みの前後で）statが変化したように見せかけ、その分岐自体が
+    `INPUT_CHANGED`を送出することを確認する。
+    """
+    p = tmp_path / "raw.wiff"
+    p.write_bytes(b"aaaa")
+    real_stat = Path.stat
+    calls = {"n": 0}
+
+    def fake_stat(self, *args, **kwargs):
+        calls["n"] += 1
+        real = real_stat(self, *args, **kwargs)
+        if calls["n"] == 1:
+            return real
+        # 2回目（読み込み後のstat）だけ、実際には起きていないサイズ変化を装う。
+        return SimpleNamespace(st_size=real.st_size + 1, st_mtime_ns=real.st_mtime_ns)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    with pytest.raises(DomainError, match="INPUT_CHANGED"):
+        profiles.hash_files([p])
+    assert calls["n"] == 2  # 実際に前後2回statしていることの確認
+
+
 # ---------- adapter_capabilities ----------
 
 def test_adapter_capabilities_returns_msp_lbm_text_rt_keys():
@@ -188,7 +232,7 @@ def test_adapter_capabilities_returns_msp_lbm_text_rt_keys():
     assert capabilities["dependency_keys"] == {
         "msp": "Msp file path",
         "lbm": "Lbm file path",
-        "text_identification": "Text db file path",
+        "text_identification": "Text DB file path",
         "rt_reference": "Compounds library file path for RT correction",
     }
     assert "wiff" in capabilities["raw_formats"]
@@ -268,6 +312,10 @@ def test_resolve_profile_inputs_metabolomics_without_lbm(tmp_path):
     assert plan["execution_environment"]["companions"]["MsdialCore.dll"]
     assert "MSDIALCUI.pdb" not in plan["execution_environment"]["companions"]
     assert plan["polarity"] == "positive"
+    # raw指紋（spec §6.1「上流指紋にraw全構成ファイルSHA-256、採用形式...を含める」）。
+    assert plan["raw_files"]["selected_format"] == "wiff"
+    raw_entry = next(e for e in plan["raw_files"]["files"] if e["relative_path"] == "sample1.wiff")
+    assert raw_entry["sha256"] == _sha256(root / "sample1.wiff")
 
 
 def test_resolve_profile_inputs_optional_dependency_missing_is_not_fatal(tmp_path):
@@ -426,6 +474,57 @@ def test_resolve_profile_inputs_rejects_tampered_method_content(tmp_path):
         profiles.resolve_profile_inputs(profile, root)
 
 
+# ---------- RED (fix round 2, finding 1 / A06): raw構成ファイルのSHA-256 ----------
+
+def test_resolve_profile_inputs_raw_file_hash_detects_stat_preserving_tamper(tmp_path):
+    """A06: 生データがsize/mtimeを保ったまま改変されても検出できること。
+
+    method/依存/実行体だけでなく、実際の計測ファイル（.wiff等）自身の内容が
+    改変されたことを、statではなくhash（`profiles.hash_files`経由）で検出する。
+    `resolve_profile_inputs`を改変前後で2回呼び、`plan["raw_files"]`内の
+    同じ相対パスのsha256が変わっていることを確認する——`test_hash_detects_
+    stat_preserving_change`と同じ性質を、実際の統合経路（`resolve_profile_inputs`
+    が返すraw指紋）を通して確認する。
+    """
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[], exe=exe)
+
+    raw_path = root / "sample1.wiff"
+    stat = raw_path.stat()
+    plan_before = profiles.resolve_profile_inputs(profile, root)
+    before_entry = next(e for e in plan_before["raw_files"]["files"]
+                        if e["relative_path"] == "sample1.wiff")
+
+    # 同サイズの別内容（A06はサイズ・mtimeを保ったままの改変を想定する）。
+    tampered = b"raw-instrument-data-v2"
+    assert len(tampered) == stat.st_size
+    raw_path.write_bytes(tampered)
+    os.utime(raw_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert raw_path.stat().st_size == stat.st_size  # サイズも保ったまま（A06どおり）
+
+    plan_after = profiles.resolve_profile_inputs(profile, root)
+    after_entry = next(e for e in plan_after["raw_files"]["files"]
+                       if e["relative_path"] == "sample1.wiff")
+
+    assert before_entry["sha256"] != after_entry["sha256"]
+
+
+def test_resolve_profile_inputs_raw_files_include_sidecars(tmp_path):
+    """既存のsidecar列挙（`.wiff`+`.wiff.scan`等）をそのまま再利用しているかを確認する。"""
+    root = _nested_root(tmp_path)
+    # .wiff.scanは`_companions_of`のCOMPANION_RULESに実在する随伴ファイル。
+    (root / "sample1.wiff.scan").write_bytes(b"scan-sidecar")
+    exe = _write_fake_exe(root)
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[], exe=exe)
+
+    plan = profiles.resolve_profile_inputs(profile, root)
+    relative_paths = {e["relative_path"] for e in plan["raw_files"]["files"]}
+    assert "sample1.wiff.scan" in relative_paths
+
+
 # ---------- snapshot_profile ----------
 
 def test_snapshot_profile_writes_effective_method_with_absolute_dependency_paths(tmp_path):
@@ -444,6 +543,53 @@ def test_snapshot_profile_writes_effective_method_with_absolute_dependency_paths
     assert effective.is_file()
     text = effective.read_text(encoding="ascii")
     assert f"Msp file path: {msp.resolve()}" in text or f"Msp file path: {msp}" in text
+
+
+# ---------- RED (fix round 2, finding 2): 差分(原本宣言値→実効値)を記録する ----------
+
+def test_snapshot_profile_records_method_key_diff_with_stale_original(tmp_path):
+    """spec §5.1「原本hash、書換え後hash、差分を記録する」。method原本が古い/
+    別の値を宣言していた場合、snapshotはその宣言値（before）と実効値（after）を
+    method_keyごとに残す——`snapshot_profile`が計算するoverridesを書き込みにしか
+    使わず捨てていた、という指摘（controller裁定 fix round 2 finding 2）への対応。
+    """
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp = _write(root / "library" / "lib1.msp", "msp-content")
+    # method原本と同じディレクトリに実在する「古い」msp（内部整合性チェック
+    # ＝Finding 3のresolve_method_references(METABOLOMICS_REFERENCE_KEYS)を
+    # 通すため、宣言値は解決可能である必要がある。ここでの主眼はその値が
+    # profileのdependencyとは別物であることを示す差分の記録）。
+    _write(root / "method" / "stale.msp", "stale-msp-content")
+    dependencies = [_msp_dependency(msp)]
+    profile = _build_profile(
+        root,
+        method_lines="Ion mode: Positive\nMsp file path: stale.msp\n",
+        dependencies=dependencies, exe=exe)
+    plan = profiles.resolve_profile_inputs(profile, root)
+
+    snapshot = profiles.snapshot_profile(plan, tmp_path / "run1")
+
+    diff_by_key = {d["method_key"]: d for d in snapshot["method_overrides"]}
+    assert diff_by_key["Msp file path"]["original_value"] == "stale.msp"
+    assert diff_by_key["Msp file path"]["new_value"] == str(msp)
+
+
+def test_snapshot_profile_records_method_key_diff_when_key_absent_originally(tmp_path):
+    """method原本にキー自体が無かった場合はoriginal_valueがNone（空文字と区別する）。"""
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp = _write(root / "library" / "lib1.msp", "msp-content")
+    dependencies = [_msp_dependency(msp)]
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=dependencies, exe=exe)
+    plan = profiles.resolve_profile_inputs(profile, root)
+
+    snapshot = profiles.snapshot_profile(plan, tmp_path / "run1")
+
+    diff_by_key = {d["method_key"]: d for d in snapshot["method_overrides"]}
+    assert diff_by_key["Msp file path"]["original_value"] is None
+    assert diff_by_key["Msp file path"]["new_value"] == str(msp)
 
 
 def test_snapshot_profile_does_not_modify_originals(tmp_path):
@@ -493,14 +639,15 @@ def test_snapshot_profile_plan_identity_hash_is_stable_across_output_roots(tmp_p
     assert effective_a != effective_b
 
 
-# ---------- pipeline.inputs.py への波及: LBM以外の相対参照も絶対化する ----------
+# ---------- Finding 3 (fix round 2): REFERENCE_KEYSの拡張はmetabolomics側限定 ----------
 
-def test_inspect_inputs_rewrites_relative_msp_file_path_like_lbm(tmp_path, monkeypatch):
-    """method_file.REFERENCE_KEYSの拡張により、`resolve_method_references`は
-    `Msp file path`等も解決するようになった。`pipeline.inputs.inspect_inputs`が
-    これをLBMと同様に絶対pathへ書き換えないと、実効コピー（別ディレクトリ）へ
-    verbatimコピーした瞬間に相対参照の意味が変わってしまう（既存のLBMの
-    バグパターンと同じ——`lipidmix/pipeline/inputs.py`の該当コメント参照）。
+def test_inspect_inputs_ignores_unresolvable_msp_file_path_like_before(tmp_path, monkeypatch):
+    """v1 lipidomics経路の既存挙動を固定するテスト（A01「既存lipidomics実行が
+    変わらない」）。`method_file.REFERENCE_KEYS`は`Lbm file path`だけの既定値の
+    ままなので、lipidomicsのメソッドファイルが（本タスクと無関係な理由で）
+    解決不能な`Msp file path`を宣言していても、`inspect_inputs`はこれを無視して
+    今までどおり成功する——`METHOD_REFERENCE_UNRESOLVED`にはならないし、
+    `overrides`にMSP_KEYは現れない。
     """
     from lipidmix.core import session_state
     session_state.session = session_state.AnalysisSession()
@@ -518,8 +665,8 @@ def test_inspect_inputs_rewrites_relative_msp_file_path_like_lbm(tmp_path, monke
     lbm.touch()
     monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
 
-    msp = dataset_root / "lib1.msp"
-    msp.write_bytes(b"msp-content")
+    # `lib1.msp`は実在しない（解決不能な宣言）。REFERENCE_KEYS拡張前と同じく
+    # 無視されるはず。
     method = dataset_root / "params.txt"
     method.write_text(
         "Ion mode: Negative\nTarget omics: Lipidomics\nMsp file path: lib1.msp\n",
@@ -528,4 +675,29 @@ def test_inspect_inputs_rewrites_relative_msp_file_path_like_lbm(tmp_path, monke
     request = {"method_file": str(method), "polarity": "negative"}
     plan = inspect_inputs(dataset_root, request, exe_path=exe)
 
-    assert plan["method"]["overrides"][method_file_mod.MSP_KEY] == str(msp.resolve())
+    # 例外を投げず、MSP_KEYがoverridesへ現れないことが「無視された」ことの
+    # 直接の証拠（inspect_inputsの戻り値に"status"キーは無い——それはMCPツール層
+    # (`console_plan`)が付けるもので、ここでは戻り値自体で確認する）。
+    assert method_file_mod.MSP_KEY not in plan["method"]["overrides"]
+
+
+def test_resolve_profile_inputs_rejects_unresolvable_declared_reference_in_method_file(tmp_path):
+    """metabolomics/adapter経路限定でREFERENCE_KEYSの拡張集合
+    （`METABOLOMICS_REFERENCE_KEYS`）を使う。method原本が（profileのdependency
+    宣言とは別に）`Text DB file path`を解決不能な値で宣言していれば、
+    `resolve_profile_inputs`はそれを見逃さず`METHOD_REFERENCE_UNRESOLVED`にする
+    ——profile自身のdependency検証（`_resolve_dependency`）が通っていても、
+    method原本自体の内部整合性は別途確認する。
+    """
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(
+        root,
+        method_lines=(
+            "Ion mode: Positive\n"
+            "Text DB file path: does_not_exist.txt\n"
+        ),
+        dependencies=[], exe=exe)
+
+    with pytest.raises(DomainError, match="METHOD_REFERENCE_UNRESOLVED"):
+        profiles.resolve_profile_inputs(profile, root)
