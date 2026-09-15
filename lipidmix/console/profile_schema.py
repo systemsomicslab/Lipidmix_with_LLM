@@ -150,6 +150,24 @@ _EVIDENCE_ENTRY_KEYS = frozenset({
 })
 _VALIDATION_KEYS = frozenset({"status", "scope", "certificate_path", "certificate_sha256"})
 
+#: 「測定条件の未記載値は値nullと理由を持たせる」（spec §5）の対象となる、
+#: nullを取りうる測定条件のfield path一覧。ここに挙げたpathがnullの場合、
+#: 対応する`evidence[<path>]`エントリ（reason必須）が無ければ`PROFILE_INVALID`
+#: にする——nullを「装置既定値」や「単なる未指定」と解釈させないための
+#: 機械的な歯止め（controller裁定: fix round 1 finding 1）。
+_NULLABLE_CONDITION_FIELD_PATHS = (
+    "acquisition.instrument",
+    "acquisition.sample_matrix",
+    "acquisition.lc.column",
+    "acquisition.lc.mobile_phase_a",
+    "acquisition.lc.mobile_phase_b",
+    "acquisition.lc.flow_rate_ul_min",
+    "acquisition.lc.column_temperature_c",
+    "acquisition.lc.gradient_profile",
+    "acquisition.ms_range.ms2_low_mz",
+    "acquisition.ms_range.ms2_high_mz",
+)
+
 _CERTIFICATE_KEYS = frozenset({
     "schema", "profile_content_sha256", "dependency_hashes", "fixed_input_hashes",
     "reference_file_hashes", "validation_output_hashes", "criteria",
@@ -220,9 +238,10 @@ def _require_exact_keys(value: dict, allowed: frozenset, label: str) -> None:
                       missing_keys=sorted(missing))
 
 
-def _require_slug(value: object, label: str) -> str:
+def _require_slug(value: object, label: str, *, code: str = _PROFILE_INVALID) -> str:
     if not isinstance(value, str) or not _SAFE_ID_RE.fullmatch(value):
-        _fail_profile(
+        _fail(
+            code,
             f"{label}は安全な文字だけのID（英数字・アンダースコア・ハイフン）"
             f"である必要があります: {value!r}",
             value=value,
@@ -237,9 +256,9 @@ def _require_sha256(value: object, label: str) -> str:
     return value
 
 
-def _require_nonempty_str(value: object, label: str) -> str:
+def _require_nonempty_str(value: object, label: str, *, code: str = _PROFILE_INVALID) -> str:
     if not isinstance(value, str) or not value:
-        _fail_profile(f"{label}は空でない文字列である必要があります: {value!r}", value=value)
+        _fail(code, f"{label}は空でない文字列である必要があります: {value!r}", value=value)
     return value
 
 
@@ -250,9 +269,9 @@ def _require_nullable_str(value: object, label: str) -> str | None:
     return value
 
 
-def _require_bool(value: object, label: str) -> bool:
+def _require_bool(value: object, label: str, *, code: str = _PROFILE_INVALID) -> bool:
     if not isinstance(value, bool):
-        _fail_profile(f"{label}はboolである必要があります: {value!r}", value=value)
+        _fail(code, f"{label}はboolである必要があります: {value!r}", value=value)
     return value
 
 
@@ -808,6 +827,27 @@ def _validate_qc_policy(value: object, feature_target_ids: frozenset) -> dict:
 
 # ---------- evidence ----------
 
+_MISSING = object()  # 「keyが無い」と「値がNone」を区別するための番兵
+
+
+def _resolve_field_path(profile_so_far: dict, field_path: str):
+    """ドット区切りのfield pathをprofile内の実際の値へ解決する。
+
+    辞書のキーだけを辿る（`_FIELD_PATH_RE`が角括弧・添字を許さないため、
+    リスト要素へは到達できない——それでよい。evidenceが記述する対象は
+    固定schemaのスカラー値であり、`processing.dependencies[]`のような
+    リストの特定要素を指す用途は想定しない）。
+
+    戻り値は解決できた場合は実際の値、できなければ`_MISSING`番兵。
+    """
+    current: object = profile_so_far
+    for part in field_path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return _MISSING
+        current = current[part]
+    return current
+
+
 def _validate_evidence_entry(value: object, field_path: str) -> dict:
     label = f"evidence[{field_path!r}]"
     _require_dict(value, label)
@@ -840,15 +880,53 @@ def _validate_evidence_entry(value: object, field_path: str) -> dict:
     }
 
 
-def _validate_evidence(value: object) -> dict:
+def _validate_evidence(value: object, profile_so_far: dict) -> dict:
+    """evidenceを検証する。
+
+    各キーは`profile_so_far`（`evidence`/`validation`を除く、検証済みの
+    profile本体）内の実在するfield pathへ解決できなければならず（controller
+    裁定: fix round 1 finding 2）、解決できた場合は`entry["value"]`がそこに
+    実際にある値と一致しなければならない——evidenceが「実際のprofile内容とは
+    無関係な自己申告」になることを防ぎ、証明書が守る監査証跡としての意味を
+    保つ。
+    """
     _require_dict(value, "evidence")
     out: dict = {}
     for field_path, entry in value.items():
         if not isinstance(field_path, str) or not _FIELD_PATH_RE.fullmatch(field_path):
             _fail_profile(f"evidenceのキー(field path)が不正です: {field_path!r}",
                           field_path=field_path)
-        out[field_path] = _validate_evidence_entry(entry, field_path)
+        actual_value = _resolve_field_path(profile_so_far, field_path)
+        if actual_value is _MISSING:
+            _fail_profile(
+                f"evidence[{field_path!r}]が参照するfield pathがprofile内に"
+                "存在しません。", field_path=field_path)
+        normalized_entry = _validate_evidence_entry(entry, field_path)
+        if normalized_entry["value"] != actual_value:
+            _fail_profile(
+                f"evidence[{field_path!r}].valueが実際の値と一致しません: "
+                f"evidence={normalized_entry['value']!r} actual={actual_value!r}",
+                field_path=field_path, evidence_value=normalized_entry["value"],
+                actual_value=actual_value)
+        out[field_path] = normalized_entry
     return out
+
+
+def _require_evidence_for_null_conditions(profile_so_far: dict, evidence: dict) -> None:
+    """nullな測定条件には対応するevidenceエントリの存在を必須にする。
+
+    `_validate_evidence_entry`は「evidenceエントリが存在する場合」その
+    value/reasonの整合を検証するが、そもそもエントリ自体が無い場合を
+    ここで検出する（spec §5「測定条件の未記載値は値nullと理由を持たせる。
+    nullを装置既定値と解釈しない」・controller裁定: fix round 1 finding 1）。
+    """
+    for field_path in _NULLABLE_CONDITION_FIELD_PATHS:
+        if _resolve_field_path(profile_so_far, field_path) is None and field_path not in evidence:
+            _fail_profile(
+                f"測定条件 {field_path!r} がnullですが、対応する"
+                f"evidence[{field_path!r}]がありません"
+                "（未記載値には理由付きのevidenceが必須です）。",
+                field_path=field_path)
 
 
 # ---------- validation ----------
@@ -915,7 +993,18 @@ def validate_profile(data: dict) -> dict:
     matrix_recipe_ids = frozenset(matrix_recipes)
     analysis_recipe = _validate_analysis_recipe(data["analysis_recipe"], matrix_recipe_ids, feature_target_ids)
     qc_policy = _validate_qc_policy(data["qc_policy"], feature_target_ids)
-    evidence = _validate_evidence(data["evidence"])
+
+    # evidenceは「evidenceを除くprofile本体」に対して検証する
+    # （参照先の実在・実際の値との一致、そしてnull条件に対応エントリが
+    # あることをここまでに検証済みの本体を土台に確認する）。
+    profile_so_far = {
+        "schema": SCHEMA, "profile_id": profile_id, "revision": revision, "omics": omics,
+        "acquisition": acquisition, "software": software, "processing": processing,
+        "analysis_recipe": analysis_recipe, "feature_targets": feature_targets,
+        "matrix_recipes": matrix_recipes, "qc_policy": qc_policy,
+    }
+    evidence = _validate_evidence(data["evidence"], profile_so_far)
+    _require_evidence_for_null_conditions(profile_so_far, evidence)
     validation = _validate_validation(data["validation"])
 
     return {
@@ -964,18 +1053,15 @@ def _validate_criterion(value: object, index: int) -> dict:
     status = value["status"]
     if status not in _CRITERION_STATUS_VALUES:
         _fail_certificate(f"{label}.statusが不正です: {status!r}", status=status)
-    if not isinstance(value["required"], bool):
-        _fail_certificate(f"{label}.requiredはboolである必要があります: {value['required']!r}")
+    required = _require_bool(value["required"], f"{label}.required", code=_CERT_INVALID)
     detail = value["detail"]
     if detail is not None and not isinstance(detail, str):
         _fail_certificate(f"{label}.detailは文字列またはnullである必要があります: {detail!r}")
-    criterion_id = value["criterion_id"]
-    if not isinstance(criterion_id, str) or not _SAFE_ID_RE.fullmatch(criterion_id):
-        _fail_certificate(f"{label}.criterion_idが不正です: {criterion_id!r}")
+    criterion_id = _require_slug(value["criterion_id"], f"{label}.criterion_id", code=_CERT_INVALID)
     return {
         "criterion_id": criterion_id,
         "status": status,
-        "required": value["required"],
+        "required": required,
         "detail": detail,
     }
 

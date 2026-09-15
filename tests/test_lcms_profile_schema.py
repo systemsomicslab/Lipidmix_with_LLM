@@ -144,6 +144,22 @@ def _base_profile() -> dict:
                 "source_hash": None,
                 "location": None,
             },
+            "acquisition.ms_range.ms2_low_mz": {
+                "value": None,
+                "reason": "甘草抽出物methodの本文にMS2質量範囲の明示的な記載がない。",
+                "tier": "proposed",
+                "source_uri": None,
+                "source_hash": None,
+                "location": None,
+            },
+            "acquisition.ms_range.ms2_high_mz": {
+                "value": None,
+                "reason": "甘草抽出物methodの本文にMS2質量範囲の明示的な記載がない。",
+                "tier": "proposed",
+                "source_uri": None,
+                "source_hash": None,
+                "location": None,
+            },
         },
         "validation": {
             "status": "draft",
@@ -465,3 +481,59 @@ def test_draft_profile_rejects_certificate_check():
     normalized = validate_profile(data)
     with pytest.raises(DomainError, match="PROFILE_VALIDATION_INVALID"):
         validate_certificate(normalized, {}, {})
+
+
+# ---------- fix round 1: evidence must actually back null conditions and real values ----------
+
+def test_null_condition_without_matching_evidence_entry_rejected():
+    """測定条件の未記載値には理由付きevidenceが必須（nullを装置既定値と解釈しない）。
+
+    reviewerの反例そのもの: nullなacquisition条件がありながらevidence={}でも
+    以前は通ってしまっていた。
+    """
+    data = _base_profile()
+    data["evidence"] = {}
+    with pytest.raises(DomainError, match="PROFILE_INVALID"):
+        validate_profile(data)
+
+
+def test_null_condition_missing_just_one_evidence_entry_rejected():
+    """複数のnull条件のうち1つだけevidenceを外しても検出される。"""
+    data = _base_profile()
+    del data["evidence"]["acquisition.ms_range.ms2_low_mz"]
+    with pytest.raises(DomainError, match="PROFILE_INVALID"):
+        validate_profile(data)
+
+
+def test_evidence_value_contradicting_actual_field_value_rejected():
+    """evidence[path]["value"]は実際のprofile値と一致しなければならない。
+
+    reviewerの反例: 非nullなacquisition.instrumentに矛盾するevidence.valueを
+    与えても以前は通ってしまっていた。
+    """
+    data = _base_profile()
+    data["evidence"]["acquisition.instrument"]["value"] = "a different instrument entirely"
+    with pytest.raises(DomainError, match="PROFILE_INVALID"):
+        validate_profile(data)
+
+
+def test_evidence_referencing_nonexistent_field_path_rejected():
+    data = _base_profile()
+    data["evidence"]["acquisition.nonexistent_field"] = {
+        "value": None,
+        "reason": "でっちあげのfield path。",
+        "tier": "proposed",
+        "source_uri": None,
+        "source_hash": None,
+        "location": None,
+    }
+    with pytest.raises(DomainError, match="PROFILE_INVALID"):
+        validate_profile(data)
+
+
+def test_evidence_entry_for_present_condition_with_matching_value_accepted():
+    """value一致・reason省略（nullでないので任意）の正常系は引き続き通る。"""
+    data = _base_profile()
+    normalized = validate_profile(data)
+    assert normalized["evidence"]["acquisition.instrument"]["value"] == \
+        normalized["acquisition"]["instrument"]

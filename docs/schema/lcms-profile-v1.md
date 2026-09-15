@@ -75,7 +75,7 @@ value/reasonの対を実際に保持する場所は `acquisition`/`processing`/`
 | `lc` | object | 不可 | 下記。個々のキーはnull可・未指定キーは`null`埋め |
 | `ms_range` | object | 不可 | 下記 |
 | `sample_matrix` | str | 可 | 試料マトリクス |
-| `scope` | str | 不可 | 適用範囲の記述（例:「単一LC条件・positive・DDA・peak height限定」）。証明書の`scope`と突合される |
+| `scope` | str | 不可 | 適用範囲の記述（例:「単一LC条件・positive・DDA・peak height限定」）。**`validate_certificate`が突合するのは`validation.scope`であり、`acquisition.scope`はどことも機械比較されない**（詳細は「`validation`」節・「証明書 `lcms-profile-validation.v1`」節を参照） |
 
 `acquisition.lc`（キーは未指定なら`null`埋め。未知キーのみ拒否）:
 
@@ -278,6 +278,14 @@ field path（ドット区切りの識別子列、例 `"acquisition.lc.column"`�
 6. `required=true`の`criteria`が全て`status="pass"`。
 
 署名認証基盤（鍵管理・電子署名）は実装しない。
+
+**`acquisition.scope`は証明書と機械比較されない**。上の手順4が突合するのは
+`validation.scope`だけである。`acquisition.scope`（測定法が原理的に対応する
+適用範囲）と`validation.scope`（実際にこの証明書が検証した、それより狭いか
+同じ範囲）が食い違うこと自体は正当な状態でありうる——例えば測定法が広い
+質量範囲をカバーしていても、検証はその一部の化合物クラスだけに限定して
+行われた、という場合。spec はこの2つのscopeの一致を要求しておらず、
+実行時に値を推測して補うような一致チェックも追加しない。
 
 ## 合成profile例（`schema`のみ抜粋、完全体はテスト参照）
 
