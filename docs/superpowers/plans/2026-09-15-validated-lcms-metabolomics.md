@@ -381,7 +381,7 @@ def aggregate_counts(p, f, u, threshold):
 
 **Interfaces:** `transform_values(values: np.ndarray, transform: str) -> np.ndarray`、`arithmetic_log2fc(a: np.ndarray, b: np.ndarray) -> float`、`run_statistic(matrix: dict, specification: dict, metadata: list[dict]) -> dict`。`multigroup.test_feature(groups: list[np.ndarray], alpha: float) -> dict`。
 
-- [ ] RED: log2 clip防止、算術比と幾何比、n不足、定数、反復生物ID、全件不能、PCA rank、BH母集団を検証する。
+- [x] RED: log2 clip防止、算術比と幾何比、n不足、定数、反復生物ID、全件不能、PCA rank、BH母集団を検証する。
 
 ```python
 import math
@@ -394,8 +394,8 @@ def test_v2_transform_and_effect_size():
                         math.log2(4 / 5))
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_statistics_v2.py tests/test_multigroup.py -q`。
-- [ ] Implement: scipyのf_onewayとtukey_hsd（等分散設定）を使い、Tukeyは全群対を一回で評価する。v1 two_group_testは変更せず、Welch/BH部品だけ共有する。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_statistics_v2.py tests/test_multigroup.py -q`。
+- [x] Implement: scipyのf_onewayとtukey_hsd（等分散設定）を使い、Tukeyは全群対を一回で評価する。v1 two_group_testは変更せず、Welch/BH部品だけ共有する。
 
 ```python
 def arithmetic_log2fc(a, b):
@@ -406,8 +406,8 @@ def arithmetic_log2fc(a, b):
 ```
 
 検定前に全指定群のn≥2を確認し、n不足群を落として別のANOVAにしない。F/df/p/q/Tukey mean difference/CI/p_adjustedを出す。正のTukey差はtest−referenceとし、SciPyの配列方向をadapterで変換する。固定小例`[1,2,3],[2,3,4],[4,5,6]`でF=7、df=(2,6)を手計算照合し、Tukey CI/pはRのTukeyHSDから事前生成した公開可能な合成期待値JSONと照合する。同一ライブラリを期待値生成と本計算の両方に使わない。
-- [ ] GREEN: 上記と既存differential/PCA tests。SciPyに必要APIがない場合は明示依存エラーとし、別統計へfallbackしない。
-- [ ] Commit: 上記7ファイル、`git commit -m "feat: v2統計の変換と多群比較を追加"`。
+- [x] GREEN: 上記と既存differential/PCA tests。SciPyに必要APIがない場合は明示依存エラーとし、別統計へfallbackしない。
+- [x] Commit: 上記7ファイル、`git commit -m "feat: v2統計の変換と多群比較を追加"`。
 
 ## Task 11: 全feature出力と三軸レポート
 

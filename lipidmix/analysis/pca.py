@@ -18,7 +18,7 @@ from sklearn.preprocessing import StandardScaler
 
 
 def run_pca(matrix: np.ndarray, n_components: int | None = None,
-            log_transform: bool = False) -> dict:
+            log_transform: bool = False, *, scaling: str = "autoscale") -> dict:
     """
     標準化（スケーリング）を行った上で多次元PCAを実行する
 
@@ -26,6 +26,11 @@ def run_pca(matrix: np.ndarray, n_components: int | None = None,
       log_transform: True のとき標準化の前に log10 変換を適用する（既定 False=従来動作）。
         ピーク強度は右に大きく歪むため、log変換で正規性が改善し条件分離が向上しやすい。
         0以下/極小値対策として下限1.0でクリップしてから log10 を取る。
+      scaling: `"autoscale"`（既定・従来動作＝平均0分散1へ標準化）または `"none"`
+        （中心化だけ行い分散で割らない）。v2（spec §10）は profile が
+        `scaling` を明示するため、既定値へ黙って倒さない経路が要る。
+        `"none"` でも中心化はする——中心化しない PCA の第1成分は「平均」を
+        表すだけで、群構造を見るという目的に合わない。
     """
     n_samples, n_features = matrix.shape
     max_components = min(n_samples, n_features)
@@ -42,7 +47,9 @@ def run_pca(matrix: np.ndarray, n_components: int | None = None,
         work_matrix = np.log10(np.clip(matrix, 1.0, None))
 
     # 【重要】スケールの異なる多変量（Height, RTなど）を扱うための標準化
-    scaler = StandardScaler()
+    if scaling not in ("autoscale", "none"):
+        raise ValueError(f"unknown scaling: {scaling!r}")
+    scaler = StandardScaler(with_std=(scaling == "autoscale"))
     scaled_matrix = scaler.fit_transform(work_matrix)
 
     pca = PCA(n_components=target_components)
