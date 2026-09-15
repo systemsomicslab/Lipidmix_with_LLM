@@ -236,7 +236,11 @@ def test_adapter_capabilities_returns_msp_lbm_text_rt_keys():
         "rt_reference": "Compounds library file path for RT correction",
     }
     assert "wiff" in capabilities["raw_formats"]
-    assert capabilities["evidence_reader"] == "pai2"
+    # 注入ごとの証拠は`.arf`のAlignedPeakProperties（スポット内に注入行を持つ）
+    # から取る。`.pai2`はアライメント特徴への対応を持たないため、名前やm/z近傍の
+    # 再結合が要り、spec §9.1が禁じる「名前だけの結合」になる。
+    assert capabilities["evidence_reader"] == "arf"
+    assert capabilities["evidence_rt_unit"] == "minute"
 
 
 def test_adapter_capabilities_unknown_id_rejected():

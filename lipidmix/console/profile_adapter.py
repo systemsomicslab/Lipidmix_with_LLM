@@ -58,11 +58,21 @@ __all__ = ["adapter_capabilities"]
 _UNSUPPORTED_CODE = "PROFILE_ADAPTER_UNSUPPORTED"
 
 #: Task 6（per-injection evidence読込）向け: このadapterでは、注入ごとの
-#: ピーク証拠が`.pai2`（個別測定。`lipidmix/pai2/`が既に読む）に載る
-#: （CLAUDE.mdの対象形式表・`lipidmix/pai2/reader.py`参照）。値は
-#: 「どの既存パーサ層を使うべきか」を指す識別子であり、まだ存在しない
-#: 関数を指すcallableは作らない。
-_LCMS_EVIDENCE_READER = "pai2"
+#: ピーク証拠を`.arf`の`AlignedPeakProperties`（アライメント済みスポットの
+#: **注入ごと**の行。`lipidmix/arf/reader.py`が読む）から取る。
+#:
+#: Task 2時点では`.pai2`（個別測定）と書いていたが、Task 6で誤りと分かった:
+#: `.pai2`はアライメント特徴への対応（どのピークがどのSMF_IDか）を持たないため、
+#: そこから注入ごとのRT/mzを取るには名前やm/z近傍での再結合が要る——spec §9.1が
+#: 「名前だけの結合」を禁じている当のものになる。`.arf`のAlignedPeakPropertiesは
+#: スポット（=特徴）の中に注入ごとの行を持つので、対応が構造として与えられる。
+_LCMS_EVIDENCE_READER = "arf"
+
+#: `.arf`が持つRTの単位。MS-DIALはChromXsのRTを**分**で保持し、既存の
+#: `lipidmix/mztab/dataset_state.py`も「mzTab-MはRTを秒で持つ。ARF経路は分で持つ」
+#: という前提で秒→分の変換を行っている。単位はここで宣言し、reader側では
+#: 既定値に落とさない（秒の値を分として扱うとQC窓が60倍ずれる）。
+_LCMS_EVIDENCE_RT_UNIT = "minute"
 
 _REGISTRY: dict[str, dict] = {
     "msdial5": {
@@ -80,6 +90,7 @@ _REGISTRY: dict[str, dict] = {
         # `lipidmix.console.job_manager._RAW_EXTENSIONS`を再利用。二重管理しない）。
         "raw_formats": tuple(sorted(_MSDIAL_RAW_EXTENSIONS)),
         "evidence_reader": _LCMS_EVIDENCE_READER,
+        "evidence_rt_unit": _LCMS_EVIDENCE_RT_UNIT,
     },
 }
 

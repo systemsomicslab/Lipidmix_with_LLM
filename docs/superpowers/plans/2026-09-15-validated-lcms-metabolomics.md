@@ -244,7 +244,7 @@ ids = [r["biological_sample_id"] for r in selected]
 
 **Interfaces:** `normalize_cell(cell: dict, source_rt_unit: str) -> dict`、`build_assay_evidence(ds, artifact: Path, adapter: dict) -> dict`。結果はspec assay-feature-evidence.v1とavailability/reasons。
 
-- [ ] RED: 2注入の異なる値、秒→分、重複キー、不明単位、列順入替え、対応不明、代表値だけのartifactを試験する。
+- [x] RED: 2注入の異なる値、秒→分、重複キー、不明単位、列順入替え、対応不明、代表値だけのartifactを試験する。
 
 ```python
 from lipidmix.analysis.assay_evidence import normalize_cell
@@ -256,8 +256,8 @@ def test_per_injection_rt_is_not_representative_rt():
     assert a["observed_mz"] != b["observed_mz"]
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_assay_evidence.py -q`。
-- [ ] Implement: 既存`arf.reader._convert_to_alignment_feature`のfile_id、peak_id、rt、m_z、gap-fill値を利用する。現在のKey15/16やKey22は対応版の構造を確認してadapterで限定する。スポット順と名前だけの既存evidence推定を、v2の厳密なID/source照合の代用にしない。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_assay_evidence.py -q`。
+- [x] Implement: 既存`arf.reader._convert_to_alignment_feature`のfile_id、peak_id、rt、m_z、gap-fill値を利用する。現在のKey15/16やKey22は対応版の構造を確認してadapterで限定する。スポット順と名前だけの既存evidence推定を、v2の厳密なID/source照合の代用にしない。
 
 ```python
 def normalize_cell(cell, source_rt_unit):
@@ -269,8 +269,8 @@ def normalize_cell(cell, source_rt_unit):
 ```
 
 公開境界ではValueErrorをEVIDENCE_UNIT_UNSUPPORTEDへ変換。SMFとのalignment ID対応、jobのsource→assay対応を照合できない場合、availability=falseと理由を保存する。SMF代表値を複製しない。全SME候補とlibrary識別/scoreもbindingが読むためDatasetStateに保存する。質量データの実検証はTask 15まで行わない。
-- [ ] GREEN: 上記と既存ARF/mzTab evidence tests。
-- [ ] Commit: 5ファイルをstageし、`git commit -m "feat: 注入単位の測定証拠を保持"`。
+- [x] GREEN: 上記と既存ARF/mzTab evidence tests。
+- [x] Commit: 5ファイルをstageし、`git commit -m "feat: 注入単位の測定証拠を保持"`。
 
 ## Task 7: 論理targetをバッチ内featureへ対応付け
 
