@@ -674,6 +674,21 @@ def request_fingerprint(request: dict) -> str:
     フィールドの値が同じなら同一内容として扱う——Task 14がこのhashで
     run/request_idの再送・冪等性を判定する土台になるため、由来だけの違いで
     別内容と誤判定してはいけない。
+
+    **対象キー集合はschemaごとに違う**（spec §6のschema dispatch）。v2要求を
+    v1のキー集合で畳むと`statistics`・`feature_bindings`・`standard_assays`・
+    `profile_file`・`omics`・`execution_purpose`が丸ごと落ち、**統計定義だけが
+    違う2つの解析が同じ内容hash**になる——`store.find_or_create_run`はそれを
+    「同じ要求の再送」として1本のrunへ畳み、`recovery.prepare_resume`は
+    統計の訂正を「何も変わっていない」と読んでrevisionを上げない。spec §6.1が
+    「下流結果IDは…変換、群・検定設定に依存する」と定めるのはこの逆である。
+
+    v2のキー集合は`request_v2._TOP_LEVEL_KEYS`をそのまま使う——ここへ写しを
+    作ると、v2にフィールドが増えたときに片方だけ腐って同じ衝突が戻ってくる
+    （`request_v2`の内部定数を参照しているのは、この1箇所がv2キー集合の
+    唯一の正準であることを崩さないため）。v1の対象キーと正規化は変えない。
     """
-    content = {key: request[key] for key in _TOP_LEVEL_KEYS if key in request}
+    key_set = (request_v2._TOP_LEVEL_KEYS
+               if request.get("schema") == request_v2.SCHEMA else _TOP_LEVEL_KEYS)
+    content = {key: request[key] for key in key_set if key in request}
     return canonical_hash(content)

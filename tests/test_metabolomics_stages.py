@@ -88,6 +88,27 @@ def _resolved_v2(statistics=None, **extra):
     return request_v2.resolve(data, _profile())
 
 
+def _profile_with_target():
+    """`feature_targets`を1件持つprofile（standard_assays/feature_bindings検証用）。"""
+    profile = _profile()
+    profile["feature_targets"] = {"IS1": {"role": "internal_standard"}}
+    return profile
+
+
+#: routineでのpreprocess上書きを1フィールドだけ許す証明書相当の許容集合
+#: （`profile_schema.validate_certificate`の戻り値の同名キー）。
+_ROUTINE_OVERRIDES = {"preprocess": {"default": {"impute": {"mode": "any"}}}}
+
+
+def _resolved_v2_with_target(statistics=None, **extra):
+    data = {"profile_file": "profile.json", "target": "auto"}
+    if statistics is not None:
+        data["statistics"] = statistics
+    data.update(extra)
+    return request_v2.resolve(data, _profile_with_target(),
+                              routine_overrides=_ROUTINE_OVERRIDES)
+
+
 def _plain_v2(*statistic_ids):
     """stage計画だけを見たいときの最小v2 request。"""
     return {"schema": request_v2.SCHEMA,
@@ -622,3 +643,161 @@ def test_stage_plan_does_not_import_the_global_session():
         assert not any(name == prefix or name.startswith(prefix + ".")
                        for prefix in _FORBIDDEN_IMPORT_PREFIXES), \
             f"stage_plan.py が禁止importを含む: {name}"
+
+
+# ---------- request_fingerprint: schemaごとの内容hash ----------
+
+#: v1要求の内容hashの実測値（このタスクの変更前に`request_fingerprint`が返していた
+#: 値そのもの）。v1の対象キー集合・正規化を1文字でも動かすとここが落ちる
+#: ——受付冪等性（`find_or_create_run`）と再開時の`request_changed`判定は
+#: どちらもこの値に乗っているため、v1 runの同一性が静かに変わってはいけない。
+_V1_DEFAULT_FINGERPRINT = "ea87c236da35811be6148b234f7fe3987e833376d97ac886991706bbff1c7385"
+_V1_DIFFERENTIAL_FINGERPRINT = (
+    "0c15056a9c6f79577ad4c9e285eb2d86eee96a2fe75c7e658dbf924a3d2fa2bb")
+
+
+def test_v1_request_fingerprint_is_unchanged(tmp_path):
+    """v1 goldenの同一性: 既知のv1要求のcontent_hashは1バイトも変わらない。"""
+    from lipidmix.pipeline.request import request_fingerprint, resolve_request
+
+    root = _source(tmp_path)
+    assert request_fingerprint(resolve_request(root)) == _V1_DEFAULT_FINGERPRINT
+    differential = resolve_request(root, {
+        "target": "differential",
+        "comparisons": [{"comparison_id": "c1", "reference_group": "a",
+                         "test_group": "b"}]})
+    assert request_fingerprint(differential) == _V1_DIFFERENTIAL_FINGERPRINT
+
+
+def test_v2_fingerprint_separates_requests_that_differ_only_in_statistics():
+    """**統計定義だけ**が違う2つのv2要求を、同一内容と誤判定しない（spec §6.1）。
+
+    targetも群も同じで、違うのは`statistics`の中身だけ。ここが衝突すると
+    `find_or_create_run`が別の解析を1本のrunへ畳み、`prepare_resume`は
+    統計の訂正を「何も変わっていない」と読む。
+    """
+    from lipidmix.pipeline.request import request_fingerprint
+
+    two_components = _resolved_v2([_pca("p", n_components=2)])
+    three_components = _resolved_v2([_pca("p", n_components=3)])
+    assert two_components["target"] == three_components["target"]
+    assert two_components["effective_target"] == three_components["effective_target"]
+    assert request_fingerprint(two_components) != request_fingerprint(three_components)
+
+
+def test_v2_fingerprint_separates_an_added_statistic_with_the_same_target():
+    from lipidmix.pipeline.request import request_fingerprint
+
+    one = _resolved_v2([_welch("w")], target="differential")
+    two = _resolved_v2([_welch("w"), _anova("a")], target="differential")
+    assert request_fingerprint(one) != request_fingerprint(two)
+
+
+def test_v2_fingerprint_separates_every_resumable_v2_field():
+    """v2固有フィールドはどれ一つとしてhashから落ちていない。"""
+    from lipidmix.pipeline.request import request_fingerprint
+
+    base = _resolved_v2_with_target([_pca("p")])
+    base_hash = request_fingerprint(base)
+
+    variants = {
+        "statistics": _resolved_v2_with_target([_pca("p", n_components=3)]),
+        "profile_file": _resolved_v2_with_target([_pca("p")], profile_file="other.json"),
+        "execution_purpose": _resolved_v2_with_target(
+            [_pca("p")], execution_purpose="validation"),
+        "sample_manifest": _resolved_v2_with_target([_pca("p")],
+                                                    sample_manifest="sheet.tsv"),
+        "standard_assays": _resolved_v2_with_target(
+            [_pca("p")], standard_assays={"IS1": ["std-01"]}),
+        "preprocess": _resolved_v2_with_target(
+            [_pca("p")], preprocess={"default": {"impute": "half_min"}}),
+        "feature_bindings": _resolved_v2_with_target(
+            [_pca("p")],
+            feature_bindings={"dataset_hash": "a" * 64,
+                              "selections": {"IS1": {"feature_id": "F1",
+                                                     "reason": "手動選択"}}}),
+    }
+    for field, variant in variants.items():
+        assert request_fingerprint(variant) != base_hash,             f"{field}の違いがcontent_hashに反映されていません"
+
+
+def test_v2_fingerprint_ignores_provenance_only_differences():
+    """value_sources/effective_targetは由来情報。同じ実効値なら同一内容。"""
+    from lipidmix.pipeline.request import request_fingerprint
+
+    request = _resolved_v2([_pca("p")])
+    restated = dict(request)
+    restated["value_sources"] = {"statistics": "explicit_update"}
+    assert request_fingerprint(restated) == request_fingerprint(request)
+
+
+def test_v2_fingerprint_is_stable_for_the_same_content():
+    from lipidmix.pipeline.request import request_fingerprint
+
+    assert (request_fingerprint(_resolved_v2([_pca("p"), _welch("w")], target="differential"))
+            == request_fingerprint(_resolved_v2([_pca("p"), _welch("w")],
+                                                target="differential")))
+
+
+def test_a_v2_statistics_change_bumps_the_request_revision(tmp_path):
+    """content_hashのschema dispatchが、store/recoveryの同一性判定まで効いている。"""
+    root = _source(tmp_path)
+    one = _resolved_v2([_pca("p", n_components=2)])
+    two = _resolved_v2([_pca("p", n_components=3)])
+
+    pipeline_root = store_mod.create_run(root, one, _inputs(root))
+    recorded = store_mod.load_run(pipeline_root)["request"]["content_hash"]
+
+    from lipidmix.pipeline.request import request_fingerprint
+    assert recorded != request_fingerprint(two)
+
+
+# ---------- docs/schema: 記録形式の正準文書 ----------
+
+_SCHEMA_DOCS = REPO_ROOT / "docs" / "schema"
+
+
+def _first_table_column(text: str, heading: str) -> list[str]:
+    """`heading`節のmarkdown表から、第1列のバッククォート付き値を順に取り出す。"""
+    import re
+
+    section = text.split(heading, 1)[1].split("\n## ", 1)[0]
+    return [match.group(1) for match in
+            re.finditer(r"^\|\s*`([^`]+)`\s*\|", section, flags=re.MULTILINE)]
+
+
+def test_pipeline_run_v2_doc_lists_the_canonical_stage_order():
+    """stage列の写しが腐ったら落ちる（docs/workflowの腐敗防止と同じ流儀）。"""
+    from lipidmix.pipeline import stage_plan
+
+    doc = (_SCHEMA_DOCS / "pipeline-run-v2.md").read_text(encoding="utf-8")
+    expected = (list(stage_plan.BASE_V2_STAGE_IDS)
+                + [f"{handler}:<statistic_id>"
+                   for handler in stage_plan.PER_STATISTIC_HANDLERS]
+                + [stage_plan.FINAL_V2_STAGE_ID])
+    assert _first_table_column(doc, "## stage列") == expected
+
+
+def test_pipeline_run_v2_doc_lists_every_invalidation_token():
+    from lipidmix.pipeline import stage_plan
+
+    doc = (_SCHEMA_DOCS / "pipeline-run-v2.md").read_text(encoding="utf-8")
+    documented = set(_first_table_column(doc, "## 依存無効化"))
+    assert documented == set(stage_plan.CHANGE_ENTRY_POINTS) | {
+        "statistics", "target", "statistics:<statistic_id>"}
+
+
+def test_pipeline_run_v2_doc_names_both_schema_constants():
+    doc = (_SCHEMA_DOCS / "pipeline-run-v2.md").read_text(encoding="utf-8")
+    assert store_mod.SCHEMA_V2 in doc
+    assert store_mod.SCHEMA in doc
+
+
+def test_analysis_job_v3_doc_documents_the_v3_only_fields():
+    from lipidmix.handoff.schema import SCHEMA_VERSION, SCHEMA_VERSION_V3
+
+    doc = (_SCHEMA_DOCS / "analysis-job-v3.md").read_text(encoding="utf-8")
+    assert SCHEMA_VERSION_V3 in doc
+    assert SCHEMA_VERSION in doc
+    documented = set(_first_table_column(doc, "## v3で追加されるフィールド"))
+    assert documented == {"profile", "dependencies", "environment"}
