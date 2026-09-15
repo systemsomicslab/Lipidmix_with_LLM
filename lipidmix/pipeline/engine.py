@@ -74,6 +74,7 @@ from typing import Callable
 from lipidmix.core.atomic_io import DomainError
 from lipidmix.core.process_control import file_lock, process_identity
 from lipidmix.pipeline import report as report_mod
+from lipidmix.pipeline import stage_plan
 from lipidmix.pipeline import store
 
 __all__ = [
@@ -174,6 +175,10 @@ def _comparison_id_from_stage_id(stage_id: str) -> str | None:
 def build_stages(request: dict) -> list[dict]:
     """要求から、このrunが実行すべきstageの計画を組み立てる。
 
+    `pipeline-request.v2`（メタボロミクス）は`lipidmix.pipeline.stage_plan.build_v2`
+    へ丸ごと委譲する——**v2のstage列の正準はあちら1箇所だけ**で、`store`も同じ
+    builderを呼ぶ（順序の写しを2つ持たない）。以下はv1の規則。
+
     各要素は `{"stage_id", "handler", "comparison_id"}`。`differential:<id>` /
     `export:<id>` はどちらも1件のcomparisonに対応するstageで、handlerキーは
     それぞれ `"differential"` / `"export"` の1つだけを共有する
@@ -190,6 +195,9 @@ def build_stages(request: dict) -> list[dict]:
     意図的に同じ規則にしてある——両者がズレると `record["stages"]` に無い
     stage_idを計画してしまい、`run_engine` が `KeyError` で落ちる。
     """
+    if stage_plan.is_v2_request(request):
+        return stage_plan.build_v2(request)
+
     effective_target = request.get("effective_target") or request.get("target")
     comparisons = request.get("comparisons") or []
 
@@ -226,6 +234,11 @@ _ALWAYS_RECONSTRUCT_STAGE_IDS = frozenset({
 #: （「自動再試行は行わない」）。
 _TRUST_PERSISTED_STAGE_IDS = frozenset({
     "prepare_input", "upstream", "validate_outputs",
+    # v2（spec §6.2）の同じ位置の工程。`validate_outputs`は綴りが同じなので上の
+    # 行が兼ねる。ここに載せないと`execute_console`が成果物hashの照合で
+    # 「変わった」と読まれ、engineが自分の判断でMS-DIALを起動し直しうる
+    # ——「Consoleの自動再試行は行わない」に反する。
+    "prepare_inputs", "execute_console",
 })
 
 
@@ -278,12 +291,16 @@ def make_context(record: dict, stage: dict, runtime: dict, request: dict) -> dic
     同一worker内のこの1呼出し系列だけ、という契約をそのまま体現する。
     """
     stage_id = stage["stage_id"]
+    # `export:<id>`はv1（comparison）とv2（statistic）で綴りが重なる。要求のschemaで
+    # どちらの意味かを決め、両方に値が入った曖昧なcontextを作らない。
+    is_v2 = stage_plan.is_v2_request(request)
     return {
         "pipeline_root": Path(record["identity"]["pipeline_root"]),
         "pipeline_id": record["identity"]["pipeline_id"],
         "identity": dict(record["identity"]),
         "stage_id": stage_id,
-        "comparison_id": _comparison_id_from_stage_id(stage_id),
+        "comparison_id": None if is_v2 else _comparison_id_from_stage_id(stage_id),
+        "statistic_id": stage_plan.statistic_id_from_stage_id(stage_id) if is_v2 else None,
         "attempt": stage.get("attempt", 0),
         "request": dict(request),
         "request_meta": dict(record["request"]),

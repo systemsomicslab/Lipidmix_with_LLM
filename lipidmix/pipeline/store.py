@@ -1,17 +1,23 @@
-"""pipeline-run.v1 の永続化・受付冪等性・Console jobの所有権（spec §9）。
+"""pipeline-run（v1 / v2）の永続化・受付冪等性・Console jobの所有権（spec §9, §6）。
 
-このモジュールが解く問題は3つある。
+このモジュールが解く問題は4つある。
 
-1. **永続化**: `pipeline-run.json` を原子的に保存・読込する。`state_revision` は
+1. **schema dispatch**: 要求が`pipeline-request.v2`（メタボロミクス）なら
+   `pipeline-run.v2`を、v1（schema省略を含む）なら`pipeline-run.v1`を書く。
+   readerは両方を受け、**読んだrecordのschemaのまま返す**。未知のschemaは
+   推測せず拒否し、既存recordのschemaを書き換える保存も拒否する
+   （過去の記録をインプレース変換しない、spec §6）。v2のstage列は
+   `lipidmix.pipeline.stage_plan`が唯一の正準で、`engine`と同じbuilderを呼ぶ。
+2. **永続化**: `pipeline-run.json` を原子的に保存・読込する。`state_revision` は
    楽観的並行制御用のカウンタで、要求（`pipeline-request.v1`）自身が持つ
    `revision`（Task 10 `resolve_request`/`merge_updates` が扱う、下流の
    訂正ごとに増える別カウンタ）とは意味も増分タイミングも異なる。
-2. **受付冪等性**: 同一source_rootへ複数プロセス・複数output_rootから同時に
+3. **受付冪等性**: 同一source_rootへ複数プロセス・複数output_rootから同時に
    `find_or_create_run`が呼ばれても、同じ入力・同じ要求なら二重にrunを作らない。
    排他は`source_root`単位（正規化した絶対パスのhash）に限定し、`output_root`の
    違いでは分けない——output_rootが違うだけの同時受付でも、索引ファイルへの
    書込みは同じロックの下で直列化されなければならない。
-3. **Console jobの所有権**: pipelineが起動したConsole job（analysis-job.json）を、
+4. **Console jobの所有権**: pipelineが起動したConsole job（analysis-job.json）を、
    単体`console_run`/`console_cleanup`が横から触らないようにする。所有pipelineが
    活動中、または状態を確認できない場合は拒否する（判定不能を「安全」側＝拒否に
    倒す）。
@@ -43,11 +49,15 @@ from lipidmix.core.atomic_io import (
     read_text_stable,
 )
 from lipidmix.core.process_control import file_lock, process_identity
+from lipidmix.pipeline import request as request_mod
+from lipidmix.pipeline import stage_plan
 from lipidmix.pipeline.request import request_fingerprint
 
 __all__ = [
     "ACTIVE_STATUSES",
     "SCHEMA",
+    "SCHEMA_V2",
+    "SUPPORTED_SCHEMAS",
     "RUN_FILENAME",
     "REQUESTS_SUBDIR",
     "STAGE_IDS",
@@ -59,12 +69,24 @@ __all__ = [
     "load_run",
     "pipeline_owner_block_reason",
     "register_job_owner",
+    "run_schema_for",
     "save_run",
     "stage_ids_for",
     "verify_result_refs",
 ]
 
 SCHEMA = "pipeline-run.v1"
+
+#: メタボロミクス（`pipeline-request.v2`）のrunが書くschema（spec §6）。v1のrunは
+#: v1のまま作り、v1のまま保存する——**過去の記録をインプレース変換しない**ので、
+#: 「新しいほうへ揃える」書き換えは`save_run`が拒否する。
+SCHEMA_V2 = "pipeline-run.v2"
+
+#: readerが受ける版（spec §6「readerは旧版を継続して受ける」）。ここに無いschemaは
+#: 推測せず拒否する——未知の版を「たぶんv1だろう」と読むと、知らないフィールドを
+#: 落としたまま保存し直して記録を壊す。
+SUPPORTED_SCHEMAS = frozenset({SCHEMA, SCHEMA_V2})
+
 RUN_FILENAME = "pipeline-run.json"
 REQUESTS_SUBDIR = "requests"
 CONTROL_SUBDIR = "control"
@@ -134,13 +156,38 @@ def _sha256_file(path: Path) -> str:
 
 # ---------- stage初期化 ----------
 
-def _stage_ids_for(request: dict) -> list[str]:
-    """spec §9.1のstage ID列を、要求のcomparisonsから動的に組み立てる。
+def run_schema_for(request: dict) -> str:
+    """要求のschemaから、このrunが書くpipeline-runのschemaを決める（spec §6）。
 
-    `differential:<comparison_id>` / `export:<comparison_id>` はcomparisonごとに
-    1組ずつ増える。comparisonsが空（探索解析、またはtarget=differentialでも
-    群未指定でneeds_inputへ回る場合）はこの2種を持たない。
+    v2要求は`pipeline-run.v2`、v1要求（schema省略を含む——「schema省略は従来どおり
+    v1」）は`pipeline-run.v1`。**それ以外は推測せず拒否する**——未知の要求版を
+    既知のどちらかとして走らせると、この版が想定する工程を一つも実行しないまま
+    completedになりうる。
     """
+    if stage_plan.is_v2_request(request):
+        return SCHEMA_V2
+    schema = request.get("schema") if isinstance(request, dict) else None
+    if schema is None or schema == request_mod.SCHEMA:
+        return SCHEMA
+    raise DomainError(
+        "PIPELINE_REQUEST_INVALID",
+        f"未知の要求schemaです: {schema!r}"
+        f"（既知: {request_mod.SCHEMA!r} / {stage_plan.REQUEST_SCHEMA_V2!r}）",
+        {"schema": schema})
+
+
+def _stage_ids_for(request: dict) -> list[str]:
+    """spec §9.1 / §6.2のstage ID列を、要求の内容から動的に組み立てる。
+
+    v2要求は`lipidmix.pipeline.stage_plan`が唯一の正準（`engine.build_stages`と
+    **同じbuilder**を呼ぶ——順序の写しを2つ持たない）。
+
+    v1は従来どおり。`differential:<comparison_id>` / `export:<comparison_id>` は
+    comparisonごとに1組ずつ増える。comparisonsが空（探索解析、または
+    target=differentialでも群未指定でneeds_inputへ回る場合）はこの2種を持たない。
+    """
+    if stage_plan.is_v2_request(request):
+        return stage_plan.stage_ids_v2(request)
     ids = list(_BASE_STAGE_IDS)
     for comparison in request.get("comparisons") or []:
         cid = comparison["comparison_id"]
@@ -255,6 +302,10 @@ def create_run(source_root: Path, request: dict, inputs: dict, *,
                           "inputsにfingerprintがありません（受付冪等性の根拠に必須）。",
                           {"keys": sorted(inputs)})
 
+    # 未知の要求schemaはここで止める。ディレクトリを掘る前に判定するので、
+    # 拒否した要求が空のpipeline_rootを残さない。
+    run_schema = run_schema_for(request)
+
     output_root = request.get("output_root")
     base_dir = Path(output_root).expanduser() if output_root else source_root / RUNS_PARENT_SUBDIR
 
@@ -282,7 +333,7 @@ def create_run(source_root: Path, request: dict, inputs: dict, *,
     relativized_inputs = _relativize_inputs_paths(inputs, pipeline_root)
 
     record = {
-        "schema": SCHEMA,
+        "schema": run_schema,
         "identity": {
             "pipeline_id": pipeline_id,
             "source_root": str(source_root.resolve()),
@@ -340,11 +391,34 @@ def load_run(path: Path) -> dict:
     except ValueError as exc:
         raise DomainError("PIPELINE_RUN_INVALID", f"pipeline-run.jsonが不正なJSONです: {exc}",
                           {"pipeline_root": str(pipeline_root)}) from exc
-    if data.get("schema") != SCHEMA:
+    # readerは旧版を継続して受ける（spec §6）。v1のrecordはv1のまま返す
+    # ——ここでv2へ読み替えると、v1のstage列を持つrunがv2の工程で再開されうる。
+    if data.get("schema") not in SUPPORTED_SCHEMAS:
         raise DomainError("PIPELINE_RUN_INVALID",
-                          f"schemaが不正です（期待 {SCHEMA!r}）: {data.get('schema')!r}",
-                          {"pipeline_root": str(pipeline_root)})
+                          f"schemaが不正です（既知 {sorted(SUPPORTED_SCHEMAS)}）: "
+                          f"{data.get('schema')!r}",
+                          {"pipeline_root": str(pipeline_root),
+                           "schema": data.get("schema")})
     return data
+
+
+def _assert_schema_unchanged(current_schema: object, new_schema: object,
+                             pipeline_root: Path) -> None:
+    """既存recordのschemaを書き換える保存を拒む（writer側のschema dispatch）。
+
+    「v1のrunをv2へ読み替えて保存し直す」はspec §6が明示的に禁じる
+    （「v1 pipelineは旧契約・旧schemaで新規作成・再開する。過去の記録を
+    インプレース変換しない」）。そのrunのstage列・結果IDの意味はv1の契約で
+    確定しており、器だけ新しい版に付け替えても中身は付いてこない。
+    """
+    if new_schema == current_schema:
+        return
+    raise DomainError(
+        "PIPELINE_RUN_SCHEMA_IMMUTABLE",
+        f"既存recordのschemaを変更できません（現在 {current_schema!r} → "
+        f"{new_schema!r}）。過去の記録はインプレース変換しません。",
+        {"current_schema": current_schema, "new_schema": new_schema,
+         "pipeline_root": str(pipeline_root)})
 
 
 def _assert_results_append_only(current_results: list, new_results: list) -> None:
@@ -386,6 +460,7 @@ def save_run(path: Path, record: dict, *, expected_revision: int) -> None:
                 {"expected_revision": expected_revision,
                  "current_revision": current.get("state_revision"),
                  "pipeline_root": str(pipeline_root)})
+        _assert_schema_unchanged(current.get("schema"), record.get("schema"), pipeline_root)
         _assert_results_append_only(current.get("results", []), record.get("results", []))
 
         to_write = copy.deepcopy(record)
