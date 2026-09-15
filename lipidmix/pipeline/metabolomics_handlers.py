@@ -41,6 +41,7 @@ import numpy as np
 from lipidmix.analysis import assay_evidence, assay_qc, feature_bindings
 from lipidmix.analysis import feature_export, matrix_state, statistics_v2
 from lipidmix.analysis.preprocess_policy import explicit_policy
+from lipidmix.analysis.result_state import dataset_fingerprint
 from lipidmix.analysis.sample_manifest import validate_standard_assays
 from lipidmix.console import profile_adapter, profiles
 from lipidmix.core.atomic_io import DomainError
@@ -174,6 +175,50 @@ def _standard_assay_ids(context: dict) -> dict:
     return resolved
 
 
+# ---------- prepare_inputs / resolve_metadata への v2 の上乗せ ----------
+
+def snapshot_profile_outcome(context: dict, outcome: dict) -> dict:
+    """解決済み profile と実行環境 manifest を run へ固定し、ref を足す。
+
+    v2 の必須成果物（spec §11「解決済みprofile、実行条件/依存manifest」）。
+    v1 の `prepare_input`（raw の実配置）の結果へ**足す**形にするのは、
+    どちらも「実行前に入力を固定する」同じ工程だから——別 stage にすると、
+    片方だけ成功した状態が記録に残りうる。
+    """
+    profile = _profile(context)
+    source_root = Path(context["identity"]["source_root"])
+    plan = profiles.resolve_profile_inputs(profile, source_root)
+    snapshot = profiles.snapshot_profile(plan, Path(context["pipeline_root"]))
+
+    refs = list(outcome.get("result_refs") or [])
+    refs.append(_persist(context, "profile", "profile",
+                         f"res_profile_{context['pipeline_id']}",
+                         _jsonable({"profile": profile, "snapshot": snapshot})))
+    refs.append(_persist(context, "execution_manifest", "execution_manifest",
+                         f"res_execution_manifest_{context['pipeline_id']}",
+                         _jsonable({
+                             "execution_environment": plan.get("execution_environment"),
+                             "dependencies": plan.get("dependencies"),
+                             "method": plan.get("method"),
+                             "raw": plan.get("raw")})))
+    context["runtime"]["profile_plan"] = plan
+    return {**outcome, "result_refs": refs}
+
+
+def sample_manifest_outcome(context: dict, outcome: dict) -> dict:
+    """解決済みの試料対応表を成果物として固定する（spec §11「試料対応表」）。
+
+    v1 は `record["inputs"]["manifest"]` にだけ書く。v2 はそれを result ref に
+    もする——必須成果物は hash 付きで名指しできなければ「揃っている」と言えない。
+    """
+    metadata = context["runtime"].get("metadata") or []
+    refs = list(outcome.get("result_refs") or [])
+    refs.append(_persist(context, "sample_manifest", "sample_manifest",
+                         f"res_sample_manifest_{context['pipeline_id']}",
+                         _jsonable({"rows": metadata, "n_rows": len(metadata)})))
+    return {**outcome, "result_refs": refs}
+
+
 # ---------- load_assay_evidence ----------
 
 def _handle_load_assay_evidence(context: dict) -> dict:
@@ -225,21 +270,52 @@ def _handle_load_assay_evidence(context: dict) -> dict:
 
 # ---------- resolve_feature_bindings ----------
 
+def _binding_overrides(context: dict, ds) -> dict | None:
+    """要求の `feature_bindings` payload を `bind_features` の overrides へ移す。
+
+    要求側（`request_v2`）の形は `{dataset_hash, selections: {target_id:
+    {feature_id, reason}}}`——「どの dataset に対する選択か」を payload 自身が
+    宣言する。ここで**実際の dataset の指紋と突き合わせる**: 一致しなければ、
+    前のバッチで決めた選択を今のバッチへ持ち込もうとしている。同じ feature_id が
+    別の化合物を指しうるので、黙って適用しない。
+    """
+    payload = context["request"].get("feature_bindings")
+    if not payload:
+        return None
+    expected = payload.get("dataset_hash")
+    actual = dataset_fingerprint(ds)
+    if expected != actual:
+        raise DomainError(
+            "FEATURE_BINDING_OVERRIDE_INVALID",
+            "feature_bindingsが別のデータセットに対する選択です"
+            "（dataset_hashが今回のデータセットと一致しません）。"
+            "同じprofile規則でこのバッチに対応付け直してください。",
+            {"expected_dataset_hash": actual, "payload_dataset_hash": expected})
+    return {target_id: {**selection, "dataset_id": getattr(ds, "dataset_id", None)}
+            for target_id, selection in (payload.get("selections") or {}).items()}
+
+
 def _handle_resolve_feature_bindings(context: dict) -> dict:
     ds = context["runtime"]["dataset"]
     profile = _profile(context)
     evidence = context["runtime"].get("assay_evidence") or {}
     standard_assays = _standard_assay_ids(context)
-    overrides = context["request"].get("feature_bindings") or None
+    overrides = _binding_overrides(context, ds)
 
     result = feature_bindings.bind_features(ds, profile, evidence,
                                             standard_assays, overrides)
     context["runtime"]["bindings"] = result
 
+    # 未解決でも結果は**必ず**保存する。全候補と不採用理由が spec §8.1 の
+    # 必須成果物で、利用者はそれを見てから `feature_bindings` で選ぶ
+    # ——保存しないと「何を選べるのか」が記録のどこにも無い。
+    ref = _persist(context, "feature_bindings", "feature_bindings",
+                   f"res_bindings_{context['pipeline_id']}", _jsonable(result))
+
     if result["status"] != "resolved":
         # 未解決のまま先へ進めない。自動再試行もしない——同じ入力で同じ答えが
         # 返るだけで、attempt ディレクトリと記録だけが増える。
-        return _needs_input(
+        outcome = _needs_input(
             "FEATURE_BINDING_UNRESOLVED",
             "profileのfeature_targetsをこのバッチのfeatureへ一意に対応付けられません。"
             "候補と不採用理由を確認し、feature_bindingsで選択するかprofileを"
@@ -247,9 +323,8 @@ def _handle_resolve_feature_bindings(context: dict) -> dict:
             {"unresolved": result["unresolved"],
              "bindings": {tid: {"status": b["status"], "reason": b["reason"]}
                           for tid, b in result["bindings"].items()}})
+        return {**outcome, "result_refs": [ref]}
 
-    ref = _persist(context, "feature_bindings", "feature_bindings",
-                   f"res_bindings_{context['pipeline_id']}", _jsonable(result))
     return _ok([ref])
 
 

@@ -196,12 +196,15 @@ def evaluate_target(record: dict) -> dict:
     （"completed"）でなければ「達成」と認めない——`evaluate_target`は単体で
     呼べる関数であり、engineのstage順序が上流成功を保証してくれるとは限らない。
     """
+    from lipidmix.pipeline import stage_plan
+
     request = _load_full_request(record)
     pipeline_root = Path(record["identity"]["pipeline_root"])
+    is_v2 = stage_plan.is_v2_request(request)
     target = request.get("effective_target")
     comparisons = request.get("comparisons") or []
 
-    if target == "differential" and not comparisons:
+    if not is_v2 and target == "differential" and not comparisons:
         return {
             "status": "needs_input",
             "reason_codes": ["COMPARISON_REQUIRED"],
@@ -211,7 +214,11 @@ def evaluate_target(record: dict) -> dict:
             "output_failures": {},
         }
 
-    required = required_outputs(request)
+    # v2は「目標(target)」ではなく「指定した統計の集合」で必須成果物が決まる。
+    # v1の分岐はそのまま残す（1つの関数に両方を詰めると、片方を触ったときに
+    # もう片方が黙って変わる）。
+    required = (required_outputs_v2(request) if is_v2
+                else required_outputs(request))
     output_failures = dict(record.get("output_failures") or {})
     upstream_verified = _upstream_verified(record)
 

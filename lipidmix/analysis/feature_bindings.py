@@ -141,8 +141,16 @@ def _check_identity(target: dict, feature_meta: dict,
         return "not_evaluable", None, ["identity_not_evaluable"]
 
     reasons: list[str] = []
+    informative = 0
     for candidate in candidates:
         values = _identifier_values(feature_meta, candidate)
+        if wanted and not values:
+            # 候補は付いているが識別子を1つも持たない（名前だけ、あるいは
+            # 全部null）。これは「違う化合物だ」という証拠ではなく「この候補
+            # では判定できない」——不一致に倒すと、同定が空の成果物で
+            # mass_rt が原理的に成立しなくなる。
+            continue
+        informative += 1
         if wanted and not (values & set(wanted.values())):
             reasons.append("identifier_mismatch")
             continue
@@ -154,6 +162,9 @@ def _check_identity(target: dict, feature_meta: dict,
             reasons.append("charge_mismatch")
             continue
         return "matched", candidate, []
+    if not informative:
+        # 判定材料を持つ候補が1件も無い。「同定が無い」と同じ扱いにする。
+        return "not_evaluable", None, ["identity_not_evaluable"]
     # どの候補も通らなかった。理由は出た順に一意化して返す（件数ではなく種類が要る）。
     return "mismatch", None, list(dict.fromkeys(reasons))
 

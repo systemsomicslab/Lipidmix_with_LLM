@@ -216,14 +216,24 @@ def test_adduct_charge_notation_difference_is_not_a_mismatch():
     assert result["bindings"]["gaba"]["selected_feature_id"] == "1"
 
 
-def test_name_only_match_does_not_qualify():
-    """名前だけ一致する候補は同定証拠にしない（spec §8.1）。"""
+def test_name_only_match_is_never_identity_evidence():
+    """名前だけ一致する候補を同定証拠にしない（spec §8.1）。
+
+    `mass_rt` は質量とRTを証拠水準にするので、同定が空でも対応付け自体は成立
+    してよい——ただしそれは「同定できた」ことではないので、理由に
+    `identity_not_evaluable` を残す。名前一致で証拠の欠落を埋めない、とは
+    「名前が一致したから同定済みと見なさない」という意味であって、
+    「名前しか無ければ質量とRTでも採ってはいけない」ではない。
+    """
     ds = _dataset({"1": {"mz": 104.0706, "rt": 1.2,
                          "candidates": [_candidate(database_identifier=None,
                                                    chemical_name="GABA")]}})
     result = bind_features(ds, _profile(), _evidence(ds), {}, None)
-    assert result["bindings"]["gaba"]["status"] == "needs_input"
-    assert "identifier_mismatch" in result["bindings"]["gaba"]["candidates"][0]["reasons"]
+    binding = result["bindings"]["gaba"]
+    assert binding["status"] == "resolved"
+    assert "identity_not_evaluable" in binding["candidates"][0]["reasons"]
+    assert binding["candidates"][0]["matched_sme_id"] is None
+
 
 
 def test_same_name_isomers_both_qualify_and_need_input():
@@ -252,6 +262,19 @@ def _library_target() -> dict:
         "kind": "library_match", "library_id": "msp-lib-1",
         "library_sha256": "c" * 64, "score_field": "MS-DIAL total score",
         "score_threshold": 0.8}])
+
+
+def test_name_only_match_does_not_satisfy_a_library_requirement():
+    """同定そのものを要求する証拠水準では、名前だけの候補は通らない。"""
+    ds = _dataset({"1": {"mz": 104.0706, "rt": 1.2,
+                         "candidates": [_candidate(database_identifier=None,
+                                                   chemical_name="GABA")]}})
+    ds.processing_dependencies = {"msp-lib-1": "c" * 64}
+    result = bind_features(ds, _profile({"gaba": _library_target()}),
+                           _evidence(ds), {}, None)
+    binding = result["bindings"]["gaba"]
+    assert binding["status"] == "needs_input"
+    assert "identification_required" in binding["candidates"][0]["reasons"]
 
 
 def test_library_match_requires_the_declared_library_hash():

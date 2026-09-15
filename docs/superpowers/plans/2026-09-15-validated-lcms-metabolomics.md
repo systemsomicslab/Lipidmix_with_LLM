@@ -505,7 +505,7 @@ profile不足、標準候補、任意QC不能を利用者が区別できる説�
 
 **Interfaces:** `MetabolomicsHarness(tmp_path)`、`run(binding_mode="unique", annotated=True, qc_fail=False) -> dict`、`resume(updates: dict) -> dict`、属性`launch_count`。既存tests.pipeline_fixturesのfake Consoleの仕組みを再利用する。
 
-- [ ] RED: 以下と、QC fail、全feature不能、2バッチ異ID、統計追加削除、timeout/cancel、二重runを検査する。
+- [x] RED: 以下と、QC fail、全feature不能、2バッチ異ID、統計追加削除、timeout/cancel、二重runを検査する。
 
 ```python
 from tests.metabolomics_fixtures import MetabolomicsHarness
@@ -518,8 +518,8 @@ def test_new_binding_resumes_without_second_console(tmp_path):
     assert h.launch_count == 1
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_end_to_end.py -q`。
-- [ ] Implement fixture: 3生物群×3注入、QC3、blank1、standard2、対象2featureと内部標準1を生成する。値は合成、QC fail用はQC値[1,10,100]、標準分母欠損caseを別に持つ。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_end_to_end.py -q`。
+- [x] Implement fixture: 3生物群×3注入、QC3、blank1、standard2、対象2featureと内部標準1を生成する。値は合成、QC fail用はQC値[1,10,100]、標準分母欠損caseを別に持つ。
 
 ```python
 raw_values = {"target": [1., 2., 3., 2., 3., 4., 4., 5., 6.],
@@ -527,8 +527,16 @@ raw_values = {"target": [1., 2., 3., 2., 3., 4., 4., 5., 6.],
 ```
 
 fixtureはmockの成功JSONだけを返さず、fake Consoleが実際に生成したmzTab/証拠をread/loadし、workerの保存物を検証する。親終了後の完了をstatus呼出しなしで確認するcaseは通常Windowsプロセスで実施する。
-- [ ] GREEN: 対象後、`C:/Python314/python.exe -m pytest tests -q`。既知環境障害は正常環境の新規実行で切り分け、失敗をPASS扱いしない。
-- [ ] Commit: 3ファイル、`git commit -m "test: メタボロミクスE2Eと再開を検証"`。
+- [x] GREEN: 対象後、`C:/Python314/python.exe -m pytest tests -q`。既知環境障害は正常環境の新規実行で切り分け、失敗をPASS扱いしない。
+- [x] Commit: 3ファイル、`git commit -m "test: メタボロミクスE2Eと再開を検証"`。
+
+**Task 14の未了（Task 15へ持ち越し）:** `tests/test_pipeline_process_lifecycle.py`への
+v2ケース追加は保留。v2の**受付層**が`inspect_inputs`（v1のmethod推定＋LBM必須）を
+通らない形でraw配置計画を作る経路が未実装で、`plan_pipeline`/`start_pipeline`から
+v2 runを起こせないため——実プロセスworkerで回す前提が揃わない。合成E2Eは
+`run_engine`直叩き（上流4工程はtest double、`execute_console`の呼出回数で
+「binding訂正でConsoleを起こし直さない」を直接確認）で全工程を通している。
+受付層のv2配線は実Console接続（Task 15）と同じ変更で入る。
 
 **Review D:** A01〜A28。全suite、fresh-process、出力hash、失敗時レポートを確認。この段階の表記は「合成入力での実装・試験完了」。実Console未接続ならソフトウェア完成としない。
 

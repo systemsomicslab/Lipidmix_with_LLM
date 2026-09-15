@@ -54,7 +54,10 @@ from lipidmix.pipeline import engine
 from lipidmix.pipeline import inputs as inputs_mod
 from lipidmix.pipeline import recovery
 from lipidmix.pipeline import report as report_mod
+from lipidmix.console import profiles as profiles_mod
 from lipidmix.pipeline import request as request_mod
+from lipidmix.pipeline import request_v2 as request_v2_mod
+from lipidmix.pipeline import stage_plan
 from lipidmix.pipeline import store
 from lipidmix.plots import result_output
 
@@ -221,6 +224,44 @@ def _dispatch_receipt(pipeline_path: Path, *, launched: bool, launch: dict | Non
     return receipt
 
 
+def _profile_arguments(source_root: Path, request: dict | None) -> dict:
+    """v2要求のときだけ、`profile_file`を読んで`resolve_request`へ渡す引数を作る。
+
+    profileの**読み込み**はここ（受付層）の責務で、`resolve_request`は検証済みの
+    dictしか受け取らない（request.pyのdocstringの契約）。v1要求では何も返さない
+    ——v1にprofileの概念は無く、空のprofileを渡すと「未指定」と「指定したが空」が
+    区別できなくなる。
+
+    `execution_purpose="routine"`のときは証明書の`routine_overrides`も渡す
+    ——省略すると fail-closed（何も上書きできない）になり、profileが明示的に
+    許した範囲の上書きまで拒否されてしまう。
+    """
+    explicit = request if isinstance(request, dict) else {}
+    schema = (explicit.get("schema")
+              if "schema" in explicit
+              else request_mod._peek_schema_declared_by_request_file(source_root))
+    if schema != stage_plan.REQUEST_SCHEMA_V2:
+        return {}
+
+    profile_file = explicit.get("profile_file")
+    if not profile_file:
+        from_file = request_v2_mod.read_request_file(source_root)
+        profile_file = from_file.get("profile_file")
+    if not profile_file:
+        raise DomainError(
+            "PIPELINE_REQUEST_INVALID",
+            "v2要求にはprofile_fileが必要です（検証済みprofileへのパス）。",
+            {"schema": schema})
+
+    purpose = explicit.get("execution_purpose", "routine")
+    profile = profiles_mod.load_profile(Path(profile_file), purpose)
+    routine_overrides = None
+    if purpose == "routine":
+        routine_overrides = profiles_mod.certificate_routine_overrides(
+            profile, Path(profile_file))
+    return {"profile": profile, "routine_overrides": routine_overrides}
+
+
 def _prepare_run(dataset_root: Path, request: dict | None,
                  request_id: str | None) -> tuple[Path, DomainError | None]:
     """resolve_request→inspect_inputs→manifest事前検査→find_or_create_run。
@@ -230,7 +271,8 @@ def _prepare_run(dataset_root: Path, request: dict | None,
     workerを起動してはいけない。
     """
     source_root = Path(dataset_root).expanduser()
-    request_resolved = request_mod.resolve_request(source_root, request)
+    request_resolved = request_mod.resolve_request(
+        source_root, request, **_profile_arguments(source_root, request))
     exe_path = _resolve_exe_path()
     plan = inputs_mod.inspect_inputs(source_root, request_resolved, exe_path=exe_path)
     plan["fingerprint"] = _plan_fingerprint(plan)
@@ -424,6 +466,39 @@ def _as_needs_input(handler):
     return wrapped
 
 
+def _handle_prepare_inputs_v2(context: dict) -> dict:
+    """v2の`prepare_inputs`: profile/実行環境の固定（＋rawの実配置）。
+
+    v2の入力を決めるのは**profile**（method・依存・実行体・rawの選択と hash）で、
+    v1のようにフォルダを読んでmethodとLBMを推定しない——v1のLBM必須アクセスは
+    profile adapterの`dependency_keys`へ移した（plan Task 12）。
+
+    rawの実配置は、受付層がv1形式の配置計画（`inputs.inspect_inputs`の出力）を
+    作っていたときだけ行う。v2の受付が profile 由来の配置計画を作る経路は
+    実Console接続（Task 15）で入れる——それまでは、profile plan の `raw`
+    （実測hash付き）が「どのrawを固定したか」の記録になる。
+    """
+    from lipidmix.pipeline import metabolomics_handlers
+
+    outcome = {"status": "succeeded", "result_refs": [], "warnings": [],
+               "error": None}
+    if "raw_stat" in (context.get("inputs") or {}):
+        outcome = _handle_prepare_input(context)
+        if outcome["status"] != "succeeded":
+            return outcome
+    return metabolomics_handlers.snapshot_profile_outcome(context, outcome)
+
+
+def _handle_resolve_metadata_v2(context: dict) -> dict:
+    """v2の`resolve_metadata`: v1と同じ解決に、試料対応表の成果物固定を足す。"""
+    from lipidmix.pipeline import metabolomics_handlers
+
+    outcome = _handle_resolve_metadata(context)
+    if outcome["status"] != "succeeded":
+        return outcome
+    return metabolomics_handlers.sample_manifest_outcome(context, outcome)
+
+
 def build_handlers() -> dict:
     """`lipidmix.pipeline.engine.run_engine`へ渡すhandler一式を組み立てる。
 
@@ -447,9 +522,10 @@ def build_handlers() -> dict:
         # v1/v2 で同じ計算をする工程（v2 の stage 名も同じ）
         "validate_outputs": _handle_validate_outputs,
         "load_dataset": _handle_load_dataset,
-        "resolve_metadata": _handle_resolve_metadata,
+        "resolve_metadata": metabolomics_handlers.by_schema(
+            _handle_resolve_metadata, _handle_resolve_metadata_v2),
         # v2 だけの stage 名（v1 の計画には現れない）
-        "prepare_inputs": _handle_prepare_input,
+        "prepare_inputs": _handle_prepare_inputs_v2,
         "execute_console": _handle_upstream,
         "load_assay_evidence": v2["load_assay_evidence"],
         "resolve_feature_bindings": v2["resolve_feature_bindings"],

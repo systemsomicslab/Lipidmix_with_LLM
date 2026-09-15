@@ -50,7 +50,8 @@ from lipidmix.console.profile_schema import profile_content_hash, validate_profi
 from lipidmix.core.atomic_io import DomainError, canonical_hash
 from lipidmix.pipeline import inputs as pipeline_inputs_mod
 
-__all__ = ["hash_files", "load_profile", "resolve_profile_inputs", "snapshot_profile"]
+__all__ = ["certificate_routine_overrides", "hash_files", "load_profile",
+           "resolve_profile_inputs", "snapshot_profile"]
 
 #: 実行環境manifestが実行体と一緒に列挙する同梱ファイルの拡張子（spec §5.1
 #: 「実行環境manifestはexeのほか同梱DLL/設定...を列挙する」）。.NETアプリの
@@ -465,3 +466,49 @@ def snapshot_profile(plan: dict, run_dir: Path) -> dict:
     snapshot["plan_identity_hash"] = plan_identity_hash
     snapshot["method_overrides"] = method_overrides
     return snapshot
+
+
+def certificate_routine_overrides(profile: dict, profile_path: Path) -> dict:
+    """validated profileの証明書が明示的に許した上書き範囲を返す（spec §6）。
+
+    `execution_purpose="routine"` の要求で `preprocess` 上書きを許すかどうかは、
+    **証明書が明示した集合**だけが決める。省略時は `{}`（fail-closed）——
+    「書いていない＝許可」にすると、検証した条件から外れた設定で routine 実行が
+    通ってしまう。
+
+    証明書は `validation.certificate_sha256` と突き合わせてから読む。1要素でも
+    変われば hash が変わるので、改変された証明書で許可範囲が広がることはない。
+    draft profile（証明書なし）は `{}`。
+    """
+    validation = profile.get("validation") or {}
+    certificate_path = validation.get("certificate_path")
+    expected = validation.get("certificate_sha256")
+    if validation.get("status") != "validated" or not certificate_path:
+        return {}
+
+    path = Path(certificate_path)
+    if not path.is_absolute():
+        path = Path(profile_path).parent / path
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise DomainError(
+            "PROFILE_VALIDATION_INVALID",
+            f"証明書ファイルが読めません: {path}",
+            {"certificate_path": str(path)}) from exc
+    try:
+        certificate = json.loads(raw_text)
+    except ValueError as exc:
+        raise DomainError(
+            "PROFILE_VALIDATION_INVALID",
+            f"証明書がJSONとして読めません: {path}",
+            {"certificate_path": str(path)}) from exc
+
+    actual = canonical_hash(certificate)
+    if actual != expected:
+        raise DomainError(
+            "PROFILE_VALIDATION_INVALID",
+            "証明書のhashがprofileのcertificate_sha256と一致しません"
+            "（証明書が改変されたか、profileが更新されています）。",
+            {"certificate_path": str(path), "expected": expected, "actual": actual})
+    return dict(certificate.get("routine_overrides") or {})

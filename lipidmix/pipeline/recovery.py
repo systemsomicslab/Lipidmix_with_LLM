@@ -400,6 +400,33 @@ def _diff_statistics(old: list, new: list) -> set:
     return {f"statistics:{sid}" for sid in changed}
 
 
+def _profile_arguments(request: dict) -> dict:
+    """v2要求のときだけ、profileを読んで`merge_updates`へ渡す引数を作る。
+
+    v2の更新検証（統計の形・target参照・routineの上書き範囲）はprofileが無いと
+    成立しない。読み込みはここ（再開の受付）の責務で、`merge_updates`自身は
+    検証済みのdictしか受け取らない——`service._profile_arguments`と同じ規約を
+    再開経路でも守る（片方だけがprofileを見ると、初回とresumeで検証の厳しさが
+    食い違う）。
+    """
+    if not stage_plan.is_v2_request(request):
+        return {}
+    from lipidmix.console import profiles as profiles_mod
+
+    profile_file = request.get("profile_file")
+    if not profile_file:
+        raise DomainError(
+            "PIPELINE_REQUEST_INVALID",
+            "v2要求にprofile_fileがありません（再開時の検証にprofileが要ります）。",
+            {"schema": request.get("schema")})
+    purpose = request.get("execution_purpose", "routine")
+    profile = profiles_mod.load_profile(Path(profile_file), purpose)
+    routine_overrides = (
+        profiles_mod.certificate_routine_overrides(profile, Path(profile_file))
+        if purpose == "routine" else None)
+    return {"profile": profile, "routine_overrides": routine_overrides}
+
+
 def _changed_aspects_v2(current_request: dict, merged_request: dict, *,
                         manifest_content_changed: bool) -> set:
     """v2要求の差分を`stage_plan.invalidated_v2`が読むtoken集合へ畳む。
@@ -591,8 +618,10 @@ def prepare_resume(path: Path, *, updates: dict | None = None,
 
         # --- d. updatesの検証・統合 ---
         current_request = _load_full_request(pipeline_root, record)
-        merged_request = (request_mod.merge_updates(current_request, updates)
-                          if updates else current_request)
+        merged_request = (
+            request_mod.merge_updates(current_request, updates,
+                                      **_profile_arguments(current_request))
+            if updates else current_request)
         new_content_hash = request_mod.request_fingerprint(merged_request)
         request_changed = new_content_hash != record["request"]["content_hash"]
 
