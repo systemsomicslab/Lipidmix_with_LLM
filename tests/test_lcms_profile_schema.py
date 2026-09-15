@@ -170,8 +170,13 @@ def _base_profile() -> dict:
     }
 
 
-def _validated_profile() -> dict:
-    """draftを土台に、hash-pinされた証明書を持つvalidated profileと対応証明書を作る。"""
+def _validated_profile(certificate_overrides: dict | None = None) -> dict:
+    """draftを土台に、hash-pinされた証明書を持つvalidated profileと対応証明書を作る。
+
+    ``certificate_overrides``は証明書へ追加/上書きする任意キー（例:
+    ``routine_overrides``）——hashは上書き後の内容から計算するので、常に
+    整合したcertificate_sha256になる。
+    """
     draft = _base_profile()
     content_hash = profile_content_hash(draft)
 
@@ -190,6 +195,8 @@ def _validated_profile() -> dict:
         "performed_at": "2026-09-15T00:00:00Z",
         "scope": draft["acquisition"]["scope"],
     }
+    if certificate_overrides:
+        certificate.update(certificate_overrides)
     certificate_sha256 = canonical_hash(certificate)
 
     profile = copy.deepcopy(draft)
@@ -537,3 +544,126 @@ def test_evidence_entry_for_present_condition_with_matching_value_accepted():
     normalized = validate_profile(data)
     assert normalized["evidence"]["acquisition.instrument"]["value"] == \
         normalized["acquisition"]["instrument"]
+
+
+# ---------- routine_overrides（証明書の明示許容集合。spec §6） ----------
+# controller裁定: routineが上書きできる範囲は証明書自身が明示的に宣言する。
+# 省略・空はfail-closed（何も上書きを許可しない）。値からの推測は一切しない。
+
+def test_routine_overrides_absent_keeps_existing_fixture_valid():
+    """既存fixture（routine_overridesを持たない証明書）はマイグレーション不要で
+    引き続き有効——欠落は必須キー扱いにしない。"""
+    profile, certificate, observed_hashes = _validated_profile()
+    assert "routine_overrides" not in certificate
+    normalized = validate_profile(profile)
+    result = validate_certificate(normalized, certificate, observed_hashes)
+    assert result["routine_overrides"] == {}
+
+
+def test_routine_overrides_valid_structure_with_any_and_values_modes_accepted():
+    profile, certificate, observed_hashes = _validated_profile({
+        "routine_overrides": {
+            "preprocess": {
+                "default": {
+                    "drift_correct": {"mode": "any"},
+                    "normalize": {"mode": "values", "values": ["none", "tic"]},
+                },
+            },
+        },
+    })
+    normalized = validate_profile(profile)
+    result = validate_certificate(normalized, certificate, observed_hashes)
+    assert result["routine_overrides"]["preprocess"]["default"]["drift_correct"] == {"mode": "any"}
+    assert result["routine_overrides"]["preprocess"]["default"]["normalize"] == {
+        "mode": "values", "values": ["none", "tic"],
+    }
+
+
+def test_routine_overrides_unknown_category_rejected():
+    profile, certificate, observed_hashes = _validated_profile({
+        "routine_overrides": {"statistics": {}},
+    })
+    normalized = validate_profile(profile)
+    with pytest.raises(DomainError, match="PROFILE_VALIDATION_INVALID"):
+        validate_certificate(normalized, certificate, observed_hashes)
+
+
+def test_routine_overrides_unknown_preprocess_field_rejected():
+    profile, certificate, observed_hashes = _validated_profile({
+        "routine_overrides": {
+            "preprocess": {"default": {"policy": {"mode": "any"}}},
+        },
+    })
+    normalized = validate_profile(profile)
+    with pytest.raises(DomainError, match="PROFILE_VALIDATION_INVALID"):
+        validate_certificate(normalized, certificate, observed_hashes)
+
+
+def test_routine_overrides_invalid_mode_rejected():
+    profile, certificate, observed_hashes = _validated_profile({
+        "routine_overrides": {
+            "preprocess": {"default": {"normalize": {"mode": "everything"}}},
+        },
+    })
+    normalized = validate_profile(profile)
+    with pytest.raises(DomainError, match="PROFILE_VALIDATION_INVALID"):
+        validate_certificate(normalized, certificate, observed_hashes)
+
+
+def test_routine_overrides_values_mode_with_empty_values_rejected():
+    profile, certificate, observed_hashes = _validated_profile({
+        "routine_overrides": {
+            "preprocess": {"default": {"normalize": {"mode": "values", "values": []}}},
+        },
+    })
+    normalized = validate_profile(profile)
+    with pytest.raises(DomainError, match="PROFILE_VALIDATION_INVALID"):
+        validate_certificate(normalized, certificate, observed_hashes)
+
+
+def test_routine_overrides_any_mode_rejects_extra_keys():
+    profile, certificate, observed_hashes = _validated_profile({
+        "routine_overrides": {
+            "preprocess": {"default": {"normalize": {"mode": "any", "values": ["none"]}}},
+        },
+    })
+    normalized = validate_profile(profile)
+    with pytest.raises(DomainError, match="PROFILE_VALIDATION_INVALID"):
+        validate_certificate(normalized, certificate, observed_hashes)
+
+
+def test_hand_written_validated_with_mismatched_certificate_rejected_before_allowance_consulted():
+    """spec §6裁定の核心: `validation.status='validated'`ラベルだけでは何も
+    証明しない。証明書がpermissiveなroutine_overrides（何でも上書き可）を
+    持っていても、証明書自体がprofileのpinされたhashと一致しなければ、その
+    routine_overridesの中身は一切参照されない（PROFILE_VALIDATION_INVALIDが
+    先に発生する）。"""
+    data = _base_profile()
+    data["validation"] = {
+        "status": "validated",
+        "scope": data["acquisition"]["scope"],
+        "certificate_path": "certificates/fake.json",
+        "certificate_sha256": "0" * 64,  # 実在しない証明書と対応しないでたらめなhash
+    }
+    normalized = validate_profile(data)
+    permissive_but_unpinned_certificate = {
+        "schema": CERTIFICATE_SCHEMA,
+        "profile_content_sha256": profile_content_hash(normalized),
+        "dependency_hashes": {},
+        "fixed_input_hashes": {},
+        "reference_file_hashes": {},
+        "validation_output_hashes": {},
+        "criteria": [{"criterion_id": "x", "status": "pass", "required": True, "detail": None}],
+        "performed_by": "someone",
+        "performed_at": "2026-09-15T00:00:00Z",
+        "scope": data["acquisition"]["scope"],
+        # 全recipe・全fieldを無制限に許可する——中身だけ見れば理想的に見える
+        "routine_overrides": {
+            "preprocess": {"default": {
+                "normalize": {"mode": "any"}, "drift_correct": {"mode": "any"},
+                "filter": {"mode": "any"}, "impute": {"mode": "any"},
+            }},
+        },
+    }
+    with pytest.raises(DomainError, match="PROFILE_VALIDATION_INVALID"):
+        validate_certificate(normalized, permissive_but_unpinned_certificate, {})

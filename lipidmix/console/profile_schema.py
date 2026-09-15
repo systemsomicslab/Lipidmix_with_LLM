@@ -19,14 +19,20 @@ dict をそのまま検証するだけ。
   変えない——これが `validation` を除く理由（spec §5「証明書はprofile本体
   （validation部分を除く）のcanonical hash…を必須とする」）。
 - `validate_certificate(profile, certificate, observed_hashes)`: 証明書が
-  「この profile を正当に validated と名乗らせる」ものかを検証する。
-  署名基盤は作らない——検証は (1) 証明書自体の hash が profile に pin された
+  「この profile を正当に validated と名乗らせる」ものかを検証し、全検証に
+  通った場合のみ正規化済み証明書（dict）を返す。署名基盤は作らない
+  ——検証は (1) 証明書自体の hash が profile に pin された
   `certificate_sha256` と一致するか（証明書の一要素改変で必ず変わる）、
   (2) profile 本体・全依存・固定入力・基準ファイル・検証出力の hash が
   `observed_hashes`（実測値、呼び出し側が計算して渡す）と一致するか、
   (3) 必須基準が全て pass か、(4) 適用範囲（scope）が profile の宣言と
   一致するか、の4点に限る。不一致・不足はすべて
   `DomainError("PROFILE_VALIDATION_INVALID", ...)`。
+- 証明書の`routine_overrides`（任意キー。省略時は`{}`＝fail-closed）は
+  `execution_purpose="routine"`のpreprocess上書きが許される明示範囲を
+  宣言する——`lipidmix.pipeline.request_v2`がこの戻り値を消費して判定する
+  （spec §6「証明書の明示許容集合」）。詳細は`docs/schema/lcms-profile-v1.md`
+  「証明書 `routine_overrides`」節を参照。
 
 ## 「未記載の測定条件」の表現
 
@@ -168,11 +174,16 @@ _NULLABLE_CONDITION_FIELD_PATHS = (
     "acquisition.ms_range.ms2_high_mz",
 )
 
-_CERTIFICATE_KEYS = frozenset({
+_CERTIFICATE_REQUIRED_KEYS = frozenset({
     "schema", "profile_content_sha256", "dependency_hashes", "fixed_input_hashes",
     "reference_file_hashes", "validation_output_hashes", "criteria",
     "performed_by", "performed_at", "scope",
 })
+#: `routine_overrides`だけが任意（controller裁定: spec §6の「証明書の明示許容
+#: 集合」をここに置く。省略はfail-closedで「何も上書きを許可しない」——
+#: Task 1が書いた既存fixtureをこのキー無しのまま有効に保つための設計）。
+_CERTIFICATE_OPTIONAL_KEYS = frozenset({"routine_overrides"})
+_CERTIFICATE_KEYS = _CERTIFICATE_REQUIRED_KEYS | _CERTIFICATE_OPTIONAL_KEYS
 _CRITERION_KEYS = frozenset({"criterion_id", "status", "required", "detail"})
 _HASH_MAP_CATEGORIES = (
     ("dependency_hashes", "dependencies"),
@@ -180,6 +191,21 @@ _HASH_MAP_CATEGORIES = (
     ("reference_file_hashes", "reference_files"),
     ("validation_output_hashes", "validation_outputs"),
 )
+
+#: `routine_overrides`が宣言できるカテゴリ。現状は`preprocess`（matrix recipe
+#: の上書き）だけ——spec §6が例示するもう1つの動機（比較群の変更）は、v2の
+#: `statistics`にはまだ「上書き」という概念自体が無い（profileのstatisticsを
+#: requestが部分的に上書きするのではなく、request自身が全体を宣言するか
+#: profile既定を丸ごと使うかの二択）ため、今回は対象にしない。将来
+#: 「statistics」のような別カテゴリを追加する場合もこの集合へ足すだけで済む
+#: よう、`routine_overrides`のtop-levelはカテゴリ名をキーにした開いた構造に
+#: してある。
+_ROUTINE_OVERRIDE_CATEGORIES = frozenset({"preprocess"})
+#: `preprocess`カテゴリで許容を宣言できるフィールド
+#: （`lipidmix.pipeline.request_v2._PREPROCESS_OVERRIDE_KEYS`と同じ集合。
+#: 循環importを避けるためここでも独立に持つ）。
+_ROUTINE_OVERRIDE_PREPROCESS_FIELDS = frozenset({"normalize", "drift_correct", "filter", "impute"})
+_ROUTINE_OVERRIDE_ALLOWANCE_MODES = frozenset({"any", "values"})
 
 
 def _fail(code: str, message: str, **details) -> None:
@@ -1066,6 +1092,102 @@ def _validate_criterion(value: object, index: int) -> dict:
     }
 
 
+# ---------- routine_overrides（spec §6の「証明書の明示許容集合」） ----------
+
+def _validate_routine_override_allowance(value: object, label: str) -> dict:
+    """1つのrecipe_id×fieldに対する許容を検証する。
+
+    `{"mode": "any"}`（任意の値を許可）または`{"mode": "values", "values": [...]}`
+    （列挙した値だけを許可）のどちらか——構造から範囲を推測する第3の道は無い
+    （controller裁定: 「explicit only」）。
+
+    ``_require_dict``/``_require_list``/``_require_exact_keys``（profile本体
+    検証用の共有helper）はここでは使わない——それらは無条件で
+    ``PROFILE_INVALID``を送出するため、証明書の一部であるこの検証が
+    ``PROFILE_VALIDATION_INVALID``を返すべき契約と食い違う
+    （``_validate_certificate_shape``自身が同じ理由でこれらのhelperを
+    避け、手書きの検査＋``_fail_certificate``で統一しているのと同じ規約）。
+    """
+    if not isinstance(value, dict):
+        _fail_certificate(f"{label}はオブジェクトである必要があります: {value!r}", value=value)
+    mode = value.get("mode")
+    if mode == "any":
+        unknown = set(value) - {"mode"}
+        if unknown:
+            _fail_certificate(f"{label}に未知のキーがあります: {sorted(unknown)}",
+                              unknown_keys=sorted(unknown))
+        return {"mode": "any"}
+    if mode == "values":
+        unknown = set(value) - {"mode", "values"}
+        if unknown:
+            _fail_certificate(f"{label}に未知のキーがあります: {sorted(unknown)}",
+                              unknown_keys=sorted(unknown))
+        if "values" not in value:
+            _fail_certificate(f"{label}に必須キーが不足しています: ['values']",
+                              missing_keys=["values"])
+        values = value["values"]
+        if not isinstance(values, list):
+            _fail_certificate(f"{label}.valuesは配列である必要があります: {values!r}", value=values)
+        if not values:
+            _fail_certificate(f"{label}.valuesは空にできません。")
+        return {"mode": "values", "values": list(values)}
+    _fail_certificate(f"{label}.modeが不正です（{sorted(_ROUTINE_OVERRIDE_ALLOWANCE_MODES)}の"
+                      f"いずれか）: {mode!r}", mode=mode)
+
+
+def _validate_routine_overrides_preprocess(value: object, label: str) -> dict:
+    if not isinstance(value, dict):
+        _fail_certificate(f"{label}はオブジェクトである必要があります: {value!r}", value=value)
+    out: dict = {}
+    for recipe_id, fields in value.items():
+        _require_slug(recipe_id, f"{label}のキー(recipe_id)", code=_CERT_INVALID)
+        recipe_label = f"{label}[{recipe_id!r}]"
+        if not isinstance(fields, dict):
+            _fail_certificate(f"{recipe_label}はオブジェクトである必要があります: {fields!r}",
+                              value=fields)
+        unknown_fields = set(fields) - _ROUTINE_OVERRIDE_PREPROCESS_FIELDS
+        if unknown_fields:
+            _fail_certificate(
+                f"{recipe_label}に未知のフィールドがあります: {sorted(unknown_fields)}",
+                unknown_keys=sorted(unknown_fields),
+            )
+        out[recipe_id] = {
+            field: _validate_routine_override_allowance(allowance, f"{recipe_label}.{field}")
+            for field, allowance in fields.items()
+        }
+    return out
+
+
+def _validate_routine_overrides(value: object) -> dict:
+    """spec §6「routineで許される...変更等は証明書の適用範囲内に限定する」・
+    このbriefの裁定「証明書が明示許容集合を持つ」を実装する。
+
+    キー自体が無ければ`{}`——**fail-closed**: `execution_purpose="routine"`
+    では何も上書きを許可しない、という既定になる（Task 1が書いた既存の
+    証明書fixtureに、このキーを足すマイグレーションを要求しない）。宣言
+    されたrecipe_id×field以外はrequest_v2側で常に拒否される——ここでの
+    検証は構造だけを保証し、「profile本体に既にある値だから許容する」的な
+    推測は一切行わない（controller裁定: 前回のrequest_v2独自ルールは
+    このため差し戻された）。
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        _fail_certificate(f"certificate.routine_overridesはオブジェクトである必要があります: "
+                          f"{value!r}", value=value)
+    unknown = set(value) - _ROUTINE_OVERRIDE_CATEGORIES
+    if unknown:
+        _fail_certificate(
+            f"certificate.routine_overridesに未知のカテゴリがあります: {sorted(unknown)}",
+            unknown_keys=sorted(unknown),
+        )
+    out: dict = {}
+    if "preprocess" in value:
+        out["preprocess"] = _validate_routine_overrides_preprocess(
+            value["preprocess"], "certificate.routine_overrides.preprocess")
+    return out
+
+
 def _validate_certificate_shape(certificate: object) -> dict:
     """証明書自体の構造（型・enum・必須キー）だけを検証する（内容の突合はしない）。"""
     if not isinstance(certificate, dict):
@@ -1080,7 +1202,9 @@ def _validate_certificate_shape(certificate: object) -> dict:
     if unknown:
         _fail_certificate(f"certificateに未知のキーがあります: {sorted(unknown)}",
                           unknown_keys=sorted(unknown))
-    missing = _CERTIFICATE_KEYS - set(certificate)
+    # routine_overridesだけは任意（_CERTIFICATE_OPTIONAL_KEYS）——欠落を許すのは
+    # このキーだけで、他の10キーはこれまでどおり必須のまま。
+    missing = _CERTIFICATE_REQUIRED_KEYS - set(certificate)
     if missing:
         _fail_certificate(f"certificateに必須キーが不足しています: {sorted(missing)}",
                           missing_keys=sorted(missing))
@@ -1122,6 +1246,8 @@ def _validate_certificate_shape(certificate: object) -> dict:
     if not isinstance(scope, str) or not scope:
         _fail_certificate(f"certificate.scopeは空でない文字列である必要があります: {scope!r}")
 
+    routine_overrides = _validate_routine_overrides(certificate.get("routine_overrides"))
+
     return {
         "schema": certificate["schema"],
         "profile_content_sha256": certificate["profile_content_sha256"],
@@ -1130,10 +1256,11 @@ def _validate_certificate_shape(certificate: object) -> dict:
         "performed_by": performed_by,
         "performed_at": performed_at,
         "scope": scope,
+        "routine_overrides": routine_overrides,
     }
 
 
-def validate_certificate(profile: dict, certificate: dict, observed_hashes: dict) -> None:
+def validate_certificate(profile: dict, certificate: dict, observed_hashes: dict) -> dict:
     """証明書がprofileを正当にvalidatedと名乗らせるものかを検証する（副作用なし）。
 
     `observed_hashes`は呼び出し側が実測した参照値で、次の4キーを持つ想定:
@@ -1143,6 +1270,16 @@ def validate_certificate(profile: dict, certificate: dict, observed_hashes: dict
     （spec §5「署名認証基盤は作らない」）。
 
     不一致・不足はすべて`DomainError("PROFILE_VALIDATION_INVALID", ...)`。
+
+    全検証に通った場合のみ、正規化済み証明書（`routine_overrides`を含む）を
+    返す——呼び出し側（`lipidmix.pipeline.request_v2`）はこの戻り値の
+    `routine_overrides`だけを使い、`execution_purpose="routine"`のpreprocess
+    上書きをこの明示許容集合とだけ照合する（spec §6）。`routine_overrides`の
+    値は、この関数が真正性（hash pin・profile内容・適用範囲・必須基準）を
+    確認し終えた**後**でしか呼び出し側に渡らない——手書きで`validated`かつ
+    それらしい`routine_overrides`を持つ証明書を用意しても、hash不一致等は
+    このチェック列のどこよりも先に検出され、`routine_overrides`が「参照
+    できる」段階にすら到達しない（下記の検証順序を参照）。
     """
     profile_validation = _require_dict(profile, "profile").get("validation")
     if not isinstance(profile_validation, dict):
@@ -1201,3 +1338,5 @@ def validate_certificate(profile: dict, certificate: dict, observed_hashes: dict
                 f"必須基準がpassではありません: criterion_id={item['criterion_id']!r} "
                 f"status={item['status']!r}",
                 criterion_id=item["criterion_id"], status=item["status"])
+
+    return normalized_certificate

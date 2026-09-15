@@ -164,21 +164,31 @@ v2既定値」。実際に働くのは次の段:
 （`profile_schema`の二重正規化禁止規則と同じ理由で、`execution_purpose`に
 関わらず常に）`PIPELINE_REQUEST_INVALID`。
 
-### `execution_purpose`によるroutine許容範囲は未実装（既知のgap）
+### `execution_purpose`によるroutine許容範囲
 
-spec §6・[`lcms-profile-v1.md`](lcms-profile-v1.md)「routine実行が上書き
-できる範囲」は、routineの`preprocess`上書きが「証明書の明示許容集合」の
-外に出れば`PROFILE_SCOPE_MISMATCH`にすると述べるが、その「明示許容集合」を
-表す構造化フィールドは`lcms-profile-validation.v1`証明書schema
-（`profile_schema._CERTIFICATE_KEYS`）にもprofile schemaにも存在しない——
-Task 1自身がこの節を「将来指針」（未実装の設計メモ）と明記し、実装を
-request v2（このモジュール）へ委譲していた。
+`execution_purpose="routine"`（既定）では、`preprocess`上書きした各
+`recipe_id`×フィールドを、証明書（`lcms-profile-validation.v1`）の
+`routine_overrides`——`profile_schema.validate_certificate`の戻り値——と
+照合する。`resolve`/`merge_updates`は検証済みのこの値を`routine_overrides`
+引数で受け取る（**呼び出し側が`validate_certificate`を呼んで得た戻り値を
+渡す**——このモジュール自身は証明書もファイルも読まない）。
 
-存在しない契約を肩代わりする独自ルールを発明しない、というcontroller裁定に
-従い、**`execution_purpose`による`preprocess`上書きの差別化は現状実装しない**
-——`routine`/`validation`のどちらでも同じ構造検証だけを課す。`PROFILE_SCOPE_MISMATCH`
-はこのモジュールからは送出されない。担当モジュール・具体的な集合の形は
-`task-3-report.md`「Concern 2」としてcontrollerへ報告済み。
+判定は**fail-closed・explicit only**:
+
+- `routine_overrides`が省略（`None`）・対象の`recipe_id`×フィールドの組が
+  宣言されていない場合は、無条件で`PROFILE_SCOPE_MISMATCH`。
+- 宣言が`{"mode": "any"}`ならどんな値への上書きも許可。
+- 宣言が`{"mode": "values", "values": [...]}`なら、上書き先の値がその配列に
+  含まれる場合だけ許可——それ以外は`PROFILE_SCOPE_MISMATCH`。
+- profile本体（`matrix_recipes`の他エントリ等）から範囲を推測することは
+  一切しない——「profile自身が使っている値だから許可」という以前の実装は
+  controller裁定により差し戻され、証明書側の明示フィールドに置き換えた
+  （詳細は`docs/schema/lcms-profile-v1.md`「証明書 `routine_overrides`」節、
+  および`task-3-report.md`「Concern 2」の記録）。
+
+`execution_purpose="validation"`ではこの照合を一切行わない——validation実行は
+まだ証明書が検証していない値を試すためのものだから。`routine_overrides`が
+`None`でも、validationなら構造的に妥当などんな上書きも通る。
 
 ## `feature_bindings`（spec §6.2、構造検証のみ）
 
@@ -209,7 +219,10 @@ datasetを受け取らないため判定しようがない）。
 pipelineが要る（spec §6.1）。
 
 更新後は`resolve`と同じ検証を通す（`statistics`の重複・target整合・
-preprocessのrecipe存在・`feature_bindings`の構造を含め、初回指定とresumeで
-検査の抜け道を作らない）。更新していないフィールドの`value_sources`は
-元の出所を保持し、`updates`に挙げたキーだけ`"explicit_update"`へ格上げする。
-resumeは`analysis-request.json`を読み直さない（更新経路は明示`updates`のみ）。
+preprocessのrecipe存在・routine許容範囲・`feature_bindings`の構造を含め、
+初回指定とresumeで検査の抜け道を作らない）。`merge_updates`も`routine_overrides`
+引数を取る——resumeでも呼び出し側が証明書検証済みの値を都度渡す（この
+モジュール自身が証明書を再取得・再検証することはない）。更新していない
+フィールドの`value_sources`は元の出所を保持し、`updates`に挙げたキーだけ
+`"explicit_update"`へ格上げする。resumeは`analysis-request.json`を読み直さない
+（更新経路は明示`updates`のみ）。

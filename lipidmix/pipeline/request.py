@@ -539,7 +539,8 @@ def _peek_schema_declared_by_request_file(source_root: Path) -> object:
 
 
 def resolve_request(source_root: Path, explicit: dict | None = None, *,
-                     profile: dict | None = None) -> dict:
+                     profile: dict | None = None,
+                     routine_overrides: dict | None = None) -> dict:
     """要求を解決し、``value_sources``/``effective_target``を付けて返す。
 
     優先順位は「MCPで明示した値 > 元フォルダ直下の``analysis-request.json``
@@ -562,7 +563,10 @@ def resolve_request(source_root: Path, explicit: dict | None = None, *,
     「省略」ではない（`docs/schema/pipeline-request-v2.md`「schema dispatch」
     節）。v2解決には検証済みprofile dict（``profile``引数、
     ``lipidmix.console.profile_schema.validate_profile``の戻り値相当）が要る
-    ——読み込み自体はこの関数の責務ではない。
+    ——読み込み自体はこの関数の責務ではない。``routine_overrides``（省略可）は
+    ``lipidmix.console.profile_schema.validate_certificate``の戻り値の同名
+    キー——``execution_purpose="routine"``のpreprocess上書きの明示許容集合。
+    省略時（``None``）はfail-closed（routineでは何も上書きできない）。
     """
     source_root = Path(source_root)
     explicit = explicit if explicit is not None else {}
@@ -573,7 +577,8 @@ def resolve_request(source_root: Path, explicit: dict | None = None, *,
         else _peek_schema_declared_by_request_file(source_root)
     if schema == request_v2.SCHEMA:
         from_file = request_v2.read_request_file(source_root)
-        return request_v2.resolve(explicit, profile, from_file=from_file)
+        return request_v2.resolve(
+            explicit, profile, from_file=from_file, routine_overrides=routine_overrides)
 
     unknown = set(explicit) - _TOP_LEVEL_KEYS
     if unknown:
@@ -618,7 +623,8 @@ def resolve_request(source_root: Path, explicit: dict | None = None, *,
     return validated
 
 
-def merge_updates(request: dict, updates: dict, *, profile: dict | None = None) -> dict:
+def merge_updates(request: dict, updates: dict, *, profile: dict | None = None,
+                   routine_overrides: dict | None = None) -> dict:
     """resumeの入力訂正を反映し、再検証した要求を返す（spec §9/§10.1）。
 
     ``UPDATABLE``（target・sample_manifest・preprocess・comparisons）以外の
@@ -630,10 +636,12 @@ def merge_updates(request: dict, updates: dict, *, profile: dict | None = None) 
 
     ``request["schema"] == "pipeline-request.v2"``のときは
     ``lipidmix.pipeline.request_v2.merge_updates``へ丸ごと委譲する（spec §6の
-    schema dispatch）。v2解決同様、検証済みprofile dictは呼び出し側が渡す。
+    schema dispatch）。v2解決同様、検証済みprofile dict・routine_overrides
+    （証明書由来の明示許容集合）は呼び出し側が渡す。
     """
     if request.get("schema") == request_v2.SCHEMA:
-        return request_v2.merge_updates(request, updates, profile)
+        return request_v2.merge_updates(
+            request, updates, profile, routine_overrides=routine_overrides)
 
     if set(updates) - UPDATABLE:
         raise DomainError("NEW_PIPELINE_REQUIRED", "上流条件の変更には新しい解析が必要です")

@@ -215,29 +215,118 @@ def _profile_with_two_recipes():
     })
 
 
-def test_preprocess_override_scope_is_not_yet_enforced_by_execution_purpose():
-    """既知のgap（task-3-report.md「Concern 2」参照）。
-
-    spec §6・docs/schema/lcms-profile-v1.mdは「routineでは証明書の明示許容
-    集合の外に出る上書きをPROFILE_SCOPE_MISMATCHで拒否する」と述べるが、
-    その「明示許容集合」を表す構造化フィールドはTask1のcertificate schema
-    （lipidmix/console/profile_schema.py の _CERTIFICATE_KEYS）にもprofile
-    schemaにも存在しない——Task1自身がこの実装をrequest v2（本モジュール）
-    へ明示的に委譲した「将来指針」の域を出ない。担当が未確定なものを
-    ここで独自ルールとして発明しない、というcontroller裁定に従い、
-    execution_purposeによる差別化は現状実装しない：routine/validationの
-    どちらでも、同じ構造的に妥当な上書きは通る。将来この判定が実装されたら
-    このtestは意図的に更新されるべき（放置して壊れたまま緑にしない）。
-    """
+def test_routine_preprocess_override_omitted_routine_overrides_fails_closed():
+    """routine_overridesを渡さない(既定None)なら、routineでは何も上書き
+    できない——fail-closed。構造的にどれだけ妥当な値でも通らない。"""
     profile = _profile_with_two_recipes()
-    for purpose in ("routine", "validation"):
-        resolved = resolve(
-            {"profile_file": "profile.json", "execution_purpose": purpose,
-             "preprocess": {"default": {"normalize": "median"}},
+    with pytest.raises(DomainError, match="PROFILE_SCOPE_MISMATCH"):
+        resolve(
+            {"profile_file": "profile.json",
+             "preprocess": {"default": {"normalize": "tic"}},
              "statistics": [_pca()]},
             profile,
         )
-        assert resolved["preprocess"]["default"]["normalize"] == "median"
+
+
+def test_routine_preprocess_override_outside_allowance_rejected():
+    profile = _profile_with_two_recipes()
+    routine_overrides = {
+        "preprocess": {"default": {"normalize": {"mode": "values", "values": ["tic"]}}},
+    }
+    with pytest.raises(DomainError, match="PROFILE_SCOPE_MISMATCH"):
+        resolve(
+            {"profile_file": "profile.json",
+             "preprocess": {"default": {"normalize": "median"}},
+             "statistics": [_pca()]},
+            profile,
+            routine_overrides=routine_overrides,
+        )
+
+
+def test_routine_preprocess_override_allowed_by_any_mode():
+    profile = _profile_with_two_recipes()
+    routine_overrides = {"preprocess": {"default": {"normalize": {"mode": "any"}}}}
+    resolved = resolve(
+        {"profile_file": "profile.json",
+         "preprocess": {"default": {"normalize": "median"}},
+         "statistics": [_pca()]},
+        profile,
+        routine_overrides=routine_overrides,
+    )
+    assert resolved["preprocess"]["default"]["normalize"] == "median"
+
+
+def test_routine_preprocess_override_allowed_by_values_mode():
+    profile = _profile_with_two_recipes()
+    routine_overrides = {
+        "preprocess": {"default": {"normalize": {"mode": "values", "values": ["tic"]}}},
+    }
+    resolved = resolve(
+        {"profile_file": "profile.json",
+         "preprocess": {"default": {"normalize": "tic"}},
+         "statistics": [_pca()]},
+        profile,
+        routine_overrides=routine_overrides,
+    )
+    assert resolved["preprocess"]["default"]["normalize"] == "tic"
+
+
+def test_routine_preprocess_override_field_not_named_in_allowance_rejected():
+    """recipe_idは許容されていても、そのfield自体が宣言に無ければ拒否
+    （fieldごとの粒度）。"""
+    profile = _profile_with_two_recipes()
+    routine_overrides = {
+        "preprocess": {"default": {"impute": {"mode": "any"}}},  # normalizeは宣言されていない
+    }
+    with pytest.raises(DomainError, match="PROFILE_SCOPE_MISMATCH"):
+        resolve(
+            {"profile_file": "profile.json",
+             "preprocess": {"default": {"normalize": "tic"}},
+             "statistics": [_pca()]},
+            profile,
+            routine_overrides=routine_overrides,
+        )
+
+
+def test_validation_purpose_ignores_routine_overrides_entirely():
+    """execution_purpose='validation'ではroutine_overridesを一切参照しない
+    ——まだ証明書が検証していない値を試すのがvalidationの目的だから。
+    routine_overrides=None（何も許容していない）でも構造的に妥当な上書きは
+    通る。"""
+    profile = _profile_with_two_recipes()
+    resolved = resolve(
+        {"profile_file": "profile.json", "execution_purpose": "validation",
+         "preprocess": {"default": {"normalize": "median"}},
+         "statistics": [_pca()]},
+        profile,
+        routine_overrides=None,
+    )
+    assert resolved["preprocess"]["default"]["normalize"] == "median"
+
+
+def test_resolve_request_dispatch_passes_routine_overrides_through(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    profile = _profile_with_two_recipes()
+    routine_overrides = {"preprocess": {"default": {"normalize": {"mode": "any"}}}}
+    resolved = request_v1.resolve_request(
+        root,
+        {"schema": "pipeline-request.v2", "profile_file": "profile.json",
+         "preprocess": {"default": {"normalize": "median"}}, "statistics": [_pca()]},
+        profile=profile, routine_overrides=routine_overrides,
+    )
+    assert resolved["preprocess"]["default"]["normalize"] == "median"
+
+
+def test_merge_updates_dispatch_passes_routine_overrides_through():
+    profile = _profile_with_two_recipes()
+    routine_overrides = {"preprocess": {"default": {"normalize": {"mode": "any"}}}}
+    resolved = resolve({"profile_file": "profile.json", "statistics": [_pca()]}, profile)
+    updated = request_v1.merge_updates(
+        resolved, {"preprocess": {"default": {"normalize": "median"}}},
+        profile=profile, routine_overrides=routine_overrides,
+    )
+    assert updated["preprocess"]["default"]["normalize"] == "median"
 
 
 def test_preprocess_override_unknown_recipe_rejected():

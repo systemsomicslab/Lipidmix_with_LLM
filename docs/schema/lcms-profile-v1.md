@@ -246,8 +246,11 @@ field path（ドット区切りの識別子列、例 `"acquisition.lc.column"`�
 
 ## 証明書 `lcms-profile-validation.v1`
 
-`validate_certificate(profile, certificate, observed_hashes)`が検証する。10キー
-ちょうど:
+`validate_certificate(profile, certificate, observed_hashes) -> dict`が検証し、
+全検証に通った場合のみ正規化済み証明書を返す（失敗時は`None`を返さず
+`DomainError`を送出する——「副作用なし」は変わらないが、戻り値は
+`dict | 例外`の二択になった）。10キー必須＋`routine_overrides`が任意の
+**11キーまで**:
 
 | フィールド | 型 | 内容 |
 |---|---|---|
@@ -261,6 +264,7 @@ field path（ドット区切りの識別子列、例 `"acquisition.lc.column"`�
 | `performed_by` | str | 実施者 |
 | `performed_at` | str | 実施日時 |
 | `scope` | str | `profile.validation.scope`と一致必須 |
+| `routine_overrides` | object | **任意**（省略可）。`execution_purpose="routine"`が上書きできる範囲の明示宣言。下記「`routine_overrides`」節 |
 
 `observed_hashes`は呼び出し側が実測した参照値（`{"dependencies": {...},
 "fixed_inputs": {...}, "reference_files": {...}, "validation_outputs": {...}}`）。
@@ -277,7 +281,57 @@ field path（ドット区切りの識別子列、例 `"acquisition.lc.column"`�
 5. 4種のhash辞書が対応する`observed_hashes`のカテゴリと完全一致。
 6. `required=true`の`criteria`が全て`status="pass"`。
 
+**`routine_overrides`は上記いずれの手順よりも先に「構造だけ」検証される**
+（証明書全体の構造検証`_validate_certificate_shape`の一部）が、その中身が
+呼び出し側にとって**意味を持つ**のは、上記6手順すべてを通過し
+`validate_certificate`が正常に戻り値を返した後だけである。つまり、
+`validation.status='validated'`というラベルだけでは何も証明しない——
+証明書自体がpinされたhashと一致しない・profile内容と一致しない等の理由で
+手順2〜6のどこかで拒否されれば、`routine_overrides`がどれだけ許容的な
+内容であっても、その内容は呼び出し側に一切渡らない
+（`test_hand_written_validated_with_mismatched_certificate_rejected_before_allowance_consulted`
+がこの順序を固定する）。
+
 署名認証基盤（鍵管理・電子署名）は実装しない。
+
+### `routine_overrides`（spec §6「証明書の明示許容集合」）
+
+`execution_purpose="routine"`のrequestが`preprocess`をどこまで上書きできるかを
+証明書自身が明示的に宣言する——**fail-closed**: このキー自体が無ければ
+`{}`として扱われ、routineでは何も上書きできない（Task 1が書いた既存の
+証明書fixtureはこのキーを持たないが、そのまま有効であり続ける。マイグレー
+ション不要）。
+
+```json
+"routine_overrides": {
+  "preprocess": {
+    "<recipe_id>": {
+      "<field>": {"mode": "any"}
+      // または
+      "<field>": {"mode": "values", "values": [<v1>, <v2>, ...]}
+    }
+  }
+}
+```
+
+- トップレベルのカテゴリキーは現状`preprocess`だけ（未知のカテゴリは
+  `PROFILE_VALIDATION_INVALID`）。将来別カテゴリ（例:
+  検定の比較群変更）を追加する余地を残すための開いた構造。
+- `<recipe_id>`は`matrix_recipes`のキーである必要はない（証明書は
+  profile本体を跨いで再利用されうるため、参照整合性はここでは検査しない
+  ——`request_v2`側が実際の`profile.matrix_recipes`と突き合わせて判定する）。
+- `<field>`は`normalize` / `drift_correct` / `filter` / `impute`のいずれか
+  （未知のfieldは拒否）。
+- 許容は`{"mode": "any"}`（どんな値への上書きも許可）または
+  `{"mode": "values", "values": [...]}`（列挙した値だけ許可。`values`は
+  非空必須）の**どちらか一方**——2つのキー以外は許可しない
+  （`{"mode": "any", "values": [...]}`のような混在は拒否）。
+- **明示のみ**: この宣言に無いrecipe_id×fieldへの上書きは、profile本体の
+  他の場所に同じ値が現れていても許可されない——「profile自身が既に使って
+  いる値だから」という推測による許容は行わない（controller裁定。以前の
+  `request_v2`独自ルールがこの理由で差し戻された）。
+- `execution_purpose="validation"`ではこの宣言を一切参照しない
+  （validation目的はまだ証明書が検証していない値を試すためのものだから）。
 
 **`acquisition.scope`は証明書と機械比較されない**。上の手順4が突合するのは
 `validation.scope`だけである。`acquisition.scope`（測定法が原理的に対応する
@@ -377,15 +431,16 @@ field path（ドット区切りの識別子列、例 `"acquisition.lc.column"`�
 }
 ```
 
-## routine実行が上書きできる範囲（将来のrequest v2向けの指針）
+## routine実行が上書きできる範囲
 
-このモジュール自体はMCP requestを扱わないが、spec §6が定める
-`pipeline-request.v2`（未実装・後続タスク）の設計指針として: `matrix_recipes` /
-`feature_targets` / `analysis_recipe` / `qc_policy` はprofileの固定契約であり、
-値を変えるには新しいprofile revisionと再検証が要る。`execution_purpose=routine`
-のrequestが実行時に指定できるのは、あくまで「どのrecipe/statisticを選ぶか」
-（`matrix_recipe_id`・`statistic_id`の選択）や `preprocess` の明示上書きに限られ、
-証明書が検証した適用範囲（`validation.scope`）の外に出る変更は
-`PROFILE_SCOPE_MISMATCH` で拒否される想定（spec §6「routineで許される比較群の
-変更等は証明書の適用範囲内に限定する」）。この許容範囲の実装・検証は本タスクの
-範囲外（後続タスクでrequest v2として実装される）。
+`matrix_recipes` / `feature_targets` / `analysis_recipe` / `qc_policy` はprofileの
+固定契約であり、値を変えるには新しいprofile revisionと再検証が要る。
+`execution_purpose=routine`のrequestが実行時に指定できるのは、あくまで
+「どのrecipe/statisticを選ぶか」（`matrix_recipe_id`・`statistic_id`の選択）や
+`preprocess`の明示上書きに限られ、証明書が明示的に許容した範囲
+（上記「証明書 `lcms-profile-validation.v1`」節の`routine_overrides`）の外に
+出る変更は`PROFILE_SCOPE_MISMATCH`で拒否される（spec §6「routineで許される
+比較群の変更等は証明書の適用範囲内に限定する」）。この判定は
+`lipidmix.pipeline.request_v2`（`docs/schema/pipeline-request-v2.md`）が
+`validate_certificate`の戻り値の`routine_overrides`を消費して行う——
+このモジュール自体はMCP requestを扱わない。

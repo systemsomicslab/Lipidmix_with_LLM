@@ -24,31 +24,32 @@ v2既定値」。`statistics`だけがこの4段すべてに乗る（他フィ�
 `"explicit"` / `"request_file"` / `"profile_default"` / `"v2_default"`の
 4値、他は`"explicit"` / `"request_file"` / `"default"`の3値。
 
-## routine許容範囲の未実装（既知のgap。実装しない理由）
+## routine許容範囲: 証明書の`routine_overrides`とだけ照合する
 
-spec §6「routineで証明書の許容範囲外になる場合は`PROFILE_SCOPE_MISMATCH`」・
-`docs/schema/lcms-profile-v1.md`「routine実行が上書きできる範囲」・
-task-1-report.md（該当節を「将来指針」と明記）はいずれも、routineの
-`preprocess`上書き許容範囲を判定する具体的でmachine-checkableな集合を
-**定義していない**——「証明書の明示許容集合」という言葉だけがあり、
-`lcms-profile-validation.v1`の証明書schema（`profile_schema._CERTIFICATE_KEYS`:
-`schema` / `profile_content_sha256` / `dependency_hashes` /
-`fixed_input_hashes` / `reference_file_hashes` / `validation_output_hashes` /
-`criteria` / `performed_by` / `performed_at` / `scope`）にはそれを表す
-フィールドが存在しない。`scope`は自由記述文字列であり、上書き値の許容判定に
-機械的に使える構造を持たない。
+spec §6「routineで証明書の許容範囲外になる場合は`PROFILE_SCOPE_MISMATCH`」を、
+証明書（`lcms-profile-validation.v1`）が持つ`routine_overrides`という
+明示的・構造化されたフィールドと照合することで実装する
+（`profile_schema.validate_certificate`の戻り値。詳細は
+`docs/schema/lcms-profile-v1.md`「証明書 `routine_overrides`」節）。
+`execution_purpose="routine"`のpreprocess上書きは、この
+`routine_overrides["preprocess"][recipe_id][field]`が
+`{"mode": "any"}`（任意の値を許可）または`{"mode": "values", "values": [...]}`
+（列挙した値だけ許可）と宣言していない限り、**すべて**`PROFILE_SCOPE_MISMATCH`
+で拒否する（**fail-closed・explicit only**——`routine_overrides`省略時・
+対象recipe_id/field未宣言時は無条件で拒否。profile本体の他の場所（他の
+recipeの値等）から範囲を推測することは一切しない）。
 
 このモジュールは以前の実装で「profile自身が持ついずれかのmatrix_recipes
 エントリに既に現れる値」という代替規則を独自に発明していたが、controller
 裁定によりこれは差し戻された——存在しない契約を肩代わりして実装すると、
-後から見て「これが仕様だ」と誤読される。したがって**現状、
-`execution_purpose`による`preprocess`上書きの差別化は実装しない**
-（routine/validationのどちらでも同じ構造検証だけを課す）。`PROFILE_SCOPE_MISMATCH`
-はこのモジュールからは送出されない——実データに対する`feature_bindings`
+後から見て「これが仕様だ」と誤読される。証明書側に構造化フィールドを
+追加する形で解決済み（詳細はTask 3のfix report「Concern 2」参照）。
+
+`execution_purpose="validation"`ではこの照合を一切行わない——validation実行は
+まだ証明書が検証していない値を試すためのものだから。`feature_bindings`
 選択の許容判定（§6.2「選択はprofileの許容規則内に限定し、外れれば
-PROFILE_SCOPE_MISMATCH」）も同様の理由で未実装（後述）。担当モジュール・
-具体的な集合の形は、task-3-report.mdの「Concern 2」としてcontrollerへ
-報告し、裁定を仰ぐ。
+PROFILE_SCOPE_MISMATCH」）は実データ（dataset）へのアクセスを要するため
+引き続き未実装——後続の`resolve_feature_bindings`stageの責務（下記参照）。
 
 ## feature_bindings（spec §6.2）の扱い
 
@@ -160,6 +161,10 @@ _NULL_REJECTED_TOP_LEVEL_KEYS = frozenset({
 
 def _fail(message: str, **details) -> None:
     raise DomainError("PIPELINE_REQUEST_INVALID", message, details)
+
+
+def _fail_scope(message: str, **details) -> None:
+    raise DomainError("PROFILE_SCOPE_MISMATCH", message, details)
 
 
 def _reject_disallowed_explicit_null(source: dict, keys) -> None:
@@ -518,12 +523,59 @@ def _validate_matrix_recipe_override(value: object, label: str, recipe: dict) ->
     return out
 
 
-def _validate_preprocess(value: object, matrix_recipes: dict) -> dict:
+def _check_routine_scope(
+    recipe_id: str, field: str, value: object, routine_overrides: dict | None,
+) -> None:
+    """`execution_purpose='routine'`のpreprocess上書きを、証明書の明示許容集合
+    （`profile_schema.validate_certificate`の戻り値の`routine_overrides`）と
+    だけ照合する（spec §6・controller裁定）。
+
+    **fail-closed・explicit only**: ``routine_overrides``が``None``・
+    対象のcategoryが無い・対象の``recipe_id``が無い・対象の``field``が
+    宣言されていない、のいずれでも拒否する。profile本体（`matrix_recipes`
+    の他エントリ等）から範囲を推測することは一切しない——以前の実装
+    （「profile自身が使っている値なら許可」）はこの理由でcontrollerに
+    差し戻された。
+    """
+    preprocess_allowances = (routine_overrides or {}).get("preprocess") or {}
+    recipe_allowances = preprocess_allowances.get(recipe_id) or {}
+    allowance = recipe_allowances.get(field)
+    if not isinstance(allowance, dict):
+        _fail_scope(
+            f"execution_purpose='routine'ではpreprocess[{recipe_id!r}].{field}の"
+            "上書きは証明書の明示許容集合(routine_overrides)に含まれていません。",
+            recipe_id=recipe_id, field=field,
+        )
+        return
+    mode = allowance.get("mode")
+    if mode == "any":
+        return
+    if mode == "values":
+        allowed_values = allowance.get("values") or []
+        if value not in allowed_values:
+            _fail_scope(
+                f"execution_purpose='routine'ではpreprocess[{recipe_id!r}].{field}を"
+                f"{value!r}へ上書きできません（証明書が許可する値: {allowed_values!r}）。",
+                recipe_id=recipe_id, field=field, value=value, allowed_values=allowed_values,
+            )
+        return
+    # routine_overridesはprofile_schema.validate_certificateが検証済みの
+    # 前提で受け取るため、通常ここへは来ない（防御的な扱い）。
+    _fail_scope(
+        f"証明書のroutine_overrides[{recipe_id!r}][{field!r}]が不正です（mode不明）: "
+        f"{mode!r}", recipe_id=recipe_id, field=field,
+    )
+
+
+def _validate_preprocess(
+    value: object, matrix_recipes: dict, execution_purpose: str, routine_overrides: dict | None,
+) -> dict:
     """spec §6「preprocess: profileの既定値を明示指定で上書き可能」。
 
-    ``execution_purpose``による差別化（routineの許容範囲制限）は現状実装
-    しない——このモジュールのdocstring「routine許容範囲の未実装」を参照
-    （task-3-report.md Concern 2）。
+    ``execution_purpose="routine"``では、上書きした各フィールドを
+    ``routine_overrides``（証明書由来の明示許容集合）と照合する
+    （`_check_routine_scope`）。``"validation"``ではこの照合をしない——
+    validation実行はまだ証明書が検証していない値を試すためのものだから。
     """
     if value is None:
         return {}
@@ -535,8 +587,12 @@ def _validate_preprocess(value: object, matrix_recipes: dict) -> dict:
         if recipe_id not in matrix_recipes:
             _fail(f"preprocessが存在しないrecipeを参照しています: {recipe_id!r}",
                   recipe_id=recipe_id)
-        out[recipe_id] = _validate_matrix_recipe_override(
+        normalized_override = _validate_matrix_recipe_override(
             override, f"preprocess[{recipe_id!r}]", matrix_recipes[recipe_id])
+        if execution_purpose == "routine":
+            for field, field_value in normalized_override.items():
+                _check_routine_scope(recipe_id, field, field_value, routine_overrides)
+        out[recipe_id] = normalized_override
     return out
 
 
@@ -613,7 +669,10 @@ def _layer_top_level(explicit: dict, from_file: dict) -> tuple[dict, dict]:
 
 # ---------- 公開API ----------
 
-def resolve(data: dict, profile: dict, *, from_file: dict | None = None) -> dict:
+def resolve(
+    data: dict, profile: dict, *, from_file: dict | None = None,
+    routine_overrides: dict | None = None,
+) -> dict:
     """`pipeline-request.v2`を検証・解決する（spec §6, §6.2）。
 
     ``data``は「MCP明示値」の層そのもの。``from_file``（省略可）は
@@ -625,7 +684,11 @@ def resolve(data: dict, profile: dict, *, from_file: dict | None = None) -> dict
 
     ``profile``は既に検証済みの``lcms-profile.v1``相当のdict（このモジュール
     が実際に参照するのは``matrix_recipes`` / ``feature_targets`` /
-    ``analysis_recipe.statistics``の3つだけ）。
+    ``analysis_recipe.statistics``の3つだけ）。``routine_overrides``（省略可）
+    は``profile_schema.validate_certificate``の戻り値の同名キー——
+    ``execution_purpose="routine"``のpreprocess上書きをこの明示許容集合とだけ
+    照合する（spec §6）。**省略時（``None``）はfail-closed**: routineでは
+    何も上書きできない。
 
     未指定と明示nullの区別（``_NULL_REJECTED_TOP_LEVEL_KEYS``）は**新規の
     明示入力に対してだけ**行う——``data``と``from_file``それぞれに対して
@@ -647,14 +710,16 @@ def resolve(data: dict, profile: dict, *, from_file: dict | None = None) -> dict
               value=from_file)
 
     merged, sources = _layer_top_level(data, from_file)
-    resolved, statistics_fallback_source = _resolve_core(merged, profile)
+    resolved, statistics_fallback_source = _resolve_core(merged, profile, routine_overrides)
     resolved["value_sources"] = sources
     if "statistics" not in merged:
         resolved["value_sources"]["statistics"] = statistics_fallback_source
     return resolved
 
 
-def _resolve_core(data: dict, profile: dict) -> tuple[dict, str | None]:
+def _resolve_core(
+    data: dict, profile: dict, routine_overrides: dict | None = None,
+) -> tuple[dict, str | None]:
     """``resolve``/``merge_updates``が共有する検証本体（明示null拒否を含まない）。
 
     戻り値は``(解決済みdict（value_sourcesを含まない）, statisticsが
@@ -730,7 +795,8 @@ def _resolve_core(data: dict, profile: dict) -> tuple[dict, str | None]:
     standard_assays = _validate_standard_assays(data.get("standard_assays"), feature_target_ids)
     feature_bindings = _validate_feature_bindings(
         data.get("feature_bindings"), feature_target_ids)
-    preprocess = _validate_preprocess(data.get("preprocess"), matrix_recipes)
+    preprocess = _validate_preprocess(
+        data.get("preprocess"), matrix_recipes, execution_purpose, routine_overrides)
 
     resolved = {
         "schema": SCHEMA,
@@ -752,7 +818,9 @@ def _resolve_core(data: dict, profile: dict) -> tuple[dict, str | None]:
     return resolved, statistics_fallback_source
 
 
-def merge_updates(current: dict, updates: dict, profile: dict) -> dict:
+def merge_updates(
+    current: dict, updates: dict, profile: dict, *, routine_overrides: dict | None = None,
+) -> dict:
     """resumeの入力訂正を反映し、再検証した v2 request を返す（spec §6.1, §6.2）。
 
     ``UPDATABLE``（target・sample_manifest・preprocess・statistics・
@@ -764,7 +832,10 @@ def merge_updates(current: dict, updates: dict, profile: dict) -> dict:
 
     ``feature_bindings``の更新は初回``resolve``と全く同じ``_validate_feature_bindings``
     を通る（``_resolve_core``経由）——brief「feature_bindingsは初回指定も
-    resumeも同じ検査を通す」はこの共有によって満たされる。
+    resumeも同じ検査を通す」はこの共有によって満たされる。``preprocess``の
+    更新も同様に、初回``resolve``と全く同じ``_check_routine_scope``を通る
+    ——``routine_overrides``は呼び出し側が都度渡す（resumeでも証明書の
+    再検証・再取得は呼び出し側の責務のまま）。
     """
     if not isinstance(current, dict):
         _fail("requestはオブジェクトである必要があります。", value=current)
@@ -784,7 +855,7 @@ def merge_updates(current: dict, updates: dict, profile: dict) -> dict:
     for key, value in updates.items():
         merged[key] = copy.deepcopy(value)
 
-    resolved, _fallback_source = _resolve_core(merged, profile)
+    resolved, _fallback_source = _resolve_core(merged, profile, routine_overrides)
 
     # 出所は「保存済みの既存値」を土台に、updatesへ挙がったキーだけを
     # explicit_updateへ格上げする——merged自体は常に全キー揃っているため、
