@@ -345,7 +345,7 @@ npz（allow_pickle=False）＋JSON metaをatomic保存する。matrix IDはdatas
 
 **Interfaces:** `aggregate_counts(p: int, f: int, u: int, threshold: float) -> str`、`evaluate_qc(matrix: dict, evidence: dict, metadata: list[dict], policy: list[dict], population: dict | None) -> dict`。populationにはmetric別のfeature/assay IDとhash。出力はmetric結果、batch状態、別のeligibility提案。
 
-- [ ] RED: 全6metric、標準品とQC混同、QC2本、mask不明、blank0、全欠損、補完後RSD禁止、filter後の分母保持。
+- [x] RED: 全6metric、標準品とQC混同、QC2本、mask不明、blank0、全欠損、補完後RSD禁止、filter後の分母保持。
 
 ```python
 from lipidmix.analysis.assay_qc import aggregate_counts
@@ -356,8 +356,8 @@ def test_exclusion_does_not_turn_failed_batch_into_pass():
     assert aggregate_counts(0, 0, 0, .8) == "not_evaluable"
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_assay_qc.py -q`。
-- [ ] Implement:
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_assay_qc.py -q`。
+- [x] Implement:
 
 ```python
 def aggregate_counts(p, f, u, threshold):
@@ -370,8 +370,8 @@ def aggregate_counts(p, f, u, threshold):
 ```
 
 生物群・batch・poolごとにspecの式を適用。infinite blank_foldはJSONでInfinityを出さず`value=null, special_value=positive_infinity`として閾値比較の意味を保持する。初回populationを後段も再利用し、metric不在はnot_evaluable。QC除外はmatrix eligibilityにだけ反映し、QC結果を再集計しない。drift前提不足はneeds_input理由を返す。
-- [ ] GREEN: 上記と`tests/test_preprocess_policy.py`。
-- [ ] Commit: 3ファイル、`git commit -m "feat: QC母集団と解析filterを分離"`。
+- [x] GREEN: 上記と`tests/test_preprocess_policy.py`。
+- [x] Commit: 3ファイル、`git commit -m "feat: QC母集団と解析filterを分離"`。
 
 **Review B:** A08〜A13、A21〜A26。2バッチでbindingが変わってもprofile不変、RTは注入単位、0分母は補完されず、filterでQC合格を作れないことを確認する。
 
