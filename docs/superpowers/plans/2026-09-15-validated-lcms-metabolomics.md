@@ -278,7 +278,7 @@ def normalize_cell(cell, source_rt_unit):
 
 **Interfaces:** `resolve_candidates(candidates: list[dict]) -> dict`、`bind_features(ds, profile: dict, evidence: dict, standard_assays: dict, overrides: dict | None) -> dict`。候補dictはfeature_id、qualified、reasons、evidence_refs。結果はfeature-bindings.v1。
 
-- [ ] RED: 以下に加え、同規則の2dataset、同名異性候補、adduct/charge不一致、証拠不足、別dataset overrideを拒否する。
+- [x] RED: 以下に加え、同規則の2dataset、同名異性候補、adduct/charge不一致、証拠不足、別dataset overrideを拒否する。
 
 ```python
 from lipidmix.analysis.feature_bindings import resolve_candidates
@@ -290,8 +290,8 @@ def test_two_qualified_candidates_need_input():
     assert out["selected"] is None
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_feature_bindings.py -q`。
-- [ ] Implement: m/z ppm、RT分、化合物ID、adduct/charge、必要証拠をANDで評価する。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_feature_bindings.py -q`。
+- [x] Implement: m/z ppm、RT分、化合物ID、adduct/charge、必要証拠をANDで評価する。
 
 ```python
 def resolve_candidates(candidates):
@@ -302,8 +302,8 @@ def resolve_candidates(candidates):
 ```
 
 overrideはqualified候補の選択に限定し、理由必須。0候補で無関係featureを強制採用しない。library_matchとauthentic_standard_matchはsource hash・score条件を満たす証拠を要求する。初期profileと解決結果のhashを混ぜない。
-- [ ] GREEN: 同テスト。0候補と複数候補のneeds_input理由が区別されることを確認。
-- [ ] Commit: 2ファイルをstageし、`git commit -m "feat: バッチごとのfeature対応付けを追加"`。
+- [x] GREEN: 同テスト。0候補と複数候補のneeds_input理由が区別されることを確認。
+- [x] Commit: 2ファイルをstageし、`git commit -m "feat: バッチごとのfeature対応付けを追加"`。
 
 ## Task 8: 内部標準比と版管理したmatrix
 
