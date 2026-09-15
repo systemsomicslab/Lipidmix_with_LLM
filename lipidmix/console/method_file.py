@@ -41,6 +41,37 @@ _PARAM_FILENAME = re.compile(r"_param_\d+\.txt$", re.IGNORECASE)
 
 LBM_KEY = "Lbm file path"
 
+#: metabolomics向け依存キー（spec §5.1）。MS-DIAL 5 Console
+#: (`tests/MSDIAL5/MsdialCoreTestApp`) のソースで実際に読まれることを確認済み
+#: （証拠: MsdialWorkbench コミット afd5f9522fa2f11990e1ad51f88b22eef00a087c,
+#: 2026-09-08 時点 `master`）。
+#:
+#: - `MSP_KEY`: `ParameterBase.MspFilePath` / `ConfigParser.cs` の
+#:   `case "msp file path": param.MspFilePath = value;`。`CommonProcess.cs`が
+#:   `LibraryHandler.ReadMsLibrary(param.MspFilePath, ...)` で読み、
+#:   `DataBaseSource.Msp` として同定に使う。
+#: - `TEXT_DB_KEY`: `ParameterBase.TextDBFilePath` / `ConfigParser.cs` の
+#:   `case "text db file path": param.TextDBFilePath = value;`。同じく
+#:   `CommonProcess.cs`が`LibraryHandler.ReadMsLibrary(param.TextDBFilePath, ...)`
+#:   で読み、`DataBaseSource.Text` として同定に使う（msp/lbmと並ぶテキスト形式の
+#:   同定用データベース——`lcms-profile.v1`の`kind="text_identification"`に対応）。
+#: - `RT_REFERENCE_KEY`: `ParameterBase.CompoundListForRtCorrectionPath` /
+#:   `ConfigParser.cs`の`case "compounds library file path for rt correction"`。
+#:   `RetentionTimeCorrectionProcess.cs`が「RT correction anchor library」として
+#:   読み、宣言が無い・ファイルが無い場合はConsole自身がそこで停止する
+#:   （`kind="rt_reference"`に対応）。
+#:
+#: 見つかったが対応させなかったキー: `IsotopeTextDBFilePath`
+#: （"Isotope text DB file path"）はアイソトープ追跡専用で、
+#: `msp/lbm/text_identification/rt_reference`のどれにも該当しないため
+#: 未登録（推測でkindへ割り当てない）。`CompoundListInTargetModePath`
+#: （"Compounds library file path for target detection"）はターゲットモード
+#: 検出専用（同定ではなく検出）で、同定用の`text_identification`とは役割が違うため
+#: 別扱いのまま残す。
+MSP_KEY = "Msp file path"
+TEXT_DB_KEY = "Text db file path"
+RT_REFERENCE_KEY = "Compounds library file path for RT correction"
+
 ION_MODE_KEY = "Ion mode"
 ADDUCT_KEY = "Searched adduct ions"
 
@@ -530,7 +561,26 @@ def discover_method_candidates(
 #: （spec §4.3「未知キーの値をパスと決め付けてコピーしない」）。
 #: LBM自体は既存の resolve_lbm（build_tree/env/exe_dir へのフォールバックを持つ）
 #: が別途解決するが、「宣言されているのに解決できない」場合の検出はここが担う。
-REFERENCE_KEYS: frozenset[str] = frozenset({LBM_KEY.lower()})
+#:
+#: metabolomicsプロファイル（spec §5.1）が使う msp/text_identification/
+#: rt_reference の3キーもここに含める——lipidomics/metabolomicsを問わず、
+#: 「宣言されたら実在確認する」という既知参照キーの性質は同じであるため
+#: （個々のkindがどのadapterで実際に使えるかは`profile_adapter`のallowlistが
+#: 別途検証する。ここでの登録は「構造的に既知の参照キーである」ことだけを示す）。
+REFERENCE_KEYS: frozenset[str] = frozenset({
+    LBM_KEY.lower(), MSP_KEY.lower(), TEXT_DB_KEY.lower(), RT_REFERENCE_KEY.lower(),
+})
+
+#: REFERENCE_KEYSの小文字キー→表示用の元の大文字小文字混じり表記。
+#: `write_effective_method_file`のoverridesへ書き戻すときの見出しに使う
+#: （Console自身はconfig読込時に小文字化するので機能的には無関係だが、
+#: 実効メソッドファイルの可読性のため既存の表記に揃える）。
+REFERENCE_KEY_DISPLAY: dict[str, str] = {
+    LBM_KEY.lower(): LBM_KEY,
+    MSP_KEY.lower(): MSP_KEY,
+    TEXT_DB_KEY.lower(): TEXT_DB_KEY,
+    RT_REFERENCE_KEY.lower(): RT_REFERENCE_KEY,
+}
 
 
 def method_reference_fingerprint(

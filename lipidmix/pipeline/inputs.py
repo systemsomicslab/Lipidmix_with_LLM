@@ -416,7 +416,7 @@ def inspect_inputs(source_root: Path, request: dict, *, exe_path: Path) -> dict:
     method_keys = method_file_mod.read_method_keys(method_path)
 
     # 最終選択後にだけ厳格な参照解決を行う（select_methodのグルーピングは弱い版）。
-    method_file_mod.resolve_method_references(method_keys, method_path)
+    resolved_references = method_file_mod.resolve_method_references(method_keys, method_path)
 
     polarity = _resolve_polarity(request, method_path)
     exe_info = _resolve_exe(Path(exe_path))
@@ -442,6 +442,19 @@ def inspect_inputs(source_root: Path, request: dict, *, exe_path: Path) -> dict:
             # 原本に宣言が無く、build_tree/env/exe_dirへフォールバックした場合は
             # 元々そのキーの行自体が無いので、そのまま新規追加する。
             overrides[method_file_mod.LBM_KEY] = lbm_info["path"]
+
+    # LBM以外の既知参照キー（Msp file path等、method_file.REFERENCE_KEYS参照）も、
+    # 実効コピーはpipeline_root配下の別ディレクトリに置かれるため、宣言値が相対
+    # 参照だとLBMと同じ理由でコピー後に意味が変わる（Consoleは実効コピー自身の
+    # 場所を基準に相対参照を解決する）。resolve_method_referencesがここまでに
+    # 原本基準で解決済みの絶対パスへ、LBM同様に書き換える（spec §4.3・§5.1）。
+    for lower_key, resolved_path in resolved_references.items():
+        if lower_key == method_file_mod.LBM_KEY.lower():
+            continue  # LBMは上のbuild_tree/env/exe_dirフォールバックを含む専用ロジックが扱う
+        declared_value = (method_keys.get(lower_key) or "").strip()
+        if declared_value and not Path(declared_value).is_absolute():
+            display_key = method_file_mod.REFERENCE_KEY_DISPLAY[lower_key]
+            overrides[display_key] = str(resolved_path)
 
     return {
         "source_root": str(source_root.resolve()),

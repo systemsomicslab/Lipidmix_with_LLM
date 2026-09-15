@@ -1,0 +1,481 @@
+"""`lipidmix.console.profiles` / `profile_adapter` の統合テスト（spec §5, §5.1, §6.1）。
+
+`lipidmix.console.profile_schema` の構造検証は `tests/test_lcms_profile_schema.py`。
+ここは実ファイル（method・依存・実行体）を使う統合層: `load_profile` →
+`resolve_profile_inputs` → `snapshot_profile` の一気通貫と、`method_file.py`の
+既知参照キー拡張が`lipidmix.pipeline.inputs.inspect_inputs`（LBM以外の相対参照の
+絶対化）へ正しく波及することを検証する。fixtureはこのテスト自身が全て
+`tmp_path`配下に組み立てる。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from lipidmix.console import method_file as method_file_mod
+from lipidmix.console import profile_adapter
+from lipidmix.console import profiles
+from lipidmix.core.atomic_io import DomainError
+
+
+# ---------- fixtureヘルパ ----------
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write(path: Path, content: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content.encode("ascii"))
+    return path
+
+
+def _write_fake_exe(base: Path) -> Path:
+    """実行体+同梱DLL/設定を並べる（実行環境manifestの列挙対象）。"""
+    exe_dir = base / "msdial_app"
+    exe = _write(exe_dir / "MSDIALCUI.exe", "fake-msdial-console-exe")
+    _write(exe_dir / "MsdialCore.dll", "fake-msdialcore-dll")
+    _write(exe_dir / "MSDIALCUI.exe.config", "<configuration/>")
+    _write(exe_dir / "MSDIALCUI.pdb", "not-a-companion")  # .pdbは対象外（無視される）
+    return exe
+
+
+def _msp_dependency(msp_path: Path, *, required: bool = True) -> dict:
+    return {
+        "dependency_id": "msp-lib-1", "kind": "msp", "method_key": method_file_mod.MSP_KEY,
+        "path": str(msp_path), "sha256": _sha256(msp_path), "required": required,
+    }
+
+
+def _text_dependency(text_path: Path, *, required: bool = True) -> dict:
+    return {
+        "dependency_id": "text-db-1", "kind": "text_identification",
+        "method_key": method_file_mod.TEXT_DB_KEY,
+        "path": str(text_path), "sha256": _sha256(text_path), "required": required,
+    }
+
+
+def _build_profile(tmp_path, *, method_lines: str, dependencies: list[dict],
+                    exe: Path, polarity: str = "positive", msdial_version: str = "5.x") -> dict:
+    method = _write(tmp_path / "method" / "params.txt", method_lines)
+    return {
+        "schema": "lcms-profile.v1",
+        "profile_id": "kanzo-lcms-metabolomics",
+        "revision": 1,
+        "omics": "metabolomics",
+        "acquisition": {
+            "separation": "lc",
+            "acquisition_type": "dda",
+            "polarity": polarity,
+            "instrument": None,
+            "lc": {
+                "column": None, "mobile_phase_a": None, "mobile_phase_b": None,
+                "flow_rate_ul_min": None, "column_temperature_c": None, "gradient_profile": None,
+            },
+            "ms_range": {
+                "ms1_low_mz": 50.0, "ms1_high_mz": 1500.0,
+                "ms2_low_mz": None, "ms2_high_mz": None,
+            },
+            "sample_matrix": None,
+            "scope": "single LC method, DDA acquisition, peak height only",
+        },
+        "software": {
+            "msdial_version": msdial_version,
+            "executable_path": str(exe),
+            "executable_sha256": _sha256(exe),
+            "adapter_version": "1.0.0",
+        },
+        "processing": {
+            "method_path": str(method),
+            "method_sha256": _sha256(method),
+            "measure": "peak_height",
+            "dependencies": dependencies,
+            "effective_settings": {},
+        },
+        "analysis_recipe": {"statistics": [], "internal_standards": []},
+        "feature_targets": {},
+        "matrix_recipes": {
+            "default": {"base": "peak_height", "normalize": "none",
+                        "drift_correct": False, "filter": None, "impute": "none"},
+        },
+        "qc_policy": {},
+        "evidence": {
+            "acquisition.instrument": {
+                "value": None, "reason": "テスト用fixtureのため未記載。", "tier": "proposed",
+                "source_uri": None, "source_hash": None, "location": None,
+            },
+            "acquisition.sample_matrix": {
+                "value": None, "reason": "テスト用fixtureのため未記載。", "tier": "proposed",
+                "source_uri": None, "source_hash": None, "location": None,
+            },
+            "acquisition.lc.column": {
+                "value": None, "reason": "テスト用fixtureのため未記載。", "tier": "proposed",
+                "source_uri": None, "source_hash": None, "location": None,
+            },
+            "acquisition.lc.mobile_phase_a": {
+                "value": None, "reason": "テスト用fixtureのため未記載。", "tier": "proposed",
+                "source_uri": None, "source_hash": None, "location": None,
+            },
+            "acquisition.lc.mobile_phase_b": {
+                "value": None, "reason": "テスト用fixtureのため未記載。", "tier": "proposed",
+                "source_uri": None, "source_hash": None, "location": None,
+            },
+            "acquisition.lc.flow_rate_ul_min": {
+                "value": None, "reason": "テスト用fixtureのため未記載。", "tier": "proposed",
+                "source_uri": None, "source_hash": None, "location": None,
+            },
+            "acquisition.lc.column_temperature_c": {
+                "value": None, "reason": "テスト用fixtureのため未記載。", "tier": "proposed",
+                "source_uri": None, "source_hash": None, "location": None,
+            },
+            "acquisition.lc.gradient_profile": {
+                "value": None, "reason": "テスト用fixtureのため未記載。", "tier": "proposed",
+                "source_uri": None, "source_hash": None, "location": None,
+            },
+            "acquisition.ms_range.ms2_low_mz": {
+                "value": None, "reason": "テスト用fixtureのため未記載。", "tier": "proposed",
+                "source_uri": None, "source_hash": None, "location": None,
+            },
+            "acquisition.ms_range.ms2_high_mz": {
+                "value": None, "reason": "テスト用fixtureのため未記載。", "tier": "proposed",
+                "source_uri": None, "source_hash": None, "location": None,
+            },
+        },
+        "validation": {
+            "status": "draft",
+            "scope": "single LC method, DDA acquisition, peak height only",
+            "certificate_path": None, "certificate_sha256": None,
+        },
+    }
+
+
+def _nested_root(tmp_path: Path) -> Path:
+    """profile/依存/実行体を tmp_path 直下ではなく1段ネストして置く（他テストとの
+    兄弟フォルダ混在事故を避ける既存の流儀 — tests/test_console_plan_method.py参照）。"""
+    root = tmp_path / "fixture"
+    root.mkdir(exist_ok=True)
+    return root
+
+
+# ---------- brief記載のRED: hash_files ----------
+
+def test_hash_detects_stat_preserving_change(tmp_path):
+    """statを保ったまま内容だけ変えても検出する（brief記載のコード例そのもの）。"""
+    p = tmp_path / "raw.wiff"
+    p.write_bytes(b"aaaa")
+    stat = p.stat()
+    old = profiles.hash_files([p])
+    p.write_bytes(b"bbbb")
+    os.utime(p, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert profiles.hash_files([p]) != old
+
+
+def test_hash_files_matches_plain_sha256(tmp_path):
+    p = tmp_path / "a.txt"
+    p.write_bytes(b"hello world")
+    assert profiles.hash_files([p])[str(p)] == hashlib.sha256(b"hello world").hexdigest()
+
+
+# ---------- adapter_capabilities ----------
+
+def test_adapter_capabilities_returns_msp_lbm_text_rt_keys():
+    capabilities = profile_adapter.adapter_capabilities("msdial5")
+    assert capabilities["adapter_id"] == "msdial5"
+    assert capabilities["dependency_keys"] == {
+        "msp": "Msp file path",
+        "lbm": "Lbm file path",
+        "text_identification": "Text db file path",
+        "rt_reference": "Compounds library file path for RT correction",
+    }
+    assert "wiff" in capabilities["raw_formats"]
+    assert capabilities["evidence_reader"] == "pai2"
+
+
+def test_adapter_capabilities_unknown_id_rejected():
+    with pytest.raises(DomainError, match="PROFILE_ADAPTER_UNSUPPORTED"):
+        profile_adapter.adapter_capabilities("msdial99")
+
+
+def test_adapter_capabilities_returns_independent_copies():
+    """呼び出し側がdictを書き換えてもレジストリ自体は汚染されない。"""
+    first = profile_adapter.adapter_capabilities("msdial5")
+    first["dependency_keys"]["msp"] = "tampered"
+    second = profile_adapter.adapter_capabilities("msdial5")
+    assert second["dependency_keys"]["msp"] == "Msp file path"
+
+
+# ---------- load_profile ----------
+
+def test_load_profile_rejects_unknown_purpose(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[], exe=exe)
+    path = root / "profile.json"
+    path.write_text(json.dumps(profile), encoding="utf-8")
+    with pytest.raises(DomainError, match="PROFILE_PURPOSE_INVALID"):
+        profiles.load_profile(path, "bogus")
+
+
+def test_load_profile_routine_requires_validated_status(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[], exe=exe)
+    path = root / "profile.json"
+    path.write_text(json.dumps(profile), encoding="utf-8")
+    with pytest.raises(DomainError, match="PROFILE_NOT_VALIDATED"):
+        profiles.load_profile(path, "routine")
+    # purpose="validation"はdraftのままでよい。
+    loaded = profiles.load_profile(path, "validation")
+    assert loaded["validation"]["status"] == "draft"
+
+
+def test_load_profile_does_not_absolutize_paths(tmp_path):
+    """`profile_content_hash`の環境非依存性を守るため、パスは宣言どおり返す。"""
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[], exe=exe)
+    path = root / "profile.json"
+    path.write_text(json.dumps(profile), encoding="utf-8")
+    loaded = profiles.load_profile(path, "validation")
+    assert loaded["processing"]["method_path"] == profile["processing"]["method_path"]
+
+
+# ---------- resolve_profile_inputs: 正常系 ----------
+
+def test_resolve_profile_inputs_metabolomics_without_lbm(tmp_path):
+    """LBMなしMSP/TXT: metabolomicsはlbmを依存に含めなくてよい。"""
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp = _write(root / "library" / "lib1.msp", "msp-content")
+    text_db = _write(root / "library" / "text1.txt", "text-db-content")
+    dependencies = [_msp_dependency(msp), _text_dependency(text_db)]
+    profile = _build_profile(
+        root, method_lines="Ion mode: Positive\nTarget omics: Metabolomics\nAcquisition type: DDA\n",
+        dependencies=dependencies, exe=exe)
+
+    plan = profiles.resolve_profile_inputs(profile, root)
+
+    assert plan["adapter"]["adapter_id"] == "msdial5"
+    kinds_present = {d["kind"]: d["present"] for d in plan["dependencies"]}
+    assert kinds_present == {"msp": True, "text_identification": True}
+    assert plan["execution_environment"]["companions"]["MsdialCore.dll"]
+    assert "MSDIALCUI.pdb" not in plan["execution_environment"]["companions"]
+    assert plan["polarity"] == "positive"
+
+
+def test_resolve_profile_inputs_optional_dependency_missing_is_not_fatal(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp = _write(root / "library" / "lib1.msp", "msp-content")
+    dep = _msp_dependency(msp, required=False)
+    dep["path"] = str(root / "library" / "missing.msp")  # 実在しない、かつrequired=False
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[dep], exe=exe)
+
+    plan = profiles.resolve_profile_inputs(profile, root)
+    assert plan["dependencies"][0]["present"] is False
+
+
+# ---------- RED: 必須依存欠落 ----------
+
+def test_resolve_profile_inputs_required_dependency_missing_is_incomplete(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp = _write(root / "library" / "lib1.msp", "msp-content")
+    dep = _msp_dependency(msp, required=True)
+    dep["path"] = str(root / "library" / "missing.msp")
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[dep], exe=exe)
+
+    with pytest.raises(DomainError, match="PROFILE_INCOMPLETE"):
+        profiles.resolve_profile_inputs(profile, root)
+
+
+# ---------- RED: キー名を推測してMSPをLBM欄へ入れない ----------
+
+def test_resolve_profile_inputs_rejects_msp_in_lbm_slot(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp = _write(root / "library" / "lib1.msp", "msp-content")
+    dep = _msp_dependency(msp)
+    dep["method_key"] = method_file_mod.LBM_KEY  # kind=mspなのにLBM欄を騙る
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[dep], exe=exe)
+
+    with pytest.raises(DomainError, match="PROFILE_METHOD_CONFLICT"):
+        profiles.resolve_profile_inputs(profile, root)
+
+
+# ---------- RED: DDA/極性矛盾 ----------
+
+def test_resolve_profile_inputs_rejects_polarity_conflict(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(
+        root, method_lines="Ion mode: Negative\n", dependencies=[], exe=exe, polarity="positive")
+
+    with pytest.raises(DomainError, match="PROFILE_METHOD_CONFLICT"):
+        profiles.resolve_profile_inputs(profile, root)
+
+
+def test_resolve_profile_inputs_rejects_acquisition_type_conflict(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(
+        root, method_lines="Ion mode: Positive\nAcquisition type: SWATH\n",
+        dependencies=[], exe=exe, polarity="positive")
+
+    with pytest.raises(DomainError, match="PROFILE_METHOD_CONFLICT"):
+        profiles.resolve_profile_inputs(profile, root)
+
+
+def test_resolve_profile_inputs_rejects_omics_conflict(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(
+        root, method_lines="Ion mode: Positive\nTarget omics: Lipidomics\n",
+        dependencies=[], exe=exe, polarity="positive")
+
+    with pytest.raises(DomainError, match="PROFILE_METHOD_CONFLICT"):
+        profiles.resolve_profile_inputs(profile, root)
+
+
+# ---------- RED: 未知adapter ----------
+
+def test_resolve_profile_inputs_unknown_adapter_version(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[], exe=exe, msdial_version="99.0")
+
+    with pytest.raises(DomainError, match="PROFILE_ADAPTER_UNSUPPORTED"):
+        profiles.resolve_profile_inputs(profile, root)
+
+
+# ---------- RED: 同サイズ/mtime改変 (dependency/method/exe hash mismatch) ----------
+
+def test_resolve_profile_inputs_rejects_tampered_method_content(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=[], exe=exe)
+    # profileが記録した後にメソッドファイルの中身だけ差し替える（サイズ違いでも可）。
+    method_path = Path(profile["processing"]["method_path"])
+    stat = method_path.stat()
+    method_path.write_bytes(b"Ion mode: Negative\n")
+    os.utime(method_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+    with pytest.raises(DomainError, match="INPUT_CHANGED"):
+        profiles.resolve_profile_inputs(profile, root)
+
+
+# ---------- snapshot_profile ----------
+
+def test_snapshot_profile_writes_effective_method_with_absolute_dependency_paths(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp = _write(root / "library" / "lib1.msp", "msp-content")
+    dependencies = [_msp_dependency(msp)]
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=dependencies, exe=exe)
+    plan = profiles.resolve_profile_inputs(profile, root)
+
+    run_dir = tmp_path / "run1"
+    snapshot = profiles.snapshot_profile(plan, run_dir)
+
+    effective = run_dir / snapshot["effective_method_relative_path"]
+    assert effective.is_file()
+    text = effective.read_text(encoding="ascii")
+    assert f"Msp file path: {msp.resolve()}" in text or f"Msp file path: {msp}" in text
+
+
+def test_snapshot_profile_does_not_modify_originals(tmp_path):
+    """原本不変: method原本・依存原本は snapshot_profile 後もバイト同一。"""
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp = _write(root / "library" / "lib1.msp", "msp-content")
+    dependencies = [_msp_dependency(msp)]
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=dependencies, exe=exe)
+    method_path = Path(profile["processing"]["method_path"])
+    before_method = method_path.read_bytes()
+    before_msp = msp.read_bytes()
+
+    plan = profiles.resolve_profile_inputs(profile, root)
+    profiles.snapshot_profile(plan, tmp_path / "run1")
+
+    assert method_path.read_bytes() == before_method
+    assert msp.read_bytes() == before_msp
+
+
+def test_snapshot_profile_plan_identity_hash_is_stable_across_output_roots(tmp_path):
+    """別出力先の計画hash同一: run_dirが変わってもplan_identity_hashは変わらない。
+
+    実効コピーの中身（依存への絶対参照）はrun_dir自身の場所には依存しないため
+    バイト内容は同じになりうる——ここで守るべき不変条件は「run_dirが変わっても
+    計画の同一性(plan_identity_hash)は変わらない」ことそのもの（spec §6.1）で
+    あり、実行証跡ハッシュがrun_dirごとに違うことまでは要求しない。run_dir・
+    実効コピーの絶対path自体はrun_dirごとに異なることを別途確認する。
+    """
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    msp = _write(root / "library" / "lib1.msp", "msp-content")
+    dependencies = [_msp_dependency(msp)]
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                              dependencies=dependencies, exe=exe)
+    plan = profiles.resolve_profile_inputs(profile, root)
+
+    snapshot_a = profiles.snapshot_profile(plan, tmp_path / "run_a")
+    snapshot_b = profiles.snapshot_profile(plan, tmp_path / "run_b")
+
+    assert snapshot_a["plan_identity_hash"] == snapshot_b["plan_identity_hash"]
+    assert snapshot_a["plan_identity_hash"] == profiles.canonical_hash(plan)
+    assert snapshot_a["run_dir"] != snapshot_b["run_dir"]
+    effective_a = Path(snapshot_a["run_dir"]) / snapshot_a["effective_method_relative_path"]
+    effective_b = Path(snapshot_b["run_dir"]) / snapshot_b["effective_method_relative_path"]
+    assert effective_a != effective_b
+
+
+# ---------- pipeline.inputs.py への波及: LBM以外の相対参照も絶対化する ----------
+
+def test_inspect_inputs_rewrites_relative_msp_file_path_like_lbm(tmp_path, monkeypatch):
+    """method_file.REFERENCE_KEYSの拡張により、`resolve_method_references`は
+    `Msp file path`等も解決するようになった。`pipeline.inputs.inspect_inputs`が
+    これをLBMと同様に絶対pathへ書き換えないと、実効コピー（別ディレクトリ）へ
+    verbatimコピーした瞬間に相対参照の意味が変わってしまう（既存のLBMの
+    バグパターンと同じ——`lipidmix/pipeline/inputs.py`の該当コメント参照）。
+    """
+    from lipidmix.core import session_state
+    session_state.session = session_state.AnalysisSession()
+    from lipidmix.pipeline.inputs import inspect_inputs
+
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    (dataset_root / "a.wiff").touch()
+
+    exe_dir = tmp_path / "msdial_app"
+    exe_dir.mkdir()
+    exe = exe_dir / "MSDIALCUI.exe"
+    exe.touch()
+    lbm = exe_dir / "lib.lbm2"
+    lbm.touch()
+    monkeypatch.setattr("lipidmix.console.runner.is_console_exe", lambda *a, **k: True)
+
+    msp = dataset_root / "lib1.msp"
+    msp.write_bytes(b"msp-content")
+    method = dataset_root / "params.txt"
+    method.write_text(
+        "Ion mode: Negative\nTarget omics: Lipidomics\nMsp file path: lib1.msp\n",
+        encoding="ascii")
+
+    request = {"method_file": str(method), "polarity": "negative"}
+    plan = inspect_inputs(dataset_root, request, exe_path=exe)
+
+    assert plan["method"]["overrides"][method_file_mod.MSP_KEY] == str(msp.resolve())
