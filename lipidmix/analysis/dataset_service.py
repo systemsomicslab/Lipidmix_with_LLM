@@ -26,7 +26,12 @@ from lipidmix.analysis.dataset_analysis import (
     run_dataset_preprocess,
 )
 from lipidmix.analysis.preprocess_policy import check_applied_policy, resolve_policy
-from lipidmix.analysis.sample_manifest import apply_metadata, parse_manifest, resolve_metadata
+from lipidmix.analysis.sample_manifest import (
+    apply_metadata,
+    parse_manifest,
+    resolve_metadata,
+    select_statistical_samples,
+)
 from lipidmix.core.atomic_io import DomainError
 
 __all__ = [
@@ -274,14 +279,16 @@ def resolve_comparison(ds, comparison: dict, metadata: list[dict]) -> dict:
             )
         id_to_name[sample_id] = name
 
-    # include=true かつ role=="sample" だけが比較対象（QC/blank/unknownは混ぜない）。
-    included = [(name, row) for name, row in zip(sample_names, metadata)
-                if row.get("include", True) and row.get("role") == "sample"]
+    # 比較対象の選択規則（include=true・role=="sample"・指定群）は
+    # `sample_manifest.select_statistical_samples` が唯一の定義。ここで書き直すと、
+    # v2で足した role="standard"（標準品注入）が片方の経路にだけ混ざる。
+    selected = select_statistical_samples(metadata, [reference_group, test_group])
 
     def _group_members(label: str) -> tuple[list[str], list[str], list]:
-        ids = [row["sample_id"] for _, row in included if row.get("group") == label]
+        members = [row for row in selected if row.get("group") == label]
+        ids = [row["sample_id"] for row in members]
         names = [id_to_name[sid] for sid in ids]
-        batches = [row.get("batch") for _, row in included if row.get("group") == label]
+        batches = [row.get("batch") for row in members]
         return ids, names, batches
 
     ref_ids, ref_names, ref_batches = _group_members(reference_group)

@@ -65,8 +65,9 @@ gap-fill だけの特徴を実測として数えた行列が黙って下流に�
 
 ## dataset_set_sample_metadata
 
-実験情報シート(sample-manifest.v1)を読み、全件検証してから一括反映する。検証で
-1件でも落ちれば `apply_metadata` の契約により `session.dataset` は一切変更しない。
+実験情報シート(sample-manifest.v1 / v2)を読み、全件検証してから一括反映する。版は
+先頭の schema 行で決まり、列見出しからは推測しない。検証で1件でも落ちれば
+`apply_metadata` の契約により `session.dataset` は一切変更しない。
 
 1. lipidmix/tools/dataset_analysis_tools.py  dataset_set_sample_metadata()
 2. └─ lipidmix/analysis/dataset_service.py  apply_sample_manifest()
@@ -78,6 +79,8 @@ gap-fill だけの特徴を実測として数えた行列が黙って下流に�
 
 pipeline が比較を明示するときに使う `resolve_comparison`/`run_comparison`
 （`lipidmix/analysis/dataset_service.py`）は、群名だけで対照/処置の向きを決めない・
-QC/blank/unknown・`include=false` を混ぜない・完全交絡を `allow_confounded=true` の
+QC/blank/unknown/standard・`include=false` を混ぜない（選択規則は
+`lipidmix/analysis/sample_manifest.py` `select_statistical_samples()` が唯一の定義）・
+完全交絡を `allow_confounded=true` の
 明示なしには通さない、という前提検証を `compare_dataset()` の前に挟む。単体ツール
 `dataset_differential` はこの前提検証を経ない汎用呼び出し（USAGE.md 参照）。

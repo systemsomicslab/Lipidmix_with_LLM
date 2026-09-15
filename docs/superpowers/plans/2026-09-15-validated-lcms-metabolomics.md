@@ -65,7 +65,7 @@
 
 **Interfaces:** `validate_profile(data: dict) -> dict`は正規化した新しいdictを返す。`profile_content_hash(data: dict) -> str`はvalidationのみ除いたcanonical hash。`validate_certificate(profile: dict, certificate: dict, observed_hashes: dict) -> None`。例外はDomainErrorのPROFILE_INVALID/PROFILE_VALIDATION_INVALID。
 
-- [ ] RED: 次の検査と、未知キー、NaN、非整数revision、負ppm、重複target/recipe、循環内部標準、不存在recipe参照、既定recipe欠落を追加する。
+- [x] RED: 次の検査と、未知キー、NaN、非整数revision、負ppm、重複target/recipe、循環内部標準、不存在recipe参照、既定recipe欠落を追加する。
 
 ```python
 from lipidmix.console.profile_schema import profile_content_hash
@@ -76,8 +76,8 @@ def test_certificate_metadata_does_not_change_content_identity():
     assert profile_content_hash(p) == profile_content_hash(q)
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_lcms_profile_schema.py -q`。新規module不在または仕様assertでREDを確認する。
-- [ ] Implement: profile各層のallowlist、列挙・型・参照整合性を定義する。`analysis_recipe`は`statistics`と`internal_standards`だけを持ち、数値前処理はmatrix_recipesを唯一の保存先とする。feature_targetsはtarget_idキーのdict、matrix_recipesはrecipe_idキーのdictとする。evidenceはfield pathキーのdict、条件未記載は`{value: null, reason: ...}`とする。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_lcms_profile_schema.py -q`。新規module不在または仕様assertでREDを確認する。
+- [x] Implement: profile各層のallowlist、列挙・型・参照整合性を定義する。`analysis_recipe`は`statistics`と`internal_standards`だけを持ち、数値前処理はmatrix_recipesを唯一の保存先とする。feature_targetsはtarget_idキーのdict、matrix_recipesはrecipe_idキーのdictとする。evidenceはfield pathキーのdict、条件未記載は`{value: null, reason: ...}`とする。
 
 ```python
 from lipidmix.core.atomic_io import canonical_hash
@@ -87,8 +87,8 @@ def profile_content_hash(data: dict) -> str:
 ```
 
 証明書のhash一致、必須判定pass、適用範囲を検証する。署名を実装しない。profileを手書きvalidatedにしても証明書不足なら拒否する。schema文書へ完全な合成profile例、各キーの型、null可否、routine許容overrideの集合を記載する。runtimeで値を推測しない。
-- [ ] GREEN: 上記対象テスト。証明書の一要素改変も拒否することを確認。
-- [ ] Commit: `git add -- lipidmix/console/profile_schema.py tests/test_lcms_profile_schema.py docs/schema/lcms-profile-v1.md`、`git commit -m "feat: LC-MSプロファイル契約を追加"`。
+- [x] GREEN: 上記対象テスト。証明書の一要素改変も拒否することを確認。
+- [x] Commit: `git add -- lipidmix/console/profile_schema.py tests/test_lcms_profile_schema.py docs/schema/lcms-profile-v1.md`、`git commit -m "feat: LC-MSプロファイル契約を追加"`。
 
 ## Task 2: method依存・実行環境・raw指紋
 
@@ -96,7 +96,7 @@ def profile_content_hash(data: dict) -> str:
 
 **Interfaces:** `hash_files(paths: list[Path]) -> dict[str,str]`、`load_profile(path: Path, purpose: str) -> dict`、`resolve_profile_inputs(profile: dict, source_root: Path) -> dict`、`snapshot_profile(plan: dict, run_dir: Path) -> dict`。adapterは`adapter_id, supported_software, dependency_keys, raw_formats, evidence_reader`を返す`adapter_capabilities(adapter_id: str) -> dict`。
 
-- [ ] RED: 同サイズ/mtime改変、LBMなしMSP/TXT、必須依存欠落、DDA/極性矛盾、未知adapter、原本不変、別出力先の計画hash同一を試験する。
+- [x] RED: 同サイズ/mtime改変、LBMなしMSP/TXT、必須依存欠落、DDA/極性矛盾、未知adapter、原本不変、別出力先の計画hash同一を試験する。
 
 ```python
 import os
@@ -112,8 +112,8 @@ def test_hash_detects_stat_preserving_change(tmp_path):
     assert hash_files([p]) != old
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_lcms_profile_inputs.py -q`。
-- [ ] Implement: 既存raw形式選択・sidecar列挙を再利用し、全ファイルhashを追加する。実行環境manifestはexeのほか同梱DLL/設定、adapter版を列挙する。二回のstatが異なるhash計算はINPUT_CHANGEDとして拒否する。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_lcms_profile_inputs.py -q`。
+- [x] Implement: 既存raw形式選択・sidecar列挙を再利用し、全ファイルhashを追加する。実行環境manifestはexeのほか同梱DLL/設定、adapter版を列挙する。二回のstatが異なるhash計算はINPUT_CHANGEDとして拒否する。
 
 ```python
 import hashlib
@@ -127,8 +127,8 @@ def hash_files(paths):
 ```
 
 上記hash処理に前後stat検査を加える。profile相対pathはprofile親から解決し、snapshotだけを書換える。methodの依存キーは対応Consoleのソース/実methodで確認してadapterへ登録し、その証拠位置をdocへ記録する。キー名を推測してMSPをLBM欄へ入れない。確認できない版はPROFILE_ADAPTER_UNSUPPORTEDとしてplanに不足を返す。method実行コピーの絶対pathは計画hashに混ぜない。
-- [ ] GREEN: 新テストに加え`tests/test_console_plan_method.py tests/test_pipeline_inputs.py`。
-- [ ] Commit: 新規3ファイルと上記既存2ファイルのみstageし、`git commit -m "feat: method依存と実行環境を固定"`。
+- [x] GREEN: 新テストに加え`tests/test_console_plan_method.py tests/test_pipeline_inputs.py`。
+- [x] Commit: 新規3ファイルと上記既存2ファイルのみstageし、`git commit -m "feat: method依存と実行環境を固定"`。
 
 ## Task 3: request v2の解決・更新
 
@@ -136,7 +136,7 @@ def hash_files(paths):
 
 **Interfaces:** `request_v2.resolve(data: dict, profile: dict) -> dict`, `validate_statistics(items: list[dict], profile: dict) -> list[dict]`, `merge_updates(current: dict, updates: dict, profile: dict) -> dict`。既存resolve_request/merge_updatesでschema dispatchする。
 
-- [ ] RED: unknown、null、旧comparisons、method_file直接指定、重複statistic_id、target不整合、schema省略v1、routine範囲外override。
+- [x] RED: unknown、null、旧comparisons、method_file直接指定、重複statistic_id、target不整合、schema省略v1、routine範囲外override。
 
 ```python
 import pytest
@@ -151,8 +151,8 @@ def test_pca_rejects_groups():
         validate_statistics([s], {"matrix_recipes": {"default": {}}})
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_request.py tests/test_pipeline_request.py -q`。
-- [ ] Implement: spec §6.2のdiscriminated統計schemaを実装する。preprocess overrideは`{recipe_id: {normalize, drift_correct, filter, impute}}`で、存在するrecipeにのみ適用する。standard_assaysはsample ID配列。feature_bindingsは初回指定もresumeも同じ検査を通す。優先順位はfield単位で出所を持つ。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_request.py tests/test_pipeline_request.py -q`。
+- [x] Implement: spec §6.2のdiscriminated統計schemaを実装する。preprocess overrideは`{recipe_id: {normalize, drift_correct, filter, impute}}`で、存在するrecipeにのみ適用する。standard_assaysはsample ID配列。feature_bindingsは初回指定もresumeも同じ検査を通す。優先順位はfield単位で出所を持つ。
 
 ```python
 def effective_target(statistics):
@@ -160,8 +160,8 @@ def effective_target(statistics):
 ```
 
 更新不可キーを受けたらNEW_PIPELINE_REQUIRED、誤った型はPIPELINE_REQUEST_INVALID。既定PCAはprofileのdefault recipeを参照する。routine許容範囲は検証証明書の明示許容集合で判定し、validationだけを理由に入力検証を省略しない。
-- [ ] GREEN: 同じコマンド。v1の既定値・null・更新の既存assertは変更しない。
-- [ ] Commit: 4ファイルをstageし、`git commit -m "feat: メタボロミクスrequest v2を追加"`。
+- [x] GREEN: 同じコマンド。v1の既定値・null・更新の既存assertは変更しない。
+- [x] Commit: 4ファイルをstageし、`git commit -m "feat: メタボロミクスrequest v2を追加"`。
 
 ## Task 4: job v3・run v2・stage契約
 
@@ -169,7 +169,7 @@ def effective_target(statistics):
 
 **Interfaces:** `stage_plan.build_v2(request: dict) -> list[dict]`（stage_id/handler/statistic_id）、`stage_plan.invalidated_v2(changed: set[str], request: dict) -> set[str]`。storeとengineは同じbuilderを呼ぶ。job v3にprofile snapshotとdependency/environment manifestを追加する。
 
-- [ ] RED: 混在統計のstage、追加/削除、古いrun/job読込、未知schema拒否、schemaごとの書込版。
+- [x] RED: 混在統計のstage、追加/削除、古いrun/job読込、未知schema拒否、schemaごとの書込版。
 
 ```python
 from lipidmix.pipeline.stage_plan import build_v2
@@ -181,8 +181,8 @@ def test_statistic_ids_expand_once():
     assert len(ids) == len(set(ids))
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_stages.py tests/test_pipeline_store.py tests/test_pipeline_engine.py -q`。
-- [ ] Implement: v2 stageのみspec §6.2の順に生成する。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_metabolomics_stages.py tests/test_pipeline_store.py tests/test_pipeline_engine.py -q`。
+- [x] Implement: v2 stageのみspec §6.2の順に生成する。
 
 ```python
 BASE_V2 = ("prepare_inputs", "execute_console", "validate_outputs", "load_dataset",
@@ -199,8 +199,8 @@ def build_v2(request):
 ```
 
 旧BASE_STAGE_IDSは変更しない。schema dispatchをreader/writer両方へ追加し、v1をv2へ自動保存しない。recoveryのstage resetもbuilderと依存表を共有する。artifact hash、append-only、revision競合検査を維持する。
-- [ ] GREEN: 同じテスト群と既存handoff/loadingのテストを実行。
-- [ ] Commit: 上記7ファイルをstageし、`git commit -m "feat: v2 stageとjob v3を接続"`。
+- [x] GREEN: 同じテスト群と既存handoff/loadingのテストを実行。
+- [x] Commit: 上記7ファイルをstageし、`git commit -m "feat: v2 stageとjob v3を接続"`。
 
 **Review A:** A01〜A07。未知schema・未検証profileが誤って実行に進まないこと、v1 golden結果が不変であることを確認する。
 
@@ -210,7 +210,7 @@ def build_v2(request):
 
 **Interfaces:** 既存parse_manifestはheaderによりv1/v2をdispatch。`validate_independent_samples(rows: list[dict], groups: list[str]) -> None`をsample_manifestへ追加。
 
-- [ ] RED: 9列、standard role、exclude、同一生物ID、sourceのmissing/extra、v1の8列を検証する。
+- [x] RED: 9列、standard role、exclude、同一生物ID、sourceのmissing/extra、v1の8列を検証する。
 
 ```python
 import pytest
@@ -225,8 +225,8 @@ def test_duplicate_biological_id_is_not_independent_n():
     assert caught.value.code == "REPEATED_MEASURES_UNSUPPORTED"
 ```
 
-- [ ] Run: `C:/Python314/python.exe -m pytest tests/test_sample_manifest_v2.py tests/test_sample_manifest.py -q`。
-- [ ] Implement: role/include/group選択を共通関数へ集約し、v2の統計対象を明示する。
+- [x] Run: `C:/Python314/python.exe -m pytest tests/test_sample_manifest_v2.py tests/test_sample_manifest.py -q`。
+- [x] Implement: role/include/group選択を共通関数へ集約し、v2の統計対象を明示する。
 
 ```python
 selected = [r for r in rows if r["include"] and r["role"] == "sample"
@@ -235,8 +235,8 @@ ids = [r["biological_sample_id"] for r in selected]
 ```
 
 上記に欠落・重複検査を加える。standard_assaysはstandardかつincludedのみ。QC pool/orderを名前から作らない。metadata fingerprintへbiological_sample_idとstandard_assaysの依存を追加する。
-- [ ] GREEN: 上記と`tests/test_result_state.py`。
-- [ ] Commit: 4ファイルをstageし、`git commit -m "feat: 標準注入と独立試料を区別"`。
+- [x] GREEN: 上記と`tests/test_result_state.py`。
+- [x] Commit: 4ファイルをstageし、`git commit -m "feat: 標準注入と独立試料を区別"`。
 
 ## Task 6: 注入単位のRT/mz証拠reader
 

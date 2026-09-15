@@ -25,6 +25,7 @@ from lipidmix.core.atomic_io import DomainError, canonical_hash
 
 __all__ = [
     "PP_FIELDS",
+    "STAT_FIELDS",
     "array_fingerprint",
     "assert_current",
     "dataset_fingerprint",
@@ -43,8 +44,21 @@ __all__ = [
 PP_FIELDS = frozenset({"role", "batch", "injection_order", "qc_pool", "include",
                        "sample_id", "source_file"})
 
-#: 前処理そのものをやり直す必要がある変更。
-_PP_INVALIDATING = PP_FIELDS | {"dataset", "detection", "recipe"}
+#: 比較・検定の設計を決めるサンプルメタデータの**列**。前処理の入力ではない
+#: （群を付け替えただけで前処理をやり直す羽目にしない）が、ここが変われば
+#: 検定結果は古い。`biological_sample_id` が入るのは、どの注入を独立した n と
+#: 数えるかが検定そのものの前提だから（spec §7）。
+STAT_FIELDS = frozenset({"group", "biological_sample_id"})
+
+#: 差次的解析だけを無効化する変更。列（`STAT_FIELDS`）に加えて、列ではない
+#: 比較指定そのもの（`comparison`）を含む。
+_STAT_INVALIDATING = STAT_FIELDS | {"comparison"}
+
+#: 前処理そのものをやり直す必要がある変更。`standard_assays`（内部標準の
+#: 分母に使う標準品注入）を含めるのは、これが変われば内部標準比の行列が
+#: そのまま変わるため——比だけ作り直して古い行列を残すと、次の解析が
+#: 新しい設定の顔をした古い数字で走る。
+_PP_INVALIDATING = PP_FIELDS | {"dataset", "detection", "recipe", "standard_assays"}
 
 
 def array_fingerprint(array) -> str:
@@ -111,8 +125,10 @@ def group_fingerprint(ds) -> str:
     """
     rows = getattr(ds, "sample_metadata_rows", None)
     if not rows:
-        return canonical_hash({"group": None})
-    return canonical_hash({"group": metadata_fingerprints(rows).get("group")})
+        return canonical_hash({"group": None, "biological_sample_id": None})
+    fingerprints = metadata_fingerprints(rows)
+    return canonical_hash({field: fingerprints.get(field)
+                           for field in sorted(STAT_FIELDS)})
 
 
 def preprocess_fingerprint(ds, recipe: dict, metadata_hash: str | None = None) -> str:
@@ -132,7 +148,9 @@ def invalidate_results(ds, changed: set[str]) -> None:
     - 前処理の入力（`PP_FIELDS` ・`dataset` ・`detection` ・`recipe`）が変われば、
       前処理済み行列ごと捨てる。行列を残して結果だけ消すと、次の PCA が古い行列で
       走り、しかもそれが新しい設定の結果として記録される。
-    - 群・比較の指定が変われば差次的解析だけ。PCA は群を入力にしていない。
+    - 群・比較の指定（`STAT_FIELDS`。どの注入を独立した n と数えるかを決める
+      `biological_sample_id` を含む）が変われば差次的解析だけ。PCA は群を
+      入力にしていない。
     - PCA の設定だけなら PCA だけ。
 
     「消す」を選ぶのは、古い数字を返し続けるより無いことにするほうが安全だから。
@@ -147,7 +165,7 @@ def invalidate_results(ds, changed: set[str]) -> None:
         ds.preprocess_metadata_hash = None
         ds.last_pca = None
         ds.last_differential = None
-    elif changed & {"group", "comparison"}:
+    elif changed & _STAT_INVALIDATING:
         ds.last_differential = None
     elif "pca_settings" in changed:
         ds.last_pca = None
