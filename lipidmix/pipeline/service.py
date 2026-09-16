@@ -279,14 +279,17 @@ def _prepare_run(dataset_root: Path, request: dict | None,
         source_root, request, **_profile_arguments(source_root, request))
     if stage_plan.is_v2_request(request_resolved):
         # v1受付へ落とすとprofile以外のmethod/LBM/実行体を採用してしまう。
-        # Task 12/14の公開上流経路が接続されるまでは実行を拒否する。
-        raise DomainError(
-            "PIPELINE_V2_UPSTREAM_UNAVAILABLE",
-            "v2のprofile入力計画・Console接続は未実装です。公開経路からは起動できません。",
-            {"schema": request_resolved["schema"],
-             "remaining_tasks": ["profile_input_plan", "job_v3_execution", "v2_process_e2e"]})
-    exe_path = _resolve_exe_path()
-    plan = inputs_mod.inspect_inputs(source_root, request_resolved, exe_path=exe_path)
+        # v2はprofileが唯一の情報源なので、計画を作る経路そのものを分ける。
+        profile = _profile_arguments(source_root, request).get("profile")
+        if not profile:
+            raise DomainError(
+                "PIPELINE_REQUEST_INVALID",
+                "v2要求にはprofileが必要です（profile_fileが解決できませんでした）。",
+                {"schema": request_resolved["schema"]})
+        plan = inputs_mod.plan_from_profile(source_root, request_resolved, profile)
+    else:
+        exe_path = _resolve_exe_path()
+        plan = inputs_mod.inspect_inputs(source_root, request_resolved, exe_path=exe_path)
     plan["fingerprint"] = _plan_fingerprint(plan)
 
     manifest_error = _precheck_manifest(source_root, request_resolved, plan)

@@ -58,15 +58,12 @@ def test_explicit_routine_overrides_file_validation(tmp_path):
     assert exc.value.code == "PROFILE_NOT_VALIDATED"
 
 
-@pytest.mark.parametrize("entrypoint", [service.plan_pipeline, service.start_pipeline])
-def test_unwired_v2_upstream_cannot_fall_through_to_lipidomics(tmp_path, entrypoint):
-    profile_path = _profile(tmp_path)
-    with pytest.raises(DomainError) as exc:
-        entrypoint(tmp_path, {"schema": "pipeline-request.v2",
-                             "profile_file": str(profile_path),
-                             "execution_purpose": "validation"})
-    assert exc.value.code == "PIPELINE_V2_UPSTREAM_UNAVAILABLE"
-    assert not list(tmp_path.rglob("pipeline-run.json"))
+# 「公開入口が v2 要求を v1 の推定経路へ落とさない」ことの検証は
+# `tests/test_pipeline_inputs_v2.py` へ移した。以前はここで
+# `PIPELINE_V2_UPSTREAM_UNAVAILABLE` による停止そのものを縛っていたが、停止は
+# 「v1 へ落ちない」ための手段であって目的ではない。経路が繋がった今は、
+# `inspect_inputs` と環境設定の実行体が v2 要求では一度も呼ばれないことを
+# 直接縛っている（同じ主張を2箇所に置かない）。
 
 
 def test_snapshot_uses_profile_directory_and_persists_raw_hashes(tmp_path):

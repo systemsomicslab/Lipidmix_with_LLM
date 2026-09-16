@@ -28,7 +28,10 @@ def _setup(tmp_path, monkeypatch) -> tuple[Path, dict, dict]:
         (source_root / f"{name}.wiff").write_bytes(b"synthetic raw")
     profile_path = write_profile(source_root / "profile.json")
     profile = validate_profile(json.loads(profile_path.read_text(encoding="utf-8")))
-    request = {"schema": "pipeline-request.v2", "profile_file": str(profile_path)}
+    # draft profile なので purpose は validation。省略すると既定の routine になり、
+    # 証明書が要る経路（R2 未接続）へ入ってしまう。
+    request = {"schema": "pipeline-request.v2", "profile_file": str(profile_path),
+               "execution_purpose": "validation"}
     return source_root, request, profile
 
 
@@ -64,3 +67,46 @@ def test_a_changed_dependency_stops_before_any_plan_is_returned(tmp_path, monkey
     with pytest.raises(DomainError) as excinfo:
         inputs_mod.plan_from_profile(source_root, request, profile)
     assert excinfo.value.code == "INPUT_CHANGED"
+
+
+# ---------- 受付が v1 経路へ落ちないこと ----------
+
+def test_v2_request_does_not_go_through_the_v1_inspection(tmp_path, monkeypatch):
+    from lipidmix.pipeline import service
+
+    source_root, request, _profile = _setup(tmp_path, monkeypatch)
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("v2 要求が v1 の inspect_inputs へ落ちた")
+
+    monkeypatch.setattr(inputs_mod, "inspect_inputs", _fail)
+    result = service.plan_pipeline(source_root, request)
+    assert result["status"] in {"planned", "needs_input"}, result
+
+
+def test_v2_request_does_not_touch_the_environment_executable(tmp_path, monkeypatch):
+    from lipidmix.pipeline import service
+
+    source_root, request, _profile = _setup(tmp_path, monkeypatch)
+
+    def _fail():
+        raise AssertionError("v2 要求が環境設定の実行体を参照した")
+
+    monkeypatch.setattr(service, "_resolve_exe_path", _fail)
+    service.plan_pipeline(source_root, request)
+
+
+def test_a_v2_request_without_a_profile_stops_instead_of_falling_back(tmp_path, monkeypatch):
+    from lipidmix.pipeline import service
+
+    source_root, request, _profile = _setup(tmp_path, monkeypatch)
+    Path(request["profile_file"]).unlink()
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("profile が無い v2 要求が v1 の inspect_inputs へ落ちた")
+
+    monkeypatch.setattr(inputs_mod, "inspect_inputs", _fail)
+    with pytest.raises(DomainError) as excinfo:
+        service.plan_pipeline(source_root, request)
+    assert excinfo.value.code != "PIPELINE_V2_UPSTREAM_UNAVAILABLE"
+    assert excinfo.value.code in {"PIPELINE_REQUEST_INVALID", "PROFILE_NOT_FOUND"}
