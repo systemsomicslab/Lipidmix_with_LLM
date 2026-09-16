@@ -84,3 +84,37 @@ Task 1〜14のチェック印は実装作業の記録で、受け入れ条件A01
 - 修正後のfresh process全suite: `C:/Python314/python.exe -m pytest tests -q` → **2138 passed、1074 subtests passed、1 warning、150.37秒**。
 - `git diff --check` → exit 0。既存warningは`test_preprocessing.py::TestImpute::test_all_nan_column_fills_zero`の`Mean of empty slice`で、修正前後とも同じ。
 - 第三者レビュー用エージェントは使用上限で最終レビュー中断。以後の差分点検と全体検証は主担当で実施。独立レビュー完了とは扱わない。
+
+
+## 2026-09-17 追記: R1 の到達点（S3 として実施）
+
+対話利用を最優先する方針転換（`docs/HISTRY.md` 2026-09-16）により、R2 を降格し
+R1 を S3 として実施した。設計は
+[v2公開入口と上流接続](2026-09-17-v2-public-upstream-design.md)、計画は
+[同実装計画](2026-09-17-v2-public-upstream.md)。
+
+**完了した範囲（合成入力・fake Console）:**
+
+- `inputs.plan_from_profile` が profile だけから入力配置計画を作る。plan の形は v1 と
+  同じで `stage_inputs` 以降を共有する。解決と hash 照合は `resolve_profile_inputs` の
+  結果を移すだけにした。
+- 受付が schema で分岐し、`PIPELINE_V2_UPSTREAM_UNAVAILABLE` を解除した。profile が
+  無い v2 要求は v1 へ落とさず `PIPELINE_REQUEST_INVALID` で止まる。
+- `_handle_upstream` が omics / measure / profile_snapshot を schema で分け、job が
+  `analysis-job.v3` になる。snapshot は再開で失わないよう保存済み成果物から読む。
+- `recovery._console_supervision_state` の stage ID 直書き（v2 record で常に
+  verified=False になる既存バグ）を修正した。
+- 公開入口 → 実 handler → fake Console で**全 15 工程が succeeded、status=completed**。
+  必須成果物 10 種が揃う。完走した run は `dataset_load(pipeline_path=...)` で対話
+  セッションへ載せられる。
+
+**残る範囲:**
+
+- **実 Console 接続（R5 = 旧 Task 15/16）** は未了。method 一式が未確定。
+- **v2 の独立プロセス試験は未了。** E2E は `worker.run_worker` を in-process で回す
+  （fake Console の注入口 `build_msdial_cmd` が monkeypatch なので、切り離した
+  worker プロセスには届かない）。detached 起動での v2 は試験していない。
+- 合成 ARF fixture は `availability=True` だが証拠行ゼロを返す（harness 経路も同じ）。
+  `_detected_mask` が全 True 初期化になる R3 の穴と組み合わさるため、**検出状態の
+  正しさは本 E2E では検証できていない**。R3 と合わせて扱う。
+- R2（証明書の実測証拠）・R3（証拠/QC の残契約）・R4（統計成果物とレポート）は未着手。

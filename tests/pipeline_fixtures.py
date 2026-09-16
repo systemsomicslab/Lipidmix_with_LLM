@@ -186,16 +186,28 @@ def write_mztab(path: Path, sources: list[Path], *, with_inchikey: bool = True) 
 # 「任意のファイルを書いて任意の終了コードで終わる」だけの汎用版。
 
 def fake_console_command(files: dict | None = None, *, exit_code: int = 0,
-                         sleep_s: float = 0.0) -> list[str]:
-    """指定のファイルを書き、必要なら待ってから、指定の終了コードで終わるコマンド。"""
+                         sleep_s: float = 0.0, binary: dict | None = None) -> list[str]:
+    """指定のファイルを書き、必要なら待ってから、指定の終了コードで終わるコマンド。
+
+    `binary` はバイト列をそのまま書くファイル（`.arf` のような MessagePack 系）。
+    テキストとして書くと壊れ、読み側が「読めなかった」ことを警告に落として
+    先へ進むため、**証拠が無いまま工程が成功する**——偽 Console の都合が
+    検証結果に化けないよう、バイナリはバイナリのまま渡す。
+    """
     payload = [(str(path), text) for path, text in
                sorted((files or {}).items(), key=lambda kv: str(kv[0]))]
+    blobs = [(str(path), bytes(data)) for path, data in
+             sorted((binary or {}).items(), key=lambda kv: str(kv[0]))]
     script = (
         "import pathlib, sys, time\n"
         f"for path, text in {payload!r}:\n"
         "    p = pathlib.Path(path)\n"
         "    p.parent.mkdir(parents=True, exist_ok=True)\n"
         "    p.write_text(text, encoding='utf-8')\n"
+        f"for path, data in {blobs!r}:\n"
+        "    p = pathlib.Path(path)\n"
+        "    p.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    p.write_bytes(data)\n"
         f"time.sleep({sleep_s!r})\n"
         f"sys.exit({exit_code!r})\n"
     )

@@ -1,11 +1,17 @@
 # ワークフロー: LC–MS メタボロミクス v2
 
-検証済み profile（`lcms-profile.v1`）を前提に、注入ごとの測定証拠・feature binding・
-内部標準比・固定母集団 QC・v2 統計までを回すための開発中の経路。
-**2026-09-16時点では公開 `pipeline_plan` / `pipeline_run` のv2上流は未接続**で、
-`PIPELINE_V2_UPSTREAM_UNAVAILABLE`で停止する。routineは独立した証明書実測hashの
-受付も未接続のため`PROFILE_VALIDATION_INVALID`で停止する。
-この文書の工程図は実装予定を含む。ただし**統計までの対話経路は pipeline 抜きで通る**:
+profile（`lcms-profile.v1`）を前提に、注入ごとの測定証拠・feature binding・
+内部標準比・固定母集団 QC・v2 統計までを回す経路。
+
+**公開 `pipeline_plan` / `pipeline_run` に v2 要求を渡す経路は接続済み**で、
+profile が method・依存・実行体・極性の唯一の情報源になる（v1 の推定経路へは落ちない）。
+検証は合成入力と fake Console まで——**実 Console 接続と profile の科学的検証は未了**で、
+合成入力での完走をそれらの合格と読まないこと。
+
+**routine は引き続き `PROFILE_VALIDATION_INVALID` で停止する**（証明書の独立した
+実測hashの受付が未接続）。draft profile + `execution_purpose="validation"` を使う。
+
+統計までの対話経路は pipeline 抜きでも通る:
 `dataset_load` → `dataset_set_sample_metadata` → `dataset_build_matrix` → `dataset_statistic`。
 この経路は binding と注入証拠を持たないぶん、内部標準比を作れず検出率 filter も評価不能になる。
 完了した v2 run がある場合は `dataset_load(pipeline_path=...)` が、その run の dataset・
