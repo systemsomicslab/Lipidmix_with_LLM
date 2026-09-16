@@ -34,6 +34,28 @@ def test_pass_fraction_counts_unevaluable_in_the_denominator():
     assert aggregate_counts(79, 21, 0, .8) == "fail"
 
 
+def test_blank_fold_cannot_borrow_blanks_from_another_batch():
+    matrix = _matrix([[100.], [100.], [1.], [100.]])
+    metadata = _rows([{"batch": "A"}, {"batch": "B"},
+                      {"role": "blank", "batch": "A"},
+                      {"role": "blank", "batch": "B"}])
+    policy = [_policy("blank_fold", threshold={"operator": ">=", "value": 1.5})]
+    out = evaluate_qc(matrix, _evidence(), metadata, policy, None)
+    assert out["batch_status"] == "fail"
+    assert sorted(e["value"] for e in out["metrics"]["blank_fold"]["elements"]) == [1., 100.]
+
+
+@pytest.mark.parametrize("n_second_qc", [0, 2])
+def test_qc_insufficient_batch_remains_in_evaluation(n_second_qc):
+    metadata = _rows([{"role": "qc", "qc_pool": "pool", "batch": "A"}] * 3
+                     + [{"role": "qc", "qc_pool": "pool", "batch": "B"}] * n_second_qc
+                     + [{"batch": "B"}])
+    matrix = _matrix([[100.]] * len(metadata))
+    out = evaluate_qc(matrix, _evidence(), metadata, [_policy("pooled_qc_rsd")], None)
+    assert out["batch_status"] == "not_evaluable"
+    assert out["metrics"]["pooled_qc_rsd"]["counts"]["not_evaluable"] == 1
+
+
 # ---------- fixture ----------
 
 def _rows(specs: list[dict]) -> list[dict]:

@@ -334,3 +334,38 @@ def test_matrix_recipe_change_invalidates_the_preprocessed_matrix():
     ds.pp_matrix = object()
     invalidate_results(ds, {"matrix_recipe"})
     assert ds.pp_matrix is None
+
+
+@pytest.mark.parametrize("role,include", [("standard", True), ("blank", True), ("sample", False), ("qc", False)])
+def test_pqn_and_detection_filter_ignore_nonstudy_reference_rows(role, include):
+    ds = _dataset()
+    ds.feature_matrix = np.array([[1., 2., 100.], [2., 4., 1.], [3., 6., 50.]])
+    ds.sample_metadata_rows = [
+        {"sample_id": "a", "role": "sample", "include": True},
+        {"sample_id": "b", "role": "sample", "include": True},
+        {"sample_id": "c", "role": role, "include": include}]
+    out = make_matrix(ds, _recipe(normalize="pqn", filter={"min_detection_rate": 1.}),
+                      _bindings(ds), _evidence(ds, undetected=[("1", "assay[3]")]), _all_eligible(ds))
+    np.testing.assert_allclose(out["values"][:2], [[1.5, 3., 4.5], [1.5, 3., 4.5]])
+    assert out["eligibility_mask"].all()
+    assert out["values"].shape == (3, 3)
+    assert out["units"] == ["normalized_height"] * 3
+
+
+@pytest.mark.parametrize("defect", ["excluded", "batch", "pool", "missing_pool", "missing_order", "outside"])
+def test_drift_prerequisites_fail_closed(defect):
+    ds = _dataset()
+    ds.feature_matrix = np.ones((3, 5))
+    ds.sample_assay_ids = [f"assay[{i}]" for i in range(5)]
+    ds.sample_metadata_rows = [dict(sample_id=str(i), role="qc" if i < 4 else "sample",
+                                   include=True, batch="B", qc_pool="P" if i < 4 else None,
+                                   injection_order=i * 2 + 1 if i < 4 else 4) for i in range(5)]
+    if defect == "excluded": ds.sample_metadata_rows[0]["include"] = False
+    if defect == "batch": ds.sample_metadata_rows[0]["batch"] = "other"
+    if defect == "pool": ds.sample_metadata_rows[0]["qc_pool"] = "other"
+    if defect == "missing_pool": ds.sample_metadata_rows[0]["qc_pool"] = None
+    if defect == "missing_order": ds.sample_metadata_rows[4]["injection_order"] = None
+    if defect == "outside": ds.sample_metadata_rows[4]["injection_order"] = 99
+    with pytest.raises(DomainError) as caught:
+        make_matrix(ds, _recipe(drift_correct=True), _bindings(ds), _evidence(ds), _all_eligible(ds))
+    assert caught.value.code == "QC_PREREQUISITE_MISSING"

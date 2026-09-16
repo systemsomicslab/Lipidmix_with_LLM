@@ -96,21 +96,23 @@ def _detected_mask(ds, evidence: dict, assay_ids: list[str],
 
 # ---------- recipe の適用 ----------
 
-def _check_drift_prerequisites(ds) -> tuple[dict, dict]:
-    """ドリフト補正の前提（確認済み role / 注入順 / QC 本数）を満たすか見る。"""
+def _check_drift_prerequisites(ds) -> tuple[dict, dict, list[int]]:
     rows = getattr(ds, "sample_metadata_rows", None) or []
-    qc_rows = [r for r in rows
-               if r.get("role") == "qc" and r.get("injection_order") is not None]
-    if len(qc_rows) < _MIN_QC_FOR_DRIFT:
-        raise DomainError(
-            "QC_PREREQUISITE_MISSING",
-            f"ドリフト補正には注入順が確定したQCが{_MIN_QC_FOR_DRIFT}本以上必要です"
-            f"（現在 {len(qc_rows)} 本）。別手法へは切り替えません。",
-            {"n_qc_with_order": len(qc_rows), "min_qc": _MIN_QC_FOR_DRIFT},
-        )
-    roles = {r["sample_id"]: r.get("role") or "sample" for r in rows}
-    run_order = {r["sample_id"]: r.get("injection_order") for r in rows}
-    return roles, run_order
+    selected = [i for i, r in enumerate(rows) if r.get("include", True)]
+    active = [rows[i] for i in selected]
+    qc = [r for r in active if r.get("role") == "qc"]
+    batches = {r.get("batch") for r in active}
+    pools = {r.get("qc_pool") for r in qc}
+    orders = [r.get("injection_order") for r in active]
+    if (len(qc) < _MIN_QC_FOR_DRIFT or len(batches) != 1 or not all(batches)
+            or len(pools) != 1 or not all(pools)
+            or any(o is None for o in orders) or len(set(orders)) != len(orders)):
+        raise DomainError("QC_PREREQUISITE_MISSING",
+                          "ドリフト補正にはincluded QC4本以上、単一の確認済みbatch/pool、全注入の一意なorderが必要です。",
+                          {"n_qc": len(qc)})
+    roles = {r["sample_id"]: r.get("role") for r in active}
+    run_order = {r["sample_id"]: r.get("injection_order") for r in active}
+    return roles, run_order, selected
 
 
 def _apply_recipe(values, recipe: dict, ds, assay_ids: list[str]) -> tuple:
@@ -129,23 +131,55 @@ def _apply_recipe(values, recipe: dict, ds, assay_ids: list[str]) -> tuple:
             "二重正規化を暗黙に実行しません。",
             {"base": base, "normalize": method})
 
+    rows = getattr(ds, "sample_metadata_rows", None) or []
+    if rows and len(rows) != len(assay_ids):
+        raise DomainError(_RECIPE_INVALID, "metadataとassay軸の件数が一致しません。", {})
     if method != "none":
-        rows = getattr(ds, "sample_metadata_rows", None) or []
-        roles = {r["sample_id"]: r.get("role") or "sample" for r in rows}
-        names = [r["sample_id"] for r in rows] or list(assay_ids)
-        values, factors, report = preprocessing.normalize(
-            values, method, roles, names)
+        if not rows:
+            values, factors, report = preprocessing.normalize(values, method)
+        else:
+            included = [i for i, r in enumerate(rows)
+                        if r.get("include", True) and r.get("role") in ("sample", "qc")]
+            if not included:
+                raise DomainError(_RECIPE_INVALID, "正規化の参照試料がありません。", {})
+            # 参照の推定だけを対象試料に限定し、全assay軸は保持する。
+            if method == "pqn":
+                qc = [i for i in included if rows[i].get("role") == "qc"]
+                reference_rows = qc or [i for i in included if rows[i].get("role") == "sample"]
+                reference = np.nanmedian(values[reference_rows], axis=0)
+                factors = np.nanmedian(values / np.where(reference == 0, np.nan, reference), axis=1)
+                report = {"method": method, "pqn_reference": "qc_median" if qc else "sample_median"}
+            elif method in ("tic", "median"):
+                factors = (np.nansum(values, axis=1) if method == "tic"
+                           else np.nanmedian(values, axis=1))
+                valid_ref = factors[included]
+                valid_ref = valid_ref[np.isfinite(valid_ref) & (valid_ref != 0)]
+                reference = np.nanmedian(valid_ref) if valid_ref.size else 1.
+                factors = factors / reference
+                reference_rows = included
+                report = {"method": method}
+            else:
+                raise DomainError(_RECIPE_INVALID, "未知の正規化です。", {"normalize": method})
+            degenerate = ~np.isfinite(factors) | (factors == 0)
+            values = values / np.where(degenerate, 1., factors)[:, None]
+            report.update(reference_assay_ids=[assay_ids[i] for i in reference_rows],
+                          unscaled_samples=int(degenerate.sum()))
+            if degenerate.any():
+                report["caveat"] = "正規化係数が不正な試料は未正規化のまま保持しました。"
         history.append({"step": "normalize", **report})
         if report.get("caveat"):
             caveats.append(report["caveat"])
 
     if recipe.get("drift_correct"):
-        roles, run_order = _check_drift_prerequisites(ds)
-        names = [r["sample_id"] for r in
-                 (getattr(ds, "sample_metadata_rows", None) or [])]
-        values, report = preprocessing.qc_drift_correct(
-            values, roles, names, run_order, min_qc=_MIN_QC_FOR_DRIFT)
-        history.append({"step": "drift_correct", **report})
+        roles, run_order, selected = _check_drift_prerequisites(ds)
+        names = [rows[i]["sample_id"] for i in selected]
+        corrected, report = preprocessing.qc_drift_correct(
+            values[selected], roles, names, run_order, min_qc=_MIN_QC_FOR_DRIFT)
+        if report.get("status") != "applied":
+            raise DomainError("QC_PREREQUISITE_MISSING", "ドリフト補正の前提を満たしません。", report)
+        values = values.copy()
+        values[selected] = corrected
+        history.append({"step": "drift_correct", "assay_ids": [assay_ids[i] for i in selected], **report})
 
     return values, history, caveats
 
@@ -226,10 +260,18 @@ def make_matrix(ds, recipe: dict, bindings: dict, evidence: dict,
 
     values, history, recipe_caveats = _apply_recipe(values, recipe, ds, assay_ids)
     caveats = [*caveats, *recipe_caveats]
+    if recipe.get("normalize", "none") != "none":
+        units = ["normalized_height"] * len(feature_ids)
 
     eligibility = np.asarray(eligibility, dtype=bool).copy()
+    metadata_rows = getattr(ds, "sample_metadata_rows", None) or []
+    filter_detected = detected
+    if metadata_rows and detected is not None:
+        selected = [i for i, row in enumerate(metadata_rows)
+                    if row.get("include", True) and row.get("role") == "sample"]
+        filter_detected = detected[selected] if selected else None
     eligibility, filter_history = _detection_eligibility(
-        eligibility, detected, recipe, feature_ids)
+        eligibility, filter_detected, recipe, feature_ids)
     history.extend(filter_history)
 
     identity = {
@@ -243,7 +285,8 @@ def make_matrix(ds, recipe: dict, bindings: dict, evidence: dict,
                          "source_artifact_hash")},
         "metadata": {"assay_ids": assay_ids, "feature_ids": feature_ids,
                      "units": units,
-                     "metadata_revision": getattr(ds, "metadata_revision", 0)},
+                     "metadata_revision": getattr(ds, "metadata_revision", 0),
+                     "rows": metadata_rows},
         "eligibility": eligibility.tolist(),
         "stage": "preprocessed",
     }

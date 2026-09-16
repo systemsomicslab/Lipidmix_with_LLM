@@ -145,14 +145,17 @@ def _pooled_qc_rsd(matrix, metadata, indices, entry, population):
             # pool 不明はpooled QCの必須判定を満たさない（spec §7）。
             continue
         groups.setdefault((pool, metadata[i].get("batch")), []).append(i)
-    usable = {key: rows for key, rows in groups.items()
-              if len(rows) >= _MIN_QC_FOR_RSD}
-    if not usable:
+    if not groups:
         return None, "insufficient_qc_injections"
-
+    # QC不足・QC不在のbatchも評価不能として母集団に残す。
+    represented_batches = {batch for _, batch in groups}
+    for i in _included(metadata, role="sample"):
+        batch = metadata[i].get("batch")
+        if batch not in represented_batches:
+            groups.setdefault((None, batch), [])
     elements = []
     for index, feature_id in indices:
-        for (pool, batch), rows in sorted(usable.items(), key=lambda kv: str(kv[0])):
+        for (pool, batch), rows in sorted(groups.items(), key=lambda kv: str(kv[0])):
             column = _column(matrix, index, rows)
             finite = column[np.isfinite(column)]
             if finite.size < _MIN_QC_FOR_RSD or float(np.mean(finite)) <= 0:
@@ -172,23 +175,28 @@ def _blank_fold(matrix, metadata, indices, entry, population):
         return None, "blank_or_sample_missing"
 
     elements = []
+    batches = sorted({metadata[i].get("batch") for i in sample_rows}, key=str)
     for index, feature_id in indices:
-        samples = _column(matrix, index, sample_rows)
-        blanks = _column(matrix, index, blank_rows)
-        sample_median = float(np.nanmedian(samples)) if samples.size else np.nan
-        blank_median = float(np.nanmedian(blanks)) if blanks.size else np.nan
-        if not np.isfinite(sample_median) or not np.isfinite(blank_median):
-            elements.append(_element(feature_id, None, reason="median_not_finite"))
-        elif blank_median == 0 and sample_median > 0:
-            elements.append(_element(feature_id, None,
-                                     special_value=_POSITIVE_INFINITY,
-                                     threshold=entry["threshold"]))
-        elif blank_median == 0:
-            # 分子も 0。比は定義できない（0/0）。
-            elements.append(_element(feature_id, None, reason="blank_and_sample_zero"))
-        else:
-            elements.append(_element(feature_id, sample_median / blank_median,
-                                     threshold=entry["threshold"]))
+        for batch in batches:
+            batch_samples = [i for i in sample_rows if metadata[i].get("batch") == batch]
+            batch_blanks = [i for i in blank_rows if metadata[i].get("batch") == batch]
+            element_id = f"{feature_id}@{batch}"
+            samples = _column(matrix, index, batch_samples)
+            blanks = _column(matrix, index, batch_blanks)
+            sample_median = float(np.nanmedian(samples)) if samples.size else np.nan
+            blank_median = float(np.nanmedian(blanks)) if blanks.size else np.nan
+            if not np.isfinite(sample_median) or not np.isfinite(blank_median):
+                elements.append(_element(element_id, None, reason="median_not_finite"))
+            elif blank_median == 0 and sample_median > 0:
+                elements.append(_element(element_id, None,
+                                         special_value=_POSITIVE_INFINITY,
+                                         threshold=entry["threshold"]))
+            elif blank_median == 0:
+                # 分子も 0。比は定義できない（0/0）。
+                elements.append(_element(element_id, None, reason="blank_and_sample_zero"))
+            else:
+                elements.append(_element(element_id, sample_median / blank_median,
+                                         threshold=entry["threshold"]))
     return elements, None
 
 

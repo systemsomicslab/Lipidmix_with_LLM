@@ -90,11 +90,11 @@ def validate_pairs(pairs: list[dict], feature_ids: list[str]) -> None:
         standard_fid = pair.get("standard_feature_id")
         target_id = pair.get("target_id")
 
-        if target_id in seen_targets:
+        if target_id in seen_targets or target_fid in edges:
             raise DomainError(
                 _MAP_INVALID,
                 f"1つの対象に複数の内部標準が対応しています: target_id={target_id!r}",
-                {"target_id": target_id})
+                {"target_id": target_id, "target_feature_id": target_fid})
         seen_targets.add(target_id)
 
         missing = [fid for fid in (target_fid, standard_fid) if fid not in known]

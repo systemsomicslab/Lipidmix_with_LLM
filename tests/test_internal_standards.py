@@ -25,6 +25,16 @@ from lipidmix.core.atomic_io import DomainError
 
 # ---------- brief記載のRED ----------
 
+
+def test_different_target_ids_cannot_assign_two_standards_to_one_feature():
+    pairs = [
+        {"target_id": "a", "target_feature_id": "f", "standard_feature_id": "s1"},
+        {"target_id": "b", "target_feature_id": "f", "standard_feature_id": "s2"},
+    ]
+    with pytest.raises(DomainError) as caught:
+        apply_internal_standards([[12., 2., 3.]], ["f", "s1", "s2"], pairs, None)
+    assert caught.value.code == "INTERNAL_STANDARD_MAP_INVALID"
+
 def test_invalid_denominator_is_locked_missing():
     values, locked = ratio(np.array([10., 10.]), np.array([2., 0.]), None)
     assert values[0] == 5 and np.isnan(values[1])
