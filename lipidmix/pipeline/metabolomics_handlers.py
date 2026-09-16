@@ -187,7 +187,10 @@ def snapshot_profile_outcome(context: dict, outcome: dict) -> dict:
     """
     profile = _profile(context)
     source_root = Path(context["identity"]["source_root"])
-    plan = profiles.resolve_profile_inputs(profile, source_root)
+    profile_path = Path(context["request"]["profile_file"])
+    if not profile_path.is_absolute():
+        profile_path = source_root / profile_path
+    plan = profiles.resolve_profile_inputs(profile, profile_path.parent, raw_root=source_root)
     snapshot = profiles.snapshot_profile(plan, Path(context["pipeline_root"]))
 
     refs = list(outcome.get("result_refs") or [])
@@ -200,7 +203,7 @@ def snapshot_profile_outcome(context: dict, outcome: dict) -> dict:
                              "execution_environment": plan.get("execution_environment"),
                              "dependencies": plan.get("dependencies"),
                              "method": plan.get("method"),
-                             "raw": plan.get("raw")})))
+                             "raw": plan["raw_files"]})))
     context["runtime"]["profile_plan"] = plan
     return {**outcome, "result_refs": refs}
 

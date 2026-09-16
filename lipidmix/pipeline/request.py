@@ -577,8 +577,14 @@ def resolve_request(source_root: Path, explicit: dict | None = None, *,
         else _peek_schema_declared_by_request_file(source_root)
     if schema == request_v2.SCHEMA:
         from_file = request_v2.read_request_file(source_root)
-        return request_v2.resolve(
+        resolved = request_v2.resolve(
             explicit, profile, from_file=from_file, routine_overrides=routine_overrides)
+        # workerのcwdに依存せず、受付で読んだ同じprofileを開けるようにする。
+        profile_path = Path(resolved["profile_file"]).expanduser()
+        if not profile_path.is_absolute():
+            profile_path = source_root / profile_path
+        resolved["profile_file"] = str(profile_path.resolve())
+        return resolved
 
     unknown = set(explicit) - _TOP_LEVEL_KEYS
     if unknown:

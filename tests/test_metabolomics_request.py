@@ -508,7 +508,7 @@ def test_resolve_request_dispatch_from_v1_module(tmp_path):
         profile=profile,
     )
     assert resolved["schema"] == "pipeline-request.v2"
-    assert resolved["profile_file"] == "profile.json"
+    assert resolved["profile_file"] == str(root / "profile.json")
 
 
 # ---------- resolveは入力を書き換えない ----------
@@ -543,7 +543,7 @@ def test_request_file_fills_gaps_left_by_explicit(tmp_path):
     profile = _profile()
     resolved = request_v1.resolve_request(root, {"statistics": [_pca()]}, profile=profile)
     assert resolved["schema"] == request_v2.SCHEMA
-    assert resolved["profile_file"] == "profile-from-file.json"
+    assert resolved["profile_file"] == str(root / "profile-from-file.json")
     assert resolved["value_sources"]["profile_file"] == "request_file"
     assert resolved["sample_manifest"] == "manifest-from-file.tsv"
     assert resolved["value_sources"]["sample_manifest"] == "request_file"
@@ -564,7 +564,7 @@ def test_explicit_value_beats_request_file_for_v2(tmp_path):
          "statistics": [_pca()]},
         profile=profile,
     )
-    assert resolved["profile_file"] == "profile-from-explicit.json"
+    assert resolved["profile_file"] == str(root / "profile-from-explicit.json")
     assert resolved["value_sources"]["profile_file"] == "explicit"
 
 

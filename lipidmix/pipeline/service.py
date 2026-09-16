@@ -243,22 +243,26 @@ def _profile_arguments(source_root: Path, request: dict | None) -> dict:
     if schema != stage_plan.REQUEST_SCHEMA_V2:
         return {}
 
-    profile_file = explicit.get("profile_file")
-    if not profile_file:
-        from_file = request_v2_mod.read_request_file(source_root)
-        profile_file = from_file.get("profile_file")
-    if not profile_file:
+    from_file = request_v2_mod.read_request_file(source_root)
+    profile_file = explicit.get("profile_file", from_file.get("profile_file"))
+    if not isinstance(profile_file, str) or not profile_file:
         raise DomainError(
             "PIPELINE_REQUEST_INVALID",
             "v2要求にはprofile_fileが必要です（検証済みprofileへのパス）。",
             {"schema": schema})
 
-    purpose = explicit.get("execution_purpose", "routine")
-    profile = profiles_mod.load_profile(Path(profile_file), purpose)
+    profile_path = Path(profile_file).expanduser()
+    if not profile_path.is_absolute():
+        profile_path = source_root / profile_path
+    purpose = explicit.get("execution_purpose", from_file.get("execution_purpose", "routine"))
+    if not isinstance(purpose, str) or purpose not in {"routine", "validation"}:
+        raise DomainError("PIPELINE_REQUEST_INVALID", "execution_purposeが不正です。",
+                          {"execution_purpose": purpose})
+    profile = profiles_mod.load_profile(profile_path, purpose)
     routine_overrides = None
     if purpose == "routine":
         routine_overrides = profiles_mod.certificate_routine_overrides(
-            profile, Path(profile_file))
+            profile, profile_path)
     return {"profile": profile, "routine_overrides": routine_overrides}
 
 
@@ -273,6 +277,14 @@ def _prepare_run(dataset_root: Path, request: dict | None,
     source_root = Path(dataset_root).expanduser()
     request_resolved = request_mod.resolve_request(
         source_root, request, **_profile_arguments(source_root, request))
+    if stage_plan.is_v2_request(request_resolved):
+        # v1受付へ落とすとprofile以外のmethod/LBM/実行体を採用してしまう。
+        # Task 12/14の公開上流経路が接続されるまでは実行を拒否する。
+        raise DomainError(
+            "PIPELINE_V2_UPSTREAM_UNAVAILABLE",
+            "v2のprofile入力計画・Console接続は未実装です。公開経路からは起動できません。",
+            {"schema": request_resolved["schema"],
+             "remaining_tasks": ["profile_input_plan", "job_v3_execution", "v2_process_e2e"]})
     exe_path = _resolve_exe_path()
     plan = inputs_mod.inspect_inputs(source_root, request_resolved, exe_path=exe_path)
     plan["fingerprint"] = _plan_fingerprint(plan)

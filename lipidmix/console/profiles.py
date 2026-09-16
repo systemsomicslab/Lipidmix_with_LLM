@@ -46,7 +46,7 @@ from pathlib import Path
 
 from lipidmix.console import method_file as method_file_mod
 from lipidmix.console import profile_adapter
-from lipidmix.console.profile_schema import profile_content_hash, validate_profile
+from lipidmix.console.profile_schema import profile_content_hash, validate_profile, validate_certificate
 from lipidmix.core.atomic_io import DomainError, canonical_hash
 from lipidmix.pipeline import inputs as pipeline_inputs_mod
 
@@ -99,13 +99,15 @@ def _hash_one(path: Path) -> str:
     return hash_files([path])[str(path)]
 
 
-def load_profile(path: Path, purpose: str) -> dict:
+def load_profile(path: Path, purpose: str, *, observed_hashes: dict | None = None) -> dict:
     """profileファイルを読み、検証して返す（外部パスは絶対化しない）。
 
     `purpose`は`"routine"`（validated profile必須）か`"validation"`
     （draftでも実行可）のいずれか。それ以外は`DomainError("PROFILE_PURPOSE_INVALID")`。
     JSONとして読めない・ファイルが無い・`validate_profile`が拒否する場合は
     それぞれのDomainErrorをそのまま伝播する。
+    routineは独立に実測されたobserved_hashesも必須。証拠IDのファイル解決は
+    呼出側の責務で、証明書の宣言hashを実測値として代用しない。
     """
     if purpose not in _PURPOSES:
         raise DomainError(
@@ -140,6 +142,8 @@ def load_profile(path: Path, purpose: str) -> dict:
             {"path": str(path), "status": profile["validation"]["status"]},
         )
 
+    if purpose == "routine":
+        certificate_routine_overrides(profile, path, observed_hashes=observed_hashes)
     return profile
 
 
@@ -345,8 +349,10 @@ def _check_no_duplicate_method_keys(dependencies: list[dict]) -> None:
         seen[method_key] = dep["dependency_id"]
 
 
-def resolve_profile_inputs(profile: dict, source_root: Path) -> dict:
+def resolve_profile_inputs(profile: dict, source_root: Path, *, raw_root: Path | None = None) -> dict:
     """profileの外部参照を`source_root`（profileファイルの親）基準で解決する。
+
+    rawは`raw_root`から列挙する。省略時のみ互換性のためsource_rootを使う。
 
     method・依存ファイル・実行体の実在とhash一致を確認し、
     `processing.dependencies[].kind`と`method_key`の対応がadapterの
@@ -358,6 +364,7 @@ def resolve_profile_inputs(profile: dict, source_root: Path) -> dict:
     `snapshot_profile`へ渡す。
     """
     source_root = Path(source_root)
+    raw_root = Path(raw_root) if raw_root is not None else source_root
 
     method_path = _resolve_declared_path(profile["processing"]["method_path"], source_root)
     method_sha256 = _verify_pinned_file(
@@ -393,7 +400,7 @@ def resolve_profile_inputs(profile: dict, source_root: Path) -> dict:
         method_keys, method_path,
         reference_keys=method_file_mod.METABOLOMICS_REFERENCE_KEYS)
 
-    raw_files = _build_raw_fingerprint(source_root)
+    raw_files = _build_raw_fingerprint(raw_root)
 
     return {
         "profile_id": profile["profile_id"],
@@ -408,7 +415,7 @@ def resolve_profile_inputs(profile: dict, source_root: Path) -> dict:
         "dependencies": dependencies,
         "execution_environment": execution_environment,
         "raw_files": raw_files,
-        "source_root": str(source_root),
+        "source_root": str(raw_root),
     }
 
 
@@ -468,7 +475,8 @@ def snapshot_profile(plan: dict, run_dir: Path) -> dict:
     return snapshot
 
 
-def certificate_routine_overrides(profile: dict, profile_path: Path) -> dict:
+def certificate_routine_overrides(profile: dict, profile_path: Path, *,
+                                 observed_hashes: dict | None = None) -> dict:
     """validated profileの証明書が明示的に許した上書き範囲を返す（spec §6）。
 
     `execution_purpose="routine"` の要求で `preprocess` 上書きを許すかどうかは、
@@ -476,8 +484,9 @@ def certificate_routine_overrides(profile: dict, profile_path: Path) -> dict:
     「書いていない＝許可」にすると、検証した条件から外れた設定で routine 実行が
     通ってしまう。
 
-    証明書は `validation.certificate_sha256` と突き合わせてから読む。1要素でも
-    変われば hash が変わるので、改変された証明書で許可範囲が広がることはない。
+    証明書のhash、profile内容、scope、必須基準と独立した実測hashを検証する。
+    observed_hashesが未提供ならfail-closed。証明書のIDはpathではないため、
+    実測用ファイルの解決を宣言値から推測しない。
     draft profile（証明書なし）は `{}`。
     """
     validation = profile.get("validation") or {}
@@ -485,6 +494,16 @@ def certificate_routine_overrides(profile: dict, profile_path: Path) -> dict:
     expected = validation.get("certificate_sha256")
     if validation.get("status") != "validated" or not certificate_path:
         return {}
+
+    # Certificate keys are opaque evidence IDs, not file paths. The caller must
+    # supply independently measured evidence; declared certificate hashes must
+    # never be copied into the observed side of the comparison.
+    if observed_hashes is None:
+        raise DomainError(
+            "PROFILE_VALIDATION_INVALID",
+            "routine実行には証明書の依存・固定入力・基準・検証出力の実測hashが必要です。"
+            "現在の受付経路には証拠IDからファイルへの解決が未接続です。",
+            {"profile_path": str(profile_path)})
 
     path = Path(certificate_path)
     if not path.is_absolute():
@@ -511,4 +530,5 @@ def certificate_routine_overrides(profile: dict, profile_path: Path) -> dict:
             "証明書のhashがprofileのcertificate_sha256と一致しません"
             "（証明書が改変されたか、profileが更新されています）。",
             {"certificate_path": str(path), "expected": expected, "actual": actual})
-    return dict(certificate.get("routine_overrides") or {})
+    verified = validate_certificate(profile, certificate, observed_hashes)
+    return dict(verified.get("routine_overrides") or {})

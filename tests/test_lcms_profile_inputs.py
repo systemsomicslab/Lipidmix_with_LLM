@@ -258,6 +258,71 @@ def test_adapter_capabilities_returns_independent_copies():
 
 # ---------- load_profile ----------
 
+def test_profile_dependencies_and_raw_inventory_use_separate_roots(tmp_path):
+    root = _nested_root(tmp_path)
+    exe = _write_fake_exe(root)
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                             dependencies=[], exe=exe)
+    raw_root = tmp_path / "batch"
+    raw_root.mkdir()
+    (raw_root / "batch.wiff").write_bytes(b"different-batch")
+    plan = profiles.resolve_profile_inputs(profile, root, raw_root=raw_root)
+    assert [entry["relative_path"] for entry in plan["raw_files"]["files"]] == ["batch.wiff"]
+    assert plan["source_root"] == str(raw_root)
+    assert Path(plan["method"]["source_path"]).is_relative_to(root)
+
+
+def test_routine_requires_observed_certificate_evidence(tmp_path):
+    root = _nested_root(tmp_path)
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                             dependencies=[], exe=_write_fake_exe(root))
+    certificate = {}
+    profile["validation"] = {"status": "validated", "scope": "test",
+        "certificate_path": "certificate.json", "certificate_sha256": profiles.canonical_hash(certificate)}
+    (root / "certificate.json").write_text(json.dumps(certificate), encoding="utf-8")
+    path = root / "profile.json"
+    path.write_text(json.dumps(profile), encoding="utf-8")
+    with pytest.raises(DomainError, match="PROFILE_VALIDATION_INVALID"):
+        profiles.load_profile(path, "routine")
+    with pytest.raises(DomainError, match="PROFILE_VALIDATION_INVALID"):
+        profiles.certificate_routine_overrides(profile, path)
+
+
+@pytest.mark.parametrize("failure", [None, "failed_criterion", "changed_output", "changed_profile"])
+def test_routine_validates_independent_evidence(tmp_path, failure):
+    root = _nested_root(tmp_path)
+    profile = _build_profile(root, method_lines="Ion mode: Positive\n",
+                             dependencies=[], exe=_write_fake_exe(root))
+    observed = {}
+    certificate = {"schema": "lcms-profile-validation.v1",
+        "profile_content_sha256": profiles.profile_content_hash(profile),
+        "criteria": [{"criterion_id": "check", "status": "fail" if failure == "failed_criterion" else "pass",
+                      "required": True, "detail": None}],
+        "performed_by": "fixture", "performed_at": "2026-09-16T00:00:00Z", "scope": "test"}
+    for cert_key, observed_key in [("dependency_hashes", "dependencies"),
+            ("fixed_input_hashes", "fixed_inputs"), ("reference_file_hashes", "reference_files"),
+            ("validation_output_hashes", "validation_outputs")]:
+        evidence = root / observed_key
+        evidence.write_bytes(observed_key.encode())
+        digest = profiles.hash_files([evidence])[str(evidence)]
+        certificate[cert_key] = {"evidence": digest}
+        if failure == "changed_output" and observed_key == "validation_outputs":
+            evidence.write_bytes(b"changed")
+        observed[observed_key] = {"evidence": profiles.hash_files([evidence])[str(evidence)]}
+    profile["validation"] = {"status": "validated", "scope": "test", "certificate_path": "certificate.json",
+        "certificate_sha256": profiles.canonical_hash(certificate)}
+    if failure == "changed_profile":
+        profile["revision"] += 1
+    (root / "certificate.json").write_text(json.dumps(certificate), encoding="utf-8")
+    path = root / "profile.json"
+    path.write_text(json.dumps(profile), encoding="utf-8")
+    if failure:
+        with pytest.raises(DomainError, match="PROFILE_VALIDATION_INVALID"):
+            profiles.load_profile(path, "routine", observed_hashes=observed)
+    else:
+        assert profiles.load_profile(path, "routine", observed_hashes=observed)["validation"]["status"] == "validated"
+
+
 def test_load_profile_rejects_unknown_purpose(tmp_path):
     root = _nested_root(tmp_path)
     exe = _write_fake_exe(root)
