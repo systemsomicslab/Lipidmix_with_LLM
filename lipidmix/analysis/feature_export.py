@@ -71,7 +71,7 @@ def _cell(value) -> str:
     if isinstance(value, (int, np.integer)):
         return str(int(value))
     if isinstance(value, (float, np.floating)):
-        return "" if not math.isfinite(float(value)) else repr(round(float(value), 6))
+        return "" if not math.isfinite(float(value)) else repr(float(value))
     text = str(value)
     return text.replace("\t", " ").replace("\n", " ")
 

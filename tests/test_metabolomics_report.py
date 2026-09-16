@@ -250,6 +250,15 @@ def test_missing_p_values_are_blank_not_zero(tmp_path):
     assert by_feature["2"][p_col] == ""
 
 
+def test_export_preserves_small_nonzero_p_and_q_values(tmp_path):
+    result = _welch_result()
+    result["features"][0].update(p_value=1e-9, q_value=2.123456789e-8)
+    export_statistic(result, tmp_path / "small.tsv")
+    header, row, *_ = _read(tmp_path / "small.tsv")
+    assert float(row[header.index("p_value")]) == 1e-9
+    assert float(row[header.index("q_value")]) == 2.123456789e-8
+
+
 def test_effect_size_definition_travels_with_the_table(tmp_path):
     out = export_statistic(_welch_result(), tmp_path / "w1.tsv")
     text = (tmp_path / "w1.tsv").read_text(encoding="utf-8")

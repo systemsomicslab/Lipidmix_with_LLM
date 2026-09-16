@@ -351,6 +351,16 @@ def test_pca_with_too_few_samples_is_not_evaluable():
     assert out["reason"] == "insufficient_samples_or_features"
 
 
+@pytest.mark.parametrize("scaling", ["none", "autoscale"])
+def test_pca_components_are_limited_by_centered_rank(scaling):
+    out = run_statistic(_matrix(np.array([[1., 2.], [2., 3.]])),
+                        _pca_spec(scaling=scaling), _rows(["g1", "g2"]))
+    assert out["status"] == "completed"
+    assert out["n_components"] == 1
+    assert out["explained_variance_ratio"] == [1.0]
+    assert np.asarray(out["scores"]).shape == (2, 1)
+
+
 # ---------- 共通の記録 ----------
 
 def test_every_result_records_the_matrix_it_used():

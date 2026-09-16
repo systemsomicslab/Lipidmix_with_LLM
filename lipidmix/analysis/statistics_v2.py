@@ -296,14 +296,18 @@ def _run_pca(matrix, specification, metadata, indices) -> dict:
             n_features_excluded=int(n_excluded), features=[])
 
     requested = specification.get("n_components") or 5
-    # 成分数は行列の rank 以下。超えた分は「説明率0の成分」ではなく存在しない。
-    n_components = int(min(requested, np.linalg.matrix_rank(used),
-                           *used.shape))
     scaling = specification.get("scaling", "autoscale")
     if scaling not in ("none", "autoscale"):
         raise DomainError(
             _SPEC_INVALID, f"未知の scaling です: {scaling!r}",
             {"scaling": scaling, "supported": ["none", "autoscale"]})
+
+    # PCA が学習する中心化・スケーリング後の行列で rank を制限する。
+    from sklearn.preprocessing import StandardScaler
+
+    fitted_values = StandardScaler(with_std=(scaling == "autoscale")).fit_transform(used)
+    n_components = int(min(requested, np.linalg.matrix_rank(fitted_values),
+                           used.shape[0] - 1, used.shape[1]))
 
     result = run_pca(used, n_components=n_components, log_transform=False,
                      scaling=scaling)
