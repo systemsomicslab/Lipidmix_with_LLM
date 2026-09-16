@@ -110,3 +110,78 @@ def test_a_v2_request_without_a_profile_stops_instead_of_falling_back(tmp_path, 
         service.plan_pipeline(source_root, request)
     assert excinfo.value.code != "PIPELINE_V2_UPSTREAM_UNAVAILABLE"
     assert excinfo.value.code in {"PIPELINE_REQUEST_INVALID", "PROFILE_NOT_FOUND"}
+
+
+# ---------- Console 起動（job v3） ----------
+
+def _upstream_context(tmp_path, monkeypatch):
+    """受付 → prepare_inputs まで通し、`execute_console` の context を返す。
+
+    engine を回さず handler を直接呼ぶのは、ここで見たいのが「job に何を書くか」
+    だけだから。prepare_inputs が固定した成果物 ref を record へ載せて渡す
+    （engine が commit_stage_outcome でやることを、この試験の範囲だけ手で行う）。
+    """
+    from lipidmix.pipeline import engine as engine_mod
+    from lipidmix.pipeline import request as request_mod
+    from lipidmix.pipeline import service, store
+
+    source_root, request, _profile = _setup(tmp_path, monkeypatch)
+    receipt = service.plan_pipeline(source_root, request)
+    pipeline_root = Path(receipt["pipeline_path"])
+    resolved = request_mod.resolve_request(
+        source_root, request, **service._profile_arguments(source_root, request))
+    record = store.load_run(pipeline_root)
+
+    prepared = service._handle_prepare_inputs_v2(engine_mod.make_context(
+        record, record["stages"]["prepare_inputs"], {}, resolved))
+    assert prepared["status"] == "succeeded", prepared
+    record["results"] = list(prepared["result_refs"])
+    context = engine_mod.make_context(
+        record, record["stages"]["execute_console"], {}, resolved)
+    return context, pipeline_root
+
+
+def test_v2_upstream_writes_a_v3_job_with_the_profile_snapshot(tmp_path, monkeypatch):
+    from lipidmix.console import execution as console_execution
+    from lipidmix.pipeline import service
+
+    context, pipeline_root = _upstream_context(tmp_path, monkeypatch)
+    monkeypatch.setattr(console_execution, "supervise",
+                        lambda job_path, cancel_path=None: {
+                            "execution_id": "exec-test", "termination": "exited",
+                            "exit_code": 0})
+
+    service._handle_upstream(context)
+
+    job_path = next(pipeline_root.rglob("analysis-job.json"))
+    data = json.loads(job_path.read_text(encoding="utf-8"))
+    assert data["schema"] == "analysis-job.v3"
+    # dataclass の field は profile_snapshot、wire 上のキーは profile。
+    assert data["profile"]["profile_id"] == "synthetic-metabolomics"
+    assert data["profile"]["dependencies"], "依存manifestがsnapshotに無い"
+    assert data["project"]["omics"] == "metabolomics"
+    assert data["project"]["measure"] == "peak_height"
+
+
+def test_upstream_reads_the_snapshot_from_persisted_results_not_from_runtime(
+        tmp_path, monkeypatch):
+    """再開で prepare_inputs が skip されると runtime は空になる。
+
+    そのとき snapshot を runtime から取っていると、再開後に書く job だけが
+    snapshot を失い、v3 のはずの job が黙って v2 になる。成果物が無いなら
+    「無い」と言って止まること（前の工程を先に通す）を縛る。
+    """
+    from lipidmix.console import execution as console_execution
+    from lipidmix.pipeline import service
+
+    context, _pipeline_root = _upstream_context(tmp_path, monkeypatch)
+    monkeypatch.setattr(console_execution, "supervise",
+                        lambda job_path, cancel_path=None: {
+                            "execution_id": "exec-test", "termination": "exited",
+                            "exit_code": 0})
+    context["results"] = []          # 成果物が record に無い状態
+    context["runtime"] = {}          # runtime も空（再開直後と同じ）
+
+    outcome = service._handle_upstream(context)
+    assert outcome["status"] == "needs_input"
+    assert outcome["error"]["code"] == "PROFILE_SNAPSHOT_MISSING"

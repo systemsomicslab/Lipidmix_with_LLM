@@ -609,6 +609,25 @@ def _handle_upstream(context: dict) -> dict:
     job_path = run_dir / job_manager.JOB_FILENAME
     dataset_root = pipeline_root / _INPUT_SUBDIR
 
+    # schemaで分ける値は3つだけ。supervise・attemptディレクトリ・
+    # write_supervision_inputsの規約は v1/v2 で共通のまま。
+    omics, measure, profile_snapshot = "lipidomics", request.get("measure"), None
+    if stage_plan.is_v2_request(request):
+        # snapshotはruntimeではなく保存済み成果物から読む——再開でprepare_inputsが
+        # skipされるとruntimeは空で、そのとき書くjobだけがsnapshotを失う。
+        saved = store.read_result_data(
+            Path(pipeline_root), context.get("results") or [], "profile")
+        if not saved:
+            return {"status": "needs_input", "result_refs": [], "warnings": [],
+                    "error": {"code": "PROFILE_SNAPSHOT_MISSING",
+                              "message": "profile成果物がまだ固定されていません"
+                                         "（prepare_inputsを先に通してください）。",
+                              "details": {"pipeline_root": str(pipeline_root)}},
+                    "record_updates": {}}
+        omics = request["omics"]
+        measure = saved[-1]["profile"]["processing"]["measure"]
+        profile_snapshot = saved[-1]["snapshot"]
+
     if not job_path.is_file():
         method_rel = inputs_snapshot["method"].get("effective_relative_path")
         method_abs = ((pipeline_root / method_rel) if method_rel
@@ -620,10 +639,12 @@ def _handle_upstream(context: dict) -> dict:
             dataset_root=str(dataset_root),
             input_count=job_manager.count_raw_inputs(dataset_root),
             software_name="MS-DIAL", software_version="", execution_mode="console",
-            method_file=str(method_abs), omics="lipidomics",
-            polarity=inputs_snapshot["polarity"]["value"], measure=request["measure"],
+            method_file=str(method_abs), omics=omics,
+            polarity=inputs_snapshot["polarity"]["value"], measure=measure,
             run_dir=str(run_dir), save_project=request["save_project"],
             timeout_s=request["timeout_s"],
+            # snapshotを持つjobだけがv3として書かれる（handoff/schema.py）。
+            profile_snapshot=profile_snapshot,
         )
         job.save(job_path)
         store.register_job_owner(job_path, pipeline_root)
