@@ -167,3 +167,105 @@ def test_v1_dataset_differential_defaults_are_unchanged():
     signature = inspect.signature(dataset_differential)
     assert signature.parameters["q_threshold"].default == 0.05
     assert signature.parameters["log2fc_threshold"].default == 1.0
+
+
+# ---------- dataset_build_matrix（pipeline を経ない対話経路） ----------
+#
+# pipeline の公開入口が塞がっている間、v2 の解析行列を作る入口はどこにも無い
+# （`build_analysis_matrix` は呼出元ゼロだった）。ここで縛るのは「行列は作れる
+# が、揃っていない前提を揃ったことにしない」——binding の無い内部標準比を
+# 作らせず、検出状態が不明なまま検出率 filter を適用しない。
+
+def _dataset_for_matrix() -> DatasetState:
+    ds = DatasetState()
+    ds.feature_ids = ["1", "2"]
+    ds.sample_assay_ids = [f"assay[{i + 1}]" for i in range(6)]
+    ds.sample_names = [f"S{i}" for i in range(6)]
+    ds.sample_metadata_rows = _rows()
+    # DatasetState は (feature × assay)。解析行列側で転置される。
+    ds.feature_matrix = np.array([[10., 11., 9., 40., 42., 38.],
+                                  [5., 6., 4., 20., 21., 19.]])
+    session_state.session.dataset = ds
+    return ds
+
+
+def _recipe(**overrides) -> dict:
+    recipe = {"base": "peak_height", "normalize": "none", "drift_correct": False,
+              "filter": None, "impute": "none"}
+    recipe.update(overrides)
+    return recipe
+
+
+def test_build_matrix_is_registered_like_its_siblings():
+    import asyncio
+
+    import server
+
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    assert "dataset_build_matrix" in tools
+    assert tools["dataset_build_matrix"].annotations.readOnlyHint is True
+
+
+def test_building_without_a_dataset_says_to_load_one():
+    from lipidmix.tools.dataset_analysis_tools import dataset_build_matrix
+
+    session_state.session.dataset = None
+    payload = _payload(dataset_build_matrix(_recipe()))
+    assert payload["error"]["code"] == "missing_state"
+    assert payload["error"]["state"] == "dataset"
+    assert "dataset_load" in payload["error"]["required_tools"]
+
+
+def test_an_invalid_recipe_is_rejected_not_reported_as_missing_state():
+    from lipidmix.tools.dataset_analysis_tools import dataset_build_matrix
+
+    _dataset_for_matrix()
+    payload = _payload(dataset_build_matrix(_recipe(normalize="quantile")))
+    assert payload["error"]["code"] == "MATRIX_RECIPE_INVALID"
+    assert "quantile" in json.dumps(payload, ensure_ascii=False)
+
+
+def test_a_built_matrix_can_be_used_by_dataset_statistic():
+    from lipidmix.tools.dataset_analysis_tools import dataset_build_matrix
+
+    _dataset_for_matrix()
+    built = _payload(dataset_build_matrix(_recipe()))
+    assert built["status"] == "success"
+    assert built["n_assays"] == 6 and built["n_features"] == 2
+    assert "values" not in built
+
+    result = _payload(dataset_statistic(_spec(), built["matrix_id"]))
+    assert result["status"] == "success"
+    assert result["matrix_id"] == built["matrix_id"]
+
+
+def test_the_same_recipe_and_dataset_give_the_same_matrix_id():
+    from lipidmix.tools.dataset_analysis_tools import dataset_build_matrix
+
+    _dataset_for_matrix()
+    first = _payload(dataset_build_matrix(_recipe()))
+    second = _payload(dataset_build_matrix(_recipe()))
+    assert first["matrix_id"] == second["matrix_id"]
+
+
+def test_detection_filter_is_not_evaluable_when_detection_is_unknown():
+    from lipidmix.tools.dataset_analysis_tools import dataset_build_matrix
+
+    _dataset_for_matrix()
+    payload = _payload(dataset_build_matrix(
+        _recipe(filter={"min_detection_rate": 0.8})))
+    steps = {step["step"]: step for step in payload["history"]}
+    assert steps["detection_filter"]["status"] == "not_evaluable"
+    # 検出状態が分からないことを理由に feature を落とさない。
+    assert payload["eligible_features"] == 2
+    assert "detection_unknown" in payload["caveats"]
+
+
+def test_internal_standard_ratio_needs_bindings_and_is_not_faked():
+    from lipidmix.tools.dataset_analysis_tools import dataset_build_matrix
+
+    _dataset_for_matrix()
+    payload = _payload(dataset_build_matrix(_recipe(base="internal_standard_ratio")))
+    assert payload["error"]["code"] == "missing_state"
+    assert payload["error"]["state"] == "feature_bindings"
+    assert "pipeline_run" in payload["error"]["required_tools"]

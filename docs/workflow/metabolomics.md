@@ -5,8 +5,9 @@
 **2026-09-16時点では公開 `pipeline_plan` / `pipeline_run` のv2上流は未接続**で、
 `PIPELINE_V2_UPSTREAM_UNAVAILABLE`で停止する。routineは独立した証明書実測hashの
 受付も未接続のため`PROFILE_VALIDATION_INVALID`で停止する。
-この文書の工程図は実装予定を含む。`dataset_statistic`は既にセッションに存在する
-解析行列を対象にした単体ツールであり、現状の公開入口だけでその行列を作れるわけではない。
+この文書の工程図は実装予定を含む。ただし**統計までの対話経路は pipeline 抜きで通る**:
+`dataset_load` → `dataset_set_sample_metadata` → `dataset_build_matrix` → `dataset_statistic`。
+この経路は binding と注入証拠を持たないぶん、内部標準比を作れず検出率 filter も評価不能になる。
 検証範囲と残タスクは[実装監査](../superpowers/plans/2026-09-16-validated-lcms-metabolomics-audit.md)を参照。
 
 v1（`dataset_differential` ほか、[dataset_analysis.md](dataset_analysis.md)）とは
@@ -14,15 +15,47 @@ v1（`dataset_differential` ほか、[dataset_analysis.md](dataset_analysis.md)�
 平均差、v2 は統計変換前の算術平均比の log2（`effect_size_definition =
 log2_arithmetic_mean_ratio`）。v1 の既定値・契約は一切変更していない。
 
+## dataset_build_matrix
+
+セッションの `DatasetState` から解析行列（`analysis-matrix.v1`）を1本作り、
+`ds.analysis_matrices` へ登録する。pipeline を回さずに v2 統計へ進むための入口。
+
+- **前提** — `session.dataset` のみ（`dataset_load`）。群・batch・注入順・include は
+  `dataset_set_sample_metadata` で入れておく（正規化の参照試料とドリフト補正の
+  前提判定がこれを読む）。
+- **recipe の検証** — profile の `matrix_recipes` と**同じ規則**を共有する
+  （`profile_schema.validate_matrix_recipe`）。経路によって通る recipe が変わると、
+  同じ `recipe_id` の行列が別物になる。
+- **揃っていない前提を埋めない** — `base="internal_standard_ratio"` は対象feature↔
+  内部標準の対応付けを要求するので `missing_state`（`feature_bindings`）で止める。
+  検出状態が不明な dataset では `filter.min_detection_rate` は `not_evaluable` として
+  記録され、feature を落とさない。
+- **状態変更** — `ds.analysis_matrices[matrix_id]`。値は戻り値に載せない。
+- **呼び出し連鎖**
+
+```
+1. lipidmix/tools/dataset_analysis_tools.py  dataset_build_matrix()
+2. ├─ lipidmix/console/profile_schema.py  validate_matrix_recipe()
+3. └─ lipidmix/analysis/dataset_service.py  build_analysis_matrix()
+4.    └─ lipidmix/analysis/matrix_state.py  make_matrix()
+5.       └─ lipidmix/analysis/matrix_state.py  _detected_mask()
+6.       └─ lipidmix/analysis/matrix_state.py  _apply_recipe()
+7.       └─ lipidmix/analysis/matrix_state.py  _detection_eligibility()
+8.       └─ lipidmix/analysis/internal_standards.py  apply_internal_standards()
+```
+
+`matrix_id` は値ではなく**入力の identity**（dataset fingerprint・recipe・binding・
+証拠・metadata・eligibility）の hash。同じ入力なら同じ ID になるので、pipeline が
+作った行列と突き合わせられる。
+
 ## dataset_statistic
 
 名指しした解析行列（`analysis-matrix.v1`）に対して統計を1件実行する。
 
 - **前提** — `session.dataset`（`dataset_load`）と、`ds.analysis_matrices` に登録済みの
-  解析行列。行列は pipeline の `preprocess` / `qc_processed` 工程が作る。単体ツールで
-  行列を組む入口は置いていない——recipe・binding・注入証拠が揃って初めて意味のある
-  行列になるため。どちらが欠けても `missing_state` 封筒
-  （`required_tools` に `dataset_load` / `pipeline_run`）を返す。
+  解析行列。行列は pipeline の `preprocess` / `qc_processed` 工程か `dataset_build_matrix`
+  が作る。どちらが欠けても `missing_state` 封筒（`required_tools` に `dataset_load` /
+  `pipeline_run` / `dataset_build_matrix`）を返す。
 - **状態変更** — `session.dataset.results["stat_<statistic_id>"]` に結果全量を置く。
   戻り値には要約だけを載せる。
 - **呼び出し連鎖**

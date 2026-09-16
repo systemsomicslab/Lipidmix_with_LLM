@@ -58,6 +58,8 @@ EXPECTED_ANNOTATIONS = {
     # v2統計は名指しした解析行列を読むだけ（行列も session も書き換えない。
     # 結果全量の保持は session.dataset.results への追加で、外界へは書かない）。
     "dataset_statistic": READ_ONLY,
+    # 解析行列を1本作って session へ置くだけ（外界へは書かない）。
+    "dataset_build_matrix": READ_ONLY,
     # --- Console 実行層（console_plan/run はジョブ状態・ファイルを生成する） ---
     "console_plan": LOCAL_WRITE_APPEND,
     "console_run": LOCAL_WRITE_APPEND,

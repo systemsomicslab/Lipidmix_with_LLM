@@ -56,6 +56,7 @@ __all__ = [
     "SCHEMA",
     "CERTIFICATE_SCHEMA",
     "validate_profile",
+    "validate_matrix_recipe",
     "profile_content_hash",
     "validate_certificate",
 ]
@@ -618,6 +619,17 @@ def _validate_matrix_recipe(value: object, recipe_id: str) -> dict:
         "filter": _validate_matrix_recipe_filter(value["filter"], f"{label}.filter"),
         "impute": impute,
     }
+
+
+def validate_matrix_recipe(recipe: object, recipe_id: str = _DEFAULT_RECIPE_ID) -> dict:
+    """matrix recipe 1件を検証して正規化する（profileの外からも使う公開API）。
+
+    profile の `matrix_recipes` を検証するのと**同じ規則**をそのまま使う——
+    単体ツールから recipe を渡す経路（`dataset_build_matrix`）が、profile 経由
+    より緩い recipe を通してしまうと、同じ recipe_id の行列が経路によって
+    別物になる。戻り値に `recipe_id` は含めない（呼出側が付ける）。
+    """
+    return _validate_matrix_recipe(recipe, recipe_id)
 
 
 def _validate_matrix_recipes(value: object) -> dict:
