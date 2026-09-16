@@ -253,7 +253,11 @@ def _console_supervision_state(record: dict) -> tuple[dict | None, bool]:
     （`verified`が既にTrueなら、record自体が既にsucceededと確定させている
     ので、受信できない終了証跡があっても実害は無く例外にしない）。
     """
-    verified = record.get("stages", {}).get("upstream", {}).get("status") == "succeeded"
+    # 上流stageはv1が`upstream`、v2が`execute_console`。ここを直書きにすると
+    # v2では常にverified=Falseになり、succeededと永続化済みの実行まで
+    # EXECUTION_UNRESOLVEDで止まる（prepare_resumeは既に_upstream_stage_idを使う）。
+    verified = record.get("stages", {}).get(
+        _upstream_stage_id(record), {}).get("status") == "succeeded"
     job_path = (record.get("upstream") or {}).get("console_job_path")
     if not job_path:
         return None, verified
