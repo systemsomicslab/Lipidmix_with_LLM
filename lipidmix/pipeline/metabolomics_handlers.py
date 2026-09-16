@@ -114,6 +114,33 @@ def _persist(context: dict, output_name: str, kind: str, result_id: str,
     })
 
 
+#: 行列の配列。要約 JSON には入れず、`save_matrix` が npz へ書く。
+_MATRIX_ARRAY_KEYS = ("values", "detected_mask", "imputed_mask", "locked_mask")
+
+#: pipeline_root 相対の行列置き場。`persist_result` が書く
+#: `results/<result_id>.json` と衝突しないよう1段下げる（`save_matrix` も
+#: `<matrix_id>.json` を書くため、同じ場所だと片方が片方を潰す）。
+_MATRIX_SUBDIR = ("results", "matrices")
+
+
+def _persist_matrix(context: dict, matrix: dict, parent_ids=None) -> dict:
+    """行列を npz+meta で保存し、要約 JSON の成果物 ref を返す。
+
+    要約に値は入れない（run record と戻り値を肥大させない）。数値は
+    `matrix_state.save_matrix` が別ファイルへ書き、その参照だけを
+    `storage` として要約に載せる。完全性はこれで一本に繋がる:
+    run record（追記専用）の `storage.meta_hash` → meta の `array_hashes`
+    → npz。どこを書き換えても `load_matrix` が拒否する。
+    """
+    directory = Path(context["pipeline_root"]).joinpath(*_MATRIX_SUBDIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    storage = matrix_state.save_matrix(matrix, directory)
+    summary = _jsonable({k: v for k, v in matrix.items()
+                         if k not in _MATRIX_ARRAY_KEYS})
+    return _persist(context, "matrix", "analysis_matrix", matrix["matrix_id"],
+                    {**summary, "storage": storage}, parent_ids=parent_ids)
+
+
 def _jsonable(value):
     """numpy 配列を持つ結果を JSON 保存できる形へ落とす（mask は list にする）。"""
     if isinstance(value, np.ndarray):
@@ -421,12 +448,7 @@ def _handle_preprocess(context: dict) -> dict:
         matrix = matrix_state.make_matrix(ds, recipe, bindings, evidence,
                                           eligibility)
         matrices[recipe_id] = matrix
-        refs.append(_persist(
-            context, "matrix", "analysis_matrix", matrix["matrix_id"],
-            _jsonable({k: v for k, v in matrix.items()
-                       if k not in ("values", "detected_mask", "imputed_mask",
-                                    "locked_mask")}
-                      | {"policy": plans[recipe_id]})))
+        refs.append(_persist_matrix(context, {**matrix, "policy": plans[recipe_id]}))
 
     context["runtime"]["matrices"] = matrices
     context["runtime"]["matrix_plans"] = plans
@@ -464,12 +486,8 @@ def _handle_qc_processed(context: dict) -> dict:
         refs.append(_persist(
             context, "qc", "assay_qc", f"res_qc_{recipe_id}_{context['pipeline_id']}",
             _jsonable(qc), parent_ids=[matrix["matrix_id"]]))
-        refs.append(_persist(
-            context, "matrix", "analysis_matrix", finalized["matrix_id"],
-            _jsonable({k: v for k, v in finalized.items()
-                       if k not in ("values", "detected_mask", "imputed_mask",
-                                    "locked_mask")}),
-            parent_ids=[matrix["matrix_id"]]))
+        refs.append(_persist_matrix(context, finalized,
+                                    parent_ids=[matrix["matrix_id"]]))
 
     context["runtime"]["qc"] = qc_results
     context["runtime"]["final_matrices"] = final
@@ -492,9 +510,7 @@ def _specification(context: dict) -> dict:
 
 
 def _target_features(context: dict) -> dict:
-    bindings = (context["runtime"].get("bindings") or {}).get("bindings") or {}
-    return {tid: b["selected_feature_id"] for tid, b in bindings.items()
-            if b.get("status") == "resolved"}
+    return feature_bindings.resolved_targets(context["runtime"].get("bindings"))
 
 
 def _handle_statistics(context: dict) -> dict:
@@ -541,20 +557,9 @@ def _statistic_result(context: dict, statistic_id: str) -> dict | None:
 
 def _restore_output(context: dict, output_name: str):
     """`context["results"]` の最新 ref を hash 照合して読む（無ければ None）。"""
-    matches = [r for r in (context.get("results") or [])
-               if isinstance(r, dict) and r.get("output_name") == output_name]
-    if not matches:
-        return None
-    ref = matches[-1]
-    root = Path(context["pipeline_root"])
-    failures = store.verify_result_refs(root, [ref])
-    if failures:
-        raise DomainError(
-            "RESULT_INTEGRITY_MISMATCH",
-            f"保存済みの成果物が変更されています: {output_name}",
-            {"output_name": output_name, "failures": failures})
-    payload = json.loads((root / ref["relative_path"]).read_text(encoding="utf-8"))
-    return payload.get("data")
+    payloads = store.read_result_data(
+        Path(context["pipeline_root"]), context.get("results") or [], output_name)
+    return payloads[-1] if payloads else None
 
 
 def _handle_export(context: dict) -> dict:

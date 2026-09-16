@@ -43,7 +43,8 @@ _RECOVERY_TOOLS = {
     # dataset_build_matrix でも作れるが、そちらは binding と証拠を持たない分
     # できることが狭い（内部標準比は作れず、検出率filterは評価不能になる）。
     # 先頭ほど優先＝上流の証拠ごと揃う pipeline を先に案内する。
-    "analysis_matrix": ["pipeline_run", "pipeline_status", "dataset_build_matrix"],
+    "analysis_matrix": ["pipeline_run", "pipeline_status", "dataset_load",
+                        "dataset_build_matrix"],
     # 対象feature↔内部標準の対応付け。pipeline の resolve_feature_bindings が作る。
     "feature_bindings": ["pipeline_run", "pipeline_status"],
 }

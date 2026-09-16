@@ -50,6 +50,7 @@ __all__ = [
     "INTERNAL_STANDARD_MAP_SCHEMA",
     "bind_features",
     "resolve_candidates",
+    "resolved_targets",
 ]
 
 BINDINGS_SCHEMA = "feature-bindings.v1"
@@ -433,3 +434,16 @@ def bind_features(ds, profile: dict, evidence: dict,
             "pairs": pairs,
         },
     }
+
+
+def resolved_targets(payload: dict | None) -> dict:
+    """`feature-bindings.v1` から「解決済み target → feature」だけを取り出す。
+
+    worker（統計の feature_scope 解決）と、run を対話セッションへ引き渡す経路が
+    共有する。未解決（候補が複数・不在）の target は**含めない**——解決できて
+    いない対象を統計の対象集合へ混ぜない。
+    """
+    bindings = (payload or {}).get("bindings") or {}
+    return {target_id: entry["selected_feature_id"]
+            for target_id, entry in bindings.items()
+            if entry.get("status") == "resolved"}

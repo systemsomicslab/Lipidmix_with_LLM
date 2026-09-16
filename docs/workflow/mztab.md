@@ -42,6 +42,23 @@ job_path 経路（analysis-job.json の宣言 polarity + measure で正準を選
 13.      └─ lipidmix/mztab/dataset_state.py _resolve_sample_names()
 14. └─ lipidmix/mztab/evidence.py attach_to_dataset()
 
+pipeline_path 経路（完了した run の成果物をまとめて載せる）:
+1. lipidmix/tools/mztab_tools.py dataset_load()
+2. └─ lipidmix/pipeline/session_handoff.py load_run_dataset()
+3.    └─ lipidmix/pipeline/recovery.py normalize_pipeline_root()
+4.    └─ lipidmix/pipeline/store.py load_run()
+5.    └─ lipidmix/mztab/loading.py load_dataset_state()
+6.    └─ lipidmix/pipeline/store.py read_result_data()
+7.       └─ lipidmix/pipeline/store.py verify_result_refs()
+8.    └─ lipidmix/analysis/feature_bindings.py resolved_targets()
+9.    └─ lipidmix/analysis/matrix_state.py load_matrix()
+
+dataset・解決済み試料対応表・binding・解析行列を**同じ run から**載せる。
+行列だけを別ツールで載せる入口は置いていない——run A の dataset に run B の
+行列を混ぜられると、群の対応が黙ってずれた統計が出る。行列の値は
+`save_matrix` が残した npz から読み、meta・配列のどちらが書き換わっても
+`load_matrix` が拒否する。
+
 読み込みは「読めたか」だけでなく「どれだけ信用してよいか」も返す。
 `source_verification` は終了証跡（exit code・identity）とファイル hash が揃って初めて
 `verified` になり、ジョブ経由でも証跡が無ければ `legacy_unverified`、直接読みは

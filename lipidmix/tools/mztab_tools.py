@@ -20,6 +20,7 @@ __all__ = ["dataset_load", "dataset_status"]
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
           structured_output=False)
 def dataset_load(mztab_path: str | None = None, job_path: str | None = None,
+                 pipeline_path: str | None = None,
                  allow_incomplete: bool = False) -> str:
     """mzTab-M 2.0 ファイルを読み込んで正準状態（DatasetState）を作る。
 
@@ -28,8 +29,14 @@ def dataset_load(mztab_path: str | None = None, job_path: str | None = None,
       - job_path: analysis-job.json へのパスを指定する場合。ジョブの宣言
         （polarity・measure）で正準エントリを一意に選ぶ。console_run 完了後は
         こちらを推奨。
+      - pipeline_path: `pipeline_run` が返した pipeline-run.json（またはその親
+        ディレクトリ）を指定する場合。その run の mzTab に加えて、**解決済みの
+        試料対応表・feature binding・解析行列も同じ run からまとめて**載せる。
+        行列だけを別に載せる入口は置いていない——別 run の行列を混ぜると群の
+        対応が黙ってずれるため。載せた行列は `dataset_statistic` へ
+        `matrix_id` で渡す。
 
-    両方省略するとエラー、両方指定するとエラー。
+    3つとも省略するとエラー、2つ以上指定するとエラー。
 
     allow_incomplete: **完了していない実行**（partial / failed / running）の出力を
         読み込みます（既定 False）。中断時点の生成物なので、既定では拒否します
@@ -43,12 +50,23 @@ def dataset_load(mztab_path: str | None = None, job_path: str | None = None,
     """
     from lipidmix.core.atomic_io import DomainError
     from lipidmix.mztab.loading import load_dataset_state
+    from lipidmix.pipeline import session_handoff
 
     try:
-        ds = load_dataset_state(
-            mztab_path=Path(mztab_path) if mztab_path else None,
-            job_path=Path(job_path) if job_path else None,
-            allow_incomplete=allow_incomplete)
+        if pipeline_path:
+            if mztab_path or job_path:
+                raise DomainError(
+                    "DATASET_BAD_REQUEST",
+                    "pipeline_path は mztab_path / job_path と同時に指定できません"
+                    "（run の成果物はまとめて載せます）。",
+                    {"pipeline_path": pipeline_path})
+            ds = session_handoff.load_run_dataset(
+                pipeline_path, allow_incomplete=allow_incomplete)
+        else:
+            ds = load_dataset_state(
+                mztab_path=Path(mztab_path) if mztab_path else None,
+                job_path=Path(job_path) if job_path else None,
+                allow_incomplete=allow_incomplete)
     except DomainError as exc:
         return mztab_error(exc.code, exc.message, exc.details or None)
 
@@ -62,6 +80,9 @@ def dataset_load(mztab_path: str | None = None, job_path: str | None = None,
     lines.append(f"- 出所の裏取り: {ds.source_verification}"
                  + ("（探索専用: 2 群比較と差次的エクスポートは拒否されます）"
                     if ds.exploratory_only else ""))
+    if ds.analysis_matrices:
+        lines.append("- 解析行列（analysis-matrix.v1）: "
+                     + ", ".join(sorted(ds.analysis_matrices)))
     if ds.artifact_paths:
         lines.append("- 付随アーティファクト: "
                      + str({role: len(paths)

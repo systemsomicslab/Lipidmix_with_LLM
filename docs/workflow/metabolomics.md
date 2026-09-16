@@ -8,6 +8,8 @@
 この文書の工程図は実装予定を含む。ただし**統計までの対話経路は pipeline 抜きで通る**:
 `dataset_load` → `dataset_set_sample_metadata` → `dataset_build_matrix` → `dataset_statistic`。
 この経路は binding と注入証拠を持たないぶん、内部標準比を作れず検出率 filter も評価不能になる。
+完了した v2 run がある場合は `dataset_load(pipeline_path=...)` が、その run の dataset・
+試料対応表・binding・解析行列をまとめてセッションへ載せる（[mztab.md](mztab.md)）。
 検証範囲と残タスクは[実装監査](../superpowers/plans/2026-09-16-validated-lcms-metabolomics-audit.md)を参照。
 
 v1（`dataset_differential` ほか、[dataset_analysis.md](dataset_analysis.md)）とは
@@ -53,9 +55,9 @@ log2_arithmetic_mean_ratio`）。v1 の既定値・契約は一切変更して�
 名指しした解析行列（`analysis-matrix.v1`）に対して統計を1件実行する。
 
 - **前提** — `session.dataset`（`dataset_load`）と、`ds.analysis_matrices` に登録済みの
-  解析行列。行列は pipeline の `preprocess` / `qc_processed` 工程か `dataset_build_matrix`
-  が作る。どちらが欠けても `missing_state` 封筒（`required_tools` に `dataset_load` /
-  `pipeline_run` / `dataset_build_matrix`）を返す。
+  解析行列。行列の出どころは3つ: pipeline の `preprocess` / `qc_processed` 工程が作った
+  ものを `dataset_load(pipeline_path=...)` で載せる、`dataset_build_matrix` でこの場で作る、
+  のいずれか。どちらが欠けても `missing_state` 封筒を返す。
 - **状態変更** — `session.dataset.results["stat_<statistic_id>"]` に結果全量を置く。
   戻り値には要約だけを載せる。
 - **呼び出し連鎖**
