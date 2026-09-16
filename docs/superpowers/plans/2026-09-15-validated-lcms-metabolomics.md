@@ -1,5 +1,20 @@
 # 検証済みLC–MSメタボロミクス拡張 Implementation Plan
 
+## 2026-09-16 実装監査による状態訂正
+
+**全体は未完成。Task 1〜13は部分実装、Task 14は限定的な合成試験、Task 15/16は未完了。**
+下記の既存チェックは過去の実装作業記録であり、仕様の受け入れ完了を意味しない。
+最新の修正内容・検証結果・優先順位付き残タスクは
+[実装監査と残タスク](2026-09-16-validated-lcms-metabolomics-audit.md)を参照する。
+
+- 公開v2受付はprofile由来の上流計画・job v3実行に未接続。従来のlipidomics経路へ
+  流れないよう、`PIPELINE_V2_UPSTREAM_UNAVAILABLE`で明示的に停止する。
+- routineには証明書の宣言と独立した実測hashが必要。現受付には証拠IDから実ファイルへの
+  解決がなく、`PROFILE_VALIDATION_INVALID`で停止する。validatedラベルだけでは許可しない。
+- 合成E2Eの上流4工程はtest double。実Console、v2の独立worker全工程、科学的profile検証は未検証。
+- 追加回帰試験で判明した数値・QC・profile境界の不具合を修正したが、監査文書に記載した
+  未充足契約が残るため、「Task 1〜14完了」「ソフトウェア完成」と扱わない。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 固定した測定profileを使い、LC–MS rawから同定証拠、内部標準補正、QC、統計、レポートまで既存pipelineで実行できるようにする。
@@ -30,7 +45,7 @@
 
 コード確認基準は`db41db0`。着手時にHEAD、差分、適用AGENTS.mdを再確認し、specとplanだけを含む作業状態を隔離する。ユーザーの既存変更をstash・削除しない。今回の作成時点ではspecがstage済み、docs/researchは別の未追跡成果物だった。
 
-各TaskはRED確認→実装→対象GREEN→差分レビュー→関連ファイルだけcommitの順。コードblockは接続方針と最小回帰例であり、入力検証・境界ケースは各Taskに列挙した契約も満たすこと。実装を偽の定数返却でテストに合わせない。全チェックボックスは未着手。
+各TaskはRED確認→実装→対象GREEN→差分レビュー→関連ファイルだけcommitの順。コードblockは接続方針と最小回帰例であり、入力検証・境界ケースは各Taskに列挙した契約も満たすこと。実装を偽の定数返却でテストに合わせない。チェックボックスは過去の作業記録で、現在の受け入れ状態は冒頭の監査記録を優先する。
 
 前回の文書commitフックでは1652 passed、3 failed。2件はDETACH_UNSUPPORTED、もう1件は切り離し起動失敗だった。この値は今回のテスト結果ではない。実装時は新しいプロセスでbaselineを確認し、環境由来と実装退行を分離する。フック回避を既定手順にしない。
 
@@ -530,13 +545,13 @@ fixtureはmockの成功JSONだけを返さず、fake Consoleが実際に生成�
 - [x] GREEN: 対象後、`C:/Python314/python.exe -m pytest tests -q`。既知環境障害は正常環境の新規実行で切り分け、失敗をPASS扱いしない。
 - [x] Commit: 3ファイル、`git commit -m "test: メタボロミクスE2Eと再開を検証"`。
 
-**Task 14の未了（Task 15へ持ち越し）:** `tests/test_pipeline_process_lifecycle.py`への
+**Task 14の未了（Task 12/13/14の残実装として追跡）:** `tests/test_pipeline_process_lifecycle.py`への
 v2ケース追加は保留。v2の**受付層**が`inspect_inputs`（v1のmethod推定＋LBM必須）を
 通らない形でraw配置計画を作る経路が未実装で、`plan_pipeline`/`start_pipeline`から
 v2 runを起こせないため——実プロセスworkerで回す前提が揃わない。合成E2Eは
 `run_engine`直叩き（上流4工程はtest double、`execute_console`の呼出回数で
 「binding訂正でConsoleを起こし直さない」を直接確認）で全工程を通している。
-受付層のv2配線は実Console接続（Task 15）と同じ変更で入る。
+受付層のv2配線はTask 12/13の残実装とし、Task 14の実handler/fake Console試験を通してからTask 15へ進む。
 
 **Review D:** A01〜A28。全suite、fresh-process、出力hash、失敗時レポートを確認。この段階の表記は「合成入力での実装・試験完了」。実Console未接続ならソフトウェア完成としない。
 

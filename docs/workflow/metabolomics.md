@@ -1,9 +1,13 @@
 # ワークフロー: LC–MS メタボロミクス v2
 
 検証済み profile（`lcms-profile.v1`）を前提に、注入ごとの測定証拠・feature binding・
-内部標準比・固定母集団 QC・v2 統計までを回す経路。**一気通貫の入口は `pipeline_run`
-に v2 要求（`pipeline-request.v2`）を渡すこと**で、この文書が扱うのは、そこで作られた
-解析行列に対して統計を1件だけ足す単体ツール `dataset_statistic` である。
+内部標準比・固定母集団 QC・v2 統計までを回すための開発中の経路。
+**2026-09-16時点では公開 `pipeline_plan` / `pipeline_run` のv2上流は未接続**で、
+`PIPELINE_V2_UPSTREAM_UNAVAILABLE`で停止する。routineは独立した証明書実測hashの
+受付も未接続のため`PROFILE_VALIDATION_INVALID`で停止する。
+この文書の工程図は実装予定を含む。`dataset_statistic`は既にセッションに存在する
+解析行列を対象にした単体ツールであり、現状の公開入口だけでその行列を作れるわけではない。
+検証範囲と残タスクは[実装監査](../superpowers/plans/2026-09-16-validated-lcms-metabolomics-audit.md)を参照。
 
 v1（`dataset_differential` ほか、[dataset_analysis.md](dataset_analysis.md)）とは
 **数値契約が違う**。同じ「log2FC」という名前でも、v1 は `log2(x + pseudo_count)` 空間の
@@ -43,7 +47,7 @@ log2_arithmetic_mean_ratio`）。v1 の既定値・契約は一切変更して�
 
 ## pipeline の v2 工程（参考）
 
-`pipeline_run` に v2 要求を渡したときに worker が回す順序（handler の実体は
+公開受付接続後にv2 workerが回す予定の順序（handler の実体は
 `lipidmix/pipeline/metabolomics_handlers.py`）:
 
 ```
