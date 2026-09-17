@@ -205,6 +205,19 @@ def _detection_line(ds) -> str:
             f"{qc.get('n_cells')} セル（gap-fill {percent}）")
 
 
+def _identification_line(ds) -> str:
+    """同定の出所内訳。MS1 注釈と MS/MS 裏付けを入口で区別する。
+
+    MCP サーバ指示の「`analytical_checks.msms.band` の PASS と FLAG_ONLY を
+    同一視するな」と同じ趣旨。SML 由来の注釈は m/z 照合だけで付く。
+    """
+    by = (ds.inchikey_coverage or {}).get("identified_by") or {}
+    return (f"- 同定: MS/MS 証拠あり {by.get('sme', 0)} 件 / "
+            f"MS1 注釈のみ {by.get('sml_only', 0)} 件 / "
+            f"同定なし {by.get('none', 0)} 件"
+            "（MS1 注釈は m/z 照合のみ。MS/MS 裏付けと同一視しないこと）")
+
+
 def _summary_text(ds, filename: str) -> str:
     lines = [
         f"## dataset_load 完了: {filename}",
@@ -214,6 +227,7 @@ def _summary_text(ds, filename: str) -> str:
         f"- 定量種別: {ds.quantification_measure or '不明'} ({ds.quantification_confidence})",
         f"- 検証: {'OK' if ds.validation_result['ok'] else 'NG — ' + '; '.join(ds.validation_result['errors'])}",
         f"- InChIKey 付き: {ds.inchikey_coverage.get('with_inchikey', 0)}/{ds.inchikey_coverage.get('total_features', 0)} 件",
+        _identification_line(ds),
         # 検出状態は入口で言う。実データでは 70% のセルが gap-fill だったので、
         # これを知らずに非ゼロを検出と数えると検出率を 3 倍以上に過大評価する。
         _detection_line(ds),
