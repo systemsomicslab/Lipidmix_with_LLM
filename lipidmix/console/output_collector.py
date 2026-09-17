@@ -169,6 +169,19 @@ def collect_artifacts(
     return mztab_entries, other_artifacts
 
 
+def is_upstream_artifact(name: str) -> bool:
+    """`name` が MS-DIAL の生成物として役割を割り当てられるかを返す。
+
+    `_ROLE_MAP` が唯一の出所。MS-DIAL は `-o` だけでなく `-i` 側にも
+    `.arf` / `.pai2` / `.dcl` / `_tags.xml` 等を書くので、「入力フォルダに
+    入力以外がある」を異常と決め付ける側（`pipeline.inputs.stage_inputs`）が
+    この判定を借りる。同じ拡張子表を2か所に書くとドリフトする。
+
+    役割が付かないもの（生データ・よそのバッチのコピー等）は False。
+    """
+    return _assign_role(name)[0] != "unknown"
+
+
 def _assign_role(rel_str: str) -> tuple[str, str]:
     lower = rel_str.lower()
     for suffix, role, fmt in _ROLE_MAP:

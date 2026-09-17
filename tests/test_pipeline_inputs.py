@@ -539,3 +539,50 @@ def test_relative_lbm_reference_resolving_to_non_ascii_path_is_rejected(tmp_path
     assert plan["method"]["overrides"]  # 相対宣言なので絶対パスへの上書きが発生する
     with pytest.raises(DomainError, match="METHOD_ENCODING_UNSUPPORTED"):
         stage_inputs(plan, tmp_path / "pipeline_run")
+
+
+# ---------- 上流が入力フォルダへ書く生成物（2026-09-17 Stage B の #1）----------
+
+def test_restaging_tolerates_the_artifacts_msdial_writes_into_the_input_folder(
+        tmp_path, monkeypatch):
+    """`rerun_upstream` の再配置が、MS-DIAL 自身の生成物で塞がらないこと。
+
+    MS-DIAL は `-o` だけでなく **`-i` 側**にも `.arf` / `.pai2` / `.dcl` /
+    `_tags.xml` を書く（`console/execution.py` が両ルートを snapshot するのは
+    そのため）。pipeline では `-i` が staged input そのものなので、Console が
+    一度でも走れば必ずこれらが入力フォルダに現れる。これを「想定外のファイル」
+    として拒むと、やり直しの唯一の正規手順が使えなくなる。
+    """
+    _allow_fake_exe(monkeypatch)
+    src = make_source(tmp_path / "raw")
+    request = resolve_request(src["root"])
+    plan = inspect_inputs(src["root"], request, exe_path=src["exe"])
+    pipeline_root = tmp_path / "pipeline_run"
+    stage_inputs(plan, pipeline_root)
+
+    input_dir = pipeline_root / "input"
+    for name in ("AlignResult-20260917.arf", "AlignResult-20260917.arf2",
+                 "S0_20260917.pai2", "S0_20260917.dcl", "S0_20260917_tags.xml",
+                 "AlignResult-20260917.EIC.aef"):
+        (input_dir / name).write_text("upstream artifact", encoding="ascii")
+
+    stage_inputs(plan, pipeline_root)   # 例外を投げないこと
+
+
+def test_restaging_still_refuses_a_file_it_cannot_account_for(tmp_path, monkeypatch):
+    """上流生成物と判定できないファイルは従来どおり拒む。
+
+    「入力フォルダに知らないものがある」を一律に許すと、別バッチの生データや
+    取り違えたコピーが紛れ込んでも気付けなくなる。
+    """
+    _allow_fake_exe(monkeypatch)
+    src = make_source(tmp_path / "raw")
+    request = resolve_request(src["root"])
+    plan = inspect_inputs(src["root"], request, exe_path=src["exe"])
+    pipeline_root = tmp_path / "pipeline_run"
+    stage_inputs(plan, pipeline_root)
+
+    (pipeline_root / "input" / "stray-sample.wiff").write_text("よそのバッチ", encoding="utf-8")
+
+    with pytest.raises(DomainError, match="STAGED_INPUT_MISMATCH"):
+        stage_inputs(plan, pipeline_root)

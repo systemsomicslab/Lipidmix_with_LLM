@@ -42,6 +42,7 @@ from lipidmix.console import job_manager
 from lipidmix.console import method_file as method_file_mod
 from lipidmix.console import runner as console_runner
 from lipidmix.console.input_prep import _companions_of
+from lipidmix.console.output_collector import is_upstream_artifact
 from lipidmix.core.atomic_io import DomainError, canonical_hash
 
 __all__ = ["DEFAULT_MANIFEST_NAME", "inspect_inputs", "manifest_source_record",
@@ -629,7 +630,15 @@ def stage_inputs(plan: dict, pipeline_root: Path, *,
     entries = plan["entries"]
     expected_names = {e["name"] for e in entries}
     existing_names = {p.name for p in input_dir.iterdir()}
-    unexpected = existing_names - expected_names
+    # 上流が入力フォルダ側へ書いた生成物は「想定外」ではない。MS-DIAL は `-o` だけで
+    # なく `-i` 側にも .arf / .arf2 / .pai2 / .dcl / .EIC.aef / _tags.xml を書き、
+    # pipeline では `-i` が staged input そのもの（`service._handle_upstream` が
+    # `pipeline_root/input` を job.dataset_root として渡す）。`console/execution.py`
+    # が両ルートを snapshot して収集するのと同じ前提をここでも採る——採らないと、
+    # Console が一度でも走った run では `rerun_upstream` が必ずここで止まる。
+    # 判定規則は `output_collector` の role 表が唯一の出所（二重定義にしない）。
+    unexpected = {name for name in (existing_names - expected_names)
+                  if not is_upstream_artifact(name)}
     if unexpected:
         raise DomainError(
             "STAGED_INPUT_MISMATCH",
