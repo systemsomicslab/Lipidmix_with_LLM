@@ -138,3 +138,63 @@ def test_sme_trailing_warnings_are_aggregated_into_one(tmp_path):
     assert len(warnings) == 1
     assert "3" in warnings[0]          # 3 行分をまとめた件数が読める
     assert "trailing" in warnings[0].lower()
+
+
+# mzTab-M 2.0 の小分子セクションのヘッダ行は `SMH`（SMF は `SFH`、SME は `SEH`）。
+# reader は「ヘッダ未定義なら最初のデータ行をヘッダにする」フォールバックを持つため、
+# `SMH` を知らないと**最初の SML データ行が静かに 1 行消える**。合成 fixture は
+# ヘッダ行を `SML` 接頭辞で書いていてフォールバックに乗るので、この欠落は
+# 実 MS-DIAL 出力でしか現れない（HISTRY 2026-09-17(2)）。
+_SMH_HEADER_MZTAB = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tmzTab-mode\tComplete
+    MTD\tmzTab-type\tQuantification
+    MTD\tms_run[1]-location\tfile:///data/s1.raw
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    SMH\tSML_ID\tSMF_ID_REFS\tdatabase_identifier\tchemical_name\treliability
+    SML\t78\t78\tTextDB:GABA\tGABA\tannotated by user-defined text library
+    SML\t313\t313\tTextDB:Glutamate\tGlutamate\tannotated by user-defined text library
+    SFH\tSMF_ID\tSML_ID_REFS\tdatabase_identifier\tabundance_assay[1]
+    SMF\t78\tSML:78\tTextDB:GABA\t1000.0
+    SMF\t313\tSML:313\tTextDB:Glutamate\t2000.0
+""")
+
+
+def test_an_smh_header_row_is_not_swallowed_as_a_feature(tmp_path):
+    """`SMH` をヘッダとして認識し、SML データ行を 1 行も食わない。"""
+    p = tmp_path / "smh_header.mzTab"
+    p.write_text(_SMH_HEADER_MZTAB, encoding="utf-8")
+
+    sml = parse_mztab(p)["sections"]["SML"]
+
+    assert sml["header"][:2] == ["SML_ID", "SMF_ID_REFS"]
+    assert len(sml["rows"]) == 2
+
+
+def test_an_smh_header_names_the_sml_columns(tmp_path):
+    """`SMH` 由来のヘッダで SML 行の同定情報が名前で引ける。
+
+    Text DB 由来の同定は SME 行に出ない（MS-DIAL の `ShouldWriteSmeLine` が
+    `IsTextDbBasedRepresentative` を除外する）ため、SML 行が唯一の情報源になる。
+    """
+    p = tmp_path / "smh_named.mzTab"
+    p.write_text(_SMH_HEADER_MZTAB, encoding="utf-8")
+
+    rows = parse_mztab(p)["sections"]["SML"]["rows"]
+
+    assert [r["chemical_name"] for r in rows] == ["GABA", "Glutamate"]
+    assert rows[0]["database_identifier"] == "TextDB:GABA"
+
+
+def test_the_sml_and_smf_row_counts_agree_for_a_one_to_one_file(tmp_path):
+    """1 特徴 1 行の mzTab で SML と SMF の行数が一致する。
+
+    行数のずれは「ヘッダ行を食った」ことの最も安い検出方法。実 MS-DIAL 出力で
+    SMF 3050 に対し SML 3049 になっていたのがこのバグの発覚点だった。
+    """
+    p = tmp_path / "counts.mzTab"
+    p.write_text(_SMH_HEADER_MZTAB, encoding="utf-8")
+
+    sections = parse_mztab(p)["sections"]
+
+    assert len(sections["SML"]["rows"]) == len(sections["SMF"]["rows"])
