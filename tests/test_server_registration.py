@@ -16,6 +16,8 @@ import server
 # arf_re_pca は arf_parser（min_intensity/annotation_keyword を吸収）へ統合し撤去。
 # pai2_inspect_metabolite_details は peak 語彙へ統一し pai2_inspect_peak に改称。
 # Task18: 生データフォルダ起点の pipeline_plan/run/status/resume/cancel を追加(56→61)。
+# v2メタボロミクス Task13: dataset_statistic を追加(61→62)。
+# 対話経路S1: pipeline を経ずに解析行列を作る dataset_build_matrix を追加(62→63)。
 EXPECTED_TOOLS = sorted([
     "arf2_annotate_identities",
     "arf2_parser",
@@ -65,6 +67,8 @@ EXPECTED_TOOLS = sorted([
     "dataset_pca",
     "dataset_preprocess",
     "dataset_set_sample_metadata",
+    "dataset_build_matrix",
+    "dataset_statistic",
     "dcl_find_msms",
     "dcl_parser",
     "pai2_parser",

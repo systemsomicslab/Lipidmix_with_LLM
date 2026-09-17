@@ -113,6 +113,9 @@ MZTAB_ERROR_CODES = frozenset({
     # DatasetState 解析層の引数エラー。missing_state と違い、別のツールを先に
     # 呼んでも直らない（引数を直して呼び直すしかない）。
     "DATASET_BAD_REQUEST",
+    # v2 の matrix recipe が schema に合わない。DATASET_BAD_REQUEST と分けるのは、
+    # 直す場所が recipe の中だと一目で分かるようにするため。
+    "MATRIX_RECIPE_INVALID",
 })
 
 

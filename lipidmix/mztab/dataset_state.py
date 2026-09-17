@@ -53,6 +53,12 @@ class DatasetState:
         self.feature_ids: list[str] = []                # SMF_ID 列
         self.assay_metadata: dict = {}                  # assay_id -> MTD 情報
         self.feature_metadata: dict = {}                # smf_id -> {name, mz, rt, inchikey, ...}
+        # feature_candidates: smf_id -> [SME候補, ...]（rank昇順）。
+        # feature_metadata が持つのは rank 最上位の1件だけで、Task 7 の
+        # feature binding は adduct / charge / ライブラリ識別子 / スコアで
+        # 候補を選び直す必要がある——最上位だけを残すと、profile が要求する
+        # adduct と違う候補が付いた特徴を「同定なし」としか言えなくなる。
+        self.feature_candidates: dict = {}
         self.sml_rows: list[dict] | None = None
         self.sme_rows: list[dict] | None = None
         self.validation_result: dict = {}
@@ -114,6 +120,11 @@ class DatasetState:
         # results: result_id -> 結果全量。図・エクスポートが「どの結果か」を
         # 名指しで選べるようにする（last_* は現在の既定を指すだけの別名）。
         self.results: dict = {}
+        # analysis_matrices: matrix_id -> analysis-matrix.v1（Task 8）。
+        # v2 は recipe ごとに行列を持つので、`pp_matrix` のような単一スロットへは
+        # 置けない——2本目の recipe が1本目を黙って上書きする。統計は
+        # matrix_id で名指しして参照する。
+        self.analysis_matrices: dict = {}
 
         # --- 出所の信用度（lipidmix/mztab/loading.py が設定する） ---
         # source_verification: verified（終了証跡と hash で裏取り済み）/
@@ -176,6 +187,8 @@ def build_dataset_state(
     derivable_but_missing = 0
     for row in smf_rows:
         fid = row.get("SMF_ID", "")
+        candidates = _all_candidates(row.get("SME_ID_REFS"), sme_by_id)
+        ds.feature_candidates[fid] = candidates
         evidence = _best_evidence(row.get("SME_ID_REFS"), sme_by_id)
         ik, src = derive_inchikey(
             evidence.get("database_identifier"),
@@ -341,6 +354,61 @@ def _best_evidence(refs, sme_by_id: dict) -> dict:
     if not candidates:
         return {}
     return min(candidates, key=_sme_rank)
+
+
+#: SME 行からそのまま写す識別・スコア列。mzTab-M 2.0.0-M の列名で、
+#: MS-DIAL の出力で実際に埋まるものだけを並べる（無い列は None のまま残す
+#: ——「取得していない」と「無い」を区別するため、キー自体は落とさない）。
+_SME_TEXT_FIELDS = {
+    "chemical_name": "chemical_name",
+    "database_identifier": "database_identifier",
+    "inchi": "inchi",
+    "smiles": "smiles",
+    "adduct": "adduct_ion",
+    "identification_method": "identification_method",
+    "confidence_measure": "best_id_confidence_measure",
+    "spectra_ref": "spectra_ref",
+}
+
+
+def _all_candidates(refs, sme_by_id: dict) -> list[dict]:
+    """SME_ID_REFS が指す全候補を rank 昇順で返す（同定が無ければ空リスト）。
+
+    `_best_evidence` は最上位1件しか返さない。binding（Task 7）は profile が
+    要求する adduct / charge / ライブラリ識別子 / スコア閾値で選び直すので、
+    候補を捨てずに持つ。順序は rank 昇順（`_sme_rank` と同じ規則）で、
+    rank が無い候補は末尾に回す。
+    """
+    if not refs:
+        return []
+    rows = []
+    for ref in str(refs).split("|"):
+        row = sme_by_id.get(ref.strip())
+        if row is not None:
+            rows.append(row)
+    candidates = []
+    for row in sorted(rows, key=_sme_rank):
+        rank_key = _sme_rank(row)
+        candidate = {
+            "sme_id": str(row.get("SME_ID")),
+            "rank": rank_key[1] if rank_key[0] == 0 else None,
+            "charge": _to_int(row.get("charge")),
+            "exp_mass_to_charge": _to_float(row.get("exp_mass_to_charge")),
+            "theoretical_mass_to_charge": _to_float(
+                row.get("theoretical_mass_to_charge")),
+            "confidence_value": _to_float(row.get("best_id_confidence_value")),
+        }
+        for key, column in _SME_TEXT_FIELDS.items():
+            candidate[key] = row.get(column)
+        candidates.append(candidate)
+    return candidates
+
+
+def _to_int(v) -> int | None:
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _to_float(v: str | None) -> float | None:

@@ -46,6 +46,7 @@ IN_SCOPE: dict[str, tuple[str, ...]] = {
         "pipeline_plan", "pipeline_run", "pipeline_status",
         "pipeline_resume", "pipeline_cancel",
     ),
+    "metabolomics.md": ("dataset_statistic", "dataset_build_matrix"),
 }
 
 # 今回の範囲外。文書に混入したら落とす（線引きを固定するため）。
@@ -161,7 +162,7 @@ class TestScopeBoundary(unittest.TestCase):
     def test_scope_totals_match_registered_tool_count(self):
         """対象範囲の分割が、実際に登録されているツール数と一致することを縛る。
 
-        35 / 16 という分割は設計上の線引きだが、その合計は「全ツールを漏れなく
+        43 / 20 という分割は設計上の線引きだが、その合計は「全ツールを漏れなく
         分類した」という主張でもある。リテラルどうしの比較では自分自身を検証して
         しまうので、実際の登録数を引いて突き合わせる。
         """
@@ -176,4 +177,4 @@ class TestScopeBoundary(unittest.TestCase):
             registered,
             "対象範囲の分類と登録済みツールが一致しない",
         )
-        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 41)
+        self.assertEqual(sum(len(v) for v in IN_SCOPE.values()), 43)

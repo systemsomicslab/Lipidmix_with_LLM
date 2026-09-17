@@ -756,3 +756,47 @@ def test_make_context_carries_full_request_and_upstream_identity(tmp_path):
     assert "inputs" in context and "upstream" in context and "identity" in context
     assert context["identity"]["pipeline_root"]
     assert context["request_meta"]["revision"] == 1
+
+
+# ---------- v2 の上流stage ID（既存バグの再現） ----------
+
+def test_v2_upstream_verified_state_uses_the_v2_stage_id(tmp_path):
+    """v2 record の上流stageは`execute_console`で、`upstream`ではない。
+
+    `verified`を`stages["upstream"]`から読むと、v2では常にFalseになる。その状態で
+    終了証跡が読めないと、`execute_console`が succeeded として永続化されていても
+    `EXECUTION_UNRESOLVED`を投げ、`prepare_resume`が止まる——同モジュールの
+    `prepare_resume`は既に`_upstream_stage_id`を使っており、ここだけが
+    取り残されていた。
+    """
+    from lipidmix.pipeline import recovery
+
+    job_path = tmp_path / "console" / "attempt-0001" / "analysis-job.json"
+    job_path.parent.mkdir(parents=True)
+    job_path.write_text("{}", encoding="utf-8")
+    record = {
+        "schema": "pipeline-run.v2",
+        "stages": {"execute_console": {"status": "succeeded"}},
+        "upstream": {"console_job_path": str(job_path)},
+    }
+
+    # 終了証跡は置かない。verifiedを読み違えるとここで例外になる。
+    identity, verified = recovery._console_supervision_state(record)
+    assert verified is True
+    assert identity is None
+
+
+def test_v1_upstream_verified_state_is_unchanged(tmp_path):
+    from lipidmix.pipeline import recovery
+
+    job_path = tmp_path / "console" / "attempt-0001" / "analysis-job.json"
+    job_path.parent.mkdir(parents=True)
+    job_path.write_text("{}", encoding="utf-8")
+    record = {
+        "schema": "pipeline-run.v1",
+        "stages": {"upstream": {"status": "succeeded"}},
+        "upstream": {"console_job_path": str(job_path)},
+    }
+    identity, verified = recovery._console_supervision_state(record)
+    assert verified is True
+    assert identity is None

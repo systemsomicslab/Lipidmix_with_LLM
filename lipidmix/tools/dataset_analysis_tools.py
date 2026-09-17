@@ -29,6 +29,8 @@ __all__ = [
     "dataset_differential",
     "dataset_export_differential",
     "dataset_set_sample_metadata",
+    "dataset_statistic",
+    "dataset_build_matrix",
 ]
 
 # 欠けている状態 → それを作れるツール。missing_state の required_tools になる。
@@ -37,6 +39,14 @@ _RECOVERY_TOOLS = {
     "dataset": ["dataset_load"],
     "dataset_preprocessed": ["dataset_preprocess"],
     "dataset_differential_result": ["dataset_differential"],
+    # v2 の解析行列は pipeline（preprocess / qc_processed）が作る。単体ツールの
+    # dataset_build_matrix でも作れるが、そちらは binding と証拠を持たない分
+    # できることが狭い（内部標準比は作れず、検出率filterは評価不能になる）。
+    # 先頭ほど優先＝上流の証拠ごと揃う pipeline を先に案内する。
+    "analysis_matrix": ["pipeline_run", "pipeline_status", "dataset_load",
+                        "dataset_build_matrix"],
+    # 対象feature↔内部標準の対応付け。pipeline の resolve_feature_bindings が作る。
+    "feature_bindings": ["pipeline_run", "pipeline_status"],
 }
 
 
@@ -329,3 +339,116 @@ def _count_roles(roles: dict, sample_names: list[str]) -> dict:
         role = roles.get(name, "sample")
         counts[role] = counts.get(role, 0) + 1
     return counts
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
+def dataset_statistic(specification: dict, matrix_result_id: str) -> str:
+    """v2 の統計（welch / anova_tukey / pca）を、名指しした解析行列に実行する。
+
+    specification: `analysis_recipe.statistics` の1要素と同じ形
+      （`statistic_id` / `kind` / `transform` / `feature_scope` と、kind別の
+      `reference_group`+`test_group`、`groups`+`alpha`、`scaling`+`n_components`）。
+    matrix_result_id: `analysis-matrix.v1` の ID。pipeline の preprocess /
+      qc_processed が作った行列を名指しする。**直近の前処理を暗黙に使わない**
+      ——recipe 違いの行列が2本ある前提の設計で、どちらの数字かを結果に残す。
+
+    v1 の `dataset_differential` とは別物: 効果量は統計変換前の算術平均比の log2
+    （`effect_size_definition`）、log2 変換に pseudocount を足さない、BH の母集団は
+    検定できた feature だけ。v1 の既定値・数値契約は変更していない。
+
+    全量（feature ごとの結果）は戻り値に載せず session に保持する。
+    """
+    ds = session_state.session.dataset
+    if ds is None:
+        return _missing("dataset", "DatasetState がありません。先に dataset_load を実行してください。")
+    if not getattr(ds, "analysis_matrices", None):
+        return _missing(
+            "analysis_matrix",
+            "解析行列（analysis-matrix.v1）がありません。"
+            "pipeline_run で v2 要求を実行し、preprocess/qc_processed が作った"
+            "matrix_result_id を指定してください。")
+
+    from lipidmix.analysis.dataset_service import statistic_dataset
+    from lipidmix.core.atomic_io import DomainError
+
+    try:
+        result = statistic_dataset(ds, specification, matrix_result_id)
+    except DomainError as exc:
+        return json_payload({"error": {"code": exc.code, "message": str(exc.message),
+                                       "details": exc.details}})
+
+    session_state.session.dataset.results[
+        f"stat_{result.get('statistic_id')}"] = result
+    payload = {k: v for k, v in result.items() if k != "features"}
+    payload["status"] = "success"
+    payload["n_features"] = len(result.get("features") or [])
+    payload["features_note"] = (
+        "feature ごとの結果全量は本要約に非同梱（セッションに保持）。"
+        "TSV が必要なら pipeline の export 工程を使ってください。")
+    return json_payload(payload)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
+def dataset_build_matrix(recipe: dict, recipe_id: str = "default") -> str:
+    """v2 の解析行列（analysis-matrix.v1）を、セッションの DatasetState から1本作る。
+
+    recipe: profile の `matrix_recipes` の1要素と同じ形
+      （`base` / `normalize` / `drift_correct` / `filter` / `impute` の5キー。
+      過不足はそのまま拒否する）。検証は profile と同じ規則を共有しているので、
+      pipeline 経由より緩い recipe がここから入ることはない。
+    recipe_id: 行列の識別に使う名前。`matrix_id` は recipe 内容と dataset・
+      metadata から決まるので、**同じ dataset に同じ recipe を与えれば同じ ID**
+      になる（pipeline が作った行列と突き合わせられる）。
+
+    揃っていない前提を揃ったことにしない:
+
+    - `base="internal_standard_ratio"` は対象feature↔内部標準の対応付けが要る。
+      この単体ツールは対応付けを作らないので `missing_state` で止める
+      （空の対応付けで「比」を名乗る行列を作らない）。
+    - 検出状態が分からない dataset に `filter.min_detection_rate` を指定しても
+      feature は落ちない。`history` に `not_evaluable` が残る。
+
+    値そのものは戻り値に載せず session に保持する。`dataset_statistic` へは
+    戻り値の `matrix_id` を渡す。
+    """
+    ds = session_state.session.dataset
+    if ds is None:
+        return _missing("dataset",
+                        "DatasetState がありません。先に dataset_load を実行してください。")
+
+    from lipidmix.analysis.dataset_service import build_analysis_matrix
+    from lipidmix.console.profile_schema import validate_matrix_recipe
+    from lipidmix.core.atomic_io import DomainError
+
+    try:
+        normalized = validate_matrix_recipe(recipe, recipe_id)
+    except DomainError as exc:
+        # profile 経由なら PROFILE_INVALID だが、ここでの入力は profile ではなく
+        # 引数そのもの。直す場所を取り違えさせない。
+        return mztab_error("MATRIX_RECIPE_INVALID", exc.message, exc.details or None)
+
+    if normalized["base"] == "internal_standard_ratio":
+        return _missing(
+            "feature_bindings",
+            "内部標準比の行列には対象feature↔内部標準の対応付けが必要です。"
+            "この単体ツールは対応付けを作らないため、pipeline の経路で作成してください。")
+
+    try:
+        matrix = build_analysis_matrix(ds, {**normalized, "recipe_id": recipe_id})
+    except DomainError as exc:
+        return json_payload({"error": {"code": exc.code, "message": str(exc.message),
+                                       "details": exc.details}})
+
+    return json_payload({
+        "status": "success",
+        "matrix_id": matrix["matrix_id"],
+        "recipe_id": recipe_id,
+        "stage": matrix["stage"],
+        "n_assays": len(matrix["assay_ids"]),
+        "n_features": len(matrix["feature_ids"]),
+        "eligible_features": int(sum(bool(x) for x in matrix["eligibility_mask"])),
+        "units": sorted(set(matrix["units"])),
+        "history": matrix["correction_history"],
+        "caveats": matrix["caveats"],
+        "values_note": "値は戻り値に非同梱（セッションに保持）。dataset_statistic に matrix_id を渡す。",
+    })

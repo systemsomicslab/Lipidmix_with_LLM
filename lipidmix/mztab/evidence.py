@@ -67,16 +67,60 @@ def normalize_arf_spots(spots: list[dict]) -> list[dict]:
             continue
         cells = []
         for index, raw in enumerate(aligned):
-            feature = arf_reader._convert_to_alignment_feature(raw)
+            feature = arf_reader.alignment_feature_row(raw)
             if not feature:
                 continue
             name = feature.get("file_name") or f"Sample_{index}"
             cells.append({
                 "name": name,
                 "is_gap_filled": bool(feature.get("is_gap_filled")),
+                # 注入ごとの実測 RT / m/z（spec §9.1）。gap-fill 判定だけを使う
+                # 既存の接合はこれを読まないが、Task 6 の per-injection evidence が
+                # 同じ Key 境界を共有するために、ここで一度だけ取り出しておく
+                # ——同じ Key 番号表を2か所に書くと、片方だけが版ずれで腐る。
+                "rt": feature.get("rt"),
+                "m_z": feature.get("m_z"),
+                "file_id": feature.get("file_id"),
+                "peak_id": feature.get("peak_id"),
             })
         normalized.append({"mz": spot.get("MassCenter"), "samples": cells})
     return normalized
+
+
+def compare_feature_mz(spot_mz: list, feature_mz: list,
+                       mz_tolerance: float = MZ_TOLERANCE) -> tuple[bool, dict]:
+    """スポット代表 m/z と mzTab 側 m/z の一致を、外れの**割合**で判定する。
+
+    「最悪値で棄却しない、ただし MZ_HARD_LIMIT は1件でも棄却する」という判定を
+    `build_evidence` と `analysis/assay_evidence` で共有するための唯一の実装。
+    片方だけ緩めると、gap-fill マスクは棄却した接合から per-injection 証拠だけが
+    採用される（逆も同じ）ことになる。
+    """
+    worst = 0.0
+    worst_index = None
+    n_compared = 0
+    n_over = 0
+    over_hard_limit = False
+    for index, (actual, expected) in enumerate(zip(spot_mz, feature_mz)):
+        if actual is None or expected is None:
+            continue
+        n_compared += 1
+        delta = abs(float(actual) - float(expected))
+        if delta > mz_tolerance:
+            n_over += 1
+        if delta > MZ_HARD_LIMIT:
+            over_hard_limit = True
+        if delta > worst:
+            worst, worst_index = delta, index
+
+    over_fraction = (n_over / n_compared) if n_compared else 0.0
+    detail = {"worst_mz_delta": worst, "at_feature_index": worst_index,
+              "tolerance": mz_tolerance, "n_compared": n_compared,
+              "n_over_tolerance": n_over,
+              "over_tolerance_fraction": round(over_fraction, 6),
+              "hard_limit": MZ_HARD_LIMIT}
+    ok = not (over_hard_limit or over_fraction > MZ_OUTLIER_MAX_FRACTION)
+    return ok, detail
 
 
 def build_evidence(
@@ -100,37 +144,15 @@ def build_evidence(
                        "n_mztab_features": n_features},
         }
 
-    worst = 0.0
-    worst_index = None
-    n_compared = 0
-    n_over = 0
-    over_hard_limit = False
-    for index, (spot, mz_expected) in enumerate(zip(normalized_spots, feature_mz)):
-        mz_actual = spot.get("mz")
-        if mz_actual is None or mz_expected is None:
-            continue
-        n_compared += 1
-        delta = abs(float(mz_actual) - float(mz_expected))
-        if delta > mz_tolerance:
-            n_over += 1
-        if delta > MZ_HARD_LIMIT:
-            over_hard_limit = True
-        if delta > worst:
-            worst, worst_index = delta, index
-
     # 判定は「最悪値」ではなく「外れの割合」で行う。実データ 3944 特徴では
     # 許容超えが 1 件（14.8 mDa）だけあり、最悪値で見ると 3943 件の一致を
     # 捨てることになった。スポット代表値とアライメント平均値の差は、幅の広い
     # ピークや共溶出で稀に許容を超える。
     # 一方、1 つずらした誤接合は Da オーダーに爆発する（実測 87 Da）ので、
     # 少数でも MZ_HARD_LIMIT を超えたら誤接合として棄却する。
-    over_fraction = (n_over / n_compared) if n_compared else 0.0
-    mz_detail = {"worst_mz_delta": worst, "at_feature_index": worst_index,
-                 "tolerance": mz_tolerance, "n_compared": n_compared,
-                 "n_over_tolerance": n_over,
-                 "over_tolerance_fraction": round(over_fraction, 6),
-                 "hard_limit": MZ_HARD_LIMIT}
-    if over_hard_limit or over_fraction > MZ_OUTLIER_MAX_FRACTION:
+    mz_ok, mz_detail = compare_feature_mz(
+        [spot.get("mz") for spot in normalized_spots], feature_mz, mz_tolerance)
+    if not mz_ok:
         return {"status": "rejected", "reason": "mz_mismatch", "detail": mz_detail}
 
     arf_names = [cell["name"] for cell in (normalized_spots[0]["samples"]

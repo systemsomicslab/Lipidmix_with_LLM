@@ -420,6 +420,23 @@ def detection_rates(detected_mask) -> np.ndarray:
     return mask.sum(axis=1) / mask.shape[1]
 
 
+def detection_rate_filter(detected_mask, min_rate: float):
+    """検出率が `min_rate` 未満の特徴を落とす keep mask を返す。
+
+    `detected_mask` は `detection_rates` と同じ (特徴 × サンプル)。率の定義を
+    1 か所に保つため、閾値判定もここに置く——呼び出し側（解析行列の recipe
+    filter、QC）が各々 `mask.mean(axis=...)` を書くと、軸を取り違えた側だけが
+    静かに別の集合を落とす。
+
+    gap-fill 後の非ゼロ値で検出を代用しない（それは検出率ではなく「値の有無」）。
+    検出状態が不明なら呼び出し側が filter 自体を not_evaluable にする。
+    """
+    rates = detection_rates(detected_mask)
+    keep = rates >= float(min_rate)
+    return keep, {"method": "detection_rate", "min_detection_rate": float(min_rate),
+                  "removed": int((~keep).sum()), "n_features": int(keep.size)}
+
+
 def preprocess(matrix, sample_names, roles, run_order, recipe):
     """順序: ブランク除去 → 正規化 → ドリフト補正 → QC RSD フィルタ → 補完。
 

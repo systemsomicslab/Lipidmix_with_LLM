@@ -51,6 +51,7 @@ import re
 from pathlib import Path
 
 from lipidmix.core.atomic_io import DomainError, canonical_hash
+from lipidmix.pipeline import request_v2
 
 __all__ = [
     "REQUEST_FILE_NAME",
@@ -510,7 +511,36 @@ def _layer_preprocess(explicit: dict, from_file: dict) -> tuple:
     return merged, sources
 
 
-def resolve_request(source_root: Path, explicit: dict | None = None) -> dict:
+def _peek_schema_declared_by_request_file(source_root: Path) -> object:
+    """``analysis-request.json``の``schema``フィールドだけを覗く。
+
+    v1/v2どちらのkey setで本読込・検証すべきかを、内容を検証する前に決める
+    ための最小限の先読み——本読み込み（v1の``read_request_file``、または
+    v2の``request_v2.read_request_file``）が正しいkey setで担当する前に、
+    このファイル自体をv1のkey setで一度でも検証してしまうと、v2形状の
+    ファイルが「未知のキー」として誤って拒否される。
+
+    ファイルが無い・JSONとして壊れている・オブジェクトでない場合は例外に
+    せず``None``を返す——実際のエラー報告は、schemaが確定した後にどのみち
+    同じファイルを読み直す本読み込み関数（v1なら``read_request_file``、v2
+    なら``request_v2.read_request_file``）に一本化する。ここで二重にエラーを
+    出さない。
+    """
+    path = Path(source_root) / REQUEST_FILE_NAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data.get("schema")
+
+
+def resolve_request(source_root: Path, explicit: dict | None = None, *,
+                     profile: dict | None = None,
+                     routine_overrides: dict | None = None) -> dict:
     """要求を解決し、``value_sources``/``effective_target``を付けて返す。
 
     優先順位は「MCPで明示した値 > 元フォルダ直下の``analysis-request.json``
@@ -524,11 +554,37 @@ def resolve_request(source_root: Path, explicit: dict | None = None) -> dict:
     （comparison_idを除く各パス系フィールドは、相対と絶対のどちらも許す。
     spec §10.1の例で``method_file``にラボ共有フォルダの絶対パスが使われている
     通り、source_rootの外を指す正当なケースがあるため）。
+
+    ``explicit["schema"]``（省略時は``analysis-request.json``自身が宣言する
+    ``schema``、それも無ければv1）が``"pipeline-request.v2"``のときは
+    ``lipidmix.pipeline.request_v2.resolve``へ丸ごと委譲する（spec §6の
+    schema dispatch）。**explicit/file双方がschemaを省略したときだけがv1**
+    ——ファイル自身がv2を宣言している場合はそれ自体が明示的な指定であり、
+    「省略」ではない（`docs/schema/pipeline-request-v2.md`「schema dispatch」
+    節）。v2解決には検証済みprofile dict（``profile``引数、
+    ``lipidmix.console.profile_schema.validate_profile``の戻り値相当）が要る
+    ——読み込み自体はこの関数の責務ではない。``routine_overrides``（省略可）は
+    ``lipidmix.console.profile_schema.validate_certificate``の戻り値の同名
+    キー——``execution_purpose="routine"``のpreprocess上書きの明示許容集合。
+    省略時（``None``）はfail-closed（routineでは何も上書きできない）。
     """
     source_root = Path(source_root)
     explicit = explicit if explicit is not None else {}
     if not isinstance(explicit, dict):
         _fail("requestはオブジェクトである必要があります。", value=explicit)
+
+    schema = explicit["schema"] if "schema" in explicit \
+        else _peek_schema_declared_by_request_file(source_root)
+    if schema == request_v2.SCHEMA:
+        from_file = request_v2.read_request_file(source_root)
+        resolved = request_v2.resolve(
+            explicit, profile, from_file=from_file, routine_overrides=routine_overrides)
+        # workerのcwdに依存せず、受付で読んだ同じprofileを開けるようにする。
+        profile_path = Path(resolved["profile_file"]).expanduser()
+        if not profile_path.is_absolute():
+            profile_path = source_root / profile_path
+        resolved["profile_file"] = str(profile_path.resolve())
+        return resolved
 
     unknown = set(explicit) - _TOP_LEVEL_KEYS
     if unknown:
@@ -573,7 +629,8 @@ def resolve_request(source_root: Path, explicit: dict | None = None) -> dict:
     return validated
 
 
-def merge_updates(request: dict, updates: dict) -> dict:
+def merge_updates(request: dict, updates: dict, *, profile: dict | None = None,
+                   routine_overrides: dict | None = None) -> dict:
     """resumeの入力訂正を反映し、再検証した要求を返す（spec §9/§10.1）。
 
     ``UPDATABLE``（target・sample_manifest・preprocess・comparisons）以外の
@@ -582,7 +639,16 @@ def merge_updates(request: dict, updates: dict) -> dict:
     内部キーも``UPDATABLE``に含まれないため、ここで同じ扱いになる
     （updates自身に内部キーを許可しないという契約を、UPDATABLEの外側として
     自然に満たす）。
+
+    ``request["schema"] == "pipeline-request.v2"``のときは
+    ``lipidmix.pipeline.request_v2.merge_updates``へ丸ごと委譲する（spec §6の
+    schema dispatch）。v2解決同様、検証済みprofile dict・routine_overrides
+    （証明書由来の明示許容集合）は呼び出し側が渡す。
     """
+    if request.get("schema") == request_v2.SCHEMA:
+        return request_v2.merge_updates(
+            request, updates, profile, routine_overrides=routine_overrides)
+
     if set(updates) - UPDATABLE:
         raise DomainError("NEW_PIPELINE_REQUIRED", "上流条件の変更には新しい解析が必要です")
     # UPDATABLE個の中で明示nullが不許可なのはcomparisonsだけ(R13)——
@@ -614,6 +680,21 @@ def request_fingerprint(request: dict) -> str:
     フィールドの値が同じなら同一内容として扱う——Task 14がこのhashで
     run/request_idの再送・冪等性を判定する土台になるため、由来だけの違いで
     別内容と誤判定してはいけない。
+
+    **対象キー集合はschemaごとに違う**（spec §6のschema dispatch）。v2要求を
+    v1のキー集合で畳むと`statistics`・`feature_bindings`・`standard_assays`・
+    `profile_file`・`omics`・`execution_purpose`が丸ごと落ち、**統計定義だけが
+    違う2つの解析が同じ内容hash**になる——`store.find_or_create_run`はそれを
+    「同じ要求の再送」として1本のrunへ畳み、`recovery.prepare_resume`は
+    統計の訂正を「何も変わっていない」と読んでrevisionを上げない。spec §6.1が
+    「下流結果IDは…変換、群・検定設定に依存する」と定めるのはこの逆である。
+
+    v2のキー集合は`request_v2._TOP_LEVEL_KEYS`をそのまま使う——ここへ写しを
+    作ると、v2にフィールドが増えたときに片方だけ腐って同じ衝突が戻ってくる
+    （`request_v2`の内部定数を参照しているのは、この1箇所がv2キー集合の
+    唯一の正準であることを崩さないため）。v1の対象キーと正規化は変えない。
     """
-    content = {key: request[key] for key in _TOP_LEVEL_KEYS if key in request}
+    key_set = (request_v2._TOP_LEVEL_KEYS
+               if request.get("schema") == request_v2.SCHEMA else _TOP_LEVEL_KEYS)
+    content = {key: request[key] for key in key_set if key in request}
     return canonical_hash(content)

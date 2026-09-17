@@ -48,7 +48,7 @@ def artifact_abs_path(job, root: str, rel: str) -> Path:
     """生成物の相対パスを、記録された出所ルートから絶対パスへ戻す。
 
     MS-DIAL Console は run_dir と生データフォルダの両方へ生成物を出すため、
-    analysis-job.v2 の root に応じて解決する。
+    analysis-job（v2 以降）が記録する root に応じて解決する。
     """
     base = Path(job.dataset_root) if root == "dataset_root" else Path(job.run_dir)
     return (base / rel).resolve()
@@ -253,6 +253,41 @@ def _verify_source(job, entry, mztab_abs: Path, ds) -> tuple[bool, str]:
             return False, "mzTab の内容がジョブ記録の hash と一致しない"
     except OSError:
         return False, "mzTab の hash を計算できない"
+    return _verify_effective_method(job)
+
+
+def _verify_effective_method(job) -> tuple[bool, str]:
+    """analysis-job.v3（検証済みプロファイル実行）の実効メソッドを裏取りする。
+
+    spec §6.1 は上流指紋の確認を「計画時、実行直前、**完了検証時**」の 3 点で
+    求める。ここがその完了検証時にあたる——実際に Console へ渡ったメソッド
+    （依存の絶対パスで書き換えた実効コピー）が消えている・書き換わっている出力を
+    `verified` と名乗らせない。原本ではなく実効コピーを見るのは、走ったのが
+    そちらだから（spec §5.1「原本hash、書換え後hash、差分を記録する」）。
+
+    profile snapshot を持たないジョブ（v1 / v2）はこの検査の対象外で、判定は
+    従来どおり——既存経路の結果は変わらない。
+
+    依存ファイル本体（LBM 等）はここで hash し直さない。数百 MB になりうるものを
+    読み込みのたびに読み直すのは重く、その検証はパイプラインの `validate_outputs`
+    工程（実行直前・完了検証）の持ち場である。
+    """
+    from lipidmix.handoff.schema import sha256_file
+
+    snapshot = getattr(job, "profile_snapshot", None)
+    if not snapshot:
+        return True, ""
+    relative = snapshot.get("effective_method_relative_path")
+    recorded = (snapshot.get("effective_method_sha256") or "").strip()
+    if not relative or not recorded:
+        return False, "profile snapshot に実効メソッドの記録が無い"
+    effective = (Path(job.run_dir) / relative).resolve()
+    try:
+        actual = sha256_file(effective)
+    except OSError:
+        return False, f"実効メソッドを読めない（{relative}）"
+    if actual != recorded:
+        return False, f"実効メソッドの内容が profile snapshot の hash と一致しない（{relative}）"
     return True, ""
 
 
