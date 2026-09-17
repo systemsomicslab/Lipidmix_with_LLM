@@ -23,6 +23,32 @@ v1（`dataset_differential` ほか、[dataset_analysis.md](dataset_analysis.md)�
 平均差、v2 は統計変換前の算術平均比の log2（`effect_size_definition =
 log2_arithmetic_mean_ratio`）。v1 の既定値・契約は一切変更していない。
 
+## プロジェクト保存（`save_project`）と Application Control
+
+要求の `save_project` は**既定 true**（v1/v2 とも）。MS-DIAL はこのとき `-p` を
+受け取り、全検体の解析とアライメントを終えた**後**にプロジェクトを書く。その段で
+`MsdialLcImMsApi` を読むため、**Windows の Smart App Control が有効かつ MS-DIAL が
+ローカルビルド（未署名）**だと、ここだけがポリシーに弾かれる。
+
+症状は最悪の形になる——長い解析を全部終えてから落ちる。実測では 41 検体で
+13 分半を費やした後に `MSDIAL_EXECUTION_FAILED exit_code=1` になった。
+
+**計画時に止めるようにしてある。** `inputs._assert_project_save_possible` が
+「ポリシーが Enforce」かつ「当該アセンブリが未署名」の両方を確認したときだけ
+`PROJECT_SAVE_BLOCKED` で停止する（`lipidmix/core/app_control.py`）。ポリシー単独では
+止めない——署名済みの公式配布版を使う正当な構成まで塞いでしまうため。
+
+**対処は要求に `"save_project": false` を書く。** `.mdproject` は GUI で開くための
+便宜で、v2 の必須成果物 10 種には含まれない（`report._V2_REQUIRED_OUTPUTS`）。
+
+自分の環境を確かめるには:
+
+```powershell
+# 0=Off / 1=Enforce / 2=評価
+(Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy" `
+  -Name VerifiedAndReputablePolicyState).VerifiedAndReputablePolicyState
+```
+
 ## dataset_build_matrix
 
 セッションの `DatasetState` から解析行列（`analysis-matrix.v1`）を1本作り、
