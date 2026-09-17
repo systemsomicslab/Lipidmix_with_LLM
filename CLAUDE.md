@@ -4,12 +4,30 @@
 
 ## このリポジトリは何か
 
-MS-DIAL（リピドミクス LC-MS 解析ソフト）のバイナリ出力を読み、LLM から使える形で公開する
-**MCP サーバ `ms-data-parser`**。ツール 63・リソース 4・リソーステンプレート 3。
-対象形式は `.arf`（アライン後・サンプル別ピーク）/ `.arf2`（スポット代表）/ `.pai2`（個別測定）/
-`.dcl`（デコンボリューション済み MS/MS、独自バイナリ）/ `.EIC.aef`（クロマトグラム）。
-解析（PCA・前処理/QC・差次的解析）に加え、文献知識と再利用手順の蓄積層（`knowledge/` `playbook/`
-`analyses/`）を MCP リソースとして配信する。
+MS-DIAL（LC-MS リピドミクス／メタボロミクス解析ソフト）の出力を読み、LLM から使える形で
+公開する **MCP サーバ `ms-data-parser`**。ツール 63・リソース 4・リソーステンプレート 3。
+GUI の外では読めない圧縮 MessagePack と独自バイナリを解し、解析そのものをサーバ側で回して
+要約だけを返す（生の行列を LLM の文脈に載せない）。
+
+**読む形式** — `.arf`（アライン後・サンプル別ピーク。サンプル間比較の主データ源）/
+`.arf2`（スポット代表カタログと注釈）/ `.pai2`（個別測定のピーク）/ `.dcl`（デコンボリュー
+ション済み MS/MS。MessagePack ではない独自バイナリ）/ `.EIC.aef`（クロマトグラム）/
+**mzTab-M 2.0**（標準交換形式。Console 経路が産み、`DatasetState` の正準入力になる）。
+サイドカー（`*_tags.xml` `.mddata` `.mdproject`）はタグと試料クラスの取得に読む。
+生の測定ファイル（`.wiff`/`.raw` 等）は自分では解さず、MS-DIAL Console への入力として扱う。
+
+**やること** — (a) 前処理/QC（正規化・ブランク減算・QC RSD 足切り・ドリフト補正）・PCA・
+2 群差次的解析（Welch + BH-FDR）、(b) 同定の標準化と裏取り（GOSLIN 正規化・RefMet/LIPID MAPS
+ID・MSI レベル・`.dcl` の実スペクトル照合）、(c) EIC の検索と描画、(d) **生データ起点の統括**
+——MS-DIAL Console を計画・実行し、mzTab-M を経て前処理・PCA・比較・品質レポートまでを
+永続 run として自動で進める（`pipeline_run`。中断・訂正をまたいで冪等）、(e) LC–MS メタボロ
+ミクス v2（内部標準比・feature binding・注入ごとの測定証拠・固定母集団 QC）。**v2 は合成入力と
+fake Console までしか検証されていない**——`docs/workflow/metabolomics.md` を先に読む。
+
+差次的エクスポートの列定義は別リポジトリ（massbank-context）との契約を兼ねる。加えて、
+文献知識と再利用手順の蓄積層を持つ——`knowledge/` `playbook/` は **MCP リソース**として
+索引と本文を配信し（`lipidmix://{knowledge,playbook}/{index,expand/<slug>}`）、
+目的の `analyses/` とレポートの `reports/` はツール経由で読み書きする。
 
 クライアントは Claude Desktop / Claude Code と、別リポの WebUI（下記「関連リポジトリ」）。
 
@@ -132,6 +150,7 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 | 設計判断の経緯・調査で判明した事実 | `docs/HISTRY.md`（綴りはこのまま。**追跡外＝ローカル専用ログ**） |
 | 進行中/完了タスク | `docs/task.md`（**追跡外**。ステータス = TODO/DOING/DONE/HOLD） |
 | 過去の設計書・計画書 | `docs/superpowers/{specs,plans,notes}/` |
+| **利用者から見た**入口の分岐と、経路ごとの強制順序／オプション分岐の全体像 | `C:\Users\yuu18\Documents\KnowledgeVault\30_Projects\ms-data-parser\ms-data-parser-flow.md`（**リポジトリ外**・Obsidian vault。維持義務は「作業の記録と Git」） |
 
 ## テストの規約
 
@@ -156,6 +175,17 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 - **この 2 つは追記専用**。日付見出しで区切って末尾に足し、既存の節は書き換えない。
   どちらも追跡外で git が競合を検出しないため、複数のエージェントが同時に走ると
   書き換えは後勝ちで静かに消える。
+- **フローが変わったら vault 側の流れ図も同じ作業の中で直す**。反映先は
+  `C:\Users\yuu18\Documents\KnowledgeVault\30_Projects\ms-data-parser\ms-data-parser-flow.md`。
+  対象は「利用者から見て何がどの順に起きるか」が変わる改修——入口の判定規則
+  （`lipidmix/core/mcp_core.py` の `MCP_INSTRUCTIONS` の ENTRY POINT / GATEWAY）、
+  pipeline の stage 列（`pipeline/engine.py` `build_stages` /
+  `pipeline/stage_plan.py` `BASE_V2_STAGE_IDS`）、前提状態の連鎖（どのツールが
+  どのツールを `missing_state` で要求するか）、経路の増減（新しい入口・新しい解析枝）、
+  既定値の変更。**ツールの引数だけの変更は対象外**（正準は `USAGE.md`）。
+  直したら末尾の出典行の日付も書き直す。
+- この流れ図は**追跡外かつリポジトリ外**で、テストも git も腐敗を検出しない。
+  後回しにすると、次のエージェントが古い流れ図を正しいものとして読む。
 - `check.py` はスクラッチ（疑似ワークスペース）。一時検証コードをここに書き、通ったら適切な
   モジュールへ移して中身を消す。何もここに依存させない。
 - **コミット時に全テストが自動で走る**（`.githooks/pre-commit`・約 5 秒）。
