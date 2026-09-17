@@ -478,3 +478,171 @@ def test_dataset_state_no_rdkit_warning_when_nothing_derivable(mztab_file, monke
     assert ds.inchikey_coverage["rdkit_available"] is False
     assert ds.inchikey_coverage["with_inchikey"] == 1
     assert not any("RDKit" in w for w in ds.validation_result.get("warnings", []))
+
+
+# ---------- SML 由来の注釈（spec 2026-09-17-mztab-sml-annotation-design）----------
+
+# Text DB 運用の実形状: SME セクションが 0 行で、同定は SML にしか出ない。
+# MS-DIAL の `ShouldWriteSmeLine` が `IsTextDbBasedRepresentative` を除外するため
+# （MztabFormatExport.cs）。ヘッダ行は実形式の `SMH` で書く。
+_SML_ONLY_MZTAB = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tmzTab-mode\tComplete
+    MTD\tmzTab-type\tQuantification
+    MTD\tms_run[1]-location\tfile:///s1.raw
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    SMH\tSML_ID\tSMF_ID_REFS\tdatabase_identifier\tchemical_formula\tsmiles\tinchi\tchemical_name\tadduct_ions\treliability\tbest_id_confidence_measure\tbest_id_confidence_value
+    SML\t1\t1\tTextDB:GABA\tnull\tnull\tnull\tGABA\t[M+H]1+\tannotated by user-defined text library\t[,, MS-DIAL algorithm matching score, ]\t0.999982
+    SML\t2\t2\tnull\tnull\tnull\tnull\tnull\t[M+H]1+\tnull\tnull\tnull
+    SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]
+    SMF\t1\tnull\t104.07066\t72.0\t5000.0
+    SMF\t2\tnull\t880.8\t360.0\t100.0
+""")
+
+
+def _build_text(tmp_path, content, name="Height_sml.mzTab"):
+    """本文から mzTab を書き起こして DatasetState を作る。
+
+    既存の `_build(path)` とは別物（あちらは fixture が作った path を取る）。
+    同名にすると既存テストの呼び出しを静かに壊す。
+    """
+    p = tmp_path / name
+    p.write_text(content, encoding="utf-8")
+    return build_dataset_state(parse_mztab(p), p.name, p)
+
+
+def test_an_sml_annotation_is_recorded_for_its_feature(tmp_path):
+    ds = _build_text(tmp_path, _SML_ONLY_MZTAB)
+
+    annotation = ds.feature_annotations["1"]
+    assert annotation["name"] == "GABA"
+    assert annotation["database_identifier"] == "TextDB:GABA"
+    assert annotation["adduct"] == "[M+H]1+"
+    assert annotation["confidence_value"] == pytest.approx(0.999982)
+    assert annotation["ambiguous"] is False
+
+
+def test_an_sml_row_without_identity_is_not_recorded(tmp_path):
+    ds = _build_text(tmp_path, _SML_ONLY_MZTAB)
+
+    # SML 2 は chemical_name も database_identifier も null。
+    assert "2" not in ds.feature_annotations
+
+
+def test_the_annotation_never_holds_an_inchi_key(tmp_path):
+    """MS-DIAL は SML の `inchi` を常に null で書く（MztabFormatExport.cs:393）。
+
+    キーを置くと「取得していない」と「無い」の区別を偽るので、持たない。
+    """
+    ds = _build_text(tmp_path, _SML_ONLY_MZTAB)
+
+    assert "inchi" not in ds.feature_annotations["1"]
+
+
+def test_the_evidence_slots_stay_untouched_by_an_sml_annotation(tmp_path):
+    """SML 注釈は証拠スロットへ一切入らない（spec §5 の不変条件）。"""
+    ds = _build_text(tmp_path, _SML_ONLY_MZTAB)
+
+    assert ds.feature_metadata["1"]["name"] is None
+    assert ds.feature_metadata["1"]["inchikey"] is None
+    assert ds.feature_candidates["1"] == []
+
+
+_MULTI_REF_MZTAB = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tms_run[1]-location\tfile:///s1.raw
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    SMH\tSML_ID\tSMF_ID_REFS\tdatabase_identifier\tsmiles\tchemical_name\tadduct_ions
+    SML\t1\t1|2\tTextDB:GABA\tnull\tGABA\t[M+H]1+
+    SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]
+    SMF\t1\tnull\t104.07\t72.0\t1.0
+    SMF\t2\tnull\t126.05\t72.0\t2.0
+""")
+
+_AMBIGUOUS_MZTAB = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tms_run[1]-location\tfile:///s1.raw
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    SMH\tSML_ID\tSMF_ID_REFS\tdatabase_identifier\tsmiles\tchemical_name\tadduct_ions
+    SML\t1\t1\tTextDB:GABA\tnull\tGABA\t[M+H]1+
+    SML\t2\t1\tTextDB:Alanine\tnull\tAlanine\t[M+H]1+
+    SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]
+    SMF\t1\tnull\t104.07\t72.0\t1.0
+""")
+
+_UNKNOWN_REF_MZTAB = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tms_run[1]-location\tfile:///s1.raw
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    SMH\tSML_ID\tSMF_ID_REFS\tdatabase_identifier\tsmiles\tchemical_name\tadduct_ions
+    SML\t1\t99\tTextDB:GABA\tnull\tGABA\t[M+H]1+
+    SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]
+    SMF\t1\tnull\t104.07\t72.0\t1.0
+""")
+
+_SMILES_MZTAB = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tms_run[1]-location\tfile:///s1.raw
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    SMH\tSML_ID\tSMF_ID_REFS\tdatabase_identifier\tsmiles\tchemical_name\tadduct_ions
+    SML\t1\t1\tTextDB:GABA\tNCCCC(=O)O\tGABA\t[M+H]1+
+    SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]
+    SMF\t1\tnull\t104.07\t72.0\t1.0
+""")
+
+
+def test_one_sml_pointing_at_two_features_annotates_both(tmp_path):
+    """同一分子が複数 adduct で検出された形。両方に同じ注釈が付くのが正しい。"""
+    ds = _build_text(tmp_path, _MULTI_REF_MZTAB, "Height_multi.mzTab")
+
+    assert ds.feature_annotations["1"]["name"] == "GABA"
+    assert ds.feature_annotations["2"]["name"] == "GABA"
+
+
+def test_two_sml_rows_on_one_feature_do_not_pick_a_name(tmp_path):
+    """どれが正しいか決められないときは選ばない（リポジトリ共通の方針）。"""
+    ds = _build_text(tmp_path, _AMBIGUOUS_MZTAB, "Height_ambiguous.mzTab")
+
+    annotation = ds.feature_annotations["1"]
+    assert annotation["ambiguous"] is True
+    assert annotation["name"] is None
+    assert sorted(annotation["sml_ids"]) == ["1", "2"]
+
+
+def test_an_ambiguous_annotation_is_reported_once(tmp_path):
+    """警告は件数ではなく種類で 1 件に集約する。"""
+    ds = _build_text(tmp_path, _AMBIGUOUS_MZTAB, "Height_ambiguous2.mzTab")
+
+    hits = [w for w in ds.validation_result.get("warnings", []) if "複数の SML" in w]
+    assert len(hits) == 1
+
+
+def test_an_sml_pointing_at_a_missing_feature_is_reported(tmp_path):
+    ds = _build_text(tmp_path, _UNKNOWN_REF_MZTAB, "Height_unknown.mzTab")
+
+    assert ds.feature_annotations == {}
+    hits = [w for w in ds.validation_result.get("warnings", []) if "SMF_ID_REFS" in w]
+    assert len(hits) == 1
+
+
+def test_an_inchikey_is_derived_from_the_sml_smiles(tmp_path):
+    """MS-DIAL の SML で InChIKey に到達しうるのは smiles 経由だけ。
+
+    `database_identifier` は必ず `<db>:<name>` 形式（MztabFormatExport.cs:407）、
+    `inchi` は常に null（同 :393）。
+    """
+    pytest.importorskip("rdkit")
+    ds = _build_text(tmp_path, _SMILES_MZTAB, "Height_smiles.mzTab")
+
+    annotation = ds.feature_annotations["1"]
+    assert annotation["inchikey"] == "BTCSSZJGUNDROE-UHFFFAOYSA-N"
+    assert annotation["inchikey_source"] == "smiles_derived"
+
+
+def test_the_coverage_separates_evidence_from_ms1_annotation(tmp_path):
+    ds = _build_text(tmp_path, _SML_ONLY_MZTAB, "Height_cov.mzTab")
+
+    by = ds.inchikey_coverage["identified_by"]
+    assert by["sme"] == 0
+    assert by["sml_only"] == 1
+    assert by["none"] == 1

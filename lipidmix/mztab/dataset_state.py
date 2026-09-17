@@ -59,6 +59,16 @@ class DatasetState:
         # 候補を選び直す必要がある——最上位だけを残すと、profile が要求する
         # adduct と違う候補が付いた特徴を「同定なし」としか言えなくなる。
         self.feature_candidates: dict = {}
+        # feature_annotations: smf_id -> SML 由来のラベル。
+        # **証拠ではない。** MS-DIAL は Text DB 由来の同定を SME に書かない
+        # （MztabFormatExport.cs `ShouldWriteSmeLine` が
+        # `IsTextDbBasedRepresentative` を除外する）ので、Text DB 運用では
+        # SML が唯一の同定情報源になる。
+        # feature_metadata / feature_candidates とは**別スロット**に隔離する——
+        # feature_bindings._check_identity は候補ゼロのとき
+        # feature_metadata["inchikey"] を見て matched を返すため、ここへ混ぜると
+        # MS1 注釈だけで authentic_standard_match が通ってしまう。
+        self.feature_annotations: dict = {}
         self.sml_rows: list[dict] | None = None
         self.sme_rows: list[dict] | None = None
         self.validation_result: dict = {}
@@ -224,6 +234,36 @@ def build_dataset_state(
     # SML / SME 行
     ds.sml_rows = parse_result["sections"].get("SML", {}).get("rows")
     ds.sme_rows = parse_result["sections"].get("SME", {}).get("rows")
+
+    # SML 由来のラベル（証拠ではない）。証拠スロットの構築が終わってから作る。
+    ds.feature_annotations, annotation_warnings = _build_feature_annotations(
+        ds.sml_rows, set(ds.feature_ids))
+    if annotation_warnings:
+        existing = ds.validation_result.setdefault("warnings", [])
+        ds.validation_result["warnings"] = [*existing, *annotation_warnings]
+
+    # 同定の出所内訳。MS1 注釈を MS/MS 裏付けと取り違えないために分けて数える。
+    sme_named = sum(1 for m in ds.feature_metadata.values() if m.get("name"))
+    sml_only = sum(
+        1 for fid, a in ds.feature_annotations.items()
+        if a.get("name") and not (ds.feature_metadata.get(fid) or {}).get("name"))
+    ds.inchikey_coverage["identified_by"] = {
+        "sme": sme_named,
+        "sml_only": sml_only,
+        "none": len(ds.feature_ids) - sme_named - sml_only,
+    }
+    # SME が InChIKey を出せなかった特徴を SML が補ったぶんを足す。
+    # by_source は全特徴で 1 回ずつ数える不変条件を保つため、'none' から移す。
+    for fid, a in ds.feature_annotations.items():
+        if not a.get("inchikey"):
+            continue
+        if (ds.feature_metadata.get(fid) or {}).get("inchikey"):
+            continue
+        src = a.get("inchikey_source") or "none"
+        ds.inchikey_coverage["by_source"]["none"] -= 1
+        ds.inchikey_coverage["by_source"][src] = (
+            ds.inchikey_coverage["by_source"].get(src, 0) + 1)
+        ds.inchikey_coverage["with_inchikey"] += 1
 
     # assay メタデータ
     # `assay[N]-<suffix>` 形式（ms_run_ref 等）に加え、素の `assay[N]` 行も拾う。
@@ -402,6 +442,70 @@ def _all_candidates(refs, sme_by_id: dict) -> list[dict]:
             candidate[key] = row.get(column)
         candidates.append(candidate)
     return candidates
+
+
+#: SML 行からそのまま写す列（mzTab-M 2.0.0-M の列名）。
+#: `inchi` は含めない——MS-DIAL は常に "null" を書く（MztabFormatExport.cs:393）。
+_SML_TEXT_FIELDS = {
+    "name": "chemical_name",
+    "database_identifier": "database_identifier",
+    "chemical_formula": "chemical_formula",
+    "smiles": "smiles",
+    "adduct": "adduct_ions",
+    "reliability": "reliability",
+    "confidence_measure": "best_id_confidence_measure",
+}
+
+
+def _build_feature_annotations(sml_rows, known_feature_ids: set) -> tuple[dict, list[str]]:
+    """SML 行を feature_id（SMF_ID）ごとのラベルへ畳む。
+
+    戻り値は `(annotations, warnings)`。警告は**種類**で集約する（行ごとに積むと
+    実データで数百件になり、表示制限で重要な警告が埋もれる）。
+    """
+    by_feature: dict[str, list[dict]] = {}
+    unknown_refs = 0
+    for row in sml_rows or []:
+        if not (row.get("chemical_name") or row.get("database_identifier")):
+            continue
+        for ref in str(row.get("SMF_ID_REFS") or "").split("|"):
+            fid = ref.strip()
+            if not fid:
+                continue
+            if fid not in known_feature_ids:
+                unknown_refs += 1
+                continue
+            entry = {"sml_id": str(row.get("SML_ID")), "ambiguous": False}
+            for key, column in _SML_TEXT_FIELDS.items():
+                entry[key] = row.get(column)
+            entry["confidence_value"] = _to_float(row.get("best_id_confidence_value"))
+            # inchi は保持しないが、導出の材料としては渡す（他実装が書く余地を残す）。
+            ik, src = derive_inchikey(row.get("database_identifier"),
+                                      row.get("inchi"), row.get("smiles"))
+            entry["inchikey"] = ik
+            entry["inchikey_source"] = src
+            by_feature.setdefault(fid, []).append(entry)
+
+    annotations: dict[str, dict] = {}
+    ambiguous = 0
+    for fid, entries in by_feature.items():
+        if len(entries) == 1:
+            annotations[fid] = entries[0]
+            continue
+        ambiguous += 1
+        annotations[fid] = {"ambiguous": True,
+                            "sml_ids": [e["sml_id"] for e in entries],
+                            "name": None}
+
+    warnings: list[str] = []
+    if ambiguous:
+        warnings.append(
+            f"1 つの特徴に複数の SML 注釈が当たっています（{ambiguous} 件）。"
+            "どれが正しいか決められないため名前を付けていません。")
+    if unknown_refs:
+        warnings.append(
+            f"SML の SMF_ID_REFS が存在しない特徴を指しています（{unknown_refs} 件）。")
+    return annotations, warnings
 
 
 def _to_int(v) -> int | None:
