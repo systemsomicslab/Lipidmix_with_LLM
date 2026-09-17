@@ -156,7 +156,13 @@ def test_cancel_during_upstream_stops_only_the_owned_console_tree(
     receipt = recovery.request_cancel(pipeline_harness.pipeline_root(run))
     assert receipt["accepted"] is True
 
-    record = pipeline_harness.wait(run, expected="failed")
+    # 工程の**最中**に取り消しても `cancelled` に確定する。以前はここだけ
+    # `failed` になっていた——`cancel_requested` の判定が工程の境界でしか
+    # 走らず、Console を殺された handler の failed が格下げ規則に落ちていたため。
+    # 境界での取消（`test_cancel_at_a_stage_boundary_keeps_earlier_results`）と
+    # 語彙が食い違い、`pipeline_cancel` が契約する「`cancelled` への確定」を
+    # 待つクライアントが永久に確認できなかった。
+    record = pipeline_harness.wait(run, expected="cancelled")
 
     # 所有する一族は止まった。
     assert process_identity(console_pid) is None
