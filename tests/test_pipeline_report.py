@@ -118,6 +118,45 @@ def test_persist_result_writes_inline_numeric_data_converting_nonfinite_to_null(
     assert ref["nonfinite_reasons"]
 
 
+# ---------- 再実行での成果物の上書き（2026-09-17 Stage B の #2）----------
+
+def test_rewriting_a_result_with_new_content_does_not_clobber_the_old_file(tmp_path):
+    """同じ result_id で内容が変わったら、別のファイルへ書く。
+
+    `rerun_upstream=true` の再実行は同じ result_id を使う（pipeline_id 由来で
+    revision も上がらない）。同じパスへ上書きすると、先に記録された ref の
+    (relative_path, hash) が永久に不一致になり、以後の `verify_result_refs` が
+    必ず落ちる。実際 Stage B の実データ run はこれで止まった。
+    """
+    first = persist_result(tmp_path, {
+        "output_name": "profile", "kind": "profile", "result_id": "res_profile_x",
+        "data": {"profile": {"revision": 1}},
+    })
+    second = persist_result(tmp_path, {
+        "output_name": "profile", "kind": "profile", "result_id": "res_profile_x",
+        "data": {"profile": {"revision": 2}},
+    })
+
+    assert first["relative_path"] != second["relative_path"]
+    assert first["hash"] != second["hash"]
+    # 先の ref が指すファイルは、先の hash のまま検証できること。
+    import hashlib
+    actual = hashlib.sha256((tmp_path / first["relative_path"]).read_bytes()).hexdigest()
+    assert actual == first["hash"]
+
+
+def test_rewriting_a_result_with_identical_content_reuses_the_same_file(tmp_path):
+    """内容が同じ再実行はファイルを増やさない（冪等）。"""
+    payload = {"output_name": "profile", "kind": "profile",
+               "result_id": "res_profile_y", "data": {"profile": {"revision": 1}}}
+    first = persist_result(tmp_path, dict(payload))
+    second = persist_result(tmp_path, dict(payload))
+
+    assert first["relative_path"] == second["relative_path"]
+    assert first["hash"] == second["hash"]
+    assert len(list((tmp_path / "results").iterdir())) == 1
+
+
 # ---------- evaluate_target ----------
 
 def _build_record(tmp_path, *, target, comparisons=None, save_project=False):
