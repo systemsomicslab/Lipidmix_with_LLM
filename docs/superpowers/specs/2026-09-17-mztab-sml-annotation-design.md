@@ -195,16 +195,21 @@ ds.inchikey_coverage = {
 
 ### 7.3 `dataset_export.py` の差次的エクスポート
 
-優先順位は **SME → SML**。
+優先順位は **SME → SML**。ただし**列ごとに独立して選ばない**——1 行の中で `name` が
+SML 由来、`inchikey` が SME 由来、といった食い違いが起きるため。
+
+**行単位で出所を 1 つに決める。決め手は「InChIKey を供給した側」**（InChIKey が
+エクスポートのゲートであり、行の同一性の根拠だから）。
 
 | 列 | 規則 |
 |---|---|
-| `name` | `feature_metadata["name"]` → 無ければ `feature_annotations["name"]` |
+| 出所の決定 | `feature_metadata["inchikey"]` があれば SME、無ければ `feature_annotations["inchikey"]` を見て SML。どちらも無ければ行を捨てる（従来どおり） |
+| `name` / `inchikey` / `inchikey_source` | **決まった側からまとめて採る** |
 | `name_source` | `"mztab_sme"` / `"mztab_sml"` |
-| `inchikey` | 同じ優先順位 |
-| `inchikey_source` | 採用した側の `inchikey_source` |
 | `msi_level` | **空欄のまま**（§8） |
 | `ontology` | 空欄のまま（mzTab-M に対応物なし） |
+
+`ambiguous` な注釈（§6）は無いものとして扱う。
 
 `name_source` は現在 `"mztab_smf"` を書いているが、**実際の出所は SME なのでこれは
 事実と違う**。`"mztab_sme"` へ訂正する。下流（`massbank-context` の
