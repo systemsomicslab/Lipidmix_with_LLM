@@ -17,14 +17,16 @@ mztab_path 経路（直接指定）:
 7.    └─ lipidmix/mztab/dataset_state.py _index_sme_rows()
 8.    └─ lipidmix/mztab/dataset_state.py _best_evidence()
 9.    └─ lipidmix/mztab/identity.py derive_inchikey()
-10.   └─ lipidmix/mztab/dataset_state.py _resolve_sample_names()
-11. └─ lipidmix/mztab/evidence.py attach_to_dataset()
-12.    └─ lipidmix/mztab/evidence.py arf_candidates()
-13.    └─ lipidmix/mztab/evidence.py load_arf_evidence()
-14.       └─ lipidmix/arf/reader.py deserialize()
-15.       └─ lipidmix/mztab/evidence.py normalize_arf_spots()
-16.       └─ lipidmix/mztab/evidence.py build_evidence()
-17.    └─ lipidmix/mztab/evidence.py apply_evidence()
+10.   └─ lipidmix/mztab/dataset_state.py _build_feature_annotations()
+11.      └─ lipidmix/mztab/identity.py derive_inchikey()
+12.   └─ lipidmix/mztab/dataset_state.py _resolve_sample_names()
+13. └─ lipidmix/mztab/evidence.py attach_to_dataset()
+14.    └─ lipidmix/mztab/evidence.py arf_candidates()
+15.    └─ lipidmix/mztab/evidence.py load_arf_evidence()
+16.       └─ lipidmix/arf/reader.py deserialize()
+17.       └─ lipidmix/mztab/evidence.py normalize_arf_spots()
+18.       └─ lipidmix/mztab/evidence.py build_evidence()
+19.    └─ lipidmix/mztab/evidence.py apply_evidence()
 
 job_path 経路（analysis-job.json の宣言 polarity + measure で正準を選ぶ）:
 1. lipidmix/tools/mztab_tools.py dataset_load()
@@ -39,8 +41,10 @@ job_path 経路（analysis-job.json の宣言 polarity + measure で正準を選
 10.      └─ lipidmix/mztab/dataset_state.py _index_sme_rows()
 11.      └─ lipidmix/mztab/dataset_state.py _best_evidence()
 12.      └─ lipidmix/mztab/identity.py derive_inchikey()
-13.      └─ lipidmix/mztab/dataset_state.py _resolve_sample_names()
-14. └─ lipidmix/mztab/evidence.py attach_to_dataset()
+13.      └─ lipidmix/mztab/dataset_state.py _build_feature_annotations()
+14.         └─ lipidmix/mztab/identity.py derive_inchikey()
+15.      └─ lipidmix/mztab/dataset_state.py _resolve_sample_names()
+16. └─ lipidmix/mztab/evidence.py attach_to_dataset()
 
 pipeline_path 経路（完了した run の成果物をまとめて載せる）:
 1. lipidmix/tools/mztab_tools.py dataset_load()
@@ -75,7 +79,8 @@ completed は「実行後にファイルが増えた」以上の意味を持た�
 （`QUANTIFICATION_CONFLICT` / `POLARITY_MISMATCH` / `AMBIGUOUS_PRIMARY_MZTAB`）。
 どのファイルを読むかは解析結果そのものを変えるため、辞書順にも LLM にも決めさせない。
 
-job_path 経路では手順 14 が `artifact_paths` を入れ終えた**後**に来る。handoff が
+job_path 経路では手順 16（`attach_to_dataset`）が `artifact_paths` を入れ終えた
+**後**に来る。handoff が
 記録した `peak_matrix_source` を `.arf` 候補の先頭に使えるのはその時点以降だけ。
 
 ### evidence sidecar（検出状態）の取り込み
