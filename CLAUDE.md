@@ -128,6 +128,7 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 | **生データ → Console → mzTab-M → 差次的解析 → パスウェイ**の一気通貫の順序と、内部関数の引数・戻り値 | [docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md](docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md)（**目標状態**の記述。実装状況は同文書 §9。完成後 `docs/workflow/Lipidmix/` へ昇格） |
 | MessagePack の Key 番号 | `docs/schema/*.md` |
 | パーサ単体の CLI（フラグ一覧と実行例） | `docs/cli.md` |
+| 文献由来の設計候補（採択済み） | [docs/research-backlog.md](docs/research-backlog.md)（正準は vault 側。仕組みは spec 2026-09-14） |
 | 設計判断の経緯・調査で判明した事実 | `docs/HISTRY.md`（綴りはこのまま。**追跡外＝ローカル専用ログ**） |
 | 進行中/完了タスク | `docs/task.md`（**追跡外**。ステータス = TODO/DOING/DONE/HOLD） |
 | 過去の設計書・計画書 | `docs/superpowers/{specs,plans,notes}/` |
