@@ -322,3 +322,92 @@ def test_a_failed_export_does_not_replace_the_previous_file(tmp_path):
 def _exported_lines(func, ds, result, path: Path) -> list[str]:
     func(ds, result, path)
     return path.read_text(encoding="utf-8").splitlines()
+
+
+# ---------- SML 由来の同定（spec 2026-09-17-mztab-sml-annotation-design §7.3）----------
+
+def _export_rows(tmp_path, ds, result, name="sml.tsv") -> list[dict]:
+    """エクスポート TSV の本体を dict の一覧で返す（`#` メタ行は落とす）。"""
+    from lipidmix.analysis.dataset_export import export_dataset_result
+    path = tmp_path / name
+    export_dataset_result(ds, result, path)
+    body = [l for l in path.read_text(encoding="utf-8").splitlines()
+            if l and not l.startswith("#")]
+    header = body[0].split("\t")
+    return [dict(zip(header, line.split("\t"))) for line in body[1:]]
+
+
+def test_an_evidence_backed_row_says_sme(tmp_path):
+    """既存経路の name_source を "mztab_smf" から "mztab_sme" へ訂正した。
+
+    名前の実体は SMF 行ではなく SME 行なので、従来の値は事実と違っていた。
+    """
+    ds, result = _prepared_dataset()
+
+    rows = _export_rows(tmp_path, ds, result, "sme.tsv")
+
+    assert {r["name_source"] for r in rows} == {"mztab_sme"}
+
+
+def test_a_row_sourced_from_an_sml_annotation_says_so(tmp_path):
+    """MS1 注釈由来の行は name_source で見分けられる。
+
+    下流（massbank-context）は inchikey を結合キーにするので、証拠水準を
+    伝える列が無いと MS/MS 裏付けと区別できなくなる。
+    """
+    ds, result = _prepared_dataset()
+    # InChIKey を持つ特徴を1つ選び、証拠を剥がして注釈だけにする。
+    fid = next(f for f in ds.feature_ids
+               if (ds.feature_metadata.get(f) or {}).get("inchikey"))
+    ds.feature_metadata[fid]["inchikey"] = None
+    ds.feature_metadata[fid]["name"] = None
+    ds.feature_annotations = {
+        fid: {"sml_id": "1", "ambiguous": False, "name": "GABA",
+              "database_identifier": "TextDB:GABA", "chemical_formula": None,
+              "smiles": "NCCCC(=O)O", "adduct": "[M+H]1+", "reliability": None,
+              "confidence_measure": "MS-DIAL algorithm matching score",
+              "confidence_value": 0.99,
+              "inchikey": "BTCSSZJGUNDROE-UHFFFAOYSA-N",
+              "inchikey_source": "smiles_derived"},
+    }
+
+    rows = _export_rows(tmp_path, ds, result)
+
+    row = next(r for r in rows if r["spot_id"] == fid)
+    assert row["name"] == "GABA"
+    assert row["name_source"] == "mztab_sml"
+    assert row["inchikey"] == "BTCSSZJGUNDROE-UHFFFAOYSA-N"
+    assert row["inchikey_source"] == "smiles_derived"
+    assert row["msi_level"] == ""
+
+
+def test_a_name_without_an_inchikey_is_still_dropped(tmp_path):
+    """InChIKey ゲートは変えない。下流が InChIKey で結合するため。"""
+    from lipidmix.analysis.dataset_export import export_dataset_result
+    ds, result = _prepared_dataset()
+    for fid in ds.feature_ids:
+        ds.feature_metadata.setdefault(fid, {})["inchikey"] = None
+    # 名前だけの注釈（InChIKey なし）。これでは救われない。
+    ds.feature_annotations = {
+        fid: {"sml_id": "1", "ambiguous": False, "name": "GABA",
+              "database_identifier": "TextDB:GABA", "chemical_formula": None,
+              "smiles": None, "adduct": "[M+H]1+", "reliability": None,
+              "confidence_measure": "score", "confidence_value": 0.99,
+              "inchikey": None, "inchikey_source": "none"}
+        for fid in ds.feature_ids}
+
+    with pytest.raises(DomainError, match="NO_ANNOTATED_FEATURES"):
+        export_dataset_result(ds, result, tmp_path / "dropped.tsv")
+
+
+def test_an_ambiguous_annotation_does_not_reach_the_export(tmp_path):
+    ds, result = _prepared_dataset()
+    fid = next(f for f in ds.feature_ids
+               if (ds.feature_metadata.get(f) or {}).get("inchikey"))
+    ds.feature_metadata[fid]["inchikey"] = None
+    ds.feature_annotations = {
+        fid: {"ambiguous": True, "sml_ids": ["1", "2"], "name": None}}
+
+    rows = _export_rows(tmp_path, ds, result, "ambiguous.tsv")
+
+    assert not any(r["spot_id"] == fid for r in rows)

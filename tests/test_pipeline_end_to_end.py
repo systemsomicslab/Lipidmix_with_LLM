@@ -239,7 +239,9 @@ def test_exported_tsv_matches_the_contract_in_both_directions(pipeline_harness):
         assert row["ontology"] == ""
         assert row["msi_level"] == ""
         assert row["inchikey_source"] == "database_identifier"
-        assert row["name_source"] == "mztab_smf"
+        # 名前の実体は SMF 行ではなく SME 行。旧 "mztab_smf" は事実と違った
+        # （spec 2026-09-17-mztab-sml-annotation-design §7.3）。
+        assert row["name_source"] == "mztab_sme"
         assert row["significant"] in ("true", "false")
         assert float(row["mz"]) > 0 and float(row["rt"]) > 0
         assert float(row["mean_b"]) > float(row["mean_a"])
