@@ -2,8 +2,12 @@
 
 セクション識別規則:
   - MTD 行: メタデータ。tab 区切り [prefix, key, value]。
-  - SML/SMF/SME の最初の行: ヘッダー（列名）。以降: データ行。
-  - SEH / SFH が行頭のファイルは非標準。SEH→SME / SFH→SMF と読み替える。
+  - SMH / SFH / SEH 行: ヘッダー（列名）。mzTab-M 2.0 の正規形で、実 MS-DIAL
+    出力もこれ。SMH→SML / SFH→SMF / SEH→SME と読み替える。
+  - ヘッダー行が無いまま SML/SMF/SME が来た場合は、その最初の行を列名として扱う
+    （合成 fixture などヘッダーをデータ接頭辞で書く流儀への後方互換）。**この
+    フォールバックは、正規の接頭辞を取りこぼすと先頭データ行を静かに 1 行
+    飲み込む**ので、`_HEADER_PREFIX_MAP` に漏れを作らないこと。
   - COM 行: コメント。無視する。
   - "null" / 空文字列 → None に正規化する。
   - SME 行の末尾空欄（既知の MS-DIAL 問題）を除去しwarningを記録する。
@@ -17,8 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-# 非標準ヘッダー接頭辞の正規化マップ
-_HEADER_PREFIX_MAP = {"SEH": "SME", "SFH": "SMF", "SLH": "SML"}
+# ヘッダー接頭辞 → データ接頭辞の対応（mzTab-M 2.0 の正規形）
+_HEADER_PREFIX_MAP = {"SEH": "SME", "SFH": "SMF", "SMH": "SML"}
 # データ行として認識する接頭辞
 _DATA_PREFIXES = frozenset({"SML", "SMF", "SME"})
 # abundance 列名パターン（命名揺れに対応）
@@ -73,7 +77,7 @@ def parse_mztab(path: str | Path) -> dict:
             if prefix == "COM":
                 continue
 
-            # ヘッダー行（SFH / SEH / SLH は非標準だが存在する）
+            # ヘッダー行（mzTab-M 2.0 の正規の接頭辞: SMH / SFH / SEH）
             canonical = _HEADER_PREFIX_MAP.get(prefix)
             if canonical:
                 sections.setdefault(canonical, {"header": None, "rows": [], "warnings": []})
