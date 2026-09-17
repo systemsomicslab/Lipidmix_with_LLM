@@ -1,5 +1,9 @@
 # mzTab-M ツール呼び出し連鎖
 
+ここは**どのファイルのどの関数をどの順に呼ぶか**。出てくる値の**意味**
+（SME と SML の区別、`identification_status`、`name_source`、`inchikey_coverage`、
+gap-fill）は `docs/output_format/mztab.md`（`lipidmix://docs/output-format/mztab`）。
+
 ## dataset_load
 
 読み込みの実体は `lipidmix/mztab/loading.py`（session に依存しない層）。MCP ツールは

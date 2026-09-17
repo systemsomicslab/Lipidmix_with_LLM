@@ -141,7 +141,7 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
 | 知りたいこと | 見る場所 |
 |---|---|
 | ツールの引数・用途（`tests/test_readme_links.py` が一覧と件数を実登録と突き合わせている） | `USAGE.md` |
-| 出力フィールドの**意味**（行の粒度・脂質名文法・必須注意） | `docs/output_format/core.md` ＋ トピック別（`arf` `arf2` `pai2` `dcl` `eic` `identity`）。MCP リソース `lipidmix://docs/output-format[/{topic}]` としても配信 |
+| 出力フィールドの**意味**（行の粒度・脂質名文法・必須注意） | `docs/output_format/core.md` ＋ トピック別（`arf` `arf2` `pai2` `dcl` `eic` `identity` `mztab`）。MCP リソース `lipidmix://docs/output-format[/{topic}]` としても配信 |
 | ツールが**どのファイルのどの関数をどの順に呼ぶか** | `docs/workflow/`（対象範囲の線引きと内訳は `index.md` が正準。`tests/test_workflow_docs.py` が実登録と突き合わせている）。行番号は書かない規約 |
 | **生データ → Console → mzTab-M → 差次的解析 → パスウェイ**の一気通貫の順序と、内部関数の引数・戻り値 | [docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md](docs/superpowers/specs/2026-09-03-end-to-end-pipeline-design.md)（**目標状態**の記述。実装状況は同文書 §9。完成後 `docs/workflow/Lipidmix/` へ昇格） |
 | MessagePack の Key 番号 | `docs/schema/*.md` |
@@ -188,7 +188,11 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
   後回しにすると、次のエージェントが古い流れ図を正しいものとして読む。
 - `check.py` はスクラッチ（疑似ワークスペース）。一時検証コードをここに書き、通ったら適切な
   モジュールへ移して中身を消す。何もここに依存させない。
-- **コミット時に全テストが自動で走る**（`.githooks/pre-commit`・約 5 秒）。
+- **コミット時に全テストが自動で走る**（`.githooks/pre-commit`）。**所要は全テストの
+  実行時間そのもので、数分かかる**。エージェントの既定コマンドタイムアウトを超えるので、
+  自動化された `git commit` は最初からバックグラウンド実行にし、出力をファイルへ
+  落として `FAILED` を後から引けるようにする。フックは index ではなく**作業ツリー**を
+  検証するので、実行中にファイルを編集しない（その編集がそのテスト実行に混ざる）。
   クローン直後は `git config core.hooksPath .githooks` を 1 度実行して有効化する。
   迂回は `git commit --no-verify`（緊急時のみ）。
 - `main` へのマージは `--no-ff`、`Merge <branch>: <日本語の要約>` 形式のマージコミット。
