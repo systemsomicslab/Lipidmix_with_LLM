@@ -598,6 +598,26 @@ def write_pipeline_report(record: dict, path) -> dict:
     }
 
 
+def _result_path_for(pipeline_root: Path, relative: str, payload: dict) -> Path:
+    """`relative` へ書く。既存と内容が違うなら内容 hash を足した別名を返す。
+
+    既存が無い、または既存の中身が完全に同じなら `relative` をそのまま使う。
+    別名は `<stem>__<先頭8桁>.json` で、同じ内容なら同じ名前に落ちる
+    （決定論的——再実行のたびに名前が増えることはない）。
+    """
+    path = pipeline_root / relative
+    # 直列化は atomic_write_json と同一にする（ensure_ascii=False・区切り詰め・
+    # allow_nan=False）。ここがずれると、同じ内容でも別名に落ちて冪等でなくなる。
+    encoded = json.dumps(payload, ensure_ascii=False,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if not path.is_file():
+        return path
+    if path.read_bytes() == encoded:
+        return path
+    digest = hashlib.sha256(encoded).hexdigest()[:8]
+    return path.with_name(f"{path.stem}__{digest}{path.suffix}")
+
+
 def persist_result(pipeline_root, result: dict) -> dict:
     """成果物への参照(ref)を確定する（Task 8が残した「manifestへの登録」の穴）。
 
@@ -635,14 +655,21 @@ def persist_result(pipeline_root, result: dict) -> dict:
                 {"path": str(path)})
     elif "data" in result:
         relative = result.get("relative_path") or f"results/{result_id}.json"
-        path = pipeline_root / relative
         sanitized = _sanitize_nonfinite(result["data"], reasons=nonfinite_reasons)
-        atomic_write_json(path, {
+        payload = {
             "schema": "pipeline-result-data.v1",
             "kind": kind,
             "data": sanitized,
             "nonfinite_reasons": nonfinite_reasons,
-        })
+        }
+        # 既に記録された ref の (relative_path, hash) は永久に検証可能でなければ
+        # ならない。`rerun_upstream=true` の再実行は同じ result_id を使い
+        # （pipeline_id 由来で request_revision も上がらない）、素朴に同じパスへ
+        # 書くと先の ref が恒久的に hash 不一致になり `verify_result_refs` が
+        # 必ず落ちる。内容が変わったときだけ別名へ逃がす——内容が同じ再実行では
+        # ファイルを増やさない（冪等）。
+        path = _result_path_for(pipeline_root, relative, payload)
+        atomic_write_json(path, payload)
     else:
         raise DomainError(
             "OUTPUT_RESULT_INVALID",

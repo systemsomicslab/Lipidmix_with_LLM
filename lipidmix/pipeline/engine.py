@@ -526,13 +526,25 @@ def finish_success(pipeline_path: Path, record: dict) -> dict:
 
 
 def finish_interrupted(pipeline_path: Path, record: dict, outcome: dict) -> dict:
-    """needs_input/failedで停止する。
+    """needs_input/failed/取消で停止する。
 
     needs_inputはそのままneeds_input。failedは「有効な解析出力
     （`record['results']`が非空）」があればpartial、無ければfailedへ格下げする
     （brief「有効な解析出力があればpartial、なければfailed」）。
+
+    ただし**取消が要求済みなら`cancelled`**にする。`cancel_requested`の判定は
+    工程の境界でしか走らないので、長い工程（実測13分半のConsole）の最中に
+    取り消すと、監視経路がConsoleを殺してhandlerがfailedを返し、ここへ来る。
+    格下げ規則だけを当てるとpartialになり、`pipeline_cancel`が契約している
+    「`cancelled`への確定を`pipeline_status`で確認する」が永久に成立しない。
+    工程側の停止理由（`stages[...]["error"]`）は既に
+    `commit_stage_outcome`が記録済みなので、ここで失われるものは無い。
     """
     record = copy.deepcopy(record)
+    if outcome.get("status") == "failed" and cancel_requested(pipeline_path):
+        record["status"] = "cancelled"
+        store.save_run(pipeline_path, record, expected_revision=record["state_revision"])
+        return store.load_run(pipeline_path)
     if outcome.get("status") == "needs_input":
         record["status"] = "needs_input"
         error = outcome.get("error") or {}
