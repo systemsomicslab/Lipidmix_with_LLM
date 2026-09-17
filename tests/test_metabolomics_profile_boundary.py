@@ -1,4 +1,5 @@
 """Profile resolution must agree across file requests and worker processes."""
+import os
 import json
 
 import pytest
@@ -92,3 +93,70 @@ def test_snapshot_uses_profile_directory_and_persists_raw_hashes(tmp_path):
     # Read the actual persisted artifact, not a mocked persistence callback.
     artifact = json.loads((context["pipeline_root"] / ref["relative_path"]).read_text(encoding="utf-8"))
     assert artifact["data"]["raw"]["files"][0]["sha256"]
+
+
+# ---------- 再解決で raw の内容が変わっていたら止める（2026-09-17 Stage B の #3）----------
+
+def _profile_context(tmp_path):
+    """profile / raw / exe を実ファイルで用意し、snapshot_profile_outcome 用の
+    context を返す。"""
+    from tests.test_lcms_profile_inputs import _build_profile, _write_fake_exe, _write, _msp_dependency
+
+    profile_root = tmp_path / "configuration"
+    profile_root.mkdir()
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+    _write(raw_root / "sample.mzML", "synthetic raw")
+    exe = _write_fake_exe(profile_root)
+    library = _write(profile_root / "lib.msp", "synthetic library")
+    profile = _build_profile(profile_root, method_lines="Ion mode: Positive\n",
+                             dependencies=[_msp_dependency(library)], exe=exe)
+    profile["processing"]["method_path"] = "method/params.txt"
+    path = profile_root / "profile.json"
+    path.write_text(json.dumps(profile), encoding="utf-8")
+    return {"request": {"profile_file": str(path), "execution_purpose": "validation"},
+            "identity": {"source_root": str(raw_root)}, "runtime": {},
+            "pipeline_root": tmp_path / "run", "pipeline_id": "rawcheck"}, raw_root
+
+
+def test_raw_content_change_between_runs_stops_with_input_changed(tmp_path):
+    """再解決した raw hash が、前回固定した profile snapshot と食い違えば止める。
+
+    v2 は既に全 raw を hash して snapshot へ保存している。突き合わせないと、
+    入力が差し替わっても気付かないまま解析が進む。stat（size/mtime）だけを
+    見る v1 の `verify_inputs` は仕様上 raw の内容 hash を検証しない契約なので、
+    ここで v2 が自分の持つ hash を使う。
+    """
+    from lipidmix.pipeline import metabolomics_handlers
+    from tests.test_lcms_profile_inputs import _write
+
+    context, raw_root = _profile_context(tmp_path)
+    first = metabolomics_handlers.snapshot_profile_outcome(context, {"status": "succeeded"})
+
+    # 同じ長さのまま内容だけ差し替える（size と mtime では気付けない改変）。
+    target = raw_root / "sample.mzML"
+    stat = target.stat()
+    _write(target, "synthetic RAW")          # 同じ 13 文字
+    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert target.stat().st_size == stat.st_size
+    assert target.stat().st_mtime_ns == stat.st_mtime_ns
+
+    context["runtime"] = {}
+    context["results"] = first["result_refs"]
+    with pytest.raises(DomainError) as exc:
+        metabolomics_handlers.snapshot_profile_outcome(context, {"status": "succeeded"})
+    assert exc.value.code == "INPUT_CHANGED"
+    assert "sample.mzML" in json.dumps(exc.value.details, ensure_ascii=False)
+
+
+def test_an_unchanged_rerun_passes_the_raw_check(tmp_path):
+    """内容が同じ再実行は素通りする（照合そのものが誤検出しないこと）。"""
+    from lipidmix.pipeline import metabolomics_handlers
+
+    context, _raw_root = _profile_context(tmp_path)
+    first = metabolomics_handlers.snapshot_profile_outcome(context, {"status": "succeeded"})
+
+    context["runtime"] = {}
+    context["results"] = first["result_refs"]
+    again = metabolomics_handlers.snapshot_profile_outcome(context, {"status": "succeeded"})
+    assert again["status"] == "succeeded"

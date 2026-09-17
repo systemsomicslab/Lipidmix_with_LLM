@@ -204,6 +204,42 @@ def _standard_assay_ids(context: dict) -> dict:
 
 # ---------- prepare_inputs / resolve_metadata への v2 の上乗せ ----------
 
+def _assert_raw_unchanged(context: dict, plan: dict) -> None:
+    """前回固定した profile snapshot の raw hash と、今回の再解決結果を突き合わせる。
+
+    v2 は `resolve_profile_inputs` で全 raw を hash しており、その値は profile
+    成果物の snapshot に入っている。突き合わせなければ、入力が差し替わっても
+    気付かないまま解析が進む。v1 の `verify_inputs` が raw の内容 hash を検証
+    しないのは仕様上の決定（「rawの全量ハッシュは初期版の必須条件にしない」）
+    なので、そちらの契約は変えず、**自分が既に持っている hash** をここで使う。
+
+    前回の記録が無い初回は何もしない（比べる相手がいない）。
+    """
+    previous = store.read_result_data(
+        Path(context["pipeline_root"]), context.get("results") or [], "profile")
+    if not previous:
+        return
+    before = (previous[-1].get("snapshot") or {}).get("raw_files") or {}
+    baseline = {f["relative_path"]: f.get("sha256")
+                for f in (before.get("files") or []) if f.get("sha256")}
+    if not baseline:
+        return
+    current = {f["relative_path"]: f.get("sha256")
+               for f in ((plan.get("raw_files") or {}).get("files") or [])}
+
+    changed = sorted(rel for rel, digest in baseline.items()
+                     if rel in current and current[rel] != digest)
+    missing = sorted(rel for rel in baseline if rel not in current)
+    added = sorted(rel for rel in current if rel not in baseline)
+    if not (changed or missing or added):
+        return
+    raise DomainError(
+        "INPUT_CHANGED",
+        "固定済みの生データが変化しています（内容・件数のいずれか）。"
+        "同じ run では入力を差し替えられません——別の run を起こしてください。",
+        {"changed": changed, "missing": missing, "added": added})
+
+
 def snapshot_profile_outcome(context: dict, outcome: dict) -> dict:
     """解決済み profile と実行環境 manifest を run へ固定し、ref を足す。
 
@@ -218,6 +254,7 @@ def snapshot_profile_outcome(context: dict, outcome: dict) -> dict:
     if not profile_path.is_absolute():
         profile_path = source_root / profile_path
     plan = profiles.resolve_profile_inputs(profile, profile_path.parent, raw_root=source_root)
+    _assert_raw_unchanged(context, plan)
     snapshot = profiles.snapshot_profile(plan, Path(context["pipeline_root"]))
 
     refs = list(outcome.get("result_refs") or [])

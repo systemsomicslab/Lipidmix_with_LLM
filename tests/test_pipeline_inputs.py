@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from lipidmix.console import method_file as method_file_mod
+from lipidmix.core import app_control
 from lipidmix.core.atomic_io import DomainError
 from lipidmix.pipeline.inputs import inspect_inputs, select_method, stage_inputs, verify_inputs
 from lipidmix.pipeline.request import resolve_request
@@ -539,3 +540,115 @@ def test_relative_lbm_reference_resolving_to_non_ascii_path_is_rejected(tmp_path
     assert plan["method"]["overrides"]  # 相対宣言なので絶対パスへの上書きが発生する
     with pytest.raises(DomainError, match="METHOD_ENCODING_UNSUPPORTED"):
         stage_inputs(plan, tmp_path / "pipeline_run")
+
+
+# ---------- 上流が入力フォルダへ書く生成物（2026-09-17 Stage B の #1）----------
+
+def test_restaging_tolerates_the_artifacts_msdial_writes_into_the_input_folder(
+        tmp_path, monkeypatch):
+    """`rerun_upstream` の再配置が、MS-DIAL 自身の生成物で塞がらないこと。
+
+    MS-DIAL は `-o` だけでなく **`-i` 側**にも `.arf` / `.pai2` / `.dcl` /
+    `_tags.xml` を書く（`console/execution.py` が両ルートを snapshot するのは
+    そのため）。pipeline では `-i` が staged input そのものなので、Console が
+    一度でも走れば必ずこれらが入力フォルダに現れる。これを「想定外のファイル」
+    として拒むと、やり直しの唯一の正規手順が使えなくなる。
+    """
+    _allow_fake_exe(monkeypatch)
+    src = make_source(tmp_path / "raw")
+    request = resolve_request(src["root"])
+    plan = inspect_inputs(src["root"], request, exe_path=src["exe"])
+    pipeline_root = tmp_path / "pipeline_run"
+    stage_inputs(plan, pipeline_root)
+
+    input_dir = pipeline_root / "input"
+    for name in ("AlignResult-20260917.arf", "AlignResult-20260917.arf2",
+                 "S0_20260917.pai2", "S0_20260917.dcl", "S0_20260917_tags.xml",
+                 "AlignResult-20260917.EIC.aef"):
+        (input_dir / name).write_text("upstream artifact", encoding="ascii")
+
+    stage_inputs(plan, pipeline_root)   # 例外を投げないこと
+
+
+def test_restaging_still_refuses_a_file_it_cannot_account_for(tmp_path, monkeypatch):
+    """上流生成物と判定できないファイルは従来どおり拒む。
+
+    「入力フォルダに知らないものがある」を一律に許すと、別バッチの生データや
+    取り違えたコピーが紛れ込んでも気付けなくなる。
+    """
+    _allow_fake_exe(monkeypatch)
+    src = make_source(tmp_path / "raw")
+    request = resolve_request(src["root"])
+    plan = inspect_inputs(src["root"], request, exe_path=src["exe"])
+    pipeline_root = tmp_path / "pipeline_run"
+    stage_inputs(plan, pipeline_root)
+
+    (pipeline_root / "input" / "stray-sample.wiff").write_text("よそのバッチ", encoding="utf-8")
+
+    with pytest.raises(DomainError, match="STAGED_INPUT_MISMATCH"):
+        stage_inputs(plan, pipeline_root)
+
+
+# ---------- プロジェクト保存が Application Control に塞がれる場合（2026-09-17 #2）----------
+
+def _unsigned_dll(path):
+    """Certificate Table が空の最小 PE を書く（＝未署名）。"""
+    import struct
+    pe_off = 0x80
+    b = bytearray(0x400)
+    b[0:2] = b"MZ"
+    struct.pack_into("<I", b, 0x3C, pe_off)
+    b[pe_off:pe_off + 4] = b"PE\x00\x00"
+    struct.pack_into("<H", b, pe_off + 4, 0x8664)
+    struct.pack_into("<H", b, pe_off + 0x18, 0x20B)
+    dd = pe_off + 0x18 + 0x70
+    struct.pack_into("<II", b, dd + 4 * 8, 0, 0)
+    path.write_bytes(bytes(b))
+    return path
+
+
+def test_planning_refuses_project_save_when_app_control_would_block_it(
+        tmp_path, monkeypatch):
+    """Console を起動する**前**に止める。
+
+    Smart App Control が有効なマシンでは、プロジェクト保存に要る未署名
+    アセンブリの読み込みが弾かれる。しかもそれが起きるのは MS-DIAL が全検体の
+    解析とアライメントを終えた**後**で、実測では 13 分半を費やしてから落ちた。
+    計画時に判定すれば 1 秒で分かる。
+    """
+    _allow_fake_exe(monkeypatch)
+    monkeypatch.setattr(app_control, "smart_app_control_state", lambda: 1)
+    src = make_source(tmp_path / "raw")
+    _unsigned_dll(Path(src["exe"]).parent / "MsdialLcImMsApi.dll")
+    request = resolve_request(src["root"])
+    request["save_project"] = True
+
+    with pytest.raises(DomainError) as exc:
+        inspect_inputs(src["root"], request, exe_path=src["exe"])
+    assert exc.value.code == "PROJECT_SAVE_BLOCKED"
+    # 対処を封筒に載せる（クライアントが次の一手を推測しなくて済むように）。
+    assert "save_project" in exc.value.message
+
+
+def test_planning_proceeds_when_the_project_is_not_requested(tmp_path, monkeypatch):
+    """`save_project=false` なら塞がれる経路に入らないので止めない。"""
+    _allow_fake_exe(monkeypatch)
+    monkeypatch.setattr(app_control, "smart_app_control_state", lambda: 1)
+    src = make_source(tmp_path / "raw")
+    _unsigned_dll(Path(src["exe"]).parent / "MsdialLcImMsApi.dll")
+    request = resolve_request(src["root"])
+    request["save_project"] = False
+
+    inspect_inputs(src["root"], request, exe_path=src["exe"])   # 例外を投げない
+
+
+def test_planning_proceeds_when_the_policy_is_not_enforcing(tmp_path, monkeypatch):
+    """ポリシーが無効なら未署名でも止めない（ポリシー単独で塞がない）。"""
+    _allow_fake_exe(monkeypatch)
+    monkeypatch.setattr(app_control, "smart_app_control_state", lambda: 0)
+    src = make_source(tmp_path / "raw")
+    _unsigned_dll(Path(src["exe"]).parent / "MsdialLcImMsApi.dll")
+    request = resolve_request(src["root"])
+    request["save_project"] = True
+
+    inspect_inputs(src["root"], request, exe_path=src["exe"])   # 例外を投げない

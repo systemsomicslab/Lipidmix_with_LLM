@@ -268,6 +268,55 @@ def test_cancel_requested_stops_before_next_stage(tmp_path):
     assert "resolve_comparisons" not in calls  # 次のstageへ進む前に取消を検知して止まる
 
 
+def test_a_stage_failing_under_cancellation_settles_as_cancelled(tmp_path):
+    """工程の最中に取り消された run は `cancelled` に確定する。
+
+    `cancel_requested` の判定は工程の境界でしか走らない。13 分かかる Console の
+    ように長い工程の最中に取り消すと、監視経路が Console を殺して handler が
+    failed を返し、`finish_interrupted` の「results があれば partial」に落ちて
+    いた。`pipeline_cancel` は「`cancelled` への確定を `pipeline_status` で
+    確認する」と契約しているので、それでは待っているクライアントが永久に
+    確認できない。
+    """
+    path, handlers, calls = _build_pipeline(tmp_path, target="differential", comparisons=[])
+    original_pca = handlers["pca"]
+
+    def pca_cancelled_mid_stage(context: dict) -> dict:
+        original_pca(context)                       # 成果物は既に出ている
+        atomic_write_json(cancel_request_path(path), {"cancel_requested": True})
+        return {"status": "failed", "result_refs": [], "warnings": [],
+                "error": {"code": "MSDIAL_EXECUTION_FAILED",
+                          "message": "termination=cancelled exit_code=1",
+                          "details": {"termination": "cancelled"}},
+                "record_updates": {}}
+
+    handlers["pca"] = pca_cancelled_mid_stage
+
+    result = run_engine(path, handlers)
+    assert result["status"] == "cancelled"
+    # 停止理由の記録は失われないこと。
+    assert result["stages"]["pca"]["status"] == "failed"
+    assert result["stages"]["pca"]["error"]["code"] == "MSDIAL_EXECUTION_FAILED"
+
+
+def test_a_stage_failing_without_cancellation_still_settles_as_partial(tmp_path):
+    """取消が無ければ従来どおり partial（取消の判定が失敗一般に漏れないこと）。"""
+    path, handlers, calls = _build_pipeline(tmp_path, target="differential", comparisons=[])
+    original_pca = handlers["pca"]
+
+    def pca_fails(context: dict) -> dict:
+        original_pca(context)
+        return {"status": "failed", "result_refs": [], "warnings": [],
+                "error": {"code": "MSDIAL_EXECUTION_FAILED", "message": "exit_code=1",
+                          "details": {}},
+                "record_updates": {}}
+
+    handlers["pca"] = pca_fails
+
+    result = run_engine(path, handlers)
+    assert result["status"] == "partial"
+
+
 # ---------- state保存失敗 ----------
 
 def test_state_save_failure_propagates_and_keeps_prior_results(tmp_path, monkeypatch):

@@ -42,6 +42,8 @@ from lipidmix.console import job_manager
 from lipidmix.console import method_file as method_file_mod
 from lipidmix.console import runner as console_runner
 from lipidmix.console.input_prep import _companions_of
+from lipidmix.console.output_collector import is_upstream_artifact
+from lipidmix.core import app_control
 from lipidmix.core.atomic_io import DomainError, canonical_hash
 
 __all__ = ["DEFAULT_MANIFEST_NAME", "inspect_inputs", "manifest_source_record",
@@ -156,6 +158,33 @@ def _stat_entry(path: Path, relative_path: str, role: str) -> dict:
 
 
 # ---------- 形式解決 ----------
+
+#: プロジェクト保存（`-p`）のときだけ読まれるアセンブリ。Application Control が
+#: これを弾くと、MS-DIAL は**全検体の解析を終えた後**に落ちる。
+_PROJECT_SAVE_ASSEMBLY = "MsdialLcImMsApi.dll"
+
+
+def _assert_project_save_possible(request: dict, exe_path) -> None:
+    """プロジェクト保存が Application Control に塞がれるなら計画時に止める。
+
+    Console を起動してからでは、実測で 13 分半を費やした後に落ちる。判定は
+    「ポリシーが Enforce」かつ「当該アセンブリが未署名」の両方が揃ったときだけ
+    ——ポリシー単独で塞ぐと、署名済みの公式配布版を使う正当な構成まで止まる。
+    """
+    if not request.get("save_project"):
+        return
+    assembly = Path(exe_path).parent / _PROJECT_SAVE_ASSEMBLY
+    if not app_control.project_save_blocked(assembly):
+        return
+    raise DomainError(
+        "PROJECT_SAVE_BLOCKED",
+        "このマシンの Application Control（Smart App Control）が、プロジェクト保存に"
+        f"要る未署名のアセンブリ {_PROJECT_SAVE_ASSEMBLY} の読み込みを拒否します。"
+        "このまま実行すると、MS-DIAL は全検体の解析を終えた**後**に失敗します。"
+        "要求に save_project=false を指定してください（.mdproject は解析成果物では"
+        "なく GUI で開くための便宜で、必須成果物には含まれません）。",
+        {"assembly": str(assembly), "remedy": {"save_project": False}})
+
 
 def _resolve_raw_format(source_root: Path, requested_extension: str | None) -> tuple[str, dict]:
     """採用する計測拡張子を決める（spec §4.1「1フォルダ直下の1形式」）。
@@ -468,6 +497,9 @@ def inspect_inputs(source_root: Path, request: dict, *, exe_path: Path) -> dict:
             # 元々そのキーの行自体が無いので、そのまま新規追加する。
             overrides[method_file_mod.LBM_KEY] = lbm_info["path"]
 
+    # Console を起動する前に判定する（起動後だと全検体の解析を終えてから落ちる）。
+    _assert_project_save_possible(request, exe_info["path"])
+
     return {
         "source_root": str(source_root.resolve()),
         "selected_format": ext,
@@ -533,6 +565,8 @@ def plan_from_profile(source_root: Path, request: dict, profile: dict) -> dict:
                  for dep in resolved["dependencies"] if dep.get("present")}
     lbm = next((dep for dep in resolved["dependencies"]
                 if dep["method_key"] == method_file_mod.LBM_KEY), None)
+
+    _assert_project_save_possible(request, exe_path)
 
     return {
         "source_root": str(source_root.resolve()),
@@ -629,7 +663,15 @@ def stage_inputs(plan: dict, pipeline_root: Path, *,
     entries = plan["entries"]
     expected_names = {e["name"] for e in entries}
     existing_names = {p.name for p in input_dir.iterdir()}
-    unexpected = existing_names - expected_names
+    # 上流が入力フォルダ側へ書いた生成物は「想定外」ではない。MS-DIAL は `-o` だけで
+    # なく `-i` 側にも .arf / .arf2 / .pai2 / .dcl / .EIC.aef / _tags.xml を書き、
+    # pipeline では `-i` が staged input そのもの（`service._handle_upstream` が
+    # `pipeline_root/input` を job.dataset_root として渡す）。`console/execution.py`
+    # が両ルートを snapshot して収集するのと同じ前提をここでも採る——採らないと、
+    # Console が一度でも走った run では `rerun_upstream` が必ずここで止まる。
+    # 判定規則は `output_collector` の role 表が唯一の出所（二重定義にしない）。
+    unexpected = {name for name in (existing_names - expected_names)
+                  if not is_upstream_artifact(name)}
     if unexpected:
         raise DomainError(
             "STAGED_INPUT_MISMATCH",
