@@ -23,6 +23,10 @@ _COMPACT_TIMESTAMP_RE = re.compile(r"(\d{12,14})")
 FILE_ID_INDEX = 0
 FILE_NAME_INDEX = 1
 MASTER_PEAK_ID_INDEX = 2
+# MS-DIAL は `GetFileNameWithoutExtension` でサンプル名を作るので、剥がす集合は
+# `SupportMsRawDataExtension` 全 12 形式を覆う必要がある（`.d` を残すと、`QC01.d`
+# 由来の名前が `qc01.d` のままになり `qc01` を名乗るサイドカーと結合できない）。
+# 先に長い複合サフィックス（`.wiff.scan` 等）を置く。前方から順に 1 つだけ剥がす。
 _KNOWN_SUFFIXES = (
     ".wiff.scan",
     ".timeseries.data",
@@ -31,9 +35,15 @@ _KNOWN_SUFFIXES = (
     ".wiff",
     ".mzml",
     ".mzxml",
+    ".imzml",
     ".cdf",
     ".abf",
+    ".ibf",
     ".raw",
+    ".qgd",
+    ".lcd",
+    ".lrp",
+    ".d",
 )
 
 

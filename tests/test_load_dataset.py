@@ -321,6 +321,28 @@ class ListDataFilesTests(unittest.TestCase):
         self.assertIn("s1.pai2", out)
         self.assertNotIn("s1.dcl", out)
 
+    def test_vendor_directories_appear_only_when_opted_in(self):
+        """Agilent/Bruker の `.d` は**フォルダ**が 1 検体。
+
+        フォルダだからと一律に除外すると、`.d` だけが入った生データフォルダが
+        「空」に見え、入口で「生データが無い」と誤読される。
+        """
+        (self.directory / "s2.d").mkdir()
+        (self.directory / "s2.d" / "AcqData").mkdir()
+
+        self.assertNotIn("s2.d", server.list_data_files())
+        self.assertIn("s2.d", server.list_data_files(all_files=True))
+        self.assertIn("s2.d", server.list_data_files(extension=".d"))
+
+    def test_non_vendor_directories_never_appear(self):
+        """`.d` / `.raw` 以外はフォルダでは計測データにならない（上流の規則）。"""
+        (self.directory / "backup.mzml").mkdir()
+        self.assertNotIn("backup.mzml", server.list_data_files(all_files=True))
+
+    def test_waters_raw_directory_appears_when_opted_in(self):
+        (self.directory / "s3.raw").mkdir()
+        self.assertIn("s3.raw", server.list_data_files(all_files=True))
+
     def test_missing_directory_is_reported_not_returned_as_a_path(self):
         """純関数側は空リストを返し、文面はツール側だけが持つ。
 

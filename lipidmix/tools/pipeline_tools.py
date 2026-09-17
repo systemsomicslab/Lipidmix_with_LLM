@@ -47,7 +47,10 @@ def pipeline_plan(dataset_root: str, request: dict | None = None,
     Parameters
     ----------
     dataset_root:
-        生データフォルダのパス（.wiff / .raw 等が入っているフォルダ）。
+        生データフォルダのパス。MS-DIAL が読む 12 形式
+        （.abf / .ibf / .cdf / .mzml / .wiff / .raw / .d / .wiff2 /
+        .qgd / .lcd / .lrp / .imzml）が入っているフォルダを指します。
+        Agilent・Bruker の .d と Waters の .raw は**フォルダ**が 1 検体です。
     request:
         `pipeline-request.v1` のトップレベル項目（省略可、spec §10.1）。
         `target` / `polarity` / `method_file` / `lbm_file` / `sample_manifest` /

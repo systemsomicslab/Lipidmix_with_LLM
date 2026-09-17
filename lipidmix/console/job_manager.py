@@ -27,10 +27,35 @@ RUNS_SUBDIR = "runs"
 # sidecar自体には状態を持たせない）。
 PIPELINE_OWNER_FILENAME = "pipeline-owner.json"
 
-# MS-DIAL の SupportMsRawDataExtension と同じ集合。
+# MS-DIAL の SupportMsRawDataExtension と同じ集合
+# （src/MSDIAL5/MsdialCore/Enum/SupportFormat.cs）。
 _RAW_EXTENSIONS = frozenset({
     "abf", "ibf", "cdf", "mzml", "wiff", "raw", "d", "wiff2", "qgd", "lcd", "lrp", "imzml",
 })
+
+#: フォルダそのものが 1 検体になれる拡張子。Agilent / Bruker の `.d` と
+#: Waters の `.raw` がこれに当たる（Thermo の `.raw` は同じ拡張子のファイル）。
+#: 上流 `AnalysisFilesParser.ReadFolderContents` の `isVendorDirectory`
+#: （`Directory.Exists(path) && (extension == ".raw" || extension == ".d")`）と
+#: 同じ規則。`_RAW_EXTENSIONS` の残りは `DataAccess.IsDataFormatSupported` が
+#: `File.Exists` を要求するため、同名のフォルダがあっても入力にならない。
+_VENDOR_DIR_EXTENSIONS = frozenset({"d", "raw"})
+
+
+def is_raw_input(entry: Path) -> bool:
+    """`entry` が MS-DIAL の計測データ 1 件として読まれるかを返す。
+
+    拡張子だけで判定すると、名前が `backup.mzml` のフォルダまで 1 検体として
+    数えてしまう。それは `input_count` と `raw_inventory` に実在しない
+    サンプルを混ぜ、`ms_run[N]-location` との 1 対 1 照合が実行の最後に
+    なって落ちる形で表面化する。
+    """
+    ext = entry.suffix.lower().lstrip(".")
+    if ext not in _RAW_EXTENSIONS:
+        return False
+    if entry.is_dir():
+        return ext in _VENDOR_DIR_EXTENSIONS
+    return True
 
 
 def _now_iso() -> str:
@@ -135,10 +160,10 @@ def list_raw_inputs(dataset_root: Path) -> list[Path]:
     実行後に mzTab の `ms_run[N]-location` と 1 対 1 で突き合わせる。
     数えるだけの `raw_input_summary` もここを通す（数と中身が食い違わない）。
     """
-    # is_file() で絞らない。Agilent の `.d` と Bruker の一部はフォルダそのものが
-    # 1 検体の計測データで、MS-DIAL もフォルダを入力として受ける。
-    entries = [entry for entry in Path(dataset_root).iterdir()
-               if entry.suffix.lower().lstrip(".") in _RAW_EXTENSIONS]
+    # is_file() で絞らない。Agilent の `.d` と Waters の `.raw` はフォルダ
+    # そのものが 1 検体の計測データで、MS-DIAL もフォルダを入力として受ける。
+    # どの拡張子でフォルダが認められるかは `is_raw_input` が上流と揃える。
+    entries = [entry for entry in Path(dataset_root).iterdir() if is_raw_input(entry)]
     return sorted(entries, key=lambda p: str(p).lower())
 
 

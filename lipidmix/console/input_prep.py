@@ -11,6 +11,12 @@ stdin を塞いだ実行では NullReferenceException で終了コード 1 に�
 ください」と正しく言うが、**MCP クライアントにはフォルダを作る手段が無い**。
 ここがその手段。生データは読むだけなのでハードリンクで足りる（実測 4.1GB の
 フォルダを実体コピーせずに済む）。
+
+Agilent / Bruker の `.d` と Waters の `.raw` は**フォルダそのものが 1 検体**で、
+MS-DIAL もそう読む（`AnalysisFilesParser.ReadFolderContents` の
+`isVendorDirectory`）。この形式はフォルダ構造を実体として作り直し、中の
+ファイルだけをリンクする —— ディレクトリ自体をリンクやジャンクションに
+すると、隔離したように見えて元フォルダと同じものを指し続ける。
 """
 from __future__ import annotations
 
@@ -19,7 +25,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from lipidmix.console.job_manager import _RAW_EXTENSIONS
+from lipidmix.console.job_manager import _RAW_EXTENSIONS, is_raw_input
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,40 @@ def _companions_of(entries: list[Path], primary: Path, ext: str) -> list[Path]:
     return out
 
 
+def _replicate_dir(source: Path, target: Path) -> tuple[int, int, int]:
+    """フォルダ形式の raw を複製し、`(リンク数, コピー数, 既存で飛ばした数)` を返す。
+
+    ディレクトリは実体として作る。リンクするのは中のファイルだけ —— `.d` は
+    数 GB になりうるのでファイルまで実体コピーするとこのツールの意味が消えるが、
+    ディレクトリそのものをリンクすると元フォルダと同じ実体を指したまま
+    「隔離した」と名乗ることになる。
+
+    数え方はファイル形式の raw と揃える（1 検体ではなく 1 ファイルで数える）。
+    `copytree` に任せず自分で歩くのは、リンクとコピーの内訳を数えるためと、
+    **既にあるフォルダの中まで見て欠けているファイルだけを補う**ため。
+    フォルダの存在だけで飛ばすと、前回が途中で止まって不完全な `.d` が
+    そのまま完成扱いになる（`copytree` は `dirs_exist_ok` でも欠落の検出を
+    しない）。
+    """
+    linked = copied = skipped = 0
+    for dirpath, _dirnames, filenames in os.walk(source):
+        rel = Path(dirpath).relative_to(source)
+        (target / rel).mkdir(parents=True, exist_ok=True)
+        for name in filenames:
+            src_file = Path(dirpath) / name
+            dst_file = target / rel / name
+            if dst_file.exists():
+                skipped += 1
+                continue
+            try:
+                os.link(src_file, dst_file)
+                linked += 1
+            except OSError:
+                shutil.copy2(src_file, dst_file)
+                copied += 1
+    return linked, copied, skipped
+
+
 def prepare_single_format_input(
     dataset_root, keep_extension: str, out_dir,
 ) -> PrepareResult:
@@ -90,10 +130,12 @@ def prepare_single_format_input(
             "出力先が入力フォルダと同じです。混在を解消できないうえ、"
             "元フォルダを変更することになります。別のフォルダを指定してください。")
 
-    entries = [p for p in sorted(src.iterdir()) if p.is_file()]
-    suffix = "." + ext
-    primaries = [p for p in entries if p.name.lower().endswith(suffix)
-                 and p.suffix.lower().lstrip(".") == ext]
+    all_entries = sorted(src.iterdir())
+    file_entries = [p for p in all_entries if p.is_file()]
+    # 随伴の探索はファイルだけを見る。フォルダ形式の raw は自己完結しているので
+    # 随伴を持たない（`COMPANION_RULES` にも登録が無い）。
+    primaries = [p for p in all_entries
+                 if p.suffix.lower().lstrip(".") == ext and is_raw_input(p)]
     if not primaries:
         raise ValueError(
             f"入力フォルダに .{ext} がありません: {src}  "
@@ -103,7 +145,7 @@ def prepare_single_format_input(
     companions = 0
     for primary in primaries:
         to_copy.append(primary)
-        found = _companions_of(entries, primary, ext)
+        found = _companions_of(file_entries, primary, ext)
         companions += len(found)
         to_copy.extend(found)
 
@@ -111,6 +153,13 @@ def prepare_single_format_input(
     linked = copied = skipped = 0
     for source in to_copy:
         target = dest / source.name
+        if source.is_dir():
+            # 既にあっても中まで歩く（途中で止まった前回の続きを埋める）。
+            d_linked, d_copied, d_skipped = _replicate_dir(source, target)
+            linked += d_linked
+            copied += d_copied
+            skipped += d_skipped
+            continue
         if target.exists():
             skipped += 1
             continue
