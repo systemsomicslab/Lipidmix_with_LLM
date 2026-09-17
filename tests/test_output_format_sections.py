@@ -28,6 +28,8 @@ REQUIRED_MARKERS = {
     "dcl": ["MSDec"],
     "eic": ["peak_top", "lipidmix.eic.v1", "lipidmix.eic.multi.v1"],
     "identity": ["GOSLIN", "MSI"],
+    # SME（証拠）と SML（MS1 注釈）の区別は、この経路で最も誤読されやすい。
+    "mztab": ["SMF_ID", "ms1_annotation", "mztab_sml", "gap-fill"],
 }
 
 

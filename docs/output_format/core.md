@@ -15,6 +15,7 @@
 | `dcl` | `lipidmix://docs/output-format/dcl` | §6 | `.dcl` パーサ、`dcl_parser` / `dcl_find_msms`、PAI2 への MS/MS 付与 |
 | `eic` | `lipidmix://docs/output-format/eic` | §7, §8.4, §8.5 | `.EIC.aef` パーサ、EIC 検索、描画契約 |
 | `identity` | `lipidmix://docs/output-format/identity` | §12 | 同定信頼度・名前正規化・MSI レベル |
+| `mztab` | `lipidmix://docs/output-format/mztab` | §13 | mzTab-M 経路（`dataset_load` 以降）。SME/SML の同定、特徴表、差次的エクスポートの同定列 |
 
 節番号は分割前の通し番号をそのまま保持している。本文中の `§11.1.1` のような相互参照は、この表からトピックを引いて辿ること。
 
@@ -31,6 +32,7 @@ README に記載された主要な MS-DIAL 出力パーサーを対象とする�
 | PAI2 | `*.pai2` | `pai2_reader.py` | `pai2` |
 | DCL | `*.dcl` | `dcl_reader.py` | `dcl` |
 | EIC/AEF | `*.EIC.aef` | `eic_aef_reader.py` | `eic` |
+| mzTab-M | `*.mzTab` | `lipidmix/mztab/reader.py` | `mztab` |
 
 記載内容は、実装、`docs/schema/AlignmentSpotProperty.md`、`docs/schema/AlignmentChromPeakFeature.md`、`docs/schema/ChromatogramPeakFeature.md`、および NEG 実測データセット（`LIPIDMIX_DATA_DIR` 配下）の実ファイルに対する出力確認に基づく。
 

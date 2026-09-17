@@ -35,6 +35,7 @@ OUTPUT_FORMAT_SECTIONS: dict[str, str] = {
     "dcl": ".dcl パーサ（デコンボリューション済み MS/MS）",
     "eic": ".EIC.aef パーサ、EIC 検索・ランキング、描画契約",
     "identity": "同定信頼度・名前正規化・MSI レベル",
+    "mztab": "mzTab-M 経路（dataset_load 以降）。SME/SML の同定、特徴表、差次的エクスポートの同定列",
 }
 # 共通核。`lipidmix://docs/output-format` が返す本体。
 OUTPUT_FORMAT_DOC = OUTPUT_FORMAT_DIR / "core.md"
@@ -129,8 +130,10 @@ values from detected peaks, PAI2 peak-level PCA from sample-level PCA, and EIC
 The per-parser field definitions are split into topic resources — read the one
 matching the output you are about to interpret, not the whole document:
 `lipidmix://docs/output-format/{topic}` where topic is one of `arf` (.arf,
-arf_parser, preprocessing/QC, differential), `arf2`, `pai2`, `dcl`, `eic`, or
-`identity` (annotation confidence). Parser tool output carries a one-line pointer
+arf_parser, preprocessing/QC, differential), `arf2`, `pai2`, `dcl`, `eic`,
+`identity` (annotation confidence), or `mztab` (everything downstream of
+`dataset_load`: SME vs SML identification, the feature table, the differential
+export's identity columns). Parser tool output carries a one-line pointer
 to its topic until you have fetched it.
 
 MS/MS EVIDENCE — the real spectra live in `.dcl`, not `.pai2`; PAI2's `has_msms`

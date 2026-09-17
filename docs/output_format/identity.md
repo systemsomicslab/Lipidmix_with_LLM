@@ -47,67 +47,9 @@
 
 `ADDUCT_SHIFTS` を `(sign, shift, charge, n_mol)` の4タプル化し、多量体 `[2M-H]-`・多価 `[M-2H]2-`・`[M+FA-H]-`（`[M+HCOO]-` の別名）を追加。`adduct_mz` は `m/z = (n_mol×neutral + shift) / charge` で多量体・多価に対応する（既存1価アダクトの数値挙動は不変）。元素表に D(²H)/F/Br/¹³C を追加（標識・ハロゲン対応）。CCS/RT 参照照合・同位体パターン照合は参照表未同梱のため v1 対象外。
 
-## 13. 同定の出所: SME と SML（mzTab-M 経路）
+## 13. mzTab-M 経路の同定は別トピック
 
-mzTab-M では同定が 2 か所に出る。**意味が違うので混ぜてはいけない。**
-
-| 出所 | 何か | このサーバでの置き場所 |
-|---|---|---|
-| SME 行（Small Molecule Evidence） | **スペクトル照合の証拠**。MS/MS が割り当てられた同定だけが載る | `feature_metadata` / `feature_candidates` |
-| SML 行（Small Molecule） | 代表同定。MS1 だけの照合（Text DB）もここに載る | `feature_annotations` |
-
-MS-DIAL は Text DB 由来の同定を **SME へ書かない**（`MztabFormatExport.cs` の
-`ShouldWriteSmeLine` が `IsTextDbBasedRepresentative` を除外する）。したがって
-Text DB 運用のメタボロミクスでは **SME が 0 行**になり、同定は SML にしか無い。
-これは異常ではない。
-
-特徴表（`.annotations.tsv`）の `identification_status` がこの区別を伝える。
-
-| 値 | 意味 |
-|---|---|
-| `candidate` | SME 由来。スペクトル照合の候補（rank 1 でも確定同定は名乗らない） |
-| `ms1_annotation` | **SML 由来。m/z 照合のみ。MS/MS の裏付けは無い** |
-| `unidentified` | 同定情報が無い。複数の SML が 1 特徴に当たって決められない場合もここ |
-
-**`ms1_annotation` を `candidate` と同一視しないこと。** MSI レベルで言えば
-MS/MS 照合とは別水準で、v2 の `required_evidence` では `library_match` も
-`authentic_standard_match` も満たさない。
-
-`msi_level` は mzTab-M 経路では常に空欄。`.arf2` 由来の MSI ヒューリスティック
-（§12.3）は Level 2 に MS/MS の取得を要件としており、別ルールの値を同じ列へ入れると
-比較不能な 2 つの意味が同居するため。出所は `name_source`（`mztab_sme` / `mztab_sml`）
-で伝える。
-
-### 13.1 `feature_annotations` の項目
-
-`DatasetState.feature_annotations` は `feature_id`（= `SMF_ID`）→ 注釈の辞書。
-**証拠スロットではない**（`feature_bindings` はこれを読まない）。曖昧でない注釈は
-次のキーを持つ。
-
-| キー | 由来（SML 列） | 備考 |
-|---|---|---|
-| `sml_id` | `SML_ID` | どの SML 行から来たか |
-| `ambiguous` | — | 常に `False`（曖昧な場合は下記の別形） |
-| `name` | `chemical_name` | |
-| `database_identifier` | `database_identifier` | MS-DIAL は必ず `<db>:<name>` 形式で書く |
-| `chemical_formula` | `chemical_formula` | |
-| `smiles` | `smiles` | |
-| `adduct` | `adduct_ions` | |
-| `reliability` | `reliability` | 例: `annotated by user-defined text library` |
-| `confidence_measure` | `best_id_confidence_measure` | |
-| `confidence_value` | `best_id_confidence_value` | float。**MS1 照合スコアであって MS/MS スコアではない** |
-| `inchikey` | 導出 | `smiles` 経由でのみ到達しうる（下記） |
-| `inchikey_source` | 導出 | `smiles_derived` / `none` |
-
-**`inchi` キーは存在しない。** MS-DIAL は SML の `inchi` を常に `null` で書くため、
-キーを置くと「取得していない」と「無い」の区別を偽ることになる。
-`database_identifier` も必ず `<db>:<name>` 形式なので InChIKey にはならない。
-したがって mzTab-M の SML から InChIKey に到達できるのは `smiles` 経由（RDKit）だけで、
-テキスト DB が SMILES 列を持たなければ `inchikey` は `None` のままになる。
-
-1 つの特徴に複数の SML 行が当たった場合は、どれが正しいか決められないので名前を
-選ばない。その形は `{"ambiguous": True, "sml_ids": [...], "name": None}` で、
-特徴表では `unidentified` として出る。
-
-同定の出所内訳は `dataset_load` の要約と `inchikey_coverage["identified_by"]`
-（`sme` / `sml_only` / `none`）で読める。
+この §12 は `.arf2` / `.pai2` 由来の注釈（脂質名・MSI ヒューリスティック）を扱う。
+**mzTab-M 経路の同定は規則が違う**——同定の出所が SME 行と SML 行の 2 つに割れ、
+`msi_level` は常に空欄になる（Level 2 の要件が噛み合わないため）。
+定義は `lipidmix://docs/output-format/mztab` §13 にある。
