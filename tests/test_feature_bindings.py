@@ -500,3 +500,64 @@ def test_profile_is_not_mutated():
     before = copy.deepcopy(profile)
     bind_features(ds, profile, _evidence(ds), {}, None)
     assert profile == before
+
+
+# ---------- SML 由来の注釈は証拠にならない（spec 2026-09-17 §5）----------
+
+def _ms1_annotated_dataset():
+    """m/z と RT は合うが、同定は SML 由来のラベルしか無い dataset。"""
+    ds = _dataset({"1": {"mz": 104.0706, "rt": 1.2, "candidates": []}})
+    ds.feature_annotations = {
+        "1": {"sml_id": "1", "ambiguous": False, "name": "GABA",
+              "database_identifier": "TextDB:GABA", "chemical_formula": None,
+              "smiles": None, "adduct": "[M+H]1+", "reliability": None,
+              "confidence_measure": "[,, MS-DIAL algorithm matching score, ]",
+              "confidence_value": 0.999982,
+              "inchikey": "BTCSSZJGUNDROE-UHFFFAOYSA-N",
+              "inchikey_source": "smiles_derived"},
+    }
+    return ds
+
+
+def test_an_ms1_annotation_does_not_satisfy_a_library_match():
+    """SML の score があっても library_match（スペクトル照合）は満たさない。"""
+    ds = _ms1_annotated_dataset()
+    target = _target(required_evidence=[{
+        "kind": "library_match", "library_id": "lib1",
+        "library_sha256": "0" * 64,
+        "score_field": "[,, MS-DIAL algorithm matching score, ]",
+        "score_threshold": 0.8}])
+
+    out = bind_features(ds, _profile({"gaba": target}), _evidence(ds), {}, None)
+
+    entry = out["bindings"]["gaba"]
+    assert entry["status"] == "needs_input"
+    # 同定が「評価できない」ままであること（matched へ昇格していない）。
+    reasons = entry["candidates"][0]["reasons"]
+    assert "identity_not_evaluable" in reasons
+    assert "identification_required" in reasons
+
+
+def test_an_ms1_annotation_does_not_unlock_an_authentic_standard_match():
+    """ここが緩むと MS1 注釈だけで標準品照合が通る。spec §5 の核心。"""
+    ds = _ms1_annotated_dataset()
+    target = _target(required_evidence=[{
+        "kind": "authentic_standard_match",
+        "mz_tolerance_ppm": 10.0, "rt_tolerance_min": 0.1}])
+    evidence = _evidence(ds, rows=[_row("1", "assay[1]")])
+
+    out = bind_features(ds, _profile({"gaba": target}),
+                        evidence, {"gaba": ["assay[1]"]}, None)
+
+    entry = out["bindings"]["gaba"]
+    assert entry["status"] == "needs_input"
+    assert "identification_required" in entry["candidates"][0]["reasons"]
+
+
+def test_an_ms1_annotation_still_allows_a_mass_rt_binding():
+    """証拠水準が mass_rt だけなら、同定の有無に関係なく成立する（従来どおり）。"""
+    ds = _ms1_annotated_dataset()
+
+    out = bind_features(ds, _profile(), _evidence(ds), {}, None)
+
+    assert out["bindings"]["gaba"]["status"] == "resolved"

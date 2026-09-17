@@ -64,20 +64,34 @@ def export_dataset_result(ds, result: dict, path: Path) -> dict:
 
     rows: list[dict] = []
     n_unannotated = 0
+    annotations = getattr(ds, "feature_annotations", {}) or {}
     for row in result["results"]:
         fid = row["feature"]
         meta = ds.feature_metadata.get(fid, {})
+        # 行単位で出所を1つに決める。決め手は InChIKey を供給した側——列ごとに
+        # 選ぶと、name が SML 由来で inchikey が SME 由来、という食い違った行ができる。
         inchikey = str(meta.get("inchikey") or "").strip()
+        source = meta
+        name_source = "mztab_sme"               # 名前の実体は SME 行（旧 "mztab_smf" は誤り）
+        if not inchikey:
+            annotation = annotations.get(fid) or {}
+            if annotation.get("ambiguous"):
+                annotation = {}
+            candidate_key = str(annotation.get("inchikey") or "").strip()
+            if candidate_key:
+                inchikey = candidate_key
+                source = annotation
+                name_source = "mztab_sml"       # MS1 照合のみ。MS/MS 裏付けではない
         if not inchikey:
             n_unannotated += 1
             continue
         rows.append({
             "spot_id": fid,                     # mzTab-M の SMF_ID（メタ行で id_space を宣言）
-            "name": (meta.get("name") or "").strip(),
-            "name_source": "mztab_smf",
+            "name": (source.get("name") or "").strip(),
+            "name_source": name_source,
             "ontology": "",                     # mzTab-M に対応物なし
             "inchikey": inchikey,
-            "inchikey_source": meta.get("inchikey_source") or "",
+            "inchikey_source": source.get("inchikey_source") or "",
             "msi_level": None,                  # 同上（.arf2 由来の注釈確度が無い）
             "mz": meta.get("mz"),
             "rt": meta.get("rt"),

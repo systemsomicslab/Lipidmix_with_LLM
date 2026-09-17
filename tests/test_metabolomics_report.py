@@ -394,3 +394,78 @@ def test_v2_effect_size_definition_is_inherited_into_the_meta():
         {"effect_size_definition": "log2_arithmetic_mean_ratio"})
     assert lines == ["# effect_size_definition = log2_arithmetic_mean_ratio"]
 
+
+
+# ---------- SML 由来の注釈（spec 2026-09-17-mztab-sml-annotation-design §7.1）----------
+
+def _ms1_annotation(**over) -> dict:
+    annotation = {"sml_id": "1", "ambiguous": False, "name": "GABA",
+                  "database_identifier": "TextDB:GABA", "chemical_formula": None,
+                  "smiles": None, "adduct": "[M+H]1+", "reliability": None,
+                  "confidence_measure": "MS-DIAL algorithm matching score",
+                  "confidence_value": 0.99,
+                  "inchikey": None, "inchikey_source": "none"}
+    annotation.update(over)
+    return annotation
+
+
+def _annotation_rows(tmp_path, ds) -> list[dict]:
+    """`.annotations.tsv` を dict の一覧で返す。"""
+    out = export_features(ds, [_matrix()], tmp_path / "features.tsv")
+    table = _read(tmp_path / out["annotation_file"])
+    header = table[0]
+    return [dict(zip(header, row)) for row in table[1:]]
+
+
+def test_an_ms1_annotation_gets_its_own_identification_status(tmp_path):
+    """SME 候補が無く SML 注釈だけがある特徴は `ms1_annotation`。
+
+    `unidentified` に寄せると「同定できなかった」と読まれ、`candidate` に
+    寄せると MS/MS 裏付けがあるように読まれる。
+    """
+    ds = _dataset()
+    ds.feature_annotations = {"2": _ms1_annotation()}
+
+    rows = _annotation_rows(tmp_path, ds)
+
+    row = next(r for r in rows if r["feature_id"] == "2")
+    assert row["identification_status"] == "ms1_annotation"
+    assert row["name"] == "GABA"
+    assert row["database_identifier"] == "TextDB:GABA"
+    assert row["adduct"] == "[M+H]1+"
+    assert row["candidate_rank"] == ""
+
+
+def test_an_sme_backed_feature_is_unaffected_by_an_annotation(tmp_path):
+    """SME 候補がある特徴は従来どおり candidate。注釈があっても変わらない。"""
+    ds = _dataset()
+    ds.feature_annotations = {"1": _ms1_annotation(name="別の名前"),
+                              "2": _ms1_annotation()}
+
+    rows = _annotation_rows(tmp_path, ds)
+
+    for row in (r for r in rows if r["feature_id"] == "1"):
+        assert row["identification_status"] == "candidate"
+        assert row["name"] != "別の名前"
+
+
+def test_a_feature_without_any_annotation_stays_unidentified(tmp_path):
+    ds = _dataset()
+    ds.feature_annotations = {}
+
+    rows = _annotation_rows(tmp_path, ds)
+
+    row = next(r for r in rows if r["feature_id"] == "2")
+    assert row["identification_status"] == "unidentified"
+
+
+def test_an_ambiguous_annotation_stays_unidentified(tmp_path):
+    """どの名前かを決められない注釈で名前を出すと嘘になる。"""
+    ds = _dataset()
+    ds.feature_annotations = {
+        "2": {"ambiguous": True, "sml_ids": ["1", "2"], "name": None}}
+
+    rows = _annotation_rows(tmp_path, ds)
+
+    row = next(r for r in rows if r["feature_id"] == "2")
+    assert row["identification_status"] == "unidentified"

@@ -134,12 +134,29 @@ def export_features(ds, matrices: list[dict], path: Path) -> dict:
     annotation_path = path.with_name(f"{path.stem}.annotations.tsv")
     metadata = getattr(ds, "feature_metadata", {}) or {}
     candidates_by_feature = getattr(ds, "feature_candidates", {}) or {}
+    # SML 由来のラベル。**証拠ではない**ので、読むのは ms1_annotation 行だけ。
+    annotations_by_feature = getattr(ds, "feature_annotations", {}) or {}
     feature_ids = list(getattr(ds, "feature_ids", []) or [])
 
     annotation_rows: list[dict] = []
     for feature_id in feature_ids:
         meta = metadata.get(feature_id) or {}
         candidates = candidates_by_feature.get(feature_id) or []
+        annotation = annotations_by_feature.get(feature_id) or {}
+        if not candidates and annotation and not annotation.get("ambiguous"):
+            # MS1 の照合だけで付いた名前。candidate と混ぜると MS/MS 裏付けが
+            # あるように読まれ、unidentified と混ぜると同定できなかったと読まれる。
+            annotation_rows.append({
+                "feature_id": feature_id, "candidate_rank": None,
+                "identification_status": "ms1_annotation",
+                "name": annotation.get("name"),
+                "database_identifier": annotation.get("database_identifier"),
+                "inchikey": annotation.get("inchikey"),
+                "adduct": annotation.get("adduct"), "charge": None,
+                "confidence_measure": annotation.get("confidence_measure"),
+                "confidence_value": annotation.get("confidence_value"),
+                "mz": meta.get("mz"), "rt_min": meta.get("rt")})
+            continue
         if not candidates:
             # 未同定でも1行残す。表から消すと「同定できたものだけの世界」になる。
             annotation_rows.append({

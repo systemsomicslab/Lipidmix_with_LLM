@@ -497,3 +497,32 @@ def test_dataset_load_summary_mentions_detection_when_absent(mztab_file):
     from lipidmix.tools.mztab_tools import dataset_load
     out = dataset_load(str(mztab_file))
     assert "検出状態" in out
+
+
+# ---------- 同定の出所内訳（spec 2026-09-17-mztab-sml-annotation-design §7.2）----------
+
+# Text DB 運用の実形状: SME 0 行、同定は SML にしか無い。ヘッダは実形式の `SMH`。
+_SML_ONLY_MZTAB = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tmzTab-mode\tComplete
+    MTD\tmzTab-type\tQuantification
+    MTD\tms_run[1]-location\tfile:///s1.raw
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    SMH\tSML_ID\tSMF_ID_REFS\tdatabase_identifier\tsmiles\tchemical_name\tadduct_ions
+    SML\t1\t1\tTextDB:GABA\tnull\tGABA\t[M+H]1+
+    SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]
+    SMF\t1\tnull\t104.07066\t72.0\t5000.0
+    SMF\t2\tnull\t880.8\t360.0\t100.0
+""")
+
+
+def test_the_load_summary_separates_evidence_from_ms1_annotation(tmp_path):
+    """LLM が MS1 注釈を MS/MS 裏付けと取り違えないよう、入口で分けて言う。"""
+    from lipidmix.tools.mztab_tools import dataset_load
+    p = tmp_path / "Height_sml.mzTab"
+    p.write_text(_SML_ONLY_MZTAB, encoding="utf-8")
+
+    text = dataset_load(str(p))
+
+    assert "MS/MS 証拠あり 0 件" in text
+    assert "MS1 注釈のみ 1 件" in text
