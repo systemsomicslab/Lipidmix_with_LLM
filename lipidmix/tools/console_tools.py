@@ -36,7 +36,10 @@ def console_plan(
     Parameters
     ----------
     dataset_root:
-        生データフォルダのパス（.wiff / .raw 等が入っているフォルダ）。
+        生データフォルダのパス。MS-DIAL が読む 12 形式
+        （.abf / .ibf / .cdf / .mzml / .wiff / .raw / .d / .wiff2 /
+        .qgd / .lcd / .lrp / .imzml）が入っているフォルダを指します。
+        Agilent・Bruker の .d と Waters の .raw は**フォルダ**が 1 検体です。
         リポジトリ外のパスを指定してください。
     method_file:
         MS-DIAL Console のパラメータファイル（ASCII テキスト。`key: value` 形式）。
@@ -176,7 +179,8 @@ def console_plan(
         return console_error(
             "MIXED_RAW_FORMATS",
             f"データフォルダに MS-DIAL が読める計測ファイルがありません: {dataset_root}  "
-            "対象拡張子: abf / ibf / cdf / mzml / wiff / raw / d / wiff2 / qgd / lcd / lrp / imzml",
+            "対象拡張子: abf / ibf / cdf / mzml / wiff / raw / d / wiff2 / qgd / lcd / lrp / imzml  "
+            "（.d と .raw はフォルダ 1 つが 1 検体。それ以外はファイルであることが要ります）",
             {"formats": formats},
         )
     if len(formats) > 1:
@@ -469,12 +473,18 @@ def console_prepare_input(
     このツールは指定した拡張子の計測ファイルと**その随伴ファイル**
     （`.wiff.scan` / `.timeseries.data` 等）だけを集めたフォルダを作ります。
 
+    Agilent・Bruker の `.d` と Waters の `.raw` のように**フォルダそのものが
+    1 検体**の形式も扱えます。その場合はフォルダ構造を実体として作り直し、
+    中のファイルだけをリンクします（フォルダ自体はリンクにしません）。
+
     実体はコピーせずハードリンクを張ります（同一ボリュームで無い場合のみコピー）。
     **元フォルダは一切変更しません。** MS-DIAL の生成物はこの新しいフォルダ側に
     出るので、生データ本体を汚さずに済みます。
 
     dataset_root: 生データフォルダ。
-    keep_extension: 残す計測拡張子（既定 "wiff"）。
+    keep_extension: 残す計測拡張子（既定 "wiff"）。MS-DIAL が読む 12 形式
+        （abf / ibf / cdf / mzml / wiff / raw / d / wiff2 / qgd / lcd / lrp /
+        imzml）から選びます。`MIXED_RAW_FORMATS` の `formats` が実際の内訳です。
     out_dir: 出力先。省略時は `<元フォルダ>_<拡張子>` を兄弟として作ります。
     """
     src = Path(dataset_root).expanduser()

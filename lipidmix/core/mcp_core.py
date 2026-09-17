@@ -145,8 +145,12 @@ that precursor, NOT that the expected fragments are absent.
 ENTRY POINT — distinguish which of the following the user's folder actually is
 before picking a tool:
 
-1. RAW DATA (a folder of unprocessed instrument files, e.g. .wiff/.raw, with no
-   existing MS-DIAL output). Call `pipeline_run(dataset_root)` — a request to
+1. RAW DATA (a folder of unprocessed instrument files, with no existing MS-DIAL
+   output). Any format MS-DIAL itself reads qualifies: .abf .ibf .cdf .mzml
+   .wiff .raw .d .wiff2 .qgd .lcd .lrp .imzml. For Agilent/Bruker .d and
+   Waters .raw, one measurement is a FOLDER, not a file — a directory listing
+   showing only sub-folders with those extensions IS raw data, not an empty
+   folder and not branch 3. Call `pipeline_run(dataset_root)` — a request to
    "analyze this raw data" IS the launch request itself; you normally do not
    need a separate confirmation call. It inspects inputs, plans, and starts an
    independent worker that carries the run through upstream execution,

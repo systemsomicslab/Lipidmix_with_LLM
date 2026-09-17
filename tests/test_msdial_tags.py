@@ -41,6 +41,17 @@ class MsdialTagsTests(unittest.TestCase):
             "sample_a_202605151012",
         )
 
+    def test_normalize_sample_name_removes_every_msdial_raw_extension(self):
+        """MS-DIAL は `GetFileNameWithoutExtension` でサンプル名を作る。
+
+        剥がす拡張子の集合がそれより狭いと、`QC01.d` 由来の名前が `qc01.d` の
+        まま残り、`qc01` を名乗るタグサイドカーや ARF の FileName と結合できない。
+        """
+        for ext in ("abf", "ibf", "cdf", "mzml", "wiff", "raw",
+                    "d", "wiff2", "qgd", "lcd", "lrp", "imzml"):
+            with self.subTest(extension=ext):
+                self.assertEqual(normalize_sample_name(f"sample_A.{ext}"), "sample_a")
+
     def test_parse_tag_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sample_tags.xml"

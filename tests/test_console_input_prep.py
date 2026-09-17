@@ -151,3 +151,115 @@ def test_directories_in_source_are_ignored(tmp_path):
     (src / "a.d").mkdir()  # Agilent の .d はフォルダ
     result = prepare_single_format_input(src, "wiff", tmp_path / "out")
     assert not (Path(result.out_dir) / "a.d").exists()
+
+
+# ---------- フォルダ形式の計測データ（Agilent/Bruker の .d、Waters の .raw） ----------
+#
+# MS-DIAL の `AnalysisFilesParser.ReadFolderContents` は、拡張子が `.raw` / `.d` の
+# **ディレクトリ**を 1 検体の計測データとして受ける（`isVendorDirectory`）。
+# `.wiff` のようなファイル 1 つが 1 検体という前提だけで書くと、この形式の
+# データフォルダでは「.d がありません」と嘘をつく。
+
+
+def _vendor_dir(root: Path, name: str) -> Path:
+    """Agilent の .d を模した、入れ子を持つ計測フォルダ。"""
+    d = root / name
+    (d / "AcqData").mkdir(parents=True)
+    (d / "AcqData" / "MSScan.bin").write_text("scan", encoding="ascii")
+    (d / "AcqData" / "Devices.xml").write_text("<Devices/>", encoding="ascii")
+    (d / "Contents.xml").write_text("<Contents/>", encoding="ascii")
+    return d
+
+
+def test_keeps_directory_format_raw(tmp_path):
+    src = tmp_path / "raw"
+    src.mkdir()
+    for stem in ("a", "b", "c"):
+        _vendor_dir(src, f"{stem}.d")
+    (src / "stray.mzml").write_text("mzml", encoding="ascii")
+
+    result = prepare_single_format_input(src, "d", tmp_path / "out")
+
+    out = Path(result.out_dir)
+    assert result.primary == 3
+    assert sorted(p.name for p in out.iterdir()) == ["a.d", "b.d", "c.d"]
+    assert (out / "a.d" / "AcqData" / "MSScan.bin").read_text(encoding="ascii") == "scan"
+    assert not (out / "stray.mzml").exists()
+
+
+def test_directory_format_raw_inner_files_are_hardlinked(tmp_path):
+    """.d は数GB になりうる。中身まで実体コピーするとこのツールの意味が消える。
+
+    ディレクトリ**そのもの**はリンクにしない（実体のフォルダを作る）。
+    リンクするのは中のファイルだけ。
+    """
+    src = tmp_path / "raw"
+    src.mkdir()
+    _vendor_dir(src, "a.d")
+
+    result = prepare_single_format_input(src, "d", tmp_path / "out")
+
+    out = Path(result.out_dir)
+    assert (out / "a.d").is_dir() and not (out / "a.d").is_symlink()
+    inner = out / "a.d" / "AcqData" / "MSScan.bin"
+    assert inner.stat().st_nlink == 2
+    assert inner.stat().st_ino == (src / "a.d" / "AcqData" / "MSScan.bin").stat().st_ino
+    assert result.linked == 3 and result.copied == 0
+    assert result.mode == "hardlink"
+
+
+def test_directory_format_raw_leaves_the_source_untouched(tmp_path):
+    src = tmp_path / "raw"
+    src.mkdir()
+    _vendor_dir(src, "a.d")
+    before = sorted(str(p.relative_to(src)) for p in src.rglob("*"))
+
+    prepare_single_format_input(src, "d", tmp_path / "out")
+
+    assert sorted(str(p.relative_to(src)) for p in src.rglob("*")) == before
+
+
+def test_directory_format_raw_is_idempotent(tmp_path):
+    src = tmp_path / "raw"
+    src.mkdir()
+    _vendor_dir(src, "a.d")
+
+    first = prepare_single_format_input(src, "d", tmp_path / "out")
+    second = prepare_single_format_input(src, "d", tmp_path / "out")
+
+    assert first.linked == 3
+    assert second.linked == 0 and second.copied == 0
+    assert second.skipped_existing == 3
+    assert (Path(second.out_dir) / "a.d" / "Contents.xml").exists()
+
+
+def test_waters_raw_directory_is_kept_as_a_measurement(tmp_path):
+    """Waters の `.raw` はフォルダ。Thermo の `.raw` はファイル。拡張子は同じ。"""
+    src = tmp_path / "raw"
+    src.mkdir()
+    d = src / "sample.raw"
+    d.mkdir()
+    (d / "_FUNC001.DAT").write_text("func", encoding="ascii")
+
+    result = prepare_single_format_input(src, "raw", tmp_path / "out")
+
+    assert result.primary == 1
+    assert (Path(result.out_dir) / "sample.raw" / "_FUNC001.DAT").exists()
+
+
+def test_non_vendor_directory_is_not_a_measurement(tmp_path):
+    """`.d` / `.raw` 以外の拡張子はフォルダだと計測データにならない（上流の規則）。
+
+    `DataAccess.IsDataFormatSupported` は `File.Exists` を要求するので、
+    `backup.mzml` という名前のフォルダは MS-DIAL の入力にならない。
+    """
+    src = tmp_path / "raw"
+    src.mkdir()
+    (src / "backup.mzml").mkdir()
+    (src / "real.mzml").write_text("mzml", encoding="ascii")
+
+    result = prepare_single_format_input(src, "mzml", tmp_path / "out")
+
+    assert result.primary == 1
+    assert (Path(result.out_dir) / "real.mzml").exists()
+    assert not (Path(result.out_dir) / "backup.mzml").exists()

@@ -306,6 +306,50 @@ def test_count_raw_inputs_totals_summary(tmp_path):
     assert count_raw_inputs(tmp_path) == 2
 
 
+def test_vendor_directories_count_as_measurements(tmp_path):
+    """`.d` / `.raw` の**フォルダ**は 1 検体。MS-DIAL がそう読む。
+
+    上流 `AnalysisFilesParser.ReadFolderContents` の `isVendorDirectory`
+    （`Directory.Exists(path) && (extension == ".raw" || extension == ".d")`）。
+    Agilent/Bruker の `.d` と Waters の `.raw` がこれに当たる。
+    """
+    from lipidmix.console.job_manager import list_raw_inputs, raw_input_summary
+    (tmp_path / "a.d").mkdir()
+    (tmp_path / "b.d").mkdir()
+    (tmp_path / "waters.raw").mkdir()
+    assert raw_input_summary(tmp_path) == {"d": 2, "raw": 1}
+    assert [p.name for p in list_raw_inputs(tmp_path)] == ["a.d", "b.d", "waters.raw"]
+
+
+def test_non_vendor_directories_are_not_measurements(tmp_path):
+    """`.d` / `.raw` 以外はフォルダだと計測データにならない。
+
+    `DataAccess.IsDataFormatSupported` は `File.Exists` を要求する。名前だけ
+    `.mzml` のフォルダを 1 検体と数えると、`input_count` と `raw_inventory` に
+    実在しないサンプルが入り、`ms_run[N]-location` との 1 対 1 照合が
+    実行の最後になって落ちる。
+    """
+    from lipidmix.console.job_manager import raw_input_summary
+    (tmp_path / "backup.mzml").mkdir()
+    (tmp_path / "old.wiff").mkdir()
+    (tmp_path / "real.mzml").touch()
+    assert raw_input_summary(tmp_path) == {"mzml": 1}
+
+
+def test_all_msdial_raw_extensions_are_recognised(tmp_path):
+    """MS-DIAL の `SupportMsRawDataExtension` 12 形式をそのまま数える。
+
+    出典: `src/MSDIAL5/MsdialCore/Enum/SupportFormat.cs`
+    `enum SupportMsRawDataExtension { abf, ibf, cdf, mzml, wiff, raw, d, wiff2, qgd, lcd, lrp, imzml }`
+    """
+    from lipidmix.console.job_manager import raw_input_summary
+    extensions = ["abf", "ibf", "cdf", "mzml", "wiff", "raw",
+                  "d", "wiff2", "qgd", "lcd", "lrp", "imzml"]
+    for ext in extensions:
+        (tmp_path / f"sample.{ext}").touch()
+    assert raw_input_summary(tmp_path) == {ext: 1 for ext in extensions}
+
+
 
 def _stub_lbm(tmp_path, monkeypatch):
     """脂質ライブラリを 1 件用意する。

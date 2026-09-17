@@ -34,7 +34,10 @@ def list_data_files(
     - extension: 指定するとその拡張子だけに絞る（例 '.pai2', '.arf2', '.EIC.aef'）。
     - all_files: 既定では解析できる拡張子
       (.arf / .arf2 / .pai2 / .dcl / .EIC.aef / .mddata / .mdproject) だけを返す。
-      測定生データ（.wiff 等）まで見たいときだけ True にする。
+      測定生データ（MS-DIAL が読む .abf / .ibf / .cdf / .mzml / .wiff / .raw /
+      .d / .wiff2 / .qgd / .lcd / .lrp / .imzml）まで見たいときだけ True にする。
+      Agilent・Bruker の .d と Waters の .raw は**フォルダ**が 1 検体なので、
+      末尾に `/` を付けて示す。
 
     返すのは絶対パスで、`pai2_parser(file_path=...)` 等へそのまま渡せる。
     フォルダ全体をまず解析するなら `load_dataset(directory)` が入口。
@@ -67,7 +70,9 @@ def list_data_files(
     lines = [f"データディレクトリ: {target_dir}", f"該当ファイル: {len(paths)} 件"]
     for suffix, members in sorted(groups.items()):
         lines.append(f"\n## {suffix}（{len(members)} 件）")
-        lines.extend(members)
+        # フォルダ形式の計測データ（.d / Waters の .raw）は末尾の `/` で示す。
+        # 見分けが付かないと「開けないファイル」として扱われる。
+        lines.extend(m + "/" if Path(m).is_dir() else m for m in members)
     return "\n".join(lines)
 
 

@@ -152,10 +152,23 @@ def list_data_files(
     else:
         suffixes = ANALYSABLE_EXTENSIONS
 
+    # フォルダ形式の計測データ（Agilent/Bruker の `.d`・Waters の `.raw`）は
+    # フォルダそのものが 1 検体。一律に is_file() で落とすと、その形式だけが
+    # 入った生データフォルダが「空」に見え、入口で「生データが無い」と誤読される。
+    # 既定（ANALYSABLE_EXTENSIONS）には現れない ——`.d` はこのサーバのパーサが
+    # 読める形式ではなく、Console 経路への入力だから。
+    include_vendor_dirs = extension is not None or all_files
+    # 「どのフォルダが計測データか」の正準は console 層（上流の規則をそこで
+    # 写している）。同じ規則をここに書き写すとドリフトするので借りる。
+    # module 先頭に置かないのは、このモジュールを mcp_core と stdlib だけに
+    # 依存する下位レイヤのまま保つため（冒頭の docstring の約束）。
+    from lipidmix.console.job_manager import is_raw_input
+
     file_paths = []
-    for file in target_dir.iterdir():
+    for file in sorted(target_dir.iterdir()):
         if not file.is_file():
-            continue
+            if not (include_vendor_dirs and is_raw_input(file)):
+                continue
         if suffixes and not str(file).endswith(suffixes):
             continue
         file_paths.append(str(file.absolute()))
