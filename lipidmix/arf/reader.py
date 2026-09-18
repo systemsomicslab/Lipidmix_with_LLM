@@ -327,26 +327,48 @@ def deserialize(file_like_object) -> list[dict]:
     return results
 
 
+def _is_alignment_peak_row(data) -> bool:
+    """`_convert_to_alignment_feature` が実経路に入る行かどうか。
+
+    file_name だけ欲しい呼び出し（`exclusions._entry_file_name`）と、dict を組む
+    本体とで判定が食い違わないよう、ここ 1 か所に置く。
+    """
+    return (isinstance(data, list) and len(data) >= 3
+            and len(data) > 25 and isinstance(data[18], (int, float)))
+
+
+def file_name_of(data: list) -> str | None:
+    """`AlignedPeakProperties` の 1 行から file_name だけを取り出す公開境界。
+
+    `_convert_to_alignment_feature(data).get("file_name")` と必ず同じ答えを返す
+    （両者が同じ導出を共有している）。除外判定・roster は file_name しか要らない
+    のに、以前は 1 行ごとに feature dict を丸ごと組んでいた——spot × 注入ぶん
+    呼ばれるので、393MB の `.arf` では 294 万回の無駄な dict 生成になっていた。
+    """
+    if not _is_alignment_peak_row(data):
+        return None
+    # 配列の先頭付近からファイル名（文字列）を探す
+    for item in data[:10]:
+        if isinstance(item, (bytes, str)):
+            decoded = _decode(item)
+            if len(decoded) > 0:
+                return decoded
+    return None
+
+
 def _convert_to_alignment_feature(data: list) -> dict:
     if not isinstance(data, list) or len(data) < 3:
         return {}
-    
+
     # .arf の AlignmentChromPeakFeature row
-    if len(data) > 25 and isinstance(data[18], (int, float)):
+    if _is_alignment_peak_row(data):
         rt_value = None
         if len(data) > 15 and isinstance(data[15], list):
             rt_value = _convert_to_times(data[15]).get("rt")
         elif len(data) > 16 and isinstance(data[16], list):
             rt_value = _convert_to_times(data[16]).get("rt")
 
-        # 【追加】配列の先頭付近からファイル名（文字列）を探す
-        file_name = None
-        for item in data[:10]:
-            if isinstance(item, (bytes, str)):
-                decoded = _decode(item)
-                if len(decoded) > 0:
-                    file_name = decoded
-                    break
+        file_name = file_name_of(data)
 
         # Key37 PeakShape = [EstimatedNoise, SignalToNoise, ...]（msgpack配列）
         peak_shape = data[37] if len(data) > 37 and isinstance(data[37], list) else []
@@ -459,6 +481,26 @@ def extract_peak_properties(deserialized_list: list[dict]) -> pd.DataFrame:
             rows.append(row)
     
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def count_peak_property_rows(deserialized_list: list[dict]) -> int:
+    """`extract_peak_properties` が返す行数だけを、DataFrame を組まずに数える。
+
+    `arf_parser` は「抽出された総ピークレコード数」と「平均サンプル数/スポット」
+    しか使っていないのに、そのために spot × 注入ぶんの dict を作って pandas の
+    DataFrame へ積んでいた（393MB の `.arf` で 881 万行）。行の採否条件は
+    `extract_peak_properties` と同一に保つ——ずれたら報告値が嘘になる。
+    """
+    total = 0
+    for spot in deserialized_list:
+        aligned = spot.get("AlignedPeakProperties")
+        if not isinstance(aligned, list):
+            continue
+        for sample in aligned:
+            if not isinstance(sample, list) or len(sample) < 3:
+                continue
+            total += 1
+    return total
 
 
 def build_pca_matrix(deserialized_list: list[dict], use_properties: list[str] = None,

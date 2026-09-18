@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
@@ -52,9 +53,30 @@ def normalize_sample_name(
     *,
     strip_processing_timestamp: bool = True,
 ) -> str:
-    """Normalize an ARF FileName or tag-sidecar stem for matching."""
+    """Normalize an ARF FileName or tag-sidecar stem for matching.
+
+    **メモ化されている**。`.arf` では spot × 注入の直積ぶん呼ばれる（393MB の実測で
+    881 万回）のに、異なる値は注入数しかない。実処理は `Path(...).name` を通るので
+    素で呼ぶと pathlib のパス分解だけで数十秒になる。
+
+    ハッシュ不能な値（壊れた行から来た list など）はキャッシュに載せられないので、
+    その場合だけ素の計算へ落とす——例外にはしない（従来は `str(value)` で素通り
+    していた）。
+    """
     if value is None:
         return ""
+    try:
+        return _normalize_sample_name_cached(value, strip_processing_timestamp)
+    except TypeError:
+        return _normalize_sample_name_impl(value, strip_processing_timestamp)
+
+
+@lru_cache(maxsize=8192)
+def _normalize_sample_name_cached(value, strip_processing_timestamp: bool) -> str:
+    return _normalize_sample_name_impl(value, strip_processing_timestamp)
+
+
+def _normalize_sample_name_impl(value, strip_processing_timestamp: bool) -> str:
     name = Path(str(value)).name.strip()
     lower = name.casefold()
     if lower.endswith(TAG_XML_SUFFIX):
@@ -71,6 +93,11 @@ def normalize_sample_name(
     if strip_processing_timestamp:
         name = _TIMESTAMP_SUFFIX.sub("", name)
     return name.casefold()
+
+
+#: メモ化の管理面（テストと、長時間走るセッションでの明示的な解放用）。
+normalize_sample_name.cache_info = _normalize_sample_name_cached.cache_info
+normalize_sample_name.cache_clear = _normalize_sample_name_cached.cache_clear
 
 
 def parse_tag_file(path: str | Path) -> dict:

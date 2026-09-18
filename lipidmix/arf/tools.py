@@ -522,7 +522,7 @@ def arf_parser(
         return "データディレクトリに .arf ファイルが見つかりませんでした。"
 
     # 外部モジュールからのインポート
-    from lipidmix.arf.reader import extract_peak_properties, build_pca_matrix, run_pca, get_pca_loading_features
+    from lipidmix.arf.reader import count_peak_property_rows, build_pca_matrix, run_pca, get_pca_loading_features
 
     try:
         # 不正な選択引数でファイルや既存の解析状態を切り替えない。
@@ -576,10 +576,12 @@ def arf_parser(
             session_state.session.arf.excluded_spots,
         )
 
-        peak_df = extract_peak_properties(active_data)
+        # 使うのは行数だけなので DataFrame は組まない（spot × 注入ぶんの dict を
+        # pandas へ積むと、393MB の `.arf` で 881 万行になり数十秒を捨てる）。
+        peak_row_count = count_peak_property_rows(active_data)
         avg_samples = 0
-        if len(active_data) > 0 and len(peak_df) > 0:
-            avg_samples = len(peak_df) / len(active_data)
+        if len(active_data) > 0 and peak_row_count > 0:
+            avg_samples = peak_row_count / len(active_data)
 
         # PCA行列構築（min_detection_rate は任意の検出率フィルタ）
         matrix, sample_names, feature_names = build_pca_matrix(
@@ -662,7 +664,7 @@ def arf_parser(
             f"{_format_arf_class_filter(class_filter_stats)}"
             f"{_format_arf_tag_summary(session_state.session.arf.tag_index)}"
             f"{_format_arf_tag_filter(tag_filter_stats)}"
-            f"- **抽出された総ピークレコード数**: {len(peak_df)}\n"
+            f"- **抽出された総ピークレコード数**: {peak_row_count}\n"
             f"- **平均サンプル数/スポット**: {avg_samples:.2f}\n"
             f"- **PCA入力行列の形状**: {matrix.shape} (サンプル数 x 特徴量数)\n"
             f"- **PC1 説明分散比**: {pca_result['explained_variance_ratio'][0]*100:.2f}%\n"

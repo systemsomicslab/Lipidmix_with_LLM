@@ -9,13 +9,17 @@ from __future__ import annotations
 
 
 def _entry_file_name(entry) -> str | None:
-    """AlignedPeakProperties の1エントリ（生 list）から file_name を導出する。"""
-    from lipidmix.arf.reader import _convert_to_alignment_feature
+    """AlignedPeakProperties の1エントリ（生 list）から file_name を導出する。
+
+    `reader.file_name_of` は `_convert_to_alignment_feature` と同じ導出を共有する
+    ので答えは変わらない。feature dict を組まないぶんだけ速い——ここは spot ×
+    注入ぶん呼ばれる（`roster` が spot ごとに全エントリを舐める）。
+    """
+    from lipidmix.arf.reader import file_name_of
     try:
-        feature = _convert_to_alignment_feature(entry)
+        return file_name_of(entry)
     except Exception:
         return None
-    return feature.get("file_name")
 
 
 def prune_spots(spots, excluded_samples, excluded_spots):
