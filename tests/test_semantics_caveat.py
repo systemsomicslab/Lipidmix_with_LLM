@@ -88,5 +88,74 @@ class TestResourceReadClearsGuard(unittest.TestCase):
         self.assertTrue(session_state.session.output_format_seen)
 
 
+class TestAssayKindDigest(unittest.TestCase):
+    """意味論ダイジェストの種別行が assay_kind で切り替わること。
+
+    共通部（SEMANTICS_CAVEAT）はどの種別でも前置の先頭にあり、その後ろに
+    種別固有の1行だけが付く。行数は種別によらず一定。
+    """
+
+    def setUp(self):
+        session_state.session = session_state.AnalysisSession()
+
+    def test_default_kind_is_unknown(self):
+        self.assertEqual(session_state.session.assay_kind, "unknown")
+
+    def test_common_block_prefixes_every_kind(self):
+        for kind in session_state.ASSAY_KINDS:
+            digest = session_state.assay_digest(kind)
+            self.assertTrue(digest.startswith(session_state.SEMANTICS_CAVEAT))
+            # 共通部＋種別行1行。増やさない。
+            extra = digest[len(session_state.SEMANTICS_CAVEAT):].strip().splitlines()
+            self.assertEqual(len(extra), 1)
+
+    def test_unknown_withholds_lipid_grammar(self):
+        digest = session_state.assay_digest("unknown")
+        self.assertNotIn("16:0/18:1", digest)
+        self.assertIn("未確定", digest)
+
+    def test_lipid_kind_carries_lipid_grammar(self):
+        digest = session_state.assay_digest("lipid")
+        self.assertIn("16:0/18:1", digest)
+
+    def test_metabolite_kind_carries_candidate_rules(self):
+        digest = session_state.assay_digest("metabolite")
+        self.assertIn("アダクト", digest)
+        self.assertNotIn("16:0/18:1", digest)
+
+    def test_set_assay_kind_rejects_unknown_value(self):
+        with self.assertRaises(ValueError):
+            session_state.session.set_assay_kind("proteomics")
+
+    def test_set_assay_kind_normalizes_case(self):
+        self.assertEqual(session_state.session.set_assay_kind("LIPID"), "lipid")
+        self.assertEqual(session_state.session.assay_kind, "lipid")
+
+    def test_reemits_once_when_kind_becomes_known(self):
+        s = session_state.session
+        first = s.maybe_prepend_caveat("BODY-1")
+        self.assertIn("未確定", first)
+        # 種別が確定したら、確定後の規則を1回だけ届ける
+        s.set_assay_kind("metabolite")
+        second = s.maybe_prepend_caveat("BODY-2")
+        self.assertIn("アダクト", second)
+        # 同じ種別のままなら再注入しない
+        third = s.maybe_prepend_caveat("BODY-3")
+        self.assertEqual(third, "BODY-3")
+
+    def test_resource_read_suppresses_reemission(self):
+        s = session_state.session
+        s.maybe_prepend_caveat("BODY-1")
+        s.output_format_seen = True
+        s.set_assay_kind("lipid")
+        self.assertEqual(s.maybe_prepend_caveat("BODY-2"), "BODY-2")
+
+    def test_kind_survives_reset_analysis(self):
+        s = session_state.session
+        s.set_assay_kind("metabolite")
+        s.arf.reset_analysis()
+        self.assertEqual(s.assay_kind, "metabolite")
+
+
 if __name__ == "__main__":
     unittest.main()

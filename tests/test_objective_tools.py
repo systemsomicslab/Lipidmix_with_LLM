@@ -108,6 +108,42 @@ class ObjectiveServerToolTests(unittest.TestCase):
         self.assertIn("Q2", cov)
         self.assertIn("創発の問い", cov)
 
+
+    def test_record_objective_persists_and_applies_assay_kind(self):
+        from lipidmix.core import session_state
+        session_state.session = session_state.AnalysisSession()
+        server.record_objective(
+            "exp-4", "HILIC / POS", "POS", ["control", "treatment"], "群間差",
+            ["どの経路が動くか"], assay_kind="metabolite",
+        )
+        # セッションの解釈規則が切り替わる（脂質名文法を当てない）
+        self.assertEqual(session_state.session.assay_kind, "metabolite")
+        meta, _subqs, _body = ks.parse_objective(mcp_core.ANALYSES_DIR / "exp-4.md")
+        self.assertEqual(meta["assay_kind"], "metabolite")
+
+    def test_record_objective_defaults_to_unknown_kind(self):
+        from lipidmix.core import session_state
+        session_state.session = session_state.AnalysisSession()
+        server.record_objective("exp-5", "NEG", "NEG", ["a", "b"], "c", ["問い"])
+        self.assertEqual(session_state.session.assay_kind, "unknown")
+        meta, _subqs, _body = ks.parse_objective(mcp_core.ANALYSES_DIR / "exp-5.md")
+        self.assertEqual(meta["assay_kind"], "unknown")
+
+    def test_record_objective_rejects_bad_assay_kind(self):
+        out = server.record_objective(
+            "exp-6", "NEG", "NEG", ["a", "b"], "c", ["問い"], assay_kind="proteomics")
+        self.assertIn("assay_kind", out)
+        self.assertFalse((mcp_core.ANALYSES_DIR / "exp-6.md").exists())
+
+    def test_update_objective_switches_assay_kind(self):
+        from lipidmix.core import session_state
+        session_state.session = session_state.AnalysisSession()
+        server.record_objective("exp-7", "NEG", "NEG", ["a", "b"], "c", ["問い"])
+        server.update_objective("exp-7", assay_kind="lipid")
+        self.assertEqual(session_state.session.assay_kind, "lipid")
+        meta, _subqs, _body = ks.parse_objective(mcp_core.ANALYSES_DIR / "exp-7.md")
+        self.assertEqual(meta["assay_kind"], "lipid")
+
     def test_missing_objective_message(self):
         self.assertIn("見つかりません", server.knowledge_coverage("nope"))
         self.assertIn("見つかりません", server.log_search("nope", "Q1", "q", 0, 0))

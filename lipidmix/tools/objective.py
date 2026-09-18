@@ -9,6 +9,7 @@ from pathlib import Path
 from lipidmix.corpus import knowledge_store
 from lipidmix.corpus import paper_ingest
 from lipidmix.core import mcp_core
+from lipidmix.core import session_state
 from mcp.types import ToolAnnotations
 from lipidmix.core.mcp_core import mcp
 
@@ -52,13 +53,21 @@ def record_objective(
     inferred_objective: str = "",
     confirmed_objective: str = "",
     expected_biology: list[str] | None = None,
+    assay_kind: str = "unknown",
 ) -> str:
     """確定した実験目的を analyses/<analysis_id>.md に記録する（gap駆動探索の前提）。
 
     GATEWAY 手順1で、データから推測した目的をユーザー確認したあとに呼ぶ。biological_context
     （対象系: 生物種/細胞/処理）も確認のうえ渡す。sub_questions は Q1..Qn の本文。
+    assay_kind は lipid / metabolite / unknown。確定した種別を渡すと、以後のツール出力の
+    解釈規則（脂質名文法か候補集合か）がサーバ側で切り替わる。
     """
+    try:
+        assay_kind = session_state.session.set_assay_kind(assay_kind)
+    except ValueError as exc:
+        return str(exc)
     meta_fields = {
+        "assay_kind": assay_kind,
         "dataset": dataset,
         "polarity": polarity,
         "groups": groups,
@@ -89,12 +98,21 @@ def update_objective(
     biological_context: str | None = None,
     status: str | None = None,
     add_subquestions: list[str] | None = None,
+    assay_kind: str | None = None,
 ) -> str:
-    """objective の確定目的/文脈/状態を更新し、創発的な小問を追記する。"""
+    """objective の確定目的/文脈/状態を更新し、創発的な小問を追記する。
+
+    assay_kind（lipid / metabolite / unknown）を渡すと解釈規則も切り替わる。
+    """
     path = _resolve_objective_file(analysis_id)
     if path is None:
         return f"objective が見つかりません: {analysis_id}（record_objective で作成）"
     updates = {}
+    if assay_kind is not None:
+        try:
+            updates["assay_kind"] = session_state.session.set_assay_kind(assay_kind)
+        except ValueError as exc:
+            return str(exc)
     if confirmed_objective is not None:
         updates["confirmed_objective"] = confirmed_objective
     if biological_context is not None:

@@ -127,6 +127,17 @@ class SectionHintTests(unittest.TestCase):
         self.assertTrue(out.startswith(session_state.SEMANTICS_CAVEAT))
         self.assertIn("BODY", out)
 
+    def test_hint_mentions_lipid_grammar_only_for_lipid_assay(self):
+        session_state.session.set_assay_kind("lipid")
+        hint = session_state.session.section_hint("arf")
+        self.assertIn("脂質名文法", hint)
+
+    def test_hint_drops_lipid_grammar_for_metabolite_assay(self):
+        session_state.session.set_assay_kind("metabolite")
+        hint = session_state.session.section_hint("arf")
+        self.assertIn("lipidmix://docs/output-format/arf", hint)
+        self.assertNotIn("脂質名文法", hint)
+
 
 if __name__ == "__main__":
     unittest.main()
