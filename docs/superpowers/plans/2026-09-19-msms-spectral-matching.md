@@ -738,12 +738,22 @@ import pytest
 
 from lipidmix.analysis import spectral_match as sm
 
-_A = [[100.0, 999.0], [200.0, 500.0], [300.0, 100.0]]
+# 参照窓のうち「正規化強度 > 0.1」が 5 個以上になるようにしてある。4 個以下だと
+# weighted / reverse に peakCountPenalty が掛かり、同一スペクトルでも 1.0 にならない。
+_A = [[100.0, 999.0], [200.0, 800.0], [300.0, 600.0], [400.0, 400.0], [500.0, 200.0]]
 
 
 def test_an_identical_spectrum_scores_one():
     for fn in (sm.simple_dot_product, sm.weighted_dot_product, sm.reverse_dot_product):
         assert fn(_A, _A, bin_width=0.01) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_the_penalty_applies_even_to_an_identical_spectrum():
+    """参照窓が 4 個以下なら同一でも 1.0 にならない。penalty は「似ていなさ」ではなく
+    「参照の情報量の乏しさ」への減点なので、一致度とは独立に掛かる。"""
+    three = [[100.0, 999.0], [200.0, 800.0], [300.0, 600.0]]
+    assert sm.weighted_dot_product(three, three, bin_width=0.01) == pytest.approx(0.94, abs=1e-9)
+    assert sm.simple_dot_product(three, three, bin_width=0.01) == pytest.approx(1.0, abs=1e-9)
 
 
 def test_a_disjoint_spectrum_scores_zero():
@@ -807,8 +817,16 @@ def test_match_spectrum_returns_the_square_rooted_values():
     result = sm.match_spectrum(_A, _A, ms2_tol=0.01)
     assert result["simple_dot_product"] == pytest.approx(
         math.sqrt(sm.simple_dot_product(_A, _A, bin_width=0.01)), abs=1e-9)
-    assert result["matched_peaks_count"] == 3.0
+    assert result["matched_peaks_count"] == 5.0
     assert result["entropy_similarity"] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_the_not_computed_sentinel_survives_the_square_root():
+    """-1 は「比較していない」。sqrt(-1) の NaN に化けさせない。"""
+    result = sm.match_spectrum([], _A, ms2_tol=0.01)
+    assert result["simple_dot_product"] == -1.0
+    assert result["weighted_dot_product"] == -1.0
+    assert result["reverse_dot_product"] == -1.0
 
 
 def test_match_spectrum_reports_the_alignment():
@@ -1063,13 +1081,13 @@ def test_the_new_slot_does_not_disturb_the_others():
 def test_a_dbs_is_preferred_over_an_msp(tmp_path, monkeypatch):
     (tmp_path / "other.msp").write_text("NAME: x\n", encoding="utf-8")
     (tmp_path / "P_Loaded.msp2.dbs").write_bytes(b"PK\x03\x04")
-    monkeypatch.setattr(mcp_core, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(mcp_core, "DATA_DIR", tmp_path)   # 実物は pathlib.Path
     assert path_resolvers.resolve_library_path().endswith("P_Loaded.msp2.dbs")
 
 
 def test_an_msp_is_used_when_no_dbs_exists(tmp_path, monkeypatch):
     (tmp_path / "lib.msp").write_text("NAME: x\n", encoding="utf-8")
-    monkeypatch.setattr(mcp_core, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(mcp_core, "DATA_DIR", tmp_path)   # 実物は pathlib.Path
     assert path_resolvers.resolve_library_path().endswith("lib.msp")
 
 
@@ -1077,12 +1095,12 @@ def test_an_explicit_path_wins(tmp_path, monkeypatch):
     (tmp_path / "P_Loaded.msp2.dbs").write_bytes(b"PK\x03\x04")
     explicit = tmp_path / "explicit.msp"
     explicit.write_text("NAME: x\n", encoding="utf-8")
-    monkeypatch.setattr(mcp_core, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(mcp_core, "DATA_DIR", tmp_path)   # 実物は pathlib.Path
     assert path_resolvers.resolve_library_path(str(explicit)) == str(explicit)
 
 
 def test_nothing_found_returns_none(tmp_path, monkeypatch):
-    monkeypatch.setattr(mcp_core, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(mcp_core, "DATA_DIR", tmp_path)   # 実物は pathlib.Path
     assert path_resolvers.resolve_library_path() is None
 ```
 
@@ -1163,7 +1181,7 @@ _MSP = textwrap.dedent("""\
 @pytest.fixture(autouse=True)
 def fresh_session(tmp_path, monkeypatch):
     monkeypatch.setattr(session_state, "session", session_state.AnalysisSession())
-    monkeypatch.setattr(mcp_core, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(mcp_core, "DATA_DIR", tmp_path)   # 実物は pathlib.Path
     monkeypatch.setenv("LIPIDMIX_LIBRARY_CACHE_DIR", str(tmp_path / "cache"))
     (tmp_path / "lib.msp").write_text(_MSP, encoding="utf-8")
     return tmp_path
@@ -1194,9 +1212,12 @@ def test_the_payload_carries_no_coordinate_arrays(fresh_session, monkeypatch):
                         lambda *a, **k: [[87.0441, 999.0], [69.0335, 500.0]])
     text = tools.library_match_feature(104.0706, ion_mode="positive")
 
-    assert "87.0441" not in text or text.count("87.0441") <= 2   # ラベル程度は可
-    assert session_state.session.library.last_match is not None
-    assert session_state.session.library.last_match["candidates"][0]["spectrum"]
+    # 測定スペクトルの点列が戻り値に出ていないこと。座標はセッションにだけ持つ。
+    assert "69.0335" not in text
+    assert "87.0441" not in text
+    # 一方でセッションには完全な座標がある（図保存ツールがここから読む）。
+    stored = session_state.session.library.last_match["candidates"][0]["spectrum"]
+    assert stored == [[87.0441, 999.0], [69.0335, 500.0]]
 
 
 def test_loading_does_not_disturb_the_other_slots(fresh_session):
@@ -1288,8 +1309,8 @@ _SUBSCORE_MZTAB = textwrap.dedent("""\
     SML\t1\t1\tnull\tGABA\t[M+H]1+
     SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]
     SMF\t1\t1\t104.07\t72.0\t1.0
-    SEH\tSME_ID\tevidence_input_id\tdatabase_identifier\tchemical_name\tadduct_ion\texp_mass_to_charge\tid_confidence_measure[1]\tid_confidence_measure[2]\tid_confidence_measure[3]\tid_confidence_measure[4]\tid_confidence_measure[5]\tid_confidence_measure[6]\tid_confidence_measure[7]\tid_confidence_measure[8]\trank
-    SME\t1\t1\tnull\tGABA\t[M+H]1+\t104.07\t0.91\tnull\t0.99\t0.95\t0.93\t0.88\t7\t0.7\t1
+    SEH\tSME_ID\tevidence_input_id\tdatabase_identifier\tchemical_name\tadduct_ion\texp_mass_to_charge\tbest_id_confidence_measure\tbest_id_confidence_value\tid_confidence_measure[1]\tid_confidence_measure[2]\tid_confidence_measure[3]\tid_confidence_measure[4]\tid_confidence_measure[5]\tid_confidence_measure[6]\tid_confidence_measure[7]\tid_confidence_measure[8]\trank
+    SME\t1\t1\tnull\tGABA\t[M+H]1+\t104.07\t[,, MS-DIAL algorithm matching score, ]\t0.91\t0.91\tnull\t0.99\t0.95\t0.93\t0.88\t7\t0.7\t1
 """)
 
 
