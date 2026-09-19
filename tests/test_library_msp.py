@@ -71,3 +71,14 @@ def test_comment_lines_and_blank_lines_are_skipped(tmp_path):
     path = tmp_path / "lib.msp"
     path.write_text("# a comment\n\nNAME: X\nPRECURSORMZ: 1.0\nNum Peaks: 0\n", encoding="utf-8")
     assert [r["name"] for r in msp.iter_records(path)] == ["X"]
+
+
+def test_declared_peak_count_is_not_trusted_when_fewer_peaks_are_present(tmp_path):
+    """宣言本数 5 だが実際は 2 行しかない。宣言値を信用せず 2 本だけ返す。"""
+    path = tmp_path / "lib.msp"
+    path.write_text(
+        "NAME: Y\nPRECURSORMZ: 2.0\nNum Peaks: 5\n60.0 100\n50.0 200\n",
+        encoding="utf-8",
+    )
+    r = list(msp.iter_records(path))[0]
+    assert r["spectrum"] == [[50.0, 200.0], [60.0, 100.0]]
