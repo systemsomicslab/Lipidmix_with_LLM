@@ -631,7 +631,13 @@ def test_an_inchikey_is_derived_from_the_sml_smiles(tmp_path):
     `database_identifier` は必ず `<db>:<name>` 形式（MztabFormatExport.cs:407）、
     `inchi` は常に null（同 :393）。
     """
-    pytest.importorskip("rdkit")
+    # `importorskip("rdkit")` ではガードにならない。`rdkit` パッケージ本体は純 Python
+    # なので import は通り、native な `rdchem` を引く `rdkit.Chem` だけが落ちる環境が
+    # ある（Windows の Application Control は**ファイル単位**で効く）。必要なのは
+    # 「パッケージが在るか」ではなく「InChI を導出できるか」なので、本番と同じ判定を使う。
+    from lipidmix.mztab.identity import rdkit_available
+    if not rdkit_available():
+        pytest.skip("RDKit の native DLL を読めない環境では smiles 経路を検証できない")
     ds = _build_text(tmp_path, _SMILES_MZTAB, "Height_smiles.mzTab")
 
     annotation = ds.feature_annotations["1"]
