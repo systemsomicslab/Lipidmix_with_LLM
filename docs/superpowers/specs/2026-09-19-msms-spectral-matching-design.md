@@ -400,6 +400,56 @@ MS-DIAL が採点にかけるのは `query.NormalizedScan` であって `.dcl` �
 **`NormalizedScan` の実体を上流で確認してから採点の移植に入る。** これを実装の第 1 工程と
 する。
 
+### 結論（2026-09-19）
+
+上流 clone（`MsdialWorkbench`、既定ブランチ `master`、HEAD `afd5f9522`）を読んだ。
+`IAnnotationQuery`（`IAnnotationQuery.cs`）の `NormalizedScan` は `AnnotationQuery.cs` /
+`AnnotationQueryWithReference.cs`（後者は前者に委譲）が実装しており、両方とも
+`DataAccess.GetNormalizedMSScanProperty(Scan, Parameter)`（`DataAccess.cs`）を呼ぶだけ。
+LC-MS 経路（`StandardAnnotationProcess.cs` の `RunAnnotationCoreAsync` → LC-MS の
+`PeakAnnotationProcess.cs` から呼ばれる）では、この `Scan` は `MSDecResult` インスタンス
+そのもの（`MSDecResult : IMSScanProperty`）——つまり `.dcl` に永続化される
+デコンボリューション済みスペクトルと同一のオブジェクトである。
+
+`GetNormalizedMSScanProperty` は `ChromXs` / `IonMode` / `PrecursorMz` / `ScanID` を
+そのままコピーし、`Spectrum` だけを `GetNormalizedMs2Spectra(spectrum, AbsoluteAmpCutoff,
+RelativeAmpCutoff)` に通す。この関数がやっているのは**2 個だけ**:
+
+1. **相対・絶対強度の足切り**: 各ピークについて
+   `Intensity > maxIntensity * RelativeAmpCutoff && Intensity > AbsoluteAmpCutoff`
+   を満たすものだけ残す（元の並び順のまま。**並べ替えはしない**）。
+2. **強度の再スケール**: 生き残ったピークを `Intensity / maxIntensity * 100.0` に置き換える
+   （最大ピークが 100 になる正規化）。元の強度は `Resolution` フィールドに退避される。
+
+**precursor 近傍の除去は無い。m/z 範囲の制限も `NormalizedScan` の構築には無い**
+（`GetNormalizedMs2Spectra` は `MassRangeBegin`/`MassRangeEnd` を一切参照しない）。
+ただし m/z 範囲の制限自体は別の場所に実在する: `MsReferenceScorer.CalculateScore`
+（`MsReferenceScorer.cs`）が `MsScanMatching.GetWeightedDotProduct` などの採点関数
+（`MsScanMatching.cs`）を呼ぶときに `parameter.MassRangeBegin` / `MassRangeEnd`
+（既定 0〜2000）を渡しており、ドットプロダクトの m/z ビニング内で
+クエリ・参照の両スペクトルに対して掛かる。**`NormalizedScan` 自体には無いが、
+採点関数の内部では効く**——Task 6 の `match_spectrum` は正規化ステップではなく
+採点ステップでこの範囲を適用しないと数値が合わない。
+
+`RelativeAmpCutoff` / `AbsoluteAmpCutoff` の既定値は両方 0
+（`MsRefSearchParameterBase.cs`）。既定のままなら足切りは実質無効（強度 0 のピークだけ
+落ちる）なので、**変換は「正規化（0〜100 スケール）」の 1 個だけに縮退する**。
+ただし両パラメータは GUI から変更可能な検索パラメータ
+（`MsRefSearchParameterBaseViewModel.cs`）であり、値がどこから来るかは
+コード上ハードコードされていない——プロジェクトの手法パラメータの一部としてしか
+確定しない。**本リポジトリ（Lipidmix_with_LLM）には現時点でこの 2 値を読む経路が
+無い**（`lipidmix/` 配下に `RelativeAmpCutoff` 等への参照は無し、確認済み）。
+既定値 0/0 を仮定して進めることはできるが、ユーザーが足切りを変更した run では
+`match_spectrum` が数値不一致を起こす。この差は「移植の誤り」ではなく「入力パラメータの
+未取得」に分類できるよう、Task 6/7 はこの 2 値の出所（`.dbs`/mzTab-M/手法テンプレートの
+いずれかに露出しているか）を別途確認すること。
+
+**判断: 続行。** 変換は `.dcl` の生スペクトルと 2 個のスカラーパラメータ
+（既定 0/0）だけから決定的に再現できる。生データの再読み込みは不要。
+Task 6 の `match_spectrum` にこの正規化（足切り→0〜100 再スケール、並び順維持）を
+実装し、m/z 範囲の制限は採点関数側に実装する。上記のパラメータ出所の未解決点は
+ブロッカーではなく Task 6/7 側での確認事項として引き継ぐ。
+
 ### 9.3 pytest
 
 fixture はテスト自身が tmp に作る（既存規約）。
