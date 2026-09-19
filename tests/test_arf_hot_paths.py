@@ -122,6 +122,105 @@ class CountPeakPropertyRowsTests(unittest.TestCase):
         self.assertEqual(arf_reader.count_peak_property_rows([]), 0)
 
 
+def _row_battery():
+    """`peak_field` / `file_name_of` の同値性を試す行の一式。
+
+    実経路に入る行と、入らない行（短い・list でない・数値でない data[18]）と、
+    欠けた行（data[37] が無い・文字列が 1 つも無い）を混ぜる。
+    """
+    full = [0] * 40
+    full[0], full[1], full[2], full[3] = 7, "sA.wiff", -2, 11   # -2 = ギャップフィル
+    full[9] = 900
+    full[10] = {1: 35.0}
+    full[15] = [[1, [4.25]], [3, [700.5]]]
+    full[18], full[20], full[21], full[22] = 1234.5, 2000.0, 1800.0, 700.5
+    full[37] = [1.5, 22.0]
+
+    ri_only = list(full)
+    ri_only[15] = 0                      # data[15] が list でない → data[16] を見る
+    ri_only[16] = [[1, [9.75]]]
+
+    no_shape = [0] * 30                  # len <= 37 → PeakShape が取れない
+    no_shape[1], no_shape[2], no_shape[18] = b"sB.raw", 5, 99.0
+
+    nameless = [0] * 26                  # 先頭付近に文字列が無い
+    nameless[18] = 1.0
+
+    return [full, ri_only, no_shape, nameless,
+            [0] * 26,                    # 数値 data[18] だが名前なし（別インスタンス）
+            [1, "short"],                # len < 3
+            [0] * 30,                     # data[18] が 0（int なので実経路に入る）
+            "not-a-list",
+            None]
+
+
+class PeakFieldTests(unittest.TestCase):
+    """1 フィールドのために 16 キーの dict を組まない。答えは dict と同じ。"""
+
+    _KEYS = ("peak_id", "file_id", "file_name", "master_peak_id", "height", "area",
+             "area_above_baseline", "m_z", "rt", "signal_to_noise", "estimated_noise",
+             "ms2_raw_id", "is_msms", "is_gap_filled", "is_msms_matched", "is_matched")
+
+    def test_every_key_matches_the_full_feature_dict(self):
+        for row in _row_battery():
+            feature = (arf_reader.alignment_feature_row(row)
+                       if isinstance(row, list) else {})
+            for key in self._KEYS:
+                with self.subTest(row=row, key=key):
+                    self.assertEqual(arf_reader.peak_field(row, key), feature.get(key))
+
+    def test_unknown_key_is_none_like_the_dict(self):
+        row = _row_battery()[0]
+        self.assertIsNone(arf_reader.peak_field(row, "no_such_field"))
+
+    def test_does_not_build_the_full_feature_dict(self):
+        row = _row_battery()[0]
+        with patch.object(arf_reader, "_convert_to_alignment_feature",
+                          side_effect=AssertionError(
+                              "peak_field が feature dict を組んでいる")):
+            self.assertEqual(arf_reader.peak_field(row, "height"), 1234.5)
+            self.assertEqual(arf_reader.peak_field(row, "file_name"), "sA.wiff")
+            self.assertIs(arf_reader.peak_field(row, "is_gap_filled"), True)
+
+
+class BuildPcaMatrixAvoidsFeatureDictTests(unittest.TestCase):
+    """行列組み立ては file_name / is_gap_filled / props しか読まない。"""
+
+    def test_matrix_is_unchanged_without_the_feature_dict(self):
+        spots = _pca_fixture()
+        expected = arf_reader.build_pca_matrix(spots, use_properties=["height"])
+        with patch.object(arf_reader, "_convert_to_alignment_feature",
+                          side_effect=AssertionError(
+                              "build_pca_matrix が feature dict を組んでいる")):
+            got = arf_reader.build_pca_matrix(spots, use_properties=["height"])
+        self.assertEqual(got[1], expected[1])
+        self.assertEqual(got[2], expected[2])
+        self.assertTrue((got[0] == expected[0]).all())
+
+    def test_detection_rate_filter_still_counts_gap_filled_rows(self):
+        """`min_detection_rate` は is_gap_filled を数える。速い経路でも同じ。"""
+        spots = _pca_fixture()
+        for row in spots[0]["AlignedPeakProperties"]:
+            row[2] = -2  # spot 0 の全注入をギャップフィルにする
+        expected = arf_reader.build_pca_matrix(
+            spots, use_properties=["height"], min_detection_rate=0.5)
+        with patch.object(arf_reader, "_convert_to_alignment_feature",
+                          side_effect=AssertionError("feature dict を組んでいる")):
+            got = arf_reader.build_pca_matrix(
+                spots, use_properties=["height"], min_detection_rate=0.5)
+        self.assertEqual(got[2], expected[2])
+        self.assertNotIn("Spot_0_height", got[2])  # 検出率 0 で落ちている
+
+    def test_non_default_property_takes_the_same_path(self):
+        spots = _pca_fixture()
+        expected = arf_reader.build_pca_matrix(spots, use_properties=["m_z"])
+        with patch.object(arf_reader, "_convert_to_alignment_feature",
+                          side_effect=AssertionError("feature dict を組んでいる")):
+            got = arf_reader.build_pca_matrix(spots, use_properties=["m_z"])
+        self.assertEqual(got[1], expected[1])
+        self.assertEqual(got[2], expected[2])
+
+
 def _pca_fixture():
     """`build_pca_matrix` が実際に消費できる 4 サンプル × 3 スポット。
 
