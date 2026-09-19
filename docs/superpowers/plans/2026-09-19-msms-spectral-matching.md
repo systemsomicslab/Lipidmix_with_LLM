@@ -267,6 +267,9 @@ def test_a_dbs_zip_is_read_from_its_database_entry(tmp_path):
     assert meta["search_params"]["ms2_tolerance"] == pytest.approx(0.025)
     assert meta["search_params"]["mass_range_end"] == pytest.approx(2000.0)
     assert meta["search_params"]["rt_tolerance"] == pytest.approx(2.0)
+    # Key 7 / 8。採点前の足切りで、MS-DIAL の正規化の唯一の可変部分（Task 1）。
+    assert meta["search_params"]["relative_amp_cutoff"] == pytest.approx(0.0)
+    assert meta["search_params"]["absolute_amp_cutoff"] == pytest.approx(0.0)
 
 
 def test_an_empty_msfinder_entry_is_not_mistaken_for_the_database(tmp_path):
@@ -350,9 +353,13 @@ _K_ADDUCT = 10
 _K_COMPOUND_CLASS = 14
 
 # MsRefSearchParameterBase の [Key(N)]（配列位置）。
+# 7 / 8 は測定スペクトルの足切りで、MS-DIAL が採点前に掛ける正規化の唯一の可変部分
+# （Task 1 の調査結果）。これが取れないと、足切りを変えた run で数値が合わない理由を
+# 「移植の誤り」と誤分類することになる。
 _SEARCH_PARAM_KEYS = {
     0: "mass_range_begin", 1: "mass_range_end", 2: "rt_tolerance",
     5: "ms1_tolerance", 6: "ms2_tolerance",
+    7: "relative_amp_cutoff", 8: "absolute_amp_cutoff",
     9: "squared_weighted_dot_cutoff", 10: "squared_simple_dot_cutoff",
     11: "squared_reverse_dot_cutoff", 12: "matched_peaks_percentage_cutoff",
     13: "total_score_cutoff", 14: "minimum_spectrum_match",
@@ -720,9 +727,28 @@ git commit -m "feat(library): sha256 を鍵とする永続 store を足す"
   - `reverse_dot_product(...) -> float`（同上）
   - `matched_peaks_scores(...) -> tuple[float, float]`（`(percentage, count)`、比較不能なら `(-1.0, -1.0)`）
   - `spectral_entropy_similarity(measured, reference, *, bin_width) -> float`（比較不能なら `-1.0`）
-  - `match_spectrum(measured, reference, *, ms2_tol, mass_begin=0.0, mass_end=2000.0) -> dict`
+  - `normalize_measured(spectrum, *, relative_amp_cutoff=0.0, absolute_amp_cutoff=0.0) -> list`
+  - `match_spectrum(measured, reference, *, ms2_tol, mass_begin=0.0, mass_end=2000.0, relative_amp_cutoff=0.0, absolute_amp_cutoff=0.0) -> dict`
 
 `measured` / `reference` はいずれも `[[mz, intensity], ...]`。
+
+**測定側だけに前処理が掛かる。** Task 1 の調査結果: `MsReferenceScorer.Score` は
+`query.NormalizedScan`（正規化済みの測定スペクトル）と `reference`（ライブラリの生レコード）を
+渡す。参照側は素通しである。`normalize_measured` が写すのは上流
+`DataAccess.GetNormalizedMs2Spectra` の 2 段だけ:
+
+1. 足切り — `intensity > max * relative_amp_cutoff and intensity > absolute_amp_cutoff`
+   を満たすピークだけ残す。**並べ替えはしない**（上流も元の並び順を保つ）
+2. 再スケール — 残ったピークを `intensity / max * 100` にする
+
+既定は両方 `0.0`（`MsRefSearchParameterBase` の Key 7 / 8）。`.dbs` 由来の store は
+実値を持っているので `library_match_feature` はそれを渡す。
+
+**再スケールは 5 種のスコアすべてに対して数学的に no-op である。** dot product 3 種は
+各窓の合算値を自分の最大値で割り、matched peaks は `sumM > 0` の判定しか見ず、entropy は
+総和で正規化するため、入力を定数倍しても結果が変わらない。**忠実性のため実装はするが、
+この事実を `normalize_measured` の docstring に書くこと** — 後で数値が合わないときに
+再スケールを疑って時間を溶かさないため。実際に効くのは足切りのほうだけである。
 
 - [ ] **Step 1: 失敗するテストを書く**
 
