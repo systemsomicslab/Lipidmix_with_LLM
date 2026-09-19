@@ -87,3 +87,60 @@ def test_the_summary_reports_what_was_loaded(library):
         assert summary["search_params"] is None       # .msp には同梱されない
     finally:
         s.close()
+
+
+def test_library_id_and_record_index_round_trip(library):
+    """record.RECORD_FIELDS は 13 フィールドが「採点エンジンの入力契約」（spec）。
+    library_id / record_index を落とすと、どの元レコードが根拠かを辿れなくなる。"""
+    s = store.open_store(library)
+    try:
+        hits = {r["name"]: r for r in s.candidates(100.0, mz_tol=0.01)}
+        assert sorted(hits) == ["A", "B", "C"]
+        # .msp は library_id を持たない（単一ファイル内なので区別が要らない）
+        assert all(r["library_id"] is None for r in hits.values())
+        # record_index は .msp 内の出現順の通し番号（A, B, C, D の順）
+        assert hits["A"]["record_index"] == 0
+        assert hits["B"]["record_index"] == 1
+        assert hits["C"]["record_index"] == 2
+    finally:
+        s.close()
+
+
+_MSP_WITH_RT = textwrap.dedent("""\
+    NAME: RT_KNOWN
+    PRECURSORMZ: 150.0
+    IONMODE: Positive
+    RETENTIONTIME: 5.0
+    Num Peaks: 1
+    50.0 999
+
+    NAME: RT_UNKNOWN
+    PRECURSORMZ: 150.0
+    IONMODE: Positive
+    Num Peaks: 1
+    50.0 999
+
+    NAME: RT_FAR
+    PRECURSORMZ: 150.0
+    IONMODE: Positive
+    RETENTIONTIME: 50.0
+    Num Peaks: 1
+    50.0 999
+""")
+
+
+def test_rt_filter_keeps_null_rt_but_drops_rt_outside_tolerance(tmp_path, monkeypatch):
+    """brief 名指しの要件: `.msp` の RT は別の LC 条件で測られていることがあるので、
+    RT を持たないレコードを rt 指定クエリで落としてはいけない
+    （`AND (rt IS NULL OR ABS(rt - ?) <= ?)`）。RT が窓の外のレコードは落ちることも
+    同じテストで押さえ、`rt IS NULL` だけが特別扱いされることを示す。"""
+    monkeypatch.setenv(store.LIBRARY_CACHE_ENV, str(tmp_path / "cache"))
+    path = tmp_path / "rt_lib.msp"
+    path.write_text(_MSP_WITH_RT, encoding="utf-8")
+
+    s = store.open_store(path)
+    try:
+        hits = s.candidates(150.0, mz_tol=0.01, rt=5.0, rt_tol=0.5)
+        assert sorted(r["name"] for r in hits) == ["RT_KNOWN", "RT_UNKNOWN"]  # RT_FAR は窓の外
+    finally:
+        s.close()

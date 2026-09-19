@@ -250,12 +250,18 @@ def read_storage_meta(path: str | Path) -> dict | None:
     """`.dbs` の `Storage` エントリ（使用ライブラリ・元パス・注釈器パラメータ）を読む。
 
     `.lbm2`（ZIP でない、または `Storage` を持たない）には無いので `None` を返す。
+    ZIP かどうかは先頭 4 バイトだけで判定する——ZIP でなければそこで打ち切り、
+    大きな `.lbm2`/`.msp` に対してファイル全体を読む無駄を作らない
+    （呼び出し側の store 構築が拡張子に関わらずこれを毎回呼ぶため、ここで
+    効くと全呼び出し側が得をする）。
     """
-    data = Path(path).read_bytes()
-    if data[:4] != ZIP_MAGIC:
+    path = Path(path)
+    with open(path, "rb") as fh:
+        head = fh.read(4)
+    if head != ZIP_MAGIC:
         return None
 
-    with zipfile.ZipFile(io.BytesIO(data)) as z:
+    with zipfile.ZipFile(path) as z:
         if "Storage" not in z.namelist():
             return None
         raw = z.read("Storage")

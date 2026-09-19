@@ -35,12 +35,20 @@ from lipidmix.library import msp as msp_reader
 
 LIBRARY_CACHE_ENV = "LIPIDMIX_LIBRARY_CACHE_DIR"
 
+#: `record.RECORD_FIELDS` が「store のスキーマであり、採点エンジンの入力契約」
+#: （spec `docs/superpowers/specs/2026-09-19-msms-spectral-matching-design.md`）
+#: なので、13 フィールド全部を持つ。`library_id` は `.dbs` の `MetabolomicsDB/`
+#: 配下に複数 DB が同居するとき「どのライブラリのレコードか」を辿る唯一の手掛かり
+#: で、`record_index` と合わせて元レコードへ後から遡れることを保証する
+#: （controller裁定 2026-09-20: brief の CREATE TABLE は spec とここが食い違って
+#: おり、spec を優先して 2 列を足す）。
 _SCHEMA = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE record(
     id INTEGER PRIMARY KEY, name TEXT, precursor_mz REAL NOT NULL,
     ion_mode TEXT, adduct TEXT, rt REAL, formula TEXT, inchikey TEXT,
-    smiles TEXT, compound_class TEXT, ontology TEXT, spectrum BLOB NOT NULL);
+    smiles TEXT, compound_class TEXT, ontology TEXT, spectrum BLOB NOT NULL,
+    library_id TEXT, record_index INTEGER);
 CREATE INDEX record_mz ON record(precursor_mz);
 """
 
@@ -109,8 +117,9 @@ def _build(source_path: Path, dest_path: Path, digest: str) -> None:
                     spectrum_blob = msgpack.packb(record["spectrum"] or [])
                     conn.execute(
                         "INSERT INTO record(name, precursor_mz, ion_mode, adduct, rt, "
-                        "formula, inchikey, smiles, compound_class, ontology, spectrum) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "formula, inchikey, smiles, compound_class, ontology, spectrum, "
+                        "library_id, record_index) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             record["name"],
                             record["precursor_mz"],
@@ -123,6 +132,8 @@ def _build(source_path: Path, dest_path: Path, digest: str) -> None:
                             record["compound_class"],
                             record["ontology"],
                             spectrum_blob,
+                            record["library_id"],
+                            record["record_index"],
                         ),
                     )
                     record_count += 1
@@ -190,8 +201,8 @@ class LibraryStore:
     ) -> list[dict]:
         query = (
             "SELECT name, precursor_mz, ion_mode, adduct, rt, formula, inchikey, "
-            "smiles, compound_class, ontology, spectrum FROM record "
-            "WHERE precursor_mz BETWEEN ? AND ?"
+            "smiles, compound_class, ontology, spectrum, library_id, record_index "
+            "FROM record WHERE precursor_mz BETWEEN ? AND ?"
         )
         params: list = [precursor_mz - mz_tol, precursor_mz + mz_tol]
         if ion_mode is not None:
@@ -205,7 +216,8 @@ class LibraryStore:
         results = []
         for row in rows:
             (name, row_mz, row_ion_mode, adduct, row_rt, formula, inchikey,
-             smiles, compound_class, ontology, spectrum_blob) = row
+             smiles, compound_class, ontology, spectrum_blob,
+             library_id, record_index) = row
             results.append({
                 "name": name,
                 "precursor_mz": row_mz,
@@ -218,6 +230,8 @@ class LibraryStore:
                 "compound_class": compound_class,
                 "ontology": ontology,
                 "spectrum": msgpack.unpackb(spectrum_blob, use_list=True),
+                "library_id": library_id,
+                "record_index": record_index,
             })
         return results
 
@@ -236,4 +250,10 @@ def open_store(path: str | Path, *, cache_dir: Path | None = None, rebuild: bool
         _build(source_path, dest_path, digest)
 
     conn = sqlite3.connect(str(dest_path))
-    return LibraryStore(conn, dest_path)
+    try:
+        return LibraryStore(conn, dest_path)
+    except Exception:
+        # 構築は原子的なので確率は低いが、LibraryStore.__init__（_load_meta）が
+        # 例外を投げたときに Connection を漏らさない。
+        conn.close()
+        raise
