@@ -111,15 +111,37 @@ def _formula_str(formula: object) -> str | None:
     return formula
 
 
-def _rt_from_chromxs(chromxs: object) -> float | None:
-    """`ChromXs` から RT を取る（経路 `[0][1][0]`）。
+#: `ChromXs` 入れ子の種別コード（`docs/schema/AlignmentSpotProperty.md`）。
+#: 1=RT / 2=RI / 3=m/z / 4=drift。位置ではなくこのコードで一致を取る
+#: （`lipidmix/pai2/reader.py` の `_convert_to_times` と同じ流儀）。
+_CHROMX_TYPE_RT = 1
 
-    `.dbs` では参照 RT が入っていないことが多いので `None` 許容にする。
+
+def _rt_from_chromxs(chromxs: object) -> float | None:
+    """`ChromXs`（`[[種別, [値, ...]], ...]`）から種別 1（RT）を探して返す。
+
+    位置決め打ち（`chromxs[0]`）だと、並び順が変わる・別の種別（m/z 等）が
+    先頭に来ると黙って別の値を RT として返してしまう。実データでは末尾に
+    入れ子でないスカラーが付くこともあるので、要素ごとに list/tuple 判定を
+    してから読む（`pai2/reader.py` と同じ防御）。
+
+    値が `-1`（MS-DIAL の「未設定」番兵）のときは実質未設定なので `None` を返す。
     """
-    try:
-        return chromxs[0][1][0]
-    except (TypeError, IndexError, KeyError):
+    if not isinstance(chromxs, (list, tuple)):
         return None
+    for entry in chromxs:
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            continue
+        if entry[0] != _CHROMX_TYPE_RT:
+            continue
+        values = entry[1]
+        if not isinstance(values, (list, tuple)) or not values:
+            continue
+        rt = values[0]
+        if rt is None or rt < 0:
+            return None
+        return rt
+    return None
 
 
 def _spectrum_peaks(spectrum: object) -> list[list[float]]:
@@ -162,10 +184,13 @@ def _iter_records_from_data(data: bytes, library_id: str | None = None) -> Itera
     idx = 0
     for chunk in iter_decompressed_chunks(data):
         count = read_array_count(chunk)
-        # max_buffer_size=0（無制限）: 展開後チャンクは数百 MB〜1 GB になり得るため、
-        # msgpack の既定 100 MiB 上限（対・信頼できない入力向けの安全弁）に当たる。
-        # ここは自分で展開したローカルの中間データなので外部入力ではない。
-        unpacker = msgpack.Unpacker(raw=False, max_buffer_size=0)
+        # 展開後チャンクは数百 MB〜1 GB になり得るため、msgpack の既定 100 MiB
+        # 上限（対・信頼できない入力向けの安全弁）に当たる。上限を外すのではなく、
+        # このチャンク自身の実サイズ（＝これ以上大きくなりようがない既知の上限）
+        # に縛る。`arf/reader.py` の固定 1 GiB 定数と違い、ここは実測サイズが
+        # その場で分かっているのでそれを使う——壊れた/切り詰められたチャンクや
+        # read_array_count の誤読を、msgpack 層が早期に BufferFull で捕まえられる。
+        unpacker = msgpack.Unpacker(raw=False, max_buffer_size=len(chunk))
         unpacker.feed(memoryview(chunk)[5:])
         for _ in range(count):
             raw = unpacker.unpack()
@@ -173,13 +198,25 @@ def _iter_records_from_data(data: bytes, library_id: str | None = None) -> Itera
             idx += 1
 
 
+#: `.dbs` の中で本サーバが対象とする種別のみ（`docs/schema/molecule_ms_reference.md`
+#: 「`.dbs` の ZIP 構造」）。`ProteomicsDB/` `EadLipidomicsDB/` は明示的に対象外——
+#: 中身があっても `MoleculeMsReference` の Key 配置とは限らず、拾うとフィールドが
+#: ずれたレコードを黙って返すことになる。
+_DATABASE_ENTRY_PREFIX = "MetabolomicsDB/"
+
+
 def _is_database_entry(info: zipfile.ZipInfo) -> bool:
-    """`DataBase` の実体エントリを、名前を決め打ちせず選ぶ。
+    """`MetabolomicsDB/` 配下の `DataBase` 実体エントリだけを選ぶ。
 
     `MetabolomicsDB/MS-FINDER/DataBase` のような空エントリが混在するので、
-    「`DataBase` で終わる」だけでなく「サイズが 0 でない」ことも見る。
+    「`DataBase` で終わる」「`MetabolomicsDB/` 配下」だけでなく
+    「サイズが 0 でない」ことも見る。
     """
-    return info.filename.endswith("DataBase") and info.file_size > 0
+    return (
+        info.filename.startswith(_DATABASE_ENTRY_PREFIX)
+        and info.filename.endswith("DataBase")
+        and info.file_size > 0
+    )
 
 
 def _iter_records_from_zip(data: bytes) -> Iterator[dict]:

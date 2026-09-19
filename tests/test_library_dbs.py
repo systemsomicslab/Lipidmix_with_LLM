@@ -107,3 +107,36 @@ def test_an_empty_msfinder_entry_is_not_mistaken_for_the_database(tmp_path):
         z.writestr("MetabolomicsDB/MS-FINDER/DataBase", b"")
         z.writestr("MetabolomicsDB/real/DataBase", _pack_chunk([_record(name="R")]))
     assert [r["name"] for r in dbs.iter_records(path)] == ["R"]
+
+
+def test_a_proteomics_entry_is_not_read_as_a_metabolomics_record(tmp_path):
+    """`ProteomicsDB/` / `EadLipidomicsDB/` は対象外。中身があっても拾わない
+    （拾うと MoleculeMsReference の Key 配置とは限らずフィールドがずれる）。"""
+    path = tmp_path / "P_Loaded.msp2.dbs"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("MetabolomicsDB/real/DataBase", _pack_chunk([_record(name="R")]))
+        z.writestr("ProteomicsDB/other/DataBase", _pack_chunk([_record(name="P")]))
+        z.writestr("EadLipidomicsDB/other/DataBase", _pack_chunk([_record(name="E")]))
+    assert [r["name"] for r in dbs.iter_records(path)] == ["R"]
+
+
+def test_rt_is_matched_by_chromxs_type_code_not_by_position(tmp_path):
+    """ChromXs は `[[種別, [値, ...]], ...]`。種別 1 が RT、3 が m/z など。
+    先頭要素が RT とは限らないので、位置ではなく種別コードで一致を取る。
+    実データでは末尾に入れ子でないスカラーが付くこともあり、それは無視する。"""
+    r = _record()
+    r[2] = [[3, [104.07, 0, 0]], [1, [1.23, 0, 0]], 0, 2.4764, 0, 0]
+    path = tmp_path / "lib.lbm2"
+    path.write_bytes(_pack_chunk([r]))
+    records = list(dbs.iter_records(path))
+    assert records[0]["rt"] == pytest.approx(1.23)
+
+
+def test_rt_is_none_for_the_unset_sentinel(tmp_path):
+    """`-1` は MS-DIAL の「未設定」番兵。RT として -1 をそのまま返さない。"""
+    r = _record()
+    r[2] = [[1, [-1.0, 0, 0]]]
+    path = tmp_path / "lib.lbm2"
+    path.write_bytes(_pack_chunk([r]))
+    records = list(dbs.iter_records(path))
+    assert records[0]["rt"] is None
