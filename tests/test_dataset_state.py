@@ -631,7 +631,15 @@ def test_an_inchikey_is_derived_from_the_sml_smiles(tmp_path):
     `database_identifier` は必ず `<db>:<name>` 形式（MztabFormatExport.cs:407）、
     `inchi` は常に null（同 :393）。
     """
-    pytest.importorskip("rdkit")
+    # `importorskip("rdkit")` では足りない。`import rdkit` は素の Python パッケージ
+    # 初期化なので、ネイティブ層（`rdchem` 等の DLL）が Windows のアプリケーション
+    # 制御に個別ブロックされていても通ってしまう。実際にこの機械で
+    # 「rdkit は import できるのに InChIKey が None」になり、環境要因の失敗が
+    # コードの回帰に見えた。**製品コードが使う述語と同じものでガードする。**
+    from lipidmix.mztab.identity import rdkit_available
+    if not rdkit_available():
+        pytest.skip("RDKit の InChI 経路が使えない（未導入、またはネイティブ DLL が"
+                    "アプリケーション制御にブロックされている）")
     ds = _build_text(tmp_path, _SMILES_MZTAB, "Height_smiles.mzTab")
 
     annotation = ds.feature_annotations["1"]
