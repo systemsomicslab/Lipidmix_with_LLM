@@ -201,11 +201,22 @@ Storage
   `LZ4MessagePackSerializer.Serialize`（`MessagePack.LZ4` 名前空間、
   本リポジトリには無い外部 NuGet パッケージ側の実装）を直接呼ぶ**単発の
   LZ4 圧縮**であり、上のチャンク分割された `LargeListMessagePack` とは
-  **別の実装**。拡張タイプコードは同じ 99 だが、チャンク分割は無い
-  （1 回の ext99+LZ4 ブロックで全体を包む）。**この単発フレームの
-  バイト単位の並びは本リポジトリのソースだけでは確認できない**
-  （`LZ4MessagePackSerializer` の実装が外部パッケージにあり、この clone には
-  ソースが無い）——分からなかったこととして明記する。
+  **実装としては別物**。拡張タイプコードは同じ 99 だが、チャンク分割は無い
+  （1 回の ext99+LZ4 ブロックで全体を包む）。
+
+  この単発フレームのバイト単位の並びは、**上流ソースからは**（外部 NuGet の
+  ため）確認できないが、**実データでの検証は済んでいる**——これは上流ソースの
+  確認とは別種の根拠なので区別して書く。実データ（`.dbs` の `Storage` エントリ、
+  実測値は spec §2.2 が正準）を、上の「`LargeListMessagePack` の枠組み」節と
+  **まったく同じ 11 バイトヘッダ解釈**（`c9` + ext長4B + `63` + `d2` + 展開後
+  サイズ4B + LZ4 block）で読んだところ、`lz4.block.decompress` → `msgpack.unpackb`
+  で正しく復号できることを確認済み（controller が実測。本文書には実測値そのもの
+  は丸写ししない）。**したがって `Storage` は「チャンクが 1 個だけの
+  `LargeListMessagePack`」と同じ読み方で読める**——Task 3 のパーサは `Storage` と
+  `DataBase` を同じ展開関数（ext99+LZ4 の 1 チャンク分の展開ロジック）に通せる。
+  違いはチャンク分割が無いこと（末尾での次チャンク判定が不要）と、展開後の
+  MessagePack が配列ではなく `MetabolomicsDataBases` / `ProteomicsDataBases` /
+  `EadLipidomicsDatabases` を持つマップであることの 2 点だけ。
   復号すると `MsRefSearchParameterBase` を含む検索パラメータが読める
   （下記）。
 
