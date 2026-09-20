@@ -300,3 +300,16 @@ class MsmsEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(len(out["top_fragments"]), 5)
         self.assertEqual(out["n_peaks"], 20)  # 元本数は保つ
+
+
+def test_the_msms_band_still_has_only_three_states():
+    """PASS / FLAG_ONLY / ABSENT の 3 状態は契約。照合はその内側に足す。"""
+    from lipidmix.msdial.peak_verification import msms_evidence
+    assert msms_evidence({"msms_spectrum": [[100.0, 999.0]]})["band"] == "PASS"
+    assert msms_evidence({"has_msms": True})["band"] == "FLAG_ONLY"
+    assert msms_evidence({})["band"] == "ABSENT"
+
+
+def test_spectral_match_is_absent_without_a_loaded_library():
+    from lipidmix.msdial.peak_verification import msms_evidence
+    assert msms_evidence({"msms_spectrum": [[100.0, 999.0]]}).get("spectral_match") is None

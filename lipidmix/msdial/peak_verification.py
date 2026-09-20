@@ -9,6 +9,14 @@ from __future__ import annotations
 
 import re
 
+from lipidmix.core import session_state
+
+# session_state は leaf 側（arf/arf2/eic/pai2 の reader・msdial.classes/tags・
+# analysis.preprocessing のみに依存）で、そのどれも peak_verification を import
+# しないため循環しない。実際に `python -c "from lipidmix.core import
+# session_state; ...sys.modules..."` で peak_verification が読み込まれない
+# ことを確認済み（Task 11 レポート参照）。
+
 # --- 定数（モノアイソトピック質量） ---
 PROTON_MASS = 1.00727646
 ELECTRON_MASS = 0.00054858
@@ -228,6 +236,76 @@ def ether_caveats(name: str | None, ontology: str | None) -> list[str]:
     return []
 
 
+# library_match_feature（lipidmix/library/tools.py）と同じ既定値。あちらを import
+# すると mcp_core / session_state 経由の上位層を引き込むので、ここでは値だけ複製する
+# （peak_verification は下位レイヤに留める）。
+_LIBRARY_MZ_TOL = 0.01
+_LIBRARY_MS2_TOL = 0.025
+_LIBRARY_RT_TOL = 0.2
+
+
+def _spectral_match_for_feature(feature: dict, spectrum: list, store) -> dict:
+    """band=PASS の実スペクトルを、読み込み済みの参照ライブラリと照合する。
+
+    `library_match_feature` MCP ツール（`lipidmix/library/tools.py`）と同じ土俵
+    （`store.candidates()` によるアラインメント検索 + `spectral_match.match_spectrum`
+    採点）を使うが、ここは検証ドシエの一材料でしかないので、戻り値は最良候補の
+    スコアだけに絞る。候補一覧が要る場合は `library_match_feature` を使うこと。
+
+    どの段階で失敗しても（precursor m/z が無い・ライブラリ照会が失敗する等）
+    例外は投げない——照合は msms_evidence の主目的である band 判定を止めてはいけない。
+    """
+    from lipidmix.analysis.spectral_match import match_spectrum
+
+    precursor_mz = feature.get("m/z")
+    if precursor_mz is None:
+        return {"status": "unavailable", "reason": "precursor m/z が無いため照合できません。"}
+
+    ion_mode = feature.get("ion_mode")
+    ion_mode_name = ion_mode.name if hasattr(ion_mode, "name") else (
+        str(ion_mode) if ion_mode is not None else None)
+    rt = (feature.get("time") or {}).get("rt")
+
+    try:
+        search_params = store.summary().get("search_params") or {}
+    except Exception:  # noqa: BLE001 - store が壊れていても既定値にフォールバックする
+        search_params = {}
+    mz_tol = search_params.get("ms1_tolerance") or _LIBRARY_MZ_TOL
+    ms2_tol = search_params.get("ms2_tolerance") or _LIBRARY_MS2_TOL
+    rt_tol = search_params.get("rt_tolerance") or _LIBRARY_RT_TOL
+
+    try:
+        candidates = store.candidates(
+            precursor_mz, mz_tol=mz_tol, ion_mode=ion_mode_name, rt=rt, rt_tol=rt_tol)
+    except Exception as exc:  # noqa: BLE001 - ライブラリ照合の失敗は band 判定を止めない
+        return {"status": "error", "reason": str(exc)}
+
+    if not candidates:
+        return {"status": "no_candidates", "n_candidates": 0}
+
+    scored = [
+        (record, match_spectrum(spectrum, record["spectrum"], ms2_tol=ms2_tol))
+        for record in candidates
+    ]
+    scored.sort(key=lambda item: item[1]["weighted_dot_product"], reverse=True)
+    best_record, best_result = scored[0]
+
+    return {
+        "status": "matched",
+        "n_candidates": len(candidates),
+        "best_match": {
+            "name": best_record.get("name"),
+            "ontology": best_record.get("ontology"),
+            "adduct": best_record.get("adduct"),
+            "weighted_dot_product": round(best_result["weighted_dot_product"], 6),
+            "simple_dot_product": round(best_result["simple_dot_product"], 6),
+            "reverse_dot_product": round(best_result["reverse_dot_product"], 6),
+            "matched_peaks_percentage": round(best_result["matched_peaks_percentage"], 6),
+            "matched_peaks_count": best_result["matched_peaks_count"],
+        },
+    }
+
+
 def msms_evidence(feature: dict, top_n: int = 5) -> dict:
     """MS/MS 証拠の band と主要フラグメントを返す（決定的判定）。
 
@@ -242,6 +320,12 @@ def msms_evidence(feature: dict, top_n: int = 5) -> dict:
                       本当に空か区別できないため caveat を付す。
     - ``ABSENT``    : フラグもスペクトルも無い。
 
+    この3状態の契約は変えない。``spectral_match`` はその内側に足すだけの追加情報:
+    ``band == "PASS"`` かつ参照ライブラリが読み込み済み（``session.library.store``
+    がある）ときだけ、実スペクトルをライブラリと照合した最良候補のスコアを載せる。
+    ライブラリ未読み込みなら ``spectral_match`` キー自体を持たない
+    （``dict.get("spectral_match")`` は ``None``）。
+
     ``top_fragments`` は強度降順の上位 ``top_n`` 本（``[[mz, intensity], ...]``）。
     ``n_peaks`` は間引き前の元本数を保つ。
     """
@@ -251,13 +335,17 @@ def msms_evidence(feature: dict, top_n: int = 5) -> dict:
 
     if spectrum:
         top = sorted(spectrum, key=lambda p: p[1], reverse=True)[:top_n]
-        return {
+        result = {
             "band": "PASS",
             "source": "spectrum",
             "n_peaks": n_peaks,
             "top_fragments": [[p[0], p[1]] for p in top],
             "caveat": None,
         }
+        store = getattr(getattr(session_state.session, "library", None), "store", None)
+        if store is not None:
+            result["spectral_match"] = _spectral_match_for_feature(feature, spectrum, store)
+        return result
     if feature.get("has_msms"):
         return {
             "band": "FLAG_ONLY",

@@ -652,3 +652,45 @@ def test_the_coverage_separates_evidence_from_ms1_annotation(tmp_path):
     assert by["sme"] == 0
     assert by["sml_only"] == 1
     assert by["none"] == 1
+
+
+_SUBSCORE_MZTAB = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tms_run[1]-location\tfile:///s1.raw
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    MTD\tid_confidence_measure[1]\t[,, MS-DIAL algorithm matching score, ]
+    MTD\tid_confidence_measure[2]\t[,, Retention time similarity, ]
+    MTD\tid_confidence_measure[3]\t[,, m/z similarity, ]
+    MTD\tid_confidence_measure[4]\t[,, Simple dot product, ]
+    MTD\tid_confidence_measure[5]\t[,, Weighted dot product, ]
+    MTD\tid_confidence_measure[6]\t[,, Reverse dot product, ]
+    MTD\tid_confidence_measure[7]\t[,, Matched peaks count, ]
+    MTD\tid_confidence_measure[8]\t[,, Matched peaks percentage, ]
+    SMH\tSML_ID\tSMF_ID_REFS\tdatabase_identifier\tchemical_name\tadduct_ions
+    SML\t1\t1\tnull\tGABA\t[M+H]1+
+    SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]
+    SMF\t1\t1\t104.07\t72.0\t1.0
+    SEH\tSME_ID\tevidence_input_id\tdatabase_identifier\tchemical_name\tadduct_ion\texp_mass_to_charge\tbest_id_confidence_measure\tbest_id_confidence_value\tid_confidence_measure[1]\tid_confidence_measure[2]\tid_confidence_measure[3]\tid_confidence_measure[4]\tid_confidence_measure[5]\tid_confidence_measure[6]\tid_confidence_measure[7]\tid_confidence_measure[8]\trank
+    SME\t1\t1\tnull\tGABA\t[M+H]1+\t104.07\t[,, MS-DIAL algorithm matching score, ]\t0.91\t0.91\tnull\t0.99\t0.95\t0.93\t0.88\t7\t0.7\t1
+""")
+
+
+def test_the_sub_scores_are_recovered_from_the_sme_row(tmp_path):
+    """mzTab は [4..8] に個別スコアを出している。total だけ読むと捨てることになる。"""
+    ds = _build_text(tmp_path, _SUBSCORE_MZTAB, "Height_subscores.mzTab")
+
+    measures = ds.feature_annotations["1"]["confidence_measures"]
+
+    assert measures["simple_dot_product"] == pytest.approx(0.95)
+    assert measures["weighted_dot_product"] == pytest.approx(0.93)
+    assert measures["reverse_dot_product"] == pytest.approx(0.88)
+    assert measures["matched_peaks_count"] == pytest.approx(7.0)
+    assert measures["matched_peaks_percentage"] == pytest.approx(0.7)
+    assert measures["mz_similarity"] == pytest.approx(0.99)
+    assert "retention_time_similarity" not in measures       # null の列は入れない
+
+
+def test_the_existing_total_score_reading_is_unchanged(tmp_path):
+    """best_id_confidence_value は下流の契約。サブスコア回収で壊さない。"""
+    ds = _build_text(tmp_path, _SUBSCORE_MZTAB, "Height_total.mzTab")
+    assert ds.feature_annotations["1"]["confidence_value"] == pytest.approx(0.91)
