@@ -10,12 +10,21 @@ from __future__ import annotations
 import re
 
 from lipidmix.core import session_state
+from lipidmix.library.defaults import DEFAULT_MS2_TOL as _LIBRARY_MS2_TOL
+from lipidmix.library.defaults import DEFAULT_MZ_TOL as _LIBRARY_MZ_TOL
+from lipidmix.library.defaults import DEFAULT_RT_TOL as _LIBRARY_RT_TOL
 
 # session_state は leaf 側（arf/arf2/eic/pai2 の reader・msdial.classes/tags・
 # analysis.preprocessing のみに依存）で、そのどれも peak_verification を import
 # しないため循環しない。実際に `python -c "from lipidmix.core import
 # session_state; ...sys.modules..."` で peak_verification が読み込まれない
 # ことを確認済み（Task 11 レポート参照）。
+#
+# `lipidmix.library.defaults` は stdlib のみの leaf（Task 11 レビュー
+# Important 1 で新設）。`lipidmix.library.tools`（MCP 面）と同じ既定許容幅を
+# ここから読む——`library.tools` 自体は import しない（`@mcp.tool` の登録副作用と
+# mcp_core / session_state 経由の上位層を引き込むため。peak_verification は
+# 下位レイヤに留める）。
 
 # --- 定数（モノアイソトピック質量） ---
 PROTON_MASS = 1.00727646
@@ -236,14 +245,6 @@ def ether_caveats(name: str | None, ontology: str | None) -> list[str]:
     return []
 
 
-# library_match_feature（lipidmix/library/tools.py）と同じ既定値。あちらを import
-# すると mcp_core / session_state 経由の上位層を引き込むので、ここでは値だけ複製する
-# （peak_verification は下位レイヤに留める）。
-_LIBRARY_MZ_TOL = 0.01
-_LIBRARY_MS2_TOL = 0.025
-_LIBRARY_RT_TOL = 0.2
-
-
 def _spectral_match_for_feature(feature: dict, spectrum: list, store) -> dict:
     """band=PASS の実スペクトルを、読み込み済みの参照ライブラリと照合する。
 
@@ -268,8 +269,8 @@ def _spectral_match_for_feature(feature: dict, spectrum: list, store) -> dict:
 
     try:
         search_params = store.summary().get("search_params") or {}
-    except Exception:  # noqa: BLE001 - store が壊れていても既定値にフォールバックする
-        search_params = {}
+    except Exception:  # noqa: BLE001 - ここも下の2箇所と同じ意図: 照合の失敗で
+        search_params = {}  # msms_evidence 本来の band 判定を止めない（既定値へ）
     mz_tol = search_params.get("ms1_tolerance") or _LIBRARY_MZ_TOL
     ms2_tol = search_params.get("ms2_tolerance") or _LIBRARY_MS2_TOL
     rt_tol = search_params.get("rt_tolerance") or _LIBRARY_RT_TOL

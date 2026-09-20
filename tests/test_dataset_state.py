@@ -694,3 +694,44 @@ def test_the_existing_total_score_reading_is_unchanged(tmp_path):
     """best_id_confidence_value は下流の契約。サブスコア回収で壊さない。"""
     ds = _build_text(tmp_path, _SUBSCORE_MZTAB, "Height_total.mzTab")
     assert ds.feature_annotations["1"]["confidence_value"] == pytest.approx(0.91)
+
+
+# manualAssigned 相当（上流 SetIdConfidenceMeasure が付け足す9本目）＋対応表に無い
+# 名前の両方を一度に張る fixture。range(1, 9) のような決め打ちへ「簡略化」されると
+# ここが真っ先に壊れる（Task 11 レビュー Important 2）。
+_NINTH_MEASURE_MZTAB = textwrap.dedent("""\
+    MTD\tmzTab-version\t2.0.0-M
+    MTD\tms_run[1]-location\tfile:///s1.raw
+    MTD\tassay[1]-ms_run_ref\tms_run[1]
+    MTD\tid_confidence_measure[1]\t[,, MS-DIAL algorithm matching score, ]
+    MTD\tid_confidence_measure[2]\t[,, Retention time similarity, ]
+    MTD\tid_confidence_measure[3]\t[,, m/z similarity, ]
+    MTD\tid_confidence_measure[4]\t[,, Simple dot product, ]
+    MTD\tid_confidence_measure[5]\t[,, Weighted dot product, ]
+    MTD\tid_confidence_measure[6]\t[,, Reverse dot product, ]
+    MTD\tid_confidence_measure[7]\t[,, Matched peaks count, ]
+    MTD\tid_confidence_measure[8]\t[,, Matched peaks percentage, ]
+    MTD\tid_confidence_measure[9]\t[MS, MS:1001058, quality estimation by manual validation, ]
+    SMH\tSML_ID\tSMF_ID_REFS\tdatabase_identifier\tchemical_name\tadduct_ions
+    SML\t1\t1\tnull\tGABA\t[M+H]1+
+    SFH\tSMF_ID\tSME_ID_REFS\texp_mass_to_charge\tretention_time_in_seconds\tabundance_assay[1]
+    SMF\t1\t1\t104.07\t72.0\t1.0
+    SEH\tSME_ID\tevidence_input_id\tdatabase_identifier\tchemical_name\tadduct_ion\texp_mass_to_charge\tbest_id_confidence_measure\tbest_id_confidence_value\tid_confidence_measure[1]\tid_confidence_measure[2]\tid_confidence_measure[3]\tid_confidence_measure[4]\tid_confidence_measure[5]\tid_confidence_measure[6]\tid_confidence_measure[7]\tid_confidence_measure[8]\tid_confidence_measure[9]\trank
+    SME\t1\t1\tnull\tGABA\t[M+H]1+\t104.07\t[,, MS-DIAL algorithm matching score, ]\t0.91\t0.91\tnull\t0.99\t0.95\t0.93\t0.88\t7\t0.7\t0.5\t1
+""")
+
+
+def test_a_manually_assigned_ninth_measure_and_an_unmapped_name_are_not_dropped(tmp_path):
+    """manualAssigned は9本目を追加するだけ（SetIdConfidenceMeasure）で、対応表に無い
+    名前もある。range(1, 9) のような固定範囲へ「簡略化」すると、この9本目が
+    真っ先に静かに消える。位置ではなく宣言を読んでいることをここで縛る。"""
+    ds = _build_text(tmp_path, _NINTH_MEASURE_MZTAB, "Height_ninth.mzTab")
+
+    measures = ds.feature_annotations["1"]["confidence_measures"]
+
+    # 対応表に無い宣言名は、そのままスネークケース化されて残る（捨てない）。
+    assert measures["quality_estimation_by_manual_validation"] == pytest.approx(0.5)
+    # 9本目が増えても 1..8 の対応関係はずれない。
+    assert measures["simple_dot_product"] == pytest.approx(0.95)
+    assert measures["matched_peaks_percentage"] == pytest.approx(0.7)
+    assert "retention_time_similarity" not in measures

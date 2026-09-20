@@ -23,17 +23,14 @@ from lipidmix.core.mcp_core import mcp
 from lipidmix.core.path_resolvers import resolve_dcl_file_path, resolve_library_path
 from lipidmix.core.serialization import json_payload, round_floats
 from lipidmix.dcl.reader import deserialize_dcl, get_msms_by_precursor
+from lipidmix.library.defaults import DEFAULT_MS2_TOL as _DEFAULT_MS2_TOL
+from lipidmix.library.defaults import DEFAULT_MZ_TOL as _DEFAULT_MZ_TOL
+from lipidmix.library.defaults import DEFAULT_RT_TOL as _DEFAULT_RT_TOL
 from lipidmix.library.store import open_store
 from lipidmix.plots import mirror as mirror_plot
 from lipidmix.plots import render as plot_render
 
 __all__ = ["library_load", "library_match_feature", "library_plot_mirror"]
-
-# MsRefSearchParameterBase の既定値（`docs/schema/molecule_ms_reference.md`）。
-# store の search_params が None（`.msp` 由来）のときだけ使う。
-_DEFAULT_MZ_TOL = 0.01
-_DEFAULT_MS2_TOL = 0.025
-_DEFAULT_RT_TOL = 0.2
 
 # library_load が要約に添える化合物クラス分布の上位件数。
 _TOP_COMPOUND_CLASSES = 10
