@@ -3,7 +3,21 @@ import re
 import sys
 from unittest.mock import patch, MagicMock
 
+import pytest
+
+from lipidmix.mztab import identity
 from lipidmix.mztab.identity import derive_inchikey, _INCHIKEY_RE
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rdkit_memo(monkeypatch):
+    """RDKit 解決の memo をテストごとに捨てる。
+
+    `derive_inchikey` はプロセス内で 1 度しか RDKit を解決しないので、
+    `sys.modules` を差し替えるテストは memo を無効化しないと前のテストの
+    結論を引き継いでしまう。
+    """
+    monkeypatch.setattr(identity, "_rdkit_cache", identity._UNSET)
 
 # PC 36:2 の本物の InChIKey
 _VALID_IK = "IPCSVZSSVZVIGE-UHFFFAOYSA-N"
@@ -77,3 +91,24 @@ def test_derive_from_inchi_with_rdkit(monkeypatch):
 def test_database_identifier_takes_priority_over_smiles():
     ik, src = derive_inchikey(_VALID_IK, None, _PC362_SMILES)
     assert src == "database_identifier"
+
+
+def test_rdkit_is_resolved_only_once_when_it_is_unusable(monkeypatch):
+    """壊れた RDKit の失敗 import は `sys.modules` に載らないので、memo が無いと
+    特徴量ごとに DLL ロードを再試行する（実測 60 ms/回。35,803 特徴量で理論 2,147 秒）。
+    """
+    import builtins
+    real_import = builtins.__import__
+    attempts = []
+
+    def broken_rdkit_import(name, *args, **kwargs):
+        if name == "rdkit":
+            attempts.append(name)
+            raise ImportError("DLL load failed while importing rdchem")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", broken_rdkit_import)
+    for _ in range(5):
+        assert derive_inchikey(None, None, _PC362_SMILES) == (None, "none")
+
+    assert len(attempts) == 1, f"rdkit の解決が {len(attempts)} 回走った"
