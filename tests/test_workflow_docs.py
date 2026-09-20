@@ -58,6 +58,9 @@ OUT_OF_SCOPE: tuple[str, ...] = (
     "console_plan", "console_prepare_input", "console_method_template",
     "console_method_candidates",
     "console_run", "console_status", "console_cleanup", "job_list",
+    # 参照ライブラリ（MS/MS スペクトル照合、Task 10 で追加）。
+    # ワークフロー文書は spec 2026-09-19 完了後に追加する。
+    "library_load", "library_match_feature", "library_plot_mirror",
 )
 
 

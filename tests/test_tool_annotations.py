@@ -82,6 +82,12 @@ EXPECTED_ANNOTATIONS = {
     # --- DCL / PAI2 / EIC ---
     "dcl_parser": READ_ONLY,
     "dcl_find_msms": READ_ONLY,
+    # --- 参照ライブラリ（MS/MS スペクトル照合） ---
+    # library_load は SQLite キャッシュを書くので唯一 False。同じ元ファイルなら
+    # 同じ store になる（sha256 キー）→ idempotent。
+    "library_load": LOCAL_WRITE,
+    "library_match_feature": READ_ONLY,
+    "library_plot_mirror": READ_ONLY,
     "pai2_parser": READ_ONLY,
     "pai2_inspect_peak": READ_ONLY,
     "verify_peak_annotation": READ_ONLY,

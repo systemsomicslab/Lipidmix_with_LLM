@@ -74,6 +74,7 @@ from lipidmix.tools.objective import *
 from lipidmix.tools.reports import *
 from lipidmix.pai2.tools import *
 from lipidmix.dcl.tools import *
+from lipidmix.library.tools import *  # library_load, library_match_feature, library_plot_mirror
 from lipidmix.arf.tools import *
 from lipidmix.tools.samples import *  # sample_search
 from lipidmix.arf2.tools import *
