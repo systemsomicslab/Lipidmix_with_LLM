@@ -402,7 +402,11 @@ def read_array_count(chunk: bytes) -> int:
     raise ValueError(f"配列ヘッダではありません: {first:#04x}")
 ```
 
-`iter_records` は `.dbs`（ZIP）と `.lbm2`（生）を拡張子ではなく**中身**で見分ける（ZIP は `PK\x03\x04` で始まる）。`_to_record` が Key を引いて `make_record` に渡す。`Spectrum` の各ピークは 13 フィールドの配列で、使うのは先頭 2 つ（m/z と強度）だけ。`AdductType` は配列でインデックス 2 が表示名。`ChromXs` から RT を取る経路は `[0][1][0]` だが、`.dbs` では参照 RT が入っていないことが多いので **`None` 許容**にする。
+`iter_records` は `.dbs`（ZIP）と `.lbm2`（生）を拡張子ではなく**中身**で見分ける（ZIP は `PK\x03\x04` で始まる）。`_to_record` が Key を引いて `make_record` に渡す。`Spectrum` の各ピークは 13 フィールドの配列で、使うのは先頭 2 つ（m/z と強度）だけ。`AdductType` は配列でインデックス 2 が表示名。
+
+**`ChromXs` から RT を取るときは位置で決め打たないこと。** `ChromXs` は `[[種別, [値,...]], ...]` で **種別 1 が RT**（2=RI / 3=m/z / 4=drift）。既存の `lipidmix/pai2/reader.py` は種別コードで一致を取っている。位置 0 を RT と仮定すると、並びが違うレコードで**落ちずに m/z を RT として返す**。実データの `ChromXs` は**末尾に入れ子でないスカラーが 4 つ**付き、未設定の値は `-1.0` の番兵になっているので、走査はそれで壊れないこと。RT が `-1.0` のときは `None` を返す。
+
+**`.dbs` のエントリ選択は `MetabolomicsDB/` 配下に限定すること。** `.dbs` は `ProteomicsDB/<ID>/DataBase` と `EadLipidomicsDB/<ID>/DataBase` も持ちうるが、どちらも本サーバの対象外（`docs/schema/molecule_ms_reference.md`）。中身の入った対象外エントリを `MoleculeMsReference` の Key 配置で解釈すると、**フィールドがずれたレコードを黙って返す**。
 
 - [ ] **Step 5: テストが通ることを確認**
 
@@ -495,7 +499,9 @@ def test_the_first_record_keeps_every_field(tmp_path):
     assert r["formula"] == "C4H9NO2"
     assert r["inchikey"] == "BTCSSZJGUNDROE-UHFFFAOYSA-N"
     assert r["rt"] == pytest.approx(1.23)
-    assert r["spectrum"] == [[87.0441, 999.0], [69.0335, 500.0]]
+    # ファイル上は 87.0441 が先だが、**m/z 昇順に並べ替えて返す**。Task 6 の走査が
+    # 昇順を前提にしており、`.msp` が昇順である保証は無い。
+    assert r["spectrum"] == [[69.0335, 500.0], [87.0441, 999.0]]
 
 
 def test_the_field_name_dialects_are_accepted(tmp_path):
@@ -671,7 +677,8 @@ CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE record(
     id INTEGER PRIMARY KEY, name TEXT, precursor_mz REAL NOT NULL,
     ion_mode TEXT, adduct TEXT, rt REAL, formula TEXT, inchikey TEXT,
-    smiles TEXT, compound_class TEXT, ontology TEXT, spectrum BLOB NOT NULL);
+    smiles TEXT, compound_class TEXT, ontology TEXT, spectrum BLOB NOT NULL,
+    library_id TEXT, record_index INTEGER);
 CREATE INDEX record_mz ON record(precursor_mz);
 ```
 
@@ -961,6 +968,22 @@ git commit -m "feat(analysis): MS-DIAL の個別スコア定義を移植する"
 5. `match_spectrum` を回し、`[4] Simple` `[5] Weighted` `[6] Reverse` `[7] count` `[8] percentage` と突き合わせる。
 6. 相対誤差 **1e-4** 以内を一致とし、一致率と不一致の上位 10 件（名前・両者の値・差）を出す。
 
+**比較の規則（守らないと偽の乖離が出る）:**
+
+**3 種の dot product についてのみ、こちらの `-1` と mzTab の `0` を同一視すること。**
+
+`MsScanMatchResult` の非二乗 getter は `Math.Sqrt(Math.Max(Squared..., 0f))` で、
+**比較不能を表す `-1` を `0` にクランプしてから** `sqrt` を取る
+（`MsScanMatchResult.cs:36-38` / `:44-46` / `:51-53`）。`MztabFormatExport.cs:1412-1414` は
+このクランプ済み getter を `id_confidence_measure[4..6]` に書く。したがって
+**mzTab 上では「比較していない」が `0`（＝合わなかった）と見分けられない**。
+
+`[7]` `[8]`（matched peaks の count / percentage）は素のフィールドなので `-1` のまま出る。
+**こちらは同一視してはいけない。**
+
+`match_spectrum` 側が `-1` を保つのは意図的で、`-1`（比較していない）と `0`（合わなかった）を
+区別する設計。吸収するのは**比較する側**の責務である。
+
 - [ ] **Step 2: 実行する**
 
 ```bash
@@ -1242,8 +1265,9 @@ def test_the_payload_carries_no_coordinate_arrays(fresh_session, monkeypatch):
     assert "69.0335" not in text
     assert "87.0441" not in text
     # 一方でセッションには完全な座標がある（図保存ツールがここから読む）。
+    # store のレコードは `.msp` 由来でも **m/z 昇順**（Task 4）。
     stored = session_state.session.library.last_match["candidates"][0]["spectrum"]
-    assert stored == [[87.0441, 999.0], [69.0335, 500.0]]
+    assert stored == [[69.0335, 500.0], [87.0441, 999.0]]
 
 
 def test_loading_does_not_disturb_the_other_slots(fresh_session):
