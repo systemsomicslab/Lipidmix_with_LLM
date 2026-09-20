@@ -59,12 +59,18 @@ flowchart TD
 スペクトルと alignment を保持。**戻り値には座標を含めない**）。
 
 許容幅（`mz_tol` / `ms2_tol` / `rt_tol`）は明示指定 > store の `search_params`
-（`.dbs` 由来のときだけ実値がある） > 既定値、の順で決める。`.dcl` に MS/MS が
+（`.dbs` 由来のときだけ実値がある） > 既定値、の順で決める（`pick_tol()`、
+`lipidmix/library/defaults.py`）。**これはライブラリ候補検索（`store.candidates()`）
+にだけ効く**——`.dcl` から測定 MS/MS を引く窓（`_measured_spectrum`）はこれらを
+受け取らず、常に `dcl/reader.py` と同じ固定既定（`mz_tol=0.01`/`rt_tol=0.2`）を
+使う（Task 11 最終レビュー Important 7: ライブラリ用の広い許容幅——`.dbs` の
+`RtTolerance` 既定 100.0 など——を `.dcl` 側に流用すると、precursor m/z が近い
+別ピークの測定スペクトルを黙って拾ってしまうため分離した）。`.dcl` に MS/MS が
 無ければ `status="not_found"` を返し、候補が 0 件なら `status="no_candidates"` を
 返す——どちらも例外にはしない。
 
 1. lipidmix/library/tools.py  library_match_feature()
-2. └─ lipidmix/library/tools.py  _pick_tol()
+2. └─ lipidmix/library/defaults.py  pick_tol()
 3. └─ lipidmix/library/tools.py  _measured_spectrum()
 4. │  └─ lipidmix/core/path_resolvers.py  resolve_dcl_file_path()
 5. │  └─ lipidmix/dcl/reader.py  deserialize_dcl()

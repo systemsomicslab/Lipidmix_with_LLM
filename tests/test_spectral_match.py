@@ -112,3 +112,40 @@ def test_unsorted_input_is_sorted_before_scoring():
     """上流の走査は m/z 昇順を前提にしている。並べ替えずに渡すと静かに壊れる。"""
     shuffled = list(reversed(_A))
     assert sm.simple_dot_product(shuffled, _A, bin_width=0.01) == pytest.approx(1.0, abs=1e-9)
+
+
+# --------------------------------------------------------------------------
+# Important 4（最終レビュー）: 縮退した参照/測定スペクトルで例外を投げない。
+# --------------------------------------------------------------------------
+def test_entropy_similarity_with_a_reference_containing_a_zero_intensity_peak():
+    """`spectral_entropy_similarity([[100,10]], [[100,0],[200,5]])` は以前
+    `math.log2(0)` の定義域エラー（ValueError）を投げていた。総強度は非ゼロ
+    （0+5=5）だが個々のピーク強度に 0 が混ざるケース。0*log2(0)=0 として
+    寄与なし扱いにするだけで、比較不能（-1）にはしない。"""
+    result = sm.spectral_entropy_similarity([[100.0, 10.0]], [[100.0, 0.0], [200.0, 5.0]], bin_width=0.01)
+    assert result != -1.0
+    assert not math.isnan(result)
+
+
+def test_match_spectrum_with_an_all_zero_reference_does_not_raise():
+    """`match_spectrum([[100,10]], [[100,0]])` は以前 entropy 計算内で
+    ZeroDivisionError を投げていた（参照の総強度が 0）。空ではないので `-1`
+    （比較不能）ではなく、他の 3 dot product が同じ状況（base_r==0）で返す
+    `0.0`（＝合わなかった）に揃える。"""
+    result = sm.match_spectrum([[100.0, 10.0]], [[100.0, 0.0]], ms2_tol=0.01)
+    assert result["entropy_similarity"] == 0.0
+    assert result["weighted_dot_product"] == 0.0
+    assert result["simple_dot_product"] == 0.0
+    assert result["reverse_dot_product"] == 0.0
+
+
+def test_entropy_similarity_with_an_all_zero_measured_spectrum_does_not_raise():
+    """測定側が縮退（総強度 0）の場合も同様に例外を投げず 0.0 を返す。"""
+    result = sm.spectral_entropy_similarity([[100.0, 0.0]], [[100.0, 10.0], [200.0, 5.0]], bin_width=0.01)
+    assert result == 0.0
+
+
+def test_entropy_similarity_still_returns_the_sentinel_for_a_genuinely_empty_spectrum():
+    """縮退（総強度 0 だが非空）と比較不能（空）を混同しない回帰テスト。"""
+    assert sm.spectral_entropy_similarity([], [[100.0, 10.0]], bin_width=0.01) == -1.0
+    assert sm.spectral_entropy_similarity([[100.0, 0.0]], [], bin_width=0.01) == -1.0

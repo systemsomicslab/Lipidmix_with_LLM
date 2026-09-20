@@ -13,6 +13,7 @@ from lipidmix.core import session_state
 from lipidmix.library.defaults import DEFAULT_MS2_TOL as _LIBRARY_MS2_TOL
 from lipidmix.library.defaults import DEFAULT_MZ_TOL as _LIBRARY_MZ_TOL
 from lipidmix.library.defaults import DEFAULT_RT_TOL as _LIBRARY_RT_TOL
+from lipidmix.library.defaults import pick_tol as _pick_tol
 
 # session_state は leaf 側（arf/arf2/eic/pai2 の reader・msdial.classes/tags・
 # analysis.preprocessing のみに依存）で、そのどれも peak_verification を import
@@ -263,6 +264,9 @@ def _spectral_match_for_feature(feature: dict, spectrum: list, store) -> dict:
         return {"status": "unavailable", "reason": "precursor m/z が無いため照合できません。"}
 
     ion_mode = feature.get("ion_mode")
+    # store.candidates() の ion_mode 比較は COLLATE NOCASE（Critical 1 修正後）なので
+    # ここで小文字へ揃える必要は無い——PAI2 由来の Enum の `.name`（"Positive"）を
+    # そのまま渡してよい。
     ion_mode_name = ion_mode.name if hasattr(ion_mode, "name") else (
         str(ion_mode) if ion_mode is not None else None)
     rt = (feature.get("time") or {}).get("rt")
@@ -271,9 +275,21 @@ def _spectral_match_for_feature(feature: dict, spectrum: list, store) -> dict:
         search_params = store.summary().get("search_params") or {}
     except Exception:  # noqa: BLE001 - ここも下の2箇所と同じ意図: 照合の失敗で
         search_params = {}  # msms_evidence 本来の band 判定を止めない（既定値へ）
-    mz_tol = search_params.get("ms1_tolerance") or _LIBRARY_MZ_TOL
-    ms2_tol = search_params.get("ms2_tolerance") or _LIBRARY_MS2_TOL
-    rt_tol = search_params.get("rt_tolerance") or _LIBRARY_RT_TOL
+    # `or` ではなく共有の `pick_tol`（`is None` 判定）を使う——`search_params` の
+    # `0.0`（"足切りなし"のような正当な値）を偽値扱いで既定値に差し替えないため
+    # （最終レビュー Important 5: ここが独自の `or` 判定を持っていて、
+    # `lipidmix.library.tools._pick_tol` とロジックがずれていた）。
+    mz_tol = _pick_tol(None, search_params, "ms1_tolerance", _LIBRARY_MZ_TOL)
+    ms2_tol = _pick_tol(None, search_params, "ms2_tolerance", _LIBRARY_MS2_TOL)
+    rt_tol = _pick_tol(None, search_params, "rt_tolerance", _LIBRARY_RT_TOL)
+    # 採点前処理（`normalize_measured`）のパラメータも search_params から採る
+    # （最終レビュー Important 2: 検証 CLI と同じ集合を使わないと、足切りを変えた
+    # run の `.dbs` を読ませたときだけ `library_match_feature` と違う土俵で
+    # 採点することになる）。
+    mass_begin = _pick_tol(None, search_params, "mass_range_begin", 0.0)
+    mass_end = _pick_tol(None, search_params, "mass_range_end", 2000.0)
+    relative_amp_cutoff = _pick_tol(None, search_params, "relative_amp_cutoff", 0.0)
+    absolute_amp_cutoff = _pick_tol(None, search_params, "absolute_amp_cutoff", 0.0)
 
     try:
         candidates = store.candidates(
@@ -285,7 +301,11 @@ def _spectral_match_for_feature(feature: dict, spectrum: list, store) -> dict:
         return {"status": "no_candidates", "n_candidates": 0}
 
     scored = [
-        (record, match_spectrum(spectrum, record["spectrum"], ms2_tol=ms2_tol))
+        (record, match_spectrum(
+            spectrum, record["spectrum"], ms2_tol=ms2_tol,
+            mass_begin=mass_begin, mass_end=mass_end,
+            relative_amp_cutoff=relative_amp_cutoff, absolute_amp_cutoff=absolute_amp_cutoff,
+        ))
         for record in candidates
     ]
     scored.sort(key=lambda item: item[1]["weighted_dot_product"], reverse=True)

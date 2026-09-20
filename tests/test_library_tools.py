@@ -1,5 +1,6 @@
 """MCP ツール。戻り値の量と missing_state 契約を固定する。"""
 import json
+import struct
 import textwrap
 
 import pytest
@@ -120,3 +121,133 @@ def test_second_load_does_not_rescan_the_source_file(fresh_session, monkeypatch)
     text = tools.library_load()  # 2 回目: 元ファイルへは触れないはず
     payload = json.loads(text)
     assert payload["status"] == "success"
+
+
+# --------------------------------------------------------------------------
+# Important 7（最終レビュー）: `.dcl` 側の測定スペクトル検索経路。
+# 既存のテストは `_measured_spectrum` を全部 monkeypatch していて、
+# `.dcl` 解決 → `get_msms_by_precursor` → hits の選択が一度も検証されて
+# いなかった（この穴が Important 7 を通した）。ここでは実際の `.dcl` バイナリを
+# 組み立てて、その経路を通しで確認する。レイアウトは
+# `lipidmix/dcl/reader.py` 冒頭のドキュメントに準拠（`tests/test_parser_decode.py`
+# の `dcl_bytes`/`dcl_result` と同じ組み立て方だが、fixture はテスト自身が
+# 作る規約に沿ってここに複製する）。
+# --------------------------------------------------------------------------
+def _dcl_result(precursor_mz, rt, spectrum, scan_id=0, raw_spec_id=1,
+                ion_mode=0, model_height=9000.0, sn=50.0):
+    return {
+        "scan_id": scan_id, "raw_spec_id": raw_spec_id, "precursor_mz": precursor_mz,
+        "ion_mode": ion_mode, "rt": rt, "model_height": model_height, "sn": sn,
+        "spectrum": spectrum,
+    }
+
+
+def _dcl_bytes(results):
+    header = b"DC" + struct.pack("<i", 1) + b"\x00" + struct.pack("<i", len(results))
+    table_size = 8 * len(results)
+    body = b""
+    pointers = []
+    for result in results:
+        pointers.append(len(header) + table_size + len(body))
+        spectrum = result["spectrum"]
+        body += struct.pack(
+            "<qiididdd d",
+            0, result["scan_id"], result["raw_spec_id"], result["precursor_mz"],
+            result["ion_mode"], result["rt"], 0.0, 0.0, result["precursor_mz"],
+        )
+        body += struct.pack("<5d", 0.0, result["model_height"], 0.0, 0.0, 0.0)
+        body += struct.pack("<5f", 0.0, 0.0, 0.0, result["sn"], 0.0)
+        body += struct.pack("<3i", len(spectrum), 0, 0)
+        for mass, intensity in spectrum:
+            body += struct.pack("<2di", mass, intensity, 0)
+    return header + b"".join(struct.pack("<q", p) for p in pointers) + body
+
+
+def test_measured_spectrum_picks_the_dcl_hit_closest_in_rt(fresh_session):
+    """Important 7 (1/2) の再発防止: 同じ precursor m/z で複数の `.dcl` ヒットが
+    あるとき、ファイル内の出現順の先頭（`hits[0]`）ではなく RT が最も近いものを
+    選ぶこと。以前は先頭を無条件に採っており、rt_tol の窓が広いと別ピークの
+    測定スペクトルを黙って採点しうる不具合があった。"""
+    far_spectrum = [[999.0, 1.0]]
+    near_spectrum = [[111.0, 500.0]]
+    (fresh_session / "sample.dcl").write_bytes(_dcl_bytes([
+        _dcl_result(precursor_mz=760.5851, rt=3.0, spectrum=far_spectrum, scan_id=0),
+        _dcl_result(precursor_mz=760.5851, rt=12.0, spectrum=near_spectrum, scan_id=1),
+    ]))
+
+    measured = tools._measured_spectrum(760.5851, rt=11.8, mz_tol=0.01, rt_tol=100.0)
+    assert measured == near_spectrum
+
+
+def test_library_match_feature_walks_the_real_dcl_lookup_path(fresh_session):
+    """Important 7 の穴そのものへの回帰テスト: 既存テストは全部
+    `_measured_spectrum` を monkeypatch していたため、`.dcl` 解決 →
+    `deserialize_dcl` → `get_msms_by_precursor` → hits の選択という経路が
+    1 度も通っていなかった。ここでは monkeypatch せず `library_match_feature`
+    を実際の `.dcl` に対して走らせ、RT が近いヒットの測定スペクトルが
+    採点に使われることまで確認する。"""
+    tools.library_load()
+    (fresh_session / "sample.dcl").write_bytes(_dcl_bytes([
+        _dcl_result(precursor_mz=104.0706, rt=3.0, spectrum=[[999.0, 1.0]], scan_id=0),
+        _dcl_result(precursor_mz=104.0706, rt=12.0,
+                    spectrum=[[87.0441, 999.0], [69.0335, 500.0]], scan_id=1),
+    ]))
+
+    payload = json.loads(tools.library_match_feature(104.0706, rt=12.0, ion_mode="positive"))
+    assert payload["status"] == "success"
+    assert payload["measured_peak_count"] == 2  # RT=12.0 の方（RT=3.0 は 1 本だけ）
+
+
+def test_dcl_lookup_window_is_decoupled_from_library_search_params(fresh_session, monkeypatch):
+    """Important 7 (2/2) の再発防止: ライブラリ照合用の許容幅
+    （`store.search_params` 由来、`.dbs` の `RtTolerance` 既定は実質 RT フィルタ
+    無効化の 100.0）を `.dcl` 側の測定スペクトル検索へ流用しない。以前は
+    `library_match_feature` が解決した `resolved_mz_tol`/`resolved_rt_tol` を
+    そのまま `_measured_spectrum` に渡していたため、広いライブラリ用許容幅の
+    `.dbs` を読ませると `.dcl` 側の窓まで連動して広がっていた。"""
+    tools.library_load()
+    real_store = session_state.session.library.store
+
+    class _StoreWithWideSearchParams:
+        """`.dbs` の実質 RT フィルタ無効化（RtTolerance=100.0）を模した store。"""
+        def summary(self):
+            s = dict(real_store.summary())
+            s["search_params"] = {
+                "ms1_tolerance": 50.0, "ms2_tolerance": 0.05, "rt_tolerance": 100.0,
+            }
+            return s
+
+        def candidates(self, *args, **kwargs):
+            return real_store.candidates(*args, **kwargs)
+
+    session_state.session.library.store = _StoreWithWideSearchParams()
+
+    captured = {}
+
+    def spy(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return [[87.0441, 999.0], [69.0335, 500.0]]
+
+    monkeypatch.setattr(tools, "_measured_spectrum", spy)
+    tools.library_match_feature(104.0706, ion_mode="positive")
+
+    # 呼び出しに mz_tol/rt_tol を一切渡していない（= _measured_spectrum 自身の
+    # 固定既定 0.01/0.2 を使う。ライブラリ側の 50.0/100.0 を持ち込まない）。
+    assert "mz_tol" not in captured["kwargs"]
+    assert "rt_tol" not in captured["kwargs"]
+
+
+def test_reloading_the_library_closes_the_old_store(fresh_session):
+    """Minor 8 の再発防止: `library_load` を繰り返すと sqlite3 接続が漏れる。
+    `LibraryStore.close()` は最初から存在したが、古い store を上書きする前に
+    呼んでいなかった。閉じた store への問い合わせは `sqlite3.ProgrammingError`
+    になることを利用して、上書き前にちゃんと閉じたことを確認する。"""
+    tools.library_load()
+    old_store = session_state.session.library.store
+
+    tools.library_load()  # 同じファイル・同じ sha256 でも再読み込みは起こる
+
+    assert session_state.session.library.store is not old_store
+    with pytest.raises(Exception):
+        old_store.candidates(104.0706, mz_tol=0.01)  # 閉じた接続へのクエリはここで失敗するはず

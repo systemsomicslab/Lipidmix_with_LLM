@@ -48,7 +48,12 @@
   `_is_compared_available` ガードを使い（`spectral_match.py` の
   `spectral_entropy_similarity`）、`match_spectrum` では `sqrt` を経ずに素通し
   するため `candidates_table` にも `-1.0` がそのまま出る。
-- `0`: 比較はできたが、一致度がゼロだった（本当に合わなかった）。
+- `0`: 比較はできたが、一致度がゼロだった（本当に合わなかった）。**`entropy_similarity`
+  はこれにもう1パターン足す**: 測定・参照どちらも非空だが、どちらかの総強度が 0
+  （例: `[[100.0, 0.0]]`）という縮退入力も `-1`（比較不能）ではなく `0.0` を返す
+  （最終レビュー Important 4）。空ではないので `-1` を流用すると意味が変わるため、
+  dot product 3 種が「窓合算後に信号が無かった」ときに `0.0` を返すのと同じ規約に
+  揃えた。
 
 **mzTab の値とは番兵の扱いが違う**ので、実データ突き合わせの際に注意する:
 
@@ -91,6 +96,24 @@
 `lipidmix/library/defaults.py` の `DEFAULT_MZ_TOL` (0.01) / `DEFAULT_MS2_TOL` (0.025) /
 `DEFAULT_RT_TOL` (0.2)。
 
+**`DEFAULT_RT_TOL` の出所訂正（最終レビュー Important 6）**: これは
+`MsRefSearchParameterBase` の `RtTolerance` の既定値ではない
+（`docs/schema/molecule_ms_reference.md` によれば上流既定は **100.0**）。
+`DEFAULT_RT_TOL` (0.2) は `lipidmix/dcl/reader.py` / `dcl/tools.py` の `.dcl` 検索
+（precursor m/z から測定 MS/MS を引くときの RT 窓）の既定値であって、ライブラリ
+候補検索用の値ではない。値そのもの（0.2 分）は `.dcl` の窓として妥当。
+
+**ライブラリ照合用の窓と `.dcl` 検索用の窓は別物（最終レビュー Important 7）**:
+`library_match_feature` の `mz_tol` / `rt_tol` 引数と、それらが解決した
+`search_params` 由来の値は**ライブラリ候補検索（`store.candidates()`）にだけ**
+効く。`.dcl` から測定 MS/MS を引く窓（`_measured_spectrum`）は常に
+`dcl/reader.py` と同じ固定既定（`mz_tol=0.01` / `rt_tol=0.2`）を使い、
+`search_params` の影響を受けない。`.dbs` の `RtTolerance`（実質 RT フィルタを
+無効化する 100.0 が典型）をこの窓に流用すると、precursor m/z が近い別ピークの
+測定スペクトルを黙って拾ってしまうため。RT が渡されたときは、`.dcl` 側で複数
+ヒットしても **RT 距離が最も近いもの**を選ぶ（以前はファイル内の出現順の先頭を
+無条件に採っていた）。
+
 ### 14.5 `library_load`
 
 `.dbs`/`.msp` を解決して SQLite store を構築（または既存キャッシュを再利用）した
@@ -103,6 +126,14 @@
 | `compound_classes` | 化合物クラス別件数の上位 10（`compound_class IS NULL` は除外） |
 | `search_params` | `.dbs` 由来なら実測の許容幅、`.msp` 由来なら `null`（§14.4） |
 | `source_sha256` | 元ファイルの sha256（store のキャッシュキーと同じ） |
+| `skipped_no_precursor_mz` | precursor m/z が無い（または解釈できなかった）ため読み飛ばしたレコード件数（最終レビュー Important 3。`record_count` には含まれない） |
+
+**`skipped_no_precursor_mz`（Important 3）**: reader（`.msp`/`.dbs`）は
+PRECURSORMZ 欠損・パース失敗を契約どおり `None` に潰すだけで例外にしないが、
+store のスキーマは `precursor_mz REAL NOT NULL`。公開 `.msp`（MassBank 由来など）
+には precursor を持たないレコードが普通に混ざるため、そうしたレコードは
+1 件ずつ読み飛ばして件数だけ残す（1 件の欠損でライブラリ全体を使用不能に
+しない）。0 件より多いときは `library_load` の `note` にも件数が出る。
 
 ### 14.6 `library_match_feature`
 
@@ -117,6 +148,14 @@
 候補は既定で `weighted_dot_product` の降順（`ranked_by` フィールドが基準を明示）。
 スペクトル座標・alignment は戻り値に含めず `session.library.last_match` に持つ
 （`library_plot_mirror` がそこから読む）。
+
+**`ion_mode` の大小は問わない（最終レビュー Critical 1）**: `store.candidates()`
+の比較は `COLLATE NOCASE`。`"positive"`（store の正規化表記）と `"Positive"`
+（PAI2 由来の `IonMode.Positive.name`）はどちらも一致する。以前は SQLite の既定
+BINARY 照合のままで、`verify_peak_annotation` の統合経路（§14.8）が
+`ion_mode.name`（大文字始まり）をそのまま渡すため常に 0 件になっていた
+——`no_candidates` はここでは「該当レコードが無い」という実質的な主張なので、
+この不一致は「ライブラリに無い化合物だ」という誤った結論に直結していた。
 
 ### 14.7 `library_plot_mirror`
 

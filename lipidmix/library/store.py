@@ -112,8 +112,18 @@ def _build(source_path: Path, dest_path: Path, digest: str) -> None:
             conn.executescript(_SCHEMA)
             ion_mode_counts: dict[str, int] = {}
             record_count = 0
+            skipped_no_precursor_mz = 0
             with conn:
                 for record in _iter_records_for(source_path):
+                    if record["precursor_mz"] is None:
+                        # `record.precursor_mz REAL NOT NULL`（Important 3 レビュー）:
+                        # reader（`.msp` の `msp.py:_read_record` / `.dbs` の
+                        # `_to_record`）は PRECURSORMZ 欠損・パース失敗を契約どおり
+                        # None に潰すだけで例外にしない。公開 `.msp`（MassBank 由来
+                        # など）には precursor を持たないレコードが普通に混ざるので、
+                        # 1 件の欠損でライブラリ全体を使用不能にせず読み飛ばす。
+                        skipped_no_precursor_mz += 1
+                        continue
                     spectrum_blob = msgpack.packb(record["spectrum"] or [])
                     conn.execute(
                         "INSERT INTO record(name, precursor_mz, ion_mode, adduct, rt, "
@@ -152,6 +162,7 @@ def _build(source_path: Path, dest_path: Path, digest: str) -> None:
                     ("source_sha256", json.dumps(digest)),
                     ("source_path", json.dumps(str(source_path))),
                     ("search_params", json.dumps(search_params)),
+                    ("skipped_no_precursor_mz", json.dumps(skipped_no_precursor_mz)),
                 ]
                 conn.executemany("INSERT INTO meta(key, value) VALUES (?, ?)", meta_rows)
         finally:
@@ -172,6 +183,7 @@ class LibraryStore:
         self._ion_modes: dict[str, int] = meta["ion_modes"]
         self._source_sha256: str = meta["source_sha256"]
         self._search_params = meta["search_params"]
+        self._skipped_no_precursor_mz: int = meta["skipped_no_precursor_mz"]
 
     def _load_meta(self) -> dict:
         rows = dict(self._conn.execute("SELECT key, value FROM meta").fetchall())
@@ -180,6 +192,10 @@ class LibraryStore:
             "ion_modes": json.loads(rows["ion_modes"]),
             "source_sha256": json.loads(rows["source_sha256"]),
             "search_params": json.loads(rows["search_params"]),
+            # .get(): このコード変更より前に構築されたキャッシュ（sha256 キーが
+            # 同じまま残っている）には無いキーなので、rebuild なしで開いたときに
+            # KeyError にしない。
+            "skipped_no_precursor_mz": json.loads(rows.get("skipped_no_precursor_mz", "0")),
         }
 
     def summary(self) -> dict:
@@ -188,6 +204,7 @@ class LibraryStore:
             "ion_modes": dict(self._ion_modes),
             "source_sha256": self._source_sha256,
             "search_params": self._search_params,
+            "skipped_no_precursor_mz": self._skipped_no_precursor_mz,
         }
 
     def compound_class_counts(self, top_n: int = 10) -> list[dict]:
@@ -224,9 +241,25 @@ class LibraryStore:
         )
         params: list = [precursor_mz - mz_tol, precursor_mz + mz_tol]
         if ion_mode is not None:
-            query += " AND ion_mode = ?"
+            # COLLATE NOCASE: 呼び出し元の大小表記は揃っていない
+            # （`.dcl`/pai2 の feature は IonMode Enum の `.name` = "Positive"、
+            # store の列は record.ION_MODES = "positive"。Task 11 レビュー
+            # Critical 1 —
+            # `peak_verification._spectral_match_for_feature` がここを大小区別の
+            # BINARY 照合のまま呼び、常に 0 件になっていた。呼び出し側で `lower()`
+            # を撒くのではなくここで正規化する——呼び出し側が増えるたびに同じ穴が
+            # 開くのを防ぐため）。
+            query += " AND ion_mode = ? COLLATE NOCASE"
             params.append(ion_mode)
         if rt is not None:
+            if rt_tol is None:
+                # Minor 11: `ABS(rt - ?) <= NULL` は NULL（偽）になり `rt IS NULL` の
+                # 行しか返らない黙った縮退を起こす。シグネチャ上 rt_tol は省略できる
+                # ように見えるので、呼び出し側の取り違えを実行時に検出する。
+                raise ValueError(
+                    "rt を指定するときは rt_tol も指定してください "
+                    "（None のままだと該当行が rt IS NULL の行以外すべて捨てられます）。"
+                )
             query += " AND (rt IS NULL OR ABS(rt - ?) <= ?)"
             params.extend([rt, rt_tol])
 

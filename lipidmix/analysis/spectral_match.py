@@ -14,6 +14,12 @@
 比較不能（どちらかのスペクトルが空）は **0 ではなく -1** を返す。0 は「合わない」を
 意味するので、混同すると「照合していない」が「合わなかった」に化ける。
 
+非空だが総強度が 0 の縮退スペクトル（例: `[[100.0, 0.0]]`）は「比較不能」ではない
+（空ではないため）ので `-1` にはしない。dot product 3 種は窓合算後の信号が無い
+（`base_m == 0` / `base_r == 0`）ときに既に `0.0` を返しており、entropy も同じ
+規約に揃えて `0.0` を返す（最終レビュー Important 4。以前は `_entropy` が
+ゼロ除算・`log2(0)` の定義域エラーで例外を投げていた）。
+
 前提: 入力は m/z 昇順。`_prepare()` が並べ替えるので呼び側は気にしなくてよい。
 
 上流ソース: `MsdialWorkbench` (master, HEAD afd5f9522)
@@ -419,18 +425,51 @@ def _binned_spectrum(peaks, bin_width, halve=False):
 
 
 def _entropy(peaks):
-    """`GetSpectralEntropy` の写し。"""
+    """`GetSpectralEntropy` の写し。
+
+    強度 0 のピークは `0 * log2(0) = 0`（情報理論の慣例的な極限値）として寄与なし
+    に扱う——素の `math.log2(0)` は定義域エラーになる（最終レビュー Important 4:
+    `spectral_entropy_similarity([[100,10]], [[100,0],[200,5]])` が
+    `ValueError` を投げていた）。合計強度が 0（全ピーク強度 0）の縮退入力は
+    `spectral_entropy_similarity` 側で事前にガードするので通常ここには来ないが、
+    単体で呼ばれても例外を投げないよう `0.0` を返す。
+    """
     total = sum(intensity for _, intensity in peaks)
-    return -sum((intensity / total) * math.log2(intensity / total) for _, intensity in peaks)
+    if total <= 0:
+        return 0.0
+    entropy = 0.0
+    for _, intensity in peaks:
+        if intensity <= 0:
+            continue
+        p = intensity / total
+        entropy -= p * math.log2(p)
+    return entropy
 
 
 def spectral_entropy_similarity(measured, reference, *, bin_width):
     """`GetSpectralEntropySimilarity` の写し。Li et al. 2021 の低エントロピー重み変換は
-    入っていない（上流にも無い）。足さない。"""
+    入っていない（上流にも無い）。足さない。
+
+    **縮退入力の扱い（最終レビュー Important 4）**: 測定・参照どちらかが
+    「非空だが総強度が 0」（例: `[[100.0, 0.0]]`）だと `_normalized_by_total` が
+    ゼロ除算で例外を投げていた（上流は同じ状況で NaN になる）。この関数の既存の
+    番兵規約では `-1.0` は「比較不能＝どちらかが空」専用（`_is_compared_available`）
+    であり、この入力は空ではないので `-1.0` を流用すると意味が変わる。
+    weighted/reverse/simple の 3 dot product が同じ「窓を合算したら信号が無かった」
+    状況（`base_m == 0` / `base_r == 0`）で `0.0`（＝合わなかった）を返しているのに
+    倣い、ここも `0.0` を返す（controller裁定 2026-09-20: 上流の NaN をそのまま
+    模倣する先例が本モジュールに無い一方、「総強度 0 は無情報」を「合わなかった」
+    として扱う `0.0` は同モジュール内の既存規約と一貫する）。
+    """
     peaks1 = _prepare(measured)
     peaks2 = _prepare(reference)
     if not _is_compared_available(peaks1, peaks2):
         return -1.0
+
+    total1 = sum(intensity for _, intensity in peaks1)
+    total2 = sum(intensity for _, intensity in peaks2)
+    if total1 <= 0 or total2 <= 0:
+        return 0.0
 
     norm1 = _normalized_by_total(peaks1)
     norm2 = _normalized_by_total(peaks2)

@@ -217,3 +217,73 @@ def test_rt_filter_keeps_null_rt_but_drops_rt_outside_tolerance(tmp_path, monkey
         assert sorted(r["name"] for r in hits) == ["RT_KNOWN", "RT_UNKNOWN"]  # RT_FAR は窓の外
     finally:
         s.close()
+
+
+_MSP_MISSING_PRECURSOR = textwrap.dedent("""\
+    NAME: NO_PRECURSOR
+    IONMODE: Positive
+    Num Peaks: 1
+    50.0 999
+
+    NAME: HAS_PRECURSOR
+    PRECURSORMZ: 100.0
+    IONMODE: Positive
+    Num Peaks: 1
+    50.0 999
+""")
+
+
+def test_a_record_without_precursor_mz_is_skipped_not_fatal(tmp_path, monkeypatch):
+    """Important 3 の再発防止: `record.precursor_mz REAL NOT NULL`（store のスキーマ）
+    に対し、reader は PRECURSORMZ 欠損を契約どおり `None` に潰すだけで例外にしない
+    （`msp.py` の `_read_record`）。以前は 1 レコードの欠損で
+    `IntegrityError: NOT NULL constraint failed: record.precursor_mz` となり
+    ライブラリ全体が構築できなかった。欠損レコードだけ読み飛ばし、件数を meta に残す。"""
+    monkeypatch.setenv(store.LIBRARY_CACHE_ENV, str(tmp_path / "cache"))
+    path = tmp_path / "missing_precursor.msp"
+    path.write_text(_MSP_MISSING_PRECURSOR, encoding="utf-8")
+
+    s = store.open_store(path)
+    try:
+        assert s.record_count == 1  # NO_PRECURSOR は読み飛ばされる
+        assert s.summary()["skipped_no_precursor_mz"] == 1
+        hits = s.candidates(100.0, mz_tol=0.01)
+        assert [r["name"] for r in hits] == ["HAS_PRECURSOR"]
+    finally:
+        s.close()
+
+
+def test_skipped_no_precursor_mz_defaults_to_zero_for_a_clean_library(library):
+    s = store.open_store(library)
+    try:
+        assert s.summary()["skipped_no_precursor_mz"] == 0
+    finally:
+        s.close()
+
+
+def test_candidates_rejects_an_rt_without_a_tolerance(library):
+    """Minor 11 の再発防止: `candidates(rt=..., rt_tol=None)` は SQL の
+    `ABS(rt - ?) <= NULL` が NULL（偽）になるため `rt IS NULL` の行しか
+    返さない黙った縮退を起こす。シグネチャ上 `rt_tol` は省略できるように
+    見えるので、呼び出し側の取り違えを実行時に検出する。"""
+    s = store.open_store(library)
+    try:
+        with pytest.raises(ValueError):
+            s.candidates(100.0, mz_tol=0.01, rt=5.0, rt_tol=None)
+    finally:
+        s.close()
+
+
+def test_candidates_ion_mode_comparison_is_case_insensitive(library):
+    """Critical 1 の再発防止: store の `ion_mode` 列は小文字（`record.ION_MODES`）
+    だが、呼び出し側（`peak_verification._spectral_match_for_feature`）は
+    PAI2 由来の `IonMode.Positive.name`（`"Positive"`、大文字始まり）をそのまま
+    渡す。以前は SQLite の既定 BINARY 照合で一致せず常に 0 件になっていた。"""
+    s = store.open_store(library)
+    try:
+        hits = s.candidates(100.0, mz_tol=0.01, ion_mode="Positive")
+        assert sorted(r["name"] for r in hits) == ["A", "B"]
+        hits_upper = s.candidates(100.0, mz_tol=0.01, ion_mode="POSITIVE")
+        assert sorted(r["name"] for r in hits_upper) == ["A", "B"]
+    finally:
+        s.close()

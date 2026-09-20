@@ -26,6 +26,7 @@ from lipidmix.dcl.reader import deserialize_dcl, get_msms_by_precursor
 from lipidmix.library.defaults import DEFAULT_MS2_TOL as _DEFAULT_MS2_TOL
 from lipidmix.library.defaults import DEFAULT_MZ_TOL as _DEFAULT_MZ_TOL
 from lipidmix.library.defaults import DEFAULT_RT_TOL as _DEFAULT_RT_TOL
+from lipidmix.library.defaults import pick_tol as _pick_tol
 from lipidmix.library.store import open_store
 from lipidmix.plots import mirror as mirror_plot
 from lipidmix.plots import render as plot_render
@@ -78,6 +79,13 @@ def library_load(file_path: str | None = None, rebuild: bool = False) -> str:
     except Exception as exc:  # noqa: BLE001 - 壊れたライブラリは文言で返す（MCP が扱いやすい）
         return json_payload({"status": "error", "message": f"参照ライブラリの読み込みに失敗しました: {exc}"})
 
+    # 古い store の sqlite3 接続を閉じてから差し替える（Minor 8: 閉じずに上書きすると
+    # library_load を繰り返すたびに接続が漏れる。LibraryStore.close() は最初から
+    # 存在していたが、ここで呼んでいなかった）。
+    old_store = session_state.session.library.store
+    if old_store is not None:
+        old_store.close()
+
     # 別ライブラリへの切り替え起こりうるので、古い照合結果を新ライブラリのものと
     # 取り違えないよう破棄する（ArfState.reset_analysis と同じ考え方）。
     session_state.session.library.store = store_obj
@@ -87,6 +95,7 @@ def library_load(file_path: str | None = None, rebuild: bool = False) -> str:
     path = Path(resolved)
     summary = store_obj.summary()
     search_params = summary.get("search_params")
+    skipped = summary.get("skipped_no_precursor_mz", 0)
 
     payload = {
         "status": "success",
@@ -96,28 +105,25 @@ def library_load(file_path: str | None = None, rebuild: bool = False) -> str:
         "ion_modes": summary["ion_modes"],
         "compound_classes": store_obj.compound_class_counts(_TOP_COMPOUND_CLASSES),
         "search_params": search_params,
+        "skipped_no_precursor_mz": skipped,
     }
+    notes = []
     if search_params is None:
-        payload["note"] = (
+        notes.append(
             f"`.msp` には照合の許容幅（search_params）が同梱されないため、"
             f"library_match_feature は既定値 mz_tol={_DEFAULT_MZ_TOL} / "
             f"ms2_tol={_DEFAULT_MS2_TOL} を使用します（明示的に指定すれば上書きできます）。"
         )
+    if skipped:
+        # Important 3: PRECURSORMZ が無い/パース不能なレコードは黙って捨てず、
+        # 件数を表に出す（黙って捨てると「record_count が元ファイルと合わない」で悩む）。
+        notes.append(
+            f"precursor m/z が無い（または解釈できなかった）レコードを {skipped} 件、"
+            f"読み飛ばしました（record_count には含まれません）。"
+        )
+    if notes:
+        payload["note"] = " ".join(notes)
     return json_payload(round_floats(payload))
-
-
-def _pick_tol(explicit: float | None, search_params: dict, key: str, default: float) -> float:
-    """明示指定 > store の search_params > 既定値、の順で許容幅を決める。
-
-    `search_params.get(key)` が `0.0` のような偽値でも正しく採用されるよう、
-    `or` ではなく `is None` で判定する。
-    """
-    if explicit is not None:
-        return explicit
-    value = search_params.get(key)
-    if value is not None:
-        return value
-    return default
 
 
 def _measured_spectrum(precursor_mz: float, *, rt: float | None = None,
@@ -127,6 +133,18 @@ def _measured_spectrum(precursor_mz: float, *, rt: float | None = None,
     間引くと採点の数値が変わる。Task 1 で確認済み）。
 
     `.dcl` が無い、または該当 precursor の MS/MS が無ければ `None`。
+
+    **`mz_tol` / `rt_tol` の既定はここだけで完結させる**（呼び出し元の
+    `library_match_feature` は library 側の許容幅——`.dbs` の `search_params`
+    由来なら実値、RT は上流既定 100.0 相当——をここへ絶対に流し込まないこと。
+    最終レビュー Important 7: 以前は library 側で解決した `resolved_rt_tol`
+    をここにも渡していたため、その `.dbs` を読ませると `.dcl` 側の RT 窓が
+    ±100 分になり、precursor が近い無関係なピークまで拾っていた）。
+
+    `.dcl` の同じ precursor に複数ヒットしうる（同一 m/z の別溶出ピーク）ため、
+    `rt` が渡されたときは **RT 距離が最も近いヒットを選ぶ**（最終レビュー
+    Important 7: 以前は `hits[0]`——`.dcl` ファイル内の並び順の先頭——を無条件に
+    採っており、別のピークの測定スペクトルを黙って採点しうる不具合があった）。
     """
     resolved = resolve_dcl_file_path(dcl_file)
     if not resolved:
@@ -138,6 +156,8 @@ def _measured_spectrum(precursor_mz: float, *, rt: float | None = None,
     hits = get_msms_by_precursor(results, precursor_mz, tol=mz_tol, rt=rt, rt_tol=rt_tol)
     if not hits:
         return None
+    if rt is not None:
+        hits = sorted(hits, key=lambda hit: abs(hit["rt"] - rt))
     return hits[0]["msms_spectrum"]
 
 
@@ -155,10 +175,24 @@ def library_match_feature(
     """測定 MS/MS（`.dcl`）を参照ライブラリ（`library_load` 済みの store）と照合し、
     上位候補を返す。
 
+    `ion_mode` は `"positive"` / `"negative"`（大小は問わない——`store.candidates()`
+    が `COLLATE NOCASE` で比較するため、PAI2 由来の `IonMode.Positive.name`
+    のような `"Positive"` 表記もそのまま渡してよい）。
+
     `mz_tol` / `ms2_tol` / `rt_tol` は明示指定が無ければ store の `search_params`
     （`.dbs` 由来なら実値）を使い、それも無ければ既定値
     （`_DEFAULT_MZ_TOL` / `_DEFAULT_MS2_TOL` / `_DEFAULT_RT_TOL`、現在の値は
-    0.01 / 0.025 / 0.2）を使う。
+    0.01 / 0.025 / 0.2）を使う。**これらは参照ライブラリの候補検索（`store.candidates()`
+    の precursor m/z 窓・RT 窓）にだけ効く。** `.dcl` から測定 MS/MS を引く窓は
+    `_measured_spectrum` 内部の固定既定（`dcl/reader.py` と同じ `mz_tol=0.01`/
+    `rt_tol=0.2`）を常に使い、ここの引数や store の `search_params` の影響を受けない
+    （最終レビュー Important 7: `.dbs` の `RtTolerance` 既定 100.0 のような
+    ライブラリ用の値を `.dcl` 側の RT 窓に流用すると、同じ precursor m/z の
+    別ピークの測定スペクトルを黙って拾ってしまうため、2 つの窓を分離した）。
+    足切り（`relative_amp_cutoff` / `absolute_amp_cutoff`）と質量範囲
+    （`mass_range_begin` / `mass_range_end`）も同じ `search_params` から採って
+    採点（`match_spectrum`）に渡す——検証 CLI（`scripts/verify_spectral_match.py`）
+    と同じ集合（最終レビュー Important 2）。
 
     `.dcl` に MS/MS が無い（未取得）場合は `status="not_found"` を返す——
     「候補と合わなかった」のではなく「照合する測定スペクトルがそもそも無い」ことを
@@ -187,10 +221,18 @@ def library_match_feature(
     resolved_mz_tol = _pick_tol(mz_tol, search_params, "ms1_tolerance", _DEFAULT_MZ_TOL)
     resolved_ms2_tol = _pick_tol(ms2_tol, search_params, "ms2_tolerance", _DEFAULT_MS2_TOL)
     resolved_rt_tol = _pick_tol(rt_tol, search_params, "rt_tolerance", _DEFAULT_RT_TOL)
+    # match_spectrum の採点前処理パラメータ。検証 CLI（scripts/verify_spectral_match.py）
+    # と同じ集合を search_params から採る（Important 2）。既定は
+    # MsRefSearchParameterBase の Key 0/1/7/8（`dbs.py` の `_SEARCH_PARAM_KEYS`）。
+    mass_begin = _pick_tol(None, search_params, "mass_range_begin", 0.0)
+    mass_end = _pick_tol(None, search_params, "mass_range_end", 2000.0)
+    relative_amp_cutoff = _pick_tol(None, search_params, "relative_amp_cutoff", 0.0)
+    absolute_amp_cutoff = _pick_tol(None, search_params, "absolute_amp_cutoff", 0.0)
 
-    measured = _measured_spectrum(
-        precursor_mz, rt=rt, dcl_file=dcl_file, mz_tol=resolved_mz_tol, rt_tol=resolved_rt_tol,
-    )
+    # `.dcl` 側の窓は library 側の resolved_mz_tol/resolved_rt_tol を渡さない
+    # （Important 7 — 上のクラス docstring参照）。_measured_spectrum 自身の
+    # 固定既定（dcl/reader.py と同じ mz_tol=0.01/rt_tol=0.2）を使う。
+    measured = _measured_spectrum(precursor_mz, rt=rt, dcl_file=dcl_file)
     if not measured:
         return json_payload({
             "status": "not_found",
@@ -217,7 +259,11 @@ def library_match_feature(
         })
 
     scored = [
-        (record, match_spectrum(measured, record["spectrum"], ms2_tol=resolved_ms2_tol))
+        (record, match_spectrum(
+            measured, record["spectrum"], ms2_tol=resolved_ms2_tol,
+            mass_begin=mass_begin, mass_end=mass_end,
+            relative_amp_cutoff=relative_amp_cutoff, absolute_amp_cutoff=absolute_amp_cutoff,
+        ))
         for record in candidates
     ]
     # ランク付けの基準は _RANK_KEY（weighted_dot_product、MS-DIAL の主要な照合指標）。
@@ -281,6 +327,8 @@ def library_match_feature(
         "query": {
             "precursor_mz": precursor_mz, "rt": rt, "ion_mode": ion_mode,
             "mz_tol": resolved_mz_tol, "ms2_tol": resolved_ms2_tol, "rt_tol": resolved_rt_tol,
+            "mass_begin": mass_begin, "mass_end": mass_end,
+            "relative_amp_cutoff": relative_amp_cutoff, "absolute_amp_cutoff": absolute_amp_cutoff,
         },
         "measured_peak_count": len(measured),
         "n_candidates": len(candidates),
