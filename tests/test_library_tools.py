@@ -92,3 +92,31 @@ def test_mirror_plot_passes_ms2_tol_so_measured_side_gets_colored(fresh_session,
     monkeypatch.setattr(mirror_plot, "build_mirror_payload", spy)
     tools.library_plot_mirror(output="payload")
     assert captured.get("ms2_tol") is not None
+
+
+def test_candidates_are_ranked_by_a_documented_key(fresh_session, monkeypatch):
+    """rank 列が何の降順かを payload 自身が明示する（docstring だけに頼らない）。"""
+    tools.library_load()
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 500.0]])
+    payload = json.loads(tools.library_match_feature(104.0706, ion_mode="positive"))
+    assert payload["ranked_by"] == "weighted_dot_product"
+
+
+def test_second_load_does_not_rescan_the_source_file(fresh_session, monkeypatch):
+    """SQLite store をキャッシュした目的そのもの: 2 回目の library_load は
+    ライブラリファイルを再走査してはいけない（cache hit のはず）。"""
+    tools.library_load()  # 1 回目でキャッシュを構築する
+
+    from lipidmix.library import dbs as dbs_reader
+    from lipidmix.library import msp as msp_reader
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("iter_records が呼ばれた（2 回目は cache hit のはず）")
+
+    monkeypatch.setattr(msp_reader, "iter_records", _boom)
+    monkeypatch.setattr(dbs_reader, "iter_records", _boom)
+
+    text = tools.library_load()  # 2 回目: 元ファイルへは触れないはず
+    payload = json.loads(text)
+    assert payload["status"] == "success"

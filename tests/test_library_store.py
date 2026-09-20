@@ -129,6 +129,79 @@ _MSP_WITH_RT = textwrap.dedent("""\
 """)
 
 
+_MSP_CLASSES = textwrap.dedent("""\
+    NAME: A1
+    PRECURSORMZ: 100.0
+    IONMODE: Positive
+    COMPOUNDCLASS: LPE
+    Num Peaks: 1
+    50.0 999
+
+    NAME: A2
+    PRECURSORMZ: 100.0
+    IONMODE: Positive
+    COMPOUNDCLASS: LPE
+    Num Peaks: 1
+    50.0 999
+
+    NAME: B1
+    PRECURSORMZ: 100.0
+    IONMODE: Positive
+    COMPOUNDCLASS: PC
+    Num Peaks: 1
+    50.0 999
+
+    NAME: C1
+    PRECURSORMZ: 100.0
+    IONMODE: Positive
+    Num Peaks: 1
+    50.0 999
+""")
+
+
+def test_compound_class_counts_reports_top_classes_descending(tmp_path, monkeypatch):
+    """レコードに compound_class 未設定（None）が混ざっても集計から除外される。"""
+    monkeypatch.setenv(store.LIBRARY_CACHE_ENV, str(tmp_path / "cache"))
+    path = tmp_path / "classes.msp"
+    path.write_text(_MSP_CLASSES, encoding="utf-8")
+
+    s = store.open_store(path)
+    try:
+        assert s.compound_class_counts(top_n=10) == [
+            {"name": "LPE", "count": 2},
+            {"name": "PC", "count": 1},
+        ]
+        assert s.compound_class_counts(top_n=1) == [{"name": "LPE", "count": 2}]
+    finally:
+        s.close()
+
+
+def test_compound_class_counts_does_not_rescan_the_source_on_cache_hit(tmp_path, monkeypatch):
+    """`library_load` を 2 回呼んでも、2 回目はキャッシュを開くだけで元ファイルを
+    再走査してはいけない（SQLite store を作った目的そのものが壊れるため）。"""
+    monkeypatch.setenv(store.LIBRARY_CACHE_ENV, str(tmp_path / "cache"))
+    path = tmp_path / "classes.msp"
+    path.write_text(_MSP_CLASSES, encoding="utf-8")
+
+    s1 = store.open_store(path)
+    s1.close()
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("iter_records が呼ばれた（cache hit のはずが元ファイルを再走査した）")
+
+    monkeypatch.setattr(store.msp_reader, "iter_records", _boom)
+    monkeypatch.setattr(store.dbs_reader, "iter_records", _boom)
+
+    s2 = store.open_store(path)  # rebuild=False: キャッシュを開くだけのはず
+    try:
+        assert s2.compound_class_counts(top_n=10) == [
+            {"name": "LPE", "count": 2},
+            {"name": "PC", "count": 1},
+        ]
+    finally:
+        s2.close()
+
+
 def test_rt_filter_keeps_null_rt_but_drops_rt_outside_tolerance(tmp_path, monkeypatch):
     """brief 名指しの要件: `.msp` の RT は別の LC 条件で測られていることがあるので、
     RT を持たないレコードを rt 指定クエリで落としてはいけない

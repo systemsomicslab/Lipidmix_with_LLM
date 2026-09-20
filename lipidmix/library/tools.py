@@ -23,8 +23,6 @@ from lipidmix.core.mcp_core import mcp
 from lipidmix.core.path_resolvers import resolve_dcl_file_path, resolve_library_path
 from lipidmix.core.serialization import json_payload, round_floats
 from lipidmix.dcl.reader import deserialize_dcl, get_msms_by_precursor
-from lipidmix.library import dbs as dbs_reader
-from lipidmix.library import msp as msp_reader
 from lipidmix.library.store import open_store
 from lipidmix.plots import mirror as mirror_plot
 from lipidmix.plots import render as plot_render
@@ -40,6 +38,13 @@ _DEFAULT_RT_TOL = 0.2
 # library_load が要約に添える化合物クラス分布の上位件数。
 _TOP_COMPOUND_CLASSES = 10
 
+# library_match_feature の候補の並び順。MS-DIAL の主要な照合指標
+# （mzTab の id_confidence_measure[5] に対応）を採用している。戻り値の
+# "ranked_by" と docstring の両方がこの定数を指す——コード内コメントだけに
+# しておくと、rank 列が何の降順かを呼び出し側（MCP クライアント）が
+# 知る手段が無くなる。
+_RANK_KEY = "weighted_dot_product"
+
 # 候補一覧 TSV の列（先頭に列名を 1 回だけ出す）。スペクトル座標・alignment は
 # 意図的に含めない（座標は session.library.last_match にだけ持つ）。
 _CANDIDATE_TABLE_COLUMNS = [
@@ -48,24 +53,6 @@ _CANDIDATE_TABLE_COLUMNS = [
     "reverse_dot_product", "matched_peaks_percentage", "matched_peaks_count",
     "entropy_similarity",
 ]
-
-
-def _iter_library_records(path: Path):
-    """`.msp`/`.dbs` を拡張子で振り分けて正規化レコードを読む（`store._iter_records_for` と
-    同じ振り分けだが、こちらは化合物クラス分布のためだけに独立して呼ばれる）。"""
-    if path.suffix.lower() == ".msp":
-        return msp_reader.iter_records(path)
-    return dbs_reader.iter_records(path)
-
-
-def _top_compound_classes(path: Path, top_n: int = _TOP_COMPOUND_CLASSES) -> list[dict]:
-    counts: dict[str, int] = {}
-    for record in _iter_library_records(path):
-        name = record.get("compound_class")
-        if name:
-            counts[name] = counts.get(name, 0) + 1
-    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
-    return [{"name": name, "count": count} for name, count in ranked]
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
@@ -110,7 +97,7 @@ def library_load(file_path: str | None = None, rebuild: bool = False) -> str:
         "source_sha256": summary["source_sha256"],
         "record_count": summary["record_count"],
         "ion_modes": summary["ion_modes"],
-        "compound_classes": _top_compound_classes(path),
+        "compound_classes": store_obj.compound_class_counts(_TOP_COMPOUND_CLASSES),
         "search_params": search_params,
     }
     if search_params is None:
@@ -180,6 +167,14 @@ def library_match_feature(
     「候補と合わなかった」のではなく「照合する測定スペクトルがそもそも無い」ことを
     区別するため、`dcl_find_msms` と同じ文言の方針に揃える。
 
+    候補は **`weighted_dot_product` の降順**で返す（`rank` 列・`ranked_by`
+    フィールドが同じ基準を指す）。MS-DIAL の主要な照合指標で、mzTab の
+    `id_confidence_measure[5]` に対応する。同点は候補順を温存する（安定ソート）。
+
+    `top_n` は上位何件を返すかの上限（既定 5）。負値を渡すと全件を返す
+    （明示的な仕様ではなく Python のスライス挙動に由来する副作用的な動作
+    ——件数を絞りたくないだけなら大きな正の値を渡すこと）。
+
     候補一覧は TSV（列名 1 回）で返す。**スペクトル座標と alignment は戻り値に
     含めない**（LLM の文脈を食うため）。座標は `session.library.last_match` に
     持ち、`library_plot_mirror` がそこから読む。
@@ -228,9 +223,10 @@ def library_match_feature(
         (record, match_spectrum(measured, record["spectrum"], ms2_tol=resolved_ms2_tol))
         for record in candidates
     ]
-    # ランク付けの基準は weighted_dot_product（MS-DIAL の主要な照合指標）。
-    # 同点はそのまま候補順で温存する（安定ソート）。
-    scored.sort(key=lambda item: item[1]["weighted_dot_product"], reverse=True)
+    # ランク付けの基準は _RANK_KEY（weighted_dot_product、MS-DIAL の主要な照合指標）。
+    # 同点はそのまま候補順で温存する（安定ソート）。docstring と payload["ranked_by"]
+    # がこの基準を呼び出し側へ明示する（コード内コメントだけに留めない）。
+    scored.sort(key=lambda item: item[1][_RANK_KEY], reverse=True)
     top = scored[:top_n] if top_n >= 0 else scored
 
     session_state.session.library.last_match = {
@@ -292,6 +288,7 @@ def library_match_feature(
         "measured_peak_count": len(measured),
         "n_candidates": len(candidates),
         "top_n": len(top),
+        "ranked_by": _RANK_KEY,
         "candidates_table": table,
     }
     return json_payload(round_floats(payload))

@@ -190,6 +190,24 @@ class LibraryStore:
             "search_params": self._search_params,
         }
 
+    def compound_class_counts(self, top_n: int = 10) -> list[dict]:
+        """化合物クラス分布を件数降順で返す（読み取り専用の集計クエリ）。
+
+        `library_load` の要約が使う。`ion_modes` と違いビルド時の meta には
+        含めていない（クラス数は上位 N だけ返せば十分で、meta に全件持たせる
+        必要が無い）ので、`record` テーブルへ都度クエリする——ただし
+        **キャッシュ済み SQLite への SELECT だけ**であり、元ファイル
+        （`.dbs`/`.msp`）を読み直すことはない。`compound_class IS NULL` の
+        レコード（`.msp` に `COMPOUNDCLASS` が無い等）は除外する。
+        """
+        rows = self._conn.execute(
+            "SELECT compound_class, COUNT(*) AS n FROM record "
+            "WHERE compound_class IS NOT NULL "
+            "GROUP BY compound_class ORDER BY n DESC, compound_class ASC LIMIT ?",
+            (top_n,),
+        ).fetchall()
+        return [{"name": name, "count": count} for name, count in rows]
+
     def candidates(
         self,
         precursor_mz: float,
