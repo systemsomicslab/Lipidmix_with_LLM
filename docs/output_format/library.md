@@ -42,8 +42,12 @@
 **`-1` は「比較していない」、`0` は「合わなかった」。混同すると「照合していない」が
 「合わなかった」に化ける。**
 
-- `-1`（3 つの dot product・`matched_peaks_percentage`・`matched_peaks_count`
-  いずれも）: 測定・参照どちらかのスペクトルが空で、そもそも比較できなかった。
+- `-1`（3 つの dot product・`matched_peaks_percentage`・`matched_peaks_count`・
+  `entropy_similarity` いずれも）: 測定・参照どちらかのスペクトルが空で、
+  そもそも比較できなかった。`entropy_similarity` も他の 5 指標と同じ
+  `_is_compared_available` ガードを使い（`spectral_match.py` の
+  `spectral_entropy_similarity`）、`match_spectrum` では `sqrt` を経ずに素通し
+  するため `candidates_table` にも `-1.0` がそのまま出る。
 - `0`: 比較はできたが、一致度がゼロだった（本当に合わなかった）。
 
 **mzTab の値とは番兵の扱いが違う**ので、実データ突き合わせの際に注意する:
