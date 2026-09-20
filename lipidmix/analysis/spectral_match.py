@@ -489,6 +489,25 @@ def match_spectrum(measured, reference, *, ms2_tol, mass_begin=0.0, mass_end=200
     （このモジュールの単体関数は二乗値を返す。spec §5.1）。`-1` の番兵は sqrt を経ても
     そのまま `-1` で通す。`alignment` は参照グリッドの窓ごとの記録
     （`{"mz", "measured", "reference", "matched"}`）で、対向プロットの注釈に使う。
+
+    **`-1` は mzTab の生値とは一致しない（比較時に注意）。**
+    この関数は比較不能（測定・参照どちらかが空）を `-1` で返す。`0` は「合わなかった」を
+    意味するので、意図的に区別している。ところが上流が mzTab に書き出す値はこの区別を
+    保っていない:
+
+    - `id_confidence_measure[4..6]`（simple / weighted / reverse dot product）は
+      `MsScanMatchResult` の非二乗 getter（`WeightedDotProduct` など）が
+      `Math.Sqrt(Math.Max(Squared*, 0f))` として `-1` を `0` にクランプしてから
+      `sqrt` を取る（`MsScanMatchResult.cs:36-38,44-46,51-53`）。`MztabFormatExport.cs`
+      はこのクランプ済み getter をそのまま書き出す（`:1412-1414` 付近）。
+      **したがって mzTab 上のこれら 3 列では、比較不能は `-1` ではなく `0` として出る。**
+    - `id_confidence_measure[7..8]`（`matched_peaks_count` / `matched_peaks_percentage`）
+      は素のフィールドで、クランプを経ないので `-1` のまま出る。
+
+    Task 7 で mzTab の値と突き合わせる際は、**dot product 3 種についてのみ `-1` と `0`
+    を同一視**すること。同一視せずに素朴に比較すると、比較不能ケース（測定または参照が
+    空）で「存在しない乖離」を検出してしまう。matched peaks の 2 列はそのまま `-1` 同士で
+    比較してよい。
     """
     normalized = normalize_measured(
         measured, relative_amp_cutoff=relative_amp_cutoff, absolute_amp_cutoff=absolute_amp_cutoff)
