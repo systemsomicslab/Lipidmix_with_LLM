@@ -41,6 +41,8 @@
   | `ABSENT` | `null` | フラグもスペクトルも無い | Level 2 に到達しない |
 
   `n_peaks` は間引き前の元本数、`top_fragments` は強度降順の上位5本（`[[mz, intensity], ...]`）。`llm_decision.deterministic_summary` にも `msms=<band>` が出る。**`FLAG_ONLY` を `PASS` と同等に扱わないこと**——`.dcl` を読んでいないだけかもしれず、「MS/MS で裏が取れている」とは言えない。
+
+  `band == "PASS"` かつ参照ライブラリが読み込み済み（`library_load` 実行済み）のときは、この内側に `spectral_match` ブロックが追加で載る（参照ライブラリとの照合スコア）。3状態契約自体は変えない追加情報であり、`status` 語彙は暫定。定義は `lipidmix://docs/output-format/library` §14.8 を見ること。
 - `arf2_annotate_identities(file_path=None, max_rows=50)`: ARF2 スポットカタログの注釈を一括で正規化・ID/レベル付与し、上位 `max_rows` 件を返す。**ARF2 には MS/MS 取得フラグ・精密質量誤差が無いため MSI は保守的にクラス上限で評価**（`has_msms=False`、バンド UNKNOWN）。より確度の高い MSI 評価は個別ピークの `verify_peak_annotation` を用いること。
 
 ### 12.5 アダクト/元素表の拡張（`peak_verification.py`）

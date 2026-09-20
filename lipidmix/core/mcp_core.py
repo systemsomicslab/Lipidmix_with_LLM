@@ -36,6 +36,7 @@ OUTPUT_FORMAT_SECTIONS: dict[str, str] = {
     "eic": ".EIC.aef パーサ、EIC 検索・ランキング、描画契約",
     "identity": "同定信頼度・名前正規化・MSI レベル",
     "mztab": "mzTab-M 経路（dataset_load 以降）。SME/SML の同定、特徴表、差次的エクスポートの同定列",
+    "library": "参照ライブラリ（.dbs/.msp）照合。スコアの意味、-1/0 の区別、意図的に写した瑕疵",
 }
 # 共通核。`lipidmix://docs/output-format` が返す本体。
 OUTPUT_FORMAT_DOC = OUTPUT_FORMAT_DIR / "core.md"

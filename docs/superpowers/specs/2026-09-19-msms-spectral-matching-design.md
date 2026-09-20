@@ -205,6 +205,13 @@ total のみ）しか読んでおらず、`[2..8]` を捨てている。
 ```
 lipidmix/library/dbs.py      .dbs（ZIP → LargeListMessagePack）→ レコード列
 lipidmix/library/msp.py      .msp（テキスト）→ レコード列
+lipidmix/library/record.py   正規化レコードの定義（stdlib のみの leaf）。2 つの reader が
+                              同じレコード形を吐くための共通スキーマ（実装中に追加。§5.1 の
+                              レコード契約をコードとして持つ場所）
+lipidmix/library/defaults.py 照合許容幅の既定値（stdlib のみの leaf）。`library/tools.py` と
+                              `msdial/peak_verification.py` の両方が読む——以前は 2 箇所に
+                              同じリテラルを複写しており、Task 11 レビューで一本化した
+                              （実装中に追加）
 lipidmix/library/store.py    sha256 鍵の永続 store。構築・展開・候補取得
 lipidmix/library/tools.py    MCP 公開層（__all__ に載せる）
 lipidmix/analysis/spectral_match.py   採点（純関数）

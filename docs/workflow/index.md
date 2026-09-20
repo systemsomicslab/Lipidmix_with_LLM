@@ -46,12 +46,13 @@
 | [dataset_analysis.md](dataset_analysis.md) | DatasetState — 前処理・PCA・差次的解析・エクスポート・実験情報訂正 | 5 |
 | [pipeline.md](pipeline.md) | 生データフォルダ起点の統括(pipeline) — 上流検証・前処理・PCA・比較・レポートまでの自動進行 | 5 |
 | [metabolomics.md](metabolomics.md) | LC–MS メタボロミクス v2 — 名指しした解析行列への統計 | 1 |
+| [library.md](library.md) | 参照ライブラリ（`.dbs`/`.msp`）— MS/MS スペクトル照合と対向プロット | 3 |
 
-合計 42 ツール。対象外は 20 ツール——文献探索・レポート記録系 12
+合計 46 ツール。対象外は 20 ツール——文献探索・レポート記録系 12
 （`record_objective` `knowledge_coverage` `paper_search` `ingest_*` `write_report` など）＋
 Console 実行層 8（`console_plan` `console_prepare_input` `console_method_template`
 `console_method_candidates` `console_run` `console_status` `console_cleanup` `job_list`）。
-登録ツール総数は 62（42 + 20）。
+登録ツール総数は 66（46 + 20）。
 
 ## 一気通貫の順序
 
