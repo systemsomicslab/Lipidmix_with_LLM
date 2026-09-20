@@ -238,6 +238,31 @@ def resolve_dcl_file_path(file_path: str | None = None) -> str | None:
     return _resolve_data_file(".dcl", file_path)
 
 
+def resolve_library_path(file_path: str | None = None) -> str | None:
+    """参照ライブラリのパスを解決するヘルパー。
+
+    探索順は `*_Loaded.msp2.dbs` → `*.msp`。**`*.msp2` と `*.lbm2` は候補にしない**
+    ——前者は ASCII `.msp` を指定したときだけ中身が入るので0バイトのことがあり
+    （脂質経路では常に0）、後者は脂質専用の in-silico ライブラリで本機能
+    （親水性メタボロミクス）の入口としては出さない。複数バッチ混在時は最新バッチへ
+    絞り、同一種別内の重複は最新版（`_pick_latest`）を採る。明示パスは最優先
+    （既存リゾルバと同じ流儀）。
+    """
+    if file_path and os.path.exists(file_path):
+        return file_path
+
+    dbs_paths = [p for p in list_data_files(extension=".msp2.dbs") if os.path.isfile(p)]
+    if dbs_paths:
+        dbs_paths = _select_latest_batch(dbs_paths)
+        return _pick_latest(dbs_paths)
+
+    msp_paths = [p for p in list_data_files(extension=".msp") if os.path.isfile(p)]
+    if not msp_paths:
+        return None
+    msp_paths = _select_latest_batch(msp_paths)
+    return _pick_latest(msp_paths)
+
+
 def _filter_arf_spots(
     features: list[dict],
     min_intensity: float = 0.0,
