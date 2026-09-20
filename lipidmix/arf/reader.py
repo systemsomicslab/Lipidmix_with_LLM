@@ -306,24 +306,45 @@ def extract_arf_data(
     return None
 
 
+class ArfMemoryError(MemoryError):
+    """`.arf` を読み切る前に RAM が尽きたことと、そこまでの規模を運ぶ。
+
+    `str(MemoryError())` は空文字なので、素の `MemoryError` のままだと呼び出し側は
+    理由なしのエラーしか返せない。400 検体規模で最初に当たる失敗がこれなので、
+    どこまで読めたか（スポット数・行数）を付けて投げ直す。
+    """
+
+    def __init__(self, *, spots: int, rows: int):
+        super().__init__(f"{spots} スポット / {rows} 行を読んだところで RAM が尽きた")
+        self.spots = spots
+        self.rows = rows
+
+
 def deserialize(file_like_object) -> list[dict]:
     data = file_like_object.read()
     results = []
+    rows = 0
 
-    for group_index, (block_index, local_index, group) in enumerate(
-        _iter_arf_peak_groups(data),
-        start=0,
-    ):
-        formatted = extract_arf_data(
-            group,
-            group_index=group_index,
-            source_block_index=block_index,
-            source_local_index=local_index,
-        )
-        if formatted is not None:
-            formatted["MasterAlignmentID"] = group_index
-            formatted["AlignmentID"] = group_index
-            results.append(formatted)
+    try:
+        for group_index, (block_index, local_index, group) in enumerate(
+            _iter_arf_peak_groups(data),
+            start=0,
+        ):
+            formatted = extract_arf_data(
+                group,
+                group_index=group_index,
+                source_block_index=block_index,
+                source_local_index=local_index,
+            )
+            if formatted is not None:
+                formatted["MasterAlignmentID"] = group_index
+                formatted["AlignmentID"] = group_index
+                results.append(formatted)
+                rows += len(group)
+    except MemoryError as exc:
+        # 規模を運ぶ例外へ詰め替える。ここで確保するのは小さなオブジェクト 1 つで、
+        # 失敗した確保（数 GB 単位）とは桁が違う。
+        raise ArfMemoryError(spots=len(results), rows=rows) from exc
     return results
 
 
