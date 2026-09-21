@@ -23,6 +23,7 @@ flowchart TD
     LM --> MS[dcl.reader.get_msms_by_precursor]
     LM --> CAND[library.store.LibraryStore.candidates]
     LM --> SCORE[analysis.spectral_match.match_spectrum]
+    LM --> TOT[analysis.spectral_match.total_score]
     LM -->|session.library.last_match| LP[library_plot_mirror]
     LP --> MIR[plots.mirror.build_mirror_payload]
     LP --> REND[plots.mirror.render_mirror]
@@ -83,11 +84,16 @@ flowchart TD
 12. │  └─ lipidmix/analysis/spectral_match.py  reverse_dot_product()
 13. │  └─ lipidmix/analysis/spectral_match.py  matched_peaks_scores()
 14. │  └─ lipidmix/analysis/spectral_match.py  spectral_entropy_similarity()
-15. └─ lipidmix/arf2/reader.py  format_spots_as_table()
+15. └─ lipidmix/analysis/spectral_match.py  total_score()
+16. │  └─ lipidmix/analysis/spectral_match.py  gaussian_similarity()
+17. │  └─ lipidmix/analysis/spectral_match.py  fix_mass_tolerance()
+18. └─ lipidmix/arf2/reader.py  format_spots_as_table()
 
-候補は既定で `weighted_dot_product` の降順（`_RANK_KEY`）。TSV の列組み立てに
-`arf2/reader.py` の `format_spots_as_table()` を借用している（`.arf2` 専用ではなく
-汎用の TSV 整形ヘルパ）。
+候補は `total_score` の降順（`_RANK_KEY`）＝ MS-DIAL の総合スコア。RT 項を足すか
+どうかは store の `search_params["use_time_for_annotation_scoring"]`（`.dbs` の
+`Key(16)`。`.msp` には無いので上流既定の `False`）で決まり、戻り値の `scoring` が
+その判断を明示する。TSV の列組み立てに `arf2/reader.py` の
+`format_spots_as_table()` を借用している（`.arf2` 専用ではなく汎用の TSV 整形ヘルパ）。
 
 ## library_plot_mirror
 
@@ -97,13 +103,16 @@ flowchart TD
 
 `ms2_tol` は `library_match_feature` が使った値（`last_match` に保持済み）を自動で
 引き継ぐ。既定は画像（PNG）、`output="payload"` で座標 JSON
-（`lipidmix.mirror.v1`）を返す。
+（`lipidmix.mirror.v1`）を返す。`scale`（`"relative"` / `"sqrt"` / `"log10"`）は
+縦軸の写し方で、`render_mirror()` の中で `scale_intensity()` が各点に掛ける
+（`output="payload"` の座標は正規化前の生値なので `scale` の影響を受けない）。
 
 1. lipidmix/library/tools.py  library_plot_mirror()
 2. └─ lipidmix/plots/render.py  resolve_plot_output()
 3. └─ lipidmix/plots/mirror.py  build_mirror_payload()
 4. └─ [output=image] lipidmix/plots/mirror.py  render_mirror()
-5.    └─ lipidmix/plots/render.py  figure_to_png()
+5.    └─ lipidmix/plots/mirror.py  scale_intensity()
+6.    └─ lipidmix/plots/render.py  figure_to_png()
 
 ## `verify_peak_annotation` との関係
 
@@ -114,4 +123,6 @@ flowchart TD
 [output_format/library.md](../output_format/library.md) §14.8）。この呼び出し連鎖
 自体は `lipidmix/msdial/peak_verification.py` の内部（`_spectral_match_for_feature`）
 に閉じており、`library_match_feature` とは独立した実装（候補一覧を持たず最良候補
-だけを返す）。
+だけを返す）。ただし**「最良」の基準は共有する**——どちらも
+`spectral_match.total_score()` の降順で選ぶ。食い違わせると、同じ feature について
+検証ドシエと候補一覧が別の候補を名指しすることになる。

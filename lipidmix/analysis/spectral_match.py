@@ -42,6 +42,9 @@ __all__ = [
     "spectral_entropy_similarity",
     "normalize_measured",
     "match_spectrum",
+    "gaussian_similarity",
+    "fix_mass_tolerance",
+    "total_score",
 ]
 
 _PEAK_COUNT_PENALTY = {1: 0.75, 2: 0.88, 3: 0.94, 4: 0.97}
@@ -570,4 +573,105 @@ def match_spectrum(measured, reference, *, ms2_tol, mass_begin=0.0, mass_end=200
         "matched_peaks_count": count,
         "entropy_similarity": entropy,
         "alignment": alignment,
+    }
+
+
+def gaussian_similarity(actual, reference, tolerance):
+    """RT / precursor m/z の一致度。上流 `MsScanMatching.GetGaussianSimilarity`。
+
+    `exp(-0.5 * ((actual - reference) / tolerance)^2)`。出典は上流の
+    docstring が挙げる Tsugawa, H. et al. Anal. Chem. 85, 5191-5199 (2013)。
+
+    **欠測は `0` ではなく `-1` を返す**（上流の `out bool` 版と同じ規約）。
+    `0` は「まったく似ていない」を意味するので、混同すると「値が無い」が
+    「一致しない」に化ける——このモジュールの dot product 3 種の番兵と同じ考え方。
+    上流は非正の値（`<= 0`）も欠測として扱う（RT も m/z も正のはずのため）ので、
+    ここもそれに倣う。
+    """
+    if actual is None or reference is None:
+        return -1.0
+    if actual <= 0 or reference <= 0:
+        return -1.0
+    return math.exp(-0.5 * ((actual - reference) / tolerance) ** 2)
+
+
+def fix_mass_tolerance(tolerance, mass):
+    """precursor m/z の許容幅を高質量側へ伸ばす。上流
+    `MolecularFormulaUtility.FixMassTolerance`。
+
+    500 以下はそのまま。500 超は「500 における `tolerance` が何 ppm か」を求め直し、
+    その ppm を実測 m/z へ当てる（絶対幅ではなく相対幅で効かせる）。
+    上流の `PpmCalculator` は小数 4 桁で丸めるので、その丸めも写す——
+    丸めないと高質量側で許容幅がわずかにずれ、`gaussian_similarity` の値が
+    mzTab と合わなくなる。
+    """
+    if mass <= 500:
+        return tolerance
+    ppm = abs(round(((500.0 + tolerance) - 500.0) / 500.0 * 1000000, 4))
+    return ppm * mass / 1000000.0
+
+
+def total_score(scores, *, precursor_mz, reference_precursor_mz, ms1_tol,
+                rt=None, reference_rt=None, rt_tol=None, use_rt=False):
+    """MS-DIAL の総合スコア。上流 `MsScanMatching.GetTotalScore`。
+
+    **正規化されていない和である。**
+
+        RtSimilarity + AcurateMassSimilarity + (Weighted + Simple + Reverse)/3
+        + MatchedPeaksPercentage
+
+    各項は **`> 0` のときだけ加算する**（`-1` の番兵＝比較不能・欠測を足して
+    総合スコアを下げないため。上流も同じ条件で加算する）。0〜1 に正規化しては
+    いけない——平均にすると別の量になり、MS-DIAL の順位と比較できなくなる。
+
+    上流の `GetTotalScore` はこのほかに `CcsSimilarity` / `IsotopeSimilarity` /
+    `AndromedaScore` も足すが、**この経路には存在しない**ので扱わない
+    （CCS は IM-MS、isotope は MS1 の同位体パターン、Andromeda はプロテオミクス）。
+
+    `use_rt` は `.dbs` の `IsUseTimeForAnnotationScoring`（`Key(16)`）に対応する。
+    **上流の既定は `False`** で、`.msp` のようにフラグを持たないライブラリでは
+    RT 項が入らない。`rt_tol` は `use_rt=True` のとき必須——`None` のまま
+    使うと 0 除算になるので、黙って縮退させず例外にする
+    （`store.candidates` の `rt_tol` 欠落と同じ扱い）。
+
+    上流が順位付けに使うのはこの値**単独ではない**（`MsScanMatchResultContainer.
+    ResultOrder` は `IsReferenceMatched` 等を先に見る辞書順タプル）。その
+    ブール判定は脂質クラス固有の判定（`Lipidomics/` 66,932 行）に依存するため
+    移植していない。詳細は `docs/output_format/library.md` §14.9。
+    """
+    if use_rt and rt_tol is None:
+        raise ValueError(
+            "use_rt=True のときは rt_tol を指定してください "
+            "（None のままだと gaussian_similarity が 0 除算になります）。"
+        )
+
+    rt_similarity = gaussian_similarity(rt, reference_rt, rt_tol) if use_rt else -1.0
+
+    if precursor_mz is None or precursor_mz <= 0:
+        mass_similarity = -1.0
+    else:
+        mass_similarity = gaussian_similarity(
+            precursor_mz, reference_precursor_mz, fix_mass_tolerance(ms1_tol, precursor_mz))
+
+    weighted = scores.get("weighted_dot_product", -1.0)
+    simple = scores.get("simple_dot_product", -1.0)
+    reverse = scores.get("reverse_dot_product", -1.0)
+    spectrum_score = (weighted + simple + reverse) / 3.0
+    percentage = scores.get("matched_peaks_percentage", -1.0)
+
+    total = 0.0
+    if rt_similarity > 0:
+        total += rt_similarity
+    if mass_similarity > 0:
+        total += mass_similarity
+    if weighted > 0:          # 上流も weighted だけを見て 3 種の平均を足す
+        total += spectrum_score
+    if percentage > 0:
+        total += percentage
+
+    return {
+        "total_score": total,
+        "rt_similarity": rt_similarity,
+        "mass_similarity": mass_similarity,
+        "spectrum_score": spectrum_score,
     }

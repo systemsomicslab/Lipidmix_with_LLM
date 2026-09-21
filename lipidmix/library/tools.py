@@ -16,7 +16,7 @@ from pathlib import Path
 from mcp.server.fastmcp import Image
 from mcp.types import ToolAnnotations
 
-from lipidmix.analysis.spectral_match import match_spectrum
+from lipidmix.analysis.spectral_match import match_spectrum, total_score
 from lipidmix.arf2.reader import format_spots_as_table
 from lipidmix.core import mcp_errors, session_state
 from lipidmix.core.mcp_core import mcp
@@ -36,18 +36,21 @@ __all__ = ["library_load", "library_match_feature", "library_plot_mirror"]
 # library_load が要約に添える化合物クラス分布の上位件数。
 _TOP_COMPOUND_CLASSES = 10
 
-# library_match_feature の候補の並び順。MS-DIAL の主要な照合指標
-# （mzTab の id_confidence_measure[5] に対応）を採用している。戻り値の
-# "ranked_by" と docstring の両方がこの定数を指す——コード内コメントだけに
-# しておくと、rank 列が何の降順かを呼び出し側（MCP クライアント）が
-# 知る手段が無くなる。
-_RANK_KEY = "weighted_dot_product"
+# library_match_feature の候補の並び順。MS-DIAL の総合スコア
+# （`spectral_match.total_score` = 上流 `GetTotalScore`）を採用している。
+# 以前は weighted_dot_product 単独だったが、同名・同 precursor の別レコードで
+# 実用上の最良候補が 1 位に来ないことがあった（実データ 120 feature の
+# top-1 一致 88.3% → 94.2%。HISTRY 2026-09-22(1)）。戻り値の "ranked_by" と
+# docstring の両方がこの定数を指す——コード内コメントだけにしておくと、
+# rank 列が何の降順かを呼び出し側（MCP クライアント）が知る手段が無くなる。
+_RANK_KEY = "total_score"
 
 # 候補一覧 TSV の列（先頭に列名を 1 回だけ出す）。スペクトル座標・alignment は
 # 意図的に含めない（座標は session.library.last_match にだけ持つ）。
 _CANDIDATE_TABLE_COLUMNS = [
     "rank", "name", "precursor_mz", "ion_mode", "adduct", "rt", "formula",
-    "ontology", "compound_class", "simple_dot_product", "weighted_dot_product",
+    "ontology", "compound_class", "total_score",
+    "simple_dot_product", "weighted_dot_product",
     "reverse_dot_product", "matched_peaks_percentage", "matched_peaks_count",
     "entropy_similarity",
 ]
@@ -198,9 +201,22 @@ def library_match_feature(
     「候補と合わなかった」のではなく「照合する測定スペクトルがそもそも無い」ことを
     区別するため、`dcl_find_msms` と同じ文言の方針に揃える。
 
-    候補は **`weighted_dot_product` の降順**で返す（`rank` 列・`ranked_by`
-    フィールドが同じ基準を指す）。MS-DIAL の主要な照合指標で、mzTab の
-    `id_confidence_measure[5]` に対応する。同点は候補順を温存する（安定ソート）。
+    候補は **`total_score` の降順**で返す（`rank` 列・`ranked_by` フィールドが
+    同じ基準を指す）。MS-DIAL の総合スコア（上流 `GetTotalScore`）で、
+    `rt + precursor_mz + (weighted+simple+reverse)/3 + matched_peaks_percentage`
+    の**正規化しない和**——1 を超える。組み立て方は戻り値の `scoring` が明示する
+    （RT 項が入ったかは `.dbs` の `IsUseTimeForAnnotationScoring` 次第で、
+    数値だけを見ても分からないため）。同点は候補順を温存する（安定ソート）。
+
+    **上流の順位付けと完全に同じではない。** `MsScanMatchResultContainer.ResultOrder`
+    は `(IsManuallyModified, IsReferenceMatched, IsAnnotationSuggested, Priority,
+    TotalScore)` の辞書順で、`TotalScore` は最後のタイブレークにすぎない。
+    支配項の `IsReferenceMatched` は脂質クラス固有の判定
+    （`Lipidomics/`、上流 66,932 行）に依存するため移植していない。実データでは
+    この判定が無いと全候補が `True` になってゲートとして働かないので、
+    **`total_score` 単独比較が現実的な最良の近似**という位置づけ。
+    帰結として、上位に化学的にありえない候補が残ることがある
+    （`docs/output_format/library.md` §14.9）。
 
     `top_n` は上位何件を返すかの上限（既定 5）。負値を渡すと全件を返す
     （明示的な仕様ではなく Python のスライス挙動に由来する副作用的な動作
@@ -258,15 +274,26 @@ def library_match_feature(
             ),
         })
 
-    scored = [
-        (record, match_spectrum(
+    # RT 項を入れるかは `.dbs` の `IsUseTimeForAnnotationScoring`（Key 16）次第。
+    # `.msp` のようにフラグを持たないライブラリは上流の既定（False）に倣う。
+    use_rt_scoring = bool(search_params.get("use_time_for_annotation_scoring", False))
+
+    scored = []
+    for record in candidates:
+        result = match_spectrum(
             measured, record["spectrum"], ms2_tol=resolved_ms2_tol,
             mass_begin=mass_begin, mass_end=mass_end,
             relative_amp_cutoff=relative_amp_cutoff, absolute_amp_cutoff=absolute_amp_cutoff,
+        )
+        result.update(total_score(
+            result,
+            precursor_mz=precursor_mz, reference_precursor_mz=record.get("precursor_mz"),
+            ms1_tol=resolved_mz_tol,
+            rt=rt, reference_rt=record.get("rt"),
+            rt_tol=resolved_rt_tol, use_rt=use_rt_scoring,
         ))
-        for record in candidates
-    ]
-    # ランク付けの基準は _RANK_KEY（weighted_dot_product、MS-DIAL の主要な照合指標）。
+        scored.append((record, result))
+    # ランク付けの基準は _RANK_KEY（total_score、MS-DIAL の総合スコア）。
     # 同点はそのまま候補順で温存する（安定ソート）。docstring と payload["ranked_by"]
     # がこの基準を呼び出し側へ明示する（コード内コメントだけに留めない）。
     scored.sort(key=lambda item: item[1][_RANK_KEY], reverse=True)
@@ -311,6 +338,7 @@ def library_match_feature(
             "formula": record["formula"],
             "ontology": record["ontology"],
             "compound_class": record["compound_class"],
+            "total_score": result["total_score"],
             "simple_dot_product": result["simple_dot_product"],
             "weighted_dot_product": result["weighted_dot_product"],
             "reverse_dot_product": result["reverse_dot_product"],
@@ -330,6 +358,15 @@ def library_match_feature(
             "mass_begin": mass_begin, "mass_end": mass_end,
             "relative_amp_cutoff": relative_amp_cutoff, "absolute_amp_cutoff": absolute_amp_cutoff,
         },
+        # 総合スコアの組み立て方。RT 項の有無は戻り値の数値だけでは分からないので、
+        # 候補ごとではなく 1 回だけ載せる（内訳の 3 列は session 側にだけ持つ）。
+        "scoring": {
+            "rule": "MS-DIAL GetTotalScore: rt + precursor_mz + (weighted+simple+reverse)/3 "
+                    "+ matched_peaks_percentage（正規化しない和。各項は > 0 のときだけ加算）",
+            "use_rt": use_rt_scoring,
+            "ms1_tol": resolved_mz_tol,
+            "rt_tol": resolved_rt_tol if use_rt_scoring else None,
+        },
         "measured_peak_count": len(measured),
         "n_candidates": len(candidates),
         "top_n": len(top),
@@ -340,7 +377,8 @@ def library_match_feature(
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
-def library_plot_mirror(rank: int = 1, output: str | None = None) -> list | str:
+def library_plot_mirror(rank: int = 1, output: str | None = None,
+                        scale: str = mirror_plot.RELATIVE) -> list | str:
     """直近の `library_match_feature` 結果から対向プロット（mirror plot）を描く。
 
     上段が測定、下段が参照（`rank` 位の候補）。`output="image"`（既定）は
@@ -349,6 +387,14 @@ def library_plot_mirror(rank: int = 1, output: str | None = None) -> list | str:
 
     測定側の一致色分けには許容幅（`ms2_tol`）が要る——`library_match_feature`
     が使った値（store の `search_params` か既定値）を自動で引き継ぐ。
+
+    `scale` は縦軸の写し方で `"relative"`（既定）/ `"sqrt"` / `"log10"`。
+    **precursor がベースピークのスペクトル**（脂質の [M-H]- など）は `relative`
+    だと診断イオンが相対数 % に潰れて読めない——そのときに `"sqrt"` を使う。
+    上流 MS-DIAL も同じ問題を軸の切り替えで解いている
+    （`ObservableMsSpectrum.CreateAxisPropertySelectors2` の Relative / Absolute /
+    Log10 / Sqrt）。`Absolute` は用意しない——対向プロットは単位の違う 2 つの
+    スペクトルを上下に並べるので、生の強度で並べても比較にならない。
     """
     last_match = session_state.session.library.last_match
     if not last_match or not last_match.get("candidates"):
@@ -379,9 +425,12 @@ def library_plot_mirror(rank: int = 1, output: str | None = None) -> list | str:
     if mode == plot_render.PAYLOAD:
         return json_payload(round_floats(payload))
 
-    png = mirror_plot.render_mirror(payload)
+    try:
+        png = mirror_plot.render_mirror(payload, scale=scale)
+    except ValueError as exc:
+        return json_payload({"status": "error", "message": str(exc)})
     caption = (
         f"Mirror: measured vs {candidate['name']} "
-        f"(rank {rank}, precursor m/z={candidate['precursor_mz']})."
+        f"(rank {rank}, precursor m/z={candidate['precursor_mz']}, y-axis={scale})."
     )
     return [caption, Image(data=png, format="png")]

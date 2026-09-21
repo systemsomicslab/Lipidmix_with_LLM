@@ -14,8 +14,9 @@
 
 `.dcl` の測定 MS/MS を参照ライブラリ（`*_Loaded.msp2.dbs` 優先、無ければ `*.msp`）と
 突き合わせ、MS-DIAL の個別スコア定義をそのまま移植して数値を出す。目的は「付いている
-名前は本当か」を人が対向プロットと数値の両方で判断できるようにすることで、MS-DIAL の
-`TotalScore`（重み付け合成）は再現しない——個別スコアの定義一致だけを保証する。
+名前は本当か」を人が対向プロットと数値の両方で判断できるようにすること。個別スコアの
+定義一致に加え、**候補の並び順も MS-DIAL の `TotalScore` に合わせてある**（§14.9）。
+ただし上流の順位付けタプル全体を再現しているわけではない——同じ §14.9 に限界を書く。
 
 ### 14.1 各スコアの意味
 
@@ -25,11 +26,12 @@
 | キー | MS-DIAL 対応 | 意味 |
 |---|---|---|
 | `simple_dot_product` | `GetSimpleDotProduct` | m/z 重みなし・ペナルティなしの単純ドット積 |
-| `weighted_dot_product` | `GetWeightedDotProduct` | m/z 重みとピーク数ペナルティを掛けたドット積。**候補の既定の並び順（`ranked_by`）** |
+| `weighted_dot_product` | `GetWeightedDotProduct` | m/z 重みとピーク数ペナルティを掛けたドット積。mzTab の `id_confidence_measure[5]`。**単独では並び順に使わない**（§14.9） |
 | `reverse_dot_product` | `GetReverseDotProduct` | 参照側のピークだけを基準に測定側で説明できているかを問う非対称スコア |
 | `matched_peaks_percentage` | `GetMatchedPeaksScores`（比） | 参照ピークのうち測定側でも観測された割合 |
 | `matched_peaks_count` | 同上（count） | 一致した参照ピークの本数 |
 | `entropy_similarity` | `GetSpectralEntropySimilarity` | スペクトルエントロピーに基づく類似度。**mzTab には出ないため実データとの突き合わせ対象外**（設計 §2.7） |
+| `total_score` | `GetTotalScore` | 上の指標に RT・precursor m/z の一致度を足した**候補の並び順（`ranked_by`）**。**0〜1 ではない**（§14.9） |
 
 **`simple` / `weighted` / `reverse` の 3 つの dot product は平方根側の値**である
 （`match_spectrum` が二乗値から `sqrt` を取って返す。単体関数
@@ -124,7 +126,7 @@
 | `record_count` | store に格納した参照レコード件数 |
 | `ion_modes` | `{"positive": N, "negative": N}` のような件数内訳 |
 | `compound_classes` | 化合物クラス別件数の上位 10（`compound_class IS NULL` は除外） |
-| `search_params` | `.dbs` 由来なら実測の許容幅、`.msp` 由来なら `null`（§14.4） |
+| `search_params` | `.dbs` 由来なら実測の許容幅と注釈スコアリングのフラグ、`.msp` 由来なら `null`（§14.4） |
 | `source_sha256` | 元ファイルの sha256（store のキャッシュキーと同じ） |
 | `skipped_no_precursor_mz` | precursor m/z が無い（または解釈できなかった）ため読み飛ばしたレコード件数（最終レビュー Important 3。`record_count` には含まれない） |
 
@@ -143,11 +145,18 @@ store のスキーマは `precursor_mz REAL NOT NULL`。公開 `.msp`（MassBank
 |---|---|
 | `not_found` | `.dcl` に該当 precursor の MS/MS が無い（**未取得**であって「合わなかった」ではない。`dcl_find_msms` の `not_found` と同じ文言方針） |
 | `no_candidates` | 測定 MS/MS はあるが、m/z 窓・極性・RT に該当する参照レコードが無い |
-| `success` | 候補を採点して `candidates_table`（TSV、`rank`/`name`/... 列。§14.1 の 5 指標を含む）を返した |
+| `success` | 候補を採点して `candidates_table`（TSV、`rank`/`name`/... 列。§14.1 の指標を含む）を返した |
 
-候補は既定で `weighted_dot_product` の降順（`ranked_by` フィールドが基準を明示）。
+候補は `total_score` の降順（`ranked_by` フィールドが基準を明示）。詳細と限界は §14.9。
 スペクトル座標・alignment は戻り値に含めず `session.library.last_match` に持つ
 （`library_plot_mirror` がそこから読む）。
+
+`scoring` フィールドは総合スコアの組み立て方を 1 回だけ載せる
+（`rule` / `use_rt` / `ms1_tol` / `rt_tol`）。**RT 項が入ったかどうかは候補の数値だけ
+見ても分からない**ので、呼び出し側が順位を再現できるようここに出す。
+総合スコアの内訳（`rt_similarity` / `mass_similarity` / `spectrum_score`）は
+**候補表には出さない**——候補数ぶん掛け算で効いて戻り値が膨らむため、
+`session.library.last_match` の各候補の `scores` にだけ持つ。
 
 **`ion_mode` の大小は問わない（最終レビュー Critical 1）**: `store.candidates()`
 の比較は `COLLATE NOCASE`。`"positive"`（store の正規化表記）と `"Positive"`
@@ -165,6 +174,20 @@ BINARY 照合のままで、`verify_peak_annotation` の統合経路（§14.8）
 別フィールド `matched_measured_mz`（`ms2_tol` を渡したときだけ計算、渡さなければ空）。
 `ms2_tol` を渡さない呼び出しでは、無根拠な厳密一致で色を付けないという設計判断により
 測定側は一致色分けされない。
+
+`scale`（`"relative"` 既定 / `"sqrt"` / `"log10"`）は**縦軸の写し方**で、上下それぞれ
+自分の最大値で正規化したあとに掛ける。**precursor がベースピークのスペクトル**
+（脂質の `[M-H]-` など）は `relative` だと診断イオンが相対数 % に潰れて読めないので、
+そのとき `"sqrt"` を使う。大小関係は保つので「どちらが高いか」の読みは変わらない。
+`log10` は 0.1%（3 桁）を下限に潰す——対数は 0 へ向けて発散するため。
+軸ラベルに選んだスケールが出る。**`output="payload"` の座標は正規化前の生値**
+なので `scale` の影響を受けない（自前で描くクライアントが自分で決める）。
+
+上流 MS-DIAL も同じ問題を軸の切り替えで解いている
+（`ObservableMsSpectrum.CreateAxisPropertySelectors2` の Relative / Absolute /
+Log10 / Sqrt を**上下独立**に選ばせる）。**`Absolute` は用意しない**——対向プロットは
+単位の違う 2 つのスペクトルを上下に並べるので、生の強度で並べても比較にならない
+（上流は片側ずつ別の図として見られるので成立している）。
 
 ### 14.8 `verify_peak_annotation` への統合（`analytical_checks.msms.spectral_match`）
 
@@ -184,10 +207,58 @@ BINARY 照合のままで、`verify_peak_annotation` の統合経路（§14.8）
 | `unavailable` | precursor m/z が feature に無く照合できない |
 | `error` | ライブラリ照会自体が例外を投げた（`store.candidates()` の失敗など） |
 | `no_candidates` | 候補が 0 件 |
-| `matched` | 最良候補（`weighted_dot_product` 最大）のスコアを `best_match` に載せた |
+| `matched` | 最良候補（`total_score` 最大。`library_match_feature` と**同じ基準**）のスコアを `best_match` に載せた |
 
 どの段階で失敗しても例外は投げない——`spectral_match` は msms_evidence 本来の目的
 （`band` 判定）を止めてはいけないため、失敗は `status` の値として開示するだけに留める。
 
 `best_match` は候補一覧を持たない（候補比較が要るときは `library_match_feature` を
-直接使うこと）。`weighted_dot_product` 等は §14.1 と同じ丸め済みの平方根側の値。
+直接使うこと）。`weighted_dot_product` 等は §14.1 と同じ丸め済みの平方根側の値で、
+`total_score` も載る。**「最良」の選び方は `library_match_feature` と必ず一致させる**
+——食い違わせると、同じ feature について 2 つのツールが別の候補を名指しすることになる。
+
+### 14.9 候補の並び順（`total_score`）と、その限界
+
+`total_score` は上流 `MsScanMatching.GetTotalScore` の移植で、**正規化しない和**:
+
+```
+RtSimilarity + AcurateMassSimilarity + (Weighted + Simple + Reverse)/3
++ MatchedPeaksPercentage
+```
+
+**各項は `> 0` のときだけ加算する**（`-1` の番兵＝比較不能・欠測を足して総合スコアを
+下げないため。§14.2）。したがって**上限は 1 ではなく、項数ぶん（この経路では最大 4）**。
+0〜1 の類似度として読んではいけない。RT と precursor m/z の一致度は
+`exp(-0.5*((actual-reference)/tolerance)^2)`（`gaussian_similarity`）で、m/z の
+許容幅は 500 を超えると ppm 換算で伸びる（`fix_mass_tolerance`）。
+
+**RT 項が入る条件**: store の `search_params["use_time_for_annotation_scoring"]`
+（`.dbs` の `MsRefSearchParameterBase` `Key(16)` = `IsUseTimeForAnnotationScoring`）が
+真で、かつ測定側の RT と参照レコードの RT が両方ある場合だけ。**上流の既定は
+`False`** なので、`.msp` 由来のライブラリでは RT 項は入らない。判断結果は
+`library_match_feature` の `scoring.use_rt` に出る。
+
+**上流の順位付けと完全に同じではない。** `MsScanMatchResultContainer.ResultOrder` は
+
+```
+(IsManuallyModified, IsReferenceMatched, IsAnnotationSuggested, Priority, TotalScore)
+```
+
+の**辞書順タプル**で、`TotalScore` は最後のタイブレークにすぎない。支配項の
+`IsReferenceMatched` は `MsReferenceScorer.ValidateOnLipidomics` の
+`IsSpectrumMatch &= isLipidChainsMatch | isLipidClassMatch | ...` を経由して
+**脂質クラス固有の判定**（`GetRefinedLipidAnnotationLevel` → `Lipidomics/`、
+上流 66,932 行。`MsmsCharacterization.cs` だけで 20,177 行）に依存するため
+移植していない。実データで確認したところ、この判定が無いと候補が全件
+`IsReferenceMatched=True` になりゲートとして働かない（脂質分岐は 3 つの
+dot product の **OR** 判定で、実 run の cutoff が緩いため）。
+
+**帰結**: `total_score` 単独比較は現実的な最良の近似であって、**上位に化学的に
+ありえない候補が残ることがある**（例: PI 18:0_20:4 の照合で `SMGDG 18:0_20:4` が
+2 位、PC 18:0_22:6 の照合で `SHexCer 41:1;O3` が 2 位）。1 位の妥当性は
+対向プロット（`library_plot_mirror`）と `matched_peaks_count` で人が確かめること。
+
+**実データでの効き**（aging mice kidney neg、120 feature、正解は mzTab の
+`chemical_name`）: top-1 一致は `weighted_dot_product` 単独の 106/120 (88.3%) に対し
+`total_score` は 113/120 (94.2%)。判定が変わった 7 件は全て総合スコア側が正解で、
+悪化はゼロだった（HISTRY 2026-09-22(1)）。

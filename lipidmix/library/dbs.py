@@ -51,6 +51,11 @@ _SEARCH_PARAM_KEYS = {
     9: "squared_weighted_dot_cutoff", 10: "squared_simple_dot_cutoff",
     11: "squared_reverse_dot_cutoff", 12: "matched_peaks_percentage_cutoff",
     13: "total_score_cutoff", 14: "minimum_spectrum_match",
+    # 15〜18 は bool。総合スコア（`spectral_match.total_score`）に RT / CCS 項を
+    # 入れるかがここで決まる。**上流の既定は 4 つとも False** だが実 run では
+    # True のことがあるので、既定値を仮定せず必ずここから読む。
+    15: "use_time_for_annotation_filtering", 16: "use_time_for_annotation_scoring",
+    17: "use_ccs_for_annotation_filtering", 18: "use_ccs_for_annotation_scoring",
 }
 
 

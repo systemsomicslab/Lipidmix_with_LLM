@@ -24,6 +24,7 @@ payload の `measured` / `reference` は**生のスペクトル**（正規化前
 """
 from __future__ import annotations
 
+import math
 from typing import TypedDict
 
 MIRROR_PLOT_SCHEMA = "lipidmix.mirror.v1"
@@ -159,7 +160,41 @@ def _normalized_by_max(points: list[list[float]]) -> list[list[float]]:
     return [[mz, intensity / max_intensity] for mz, intensity in points]
 
 
-def render_mirror(payload: MirrorPayload):
+# 縦軸のスケール。MS-DIAL GUI は Relative / Absolute / Log10 / Sqrt を上下独立に
+# 選ばせる（`ObservableMsSpectrum.CreateAxisPropertySelectors2`）。ここは対向プロット
+# なので **Absolute は用意しない**——測定と参照は単位が違い、同じ図の上下に生の強度を
+# 並べても比較にならない（上流は片側ずつ別の図として見られるので成立している）。
+RELATIVE = "relative"
+SQRT = "sqrt"
+LOG10 = "log10"
+SCALES = (RELATIVE, SQRT, LOG10)
+
+# log10 軸の下限。これ未満は 0 と同じ高さに潰す（対数は 0 へ向けて発散するため、
+# 下限を決めないと軸が引けない）。3 桁 = 0.1% は上流の Log10 軸が既定で見せる範囲。
+_LOG10_FLOOR = 1e-3
+
+
+def scale_intensity(value: float, scale: str = RELATIVE) -> float:
+    """正規化済み強度（0〜1）を縦軸のスケールへ写す。戻り値も 0〜1。
+
+    `relative` は恒等。`sqrt` と `log10` は小さいピークを持ち上げるためのもので、
+    **precursor がベースピークのスペクトル**（脂質の [M-H]- など）で診断イオンが
+    相対数 % に潰れて読めなくなる問題に効く。値の大小関係は保つので、
+    「どちらが高いか」の読み取りは変わらない。
+    """
+    if scale == RELATIVE:
+        return value
+    if scale == SQRT:
+        return math.sqrt(value) if value > 0 else 0.0
+    if scale == LOG10:
+        if value <= _LOG10_FLOOR:
+            return 0.0
+        decades = -math.log10(_LOG10_FLOOR)
+        return (math.log10(value) + decades) / decades
+    raise ValueError(f"scale は {SCALES} のいずれかを指定してください（受け取った値: {scale!r}）。")
+
+
+def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE):
     """対向プロットを PNG バイト列にする（`lipidmix.plots.render.figure_to_png` 経由）。
 
     上段が測定（上向き）、下段が参照（下向き。正規化強度に `-1` を掛ける）。
@@ -169,6 +204,10 @@ def render_mirror(payload: MirrorPayload):
     許容幅の中で一致するため `matched_mz` とは値が揃わない。`build_mirror_payload`
     が計算済みの `payload["matched_measured_mz"]`（`ms2_tol` を渡さなかった場合は
     空）を使う。ラベルは `payload["labels"]` のみ（上位 `top_labels` 本）。
+
+    `scale` は縦軸の写し方（`scale_intensity` 参照）。上下は**それぞれ自分の
+    最大値で正規化**してから同じスケールを掛ける。軸ラベルに選んだスケールを
+    書く——黙って `sqrt` で描くと、読む側が相対強度の比を誤読する。
     """
     import matplotlib
 
@@ -177,8 +216,10 @@ def render_mirror(payload: MirrorPayload):
 
     from lipidmix.plots.render import figure_to_png
 
-    measured = _normalized_by_max(payload["measured"])
-    reference = _normalized_by_max(payload["reference"])
+    # 未知の scale はここで弾く（描き始めてから落ちないように、最初に検証する）。
+    scale_intensity(1.0, scale)
+    measured = [[mz, scale_intensity(v, scale)] for mz, v in _normalized_by_max(payload["measured"])]
+    reference = [[mz, scale_intensity(v, scale)] for mz, v in _normalized_by_max(payload["reference"])]
     matched_mz = set(payload.get("matched_mz") or [])
     matched_measured_mz = set(payload.get("matched_measured_mz") or [])
 
@@ -220,7 +261,8 @@ def render_mirror(payload: MirrorPayload):
     )
     for label in payload.get("labels") or []:
         raw_max = raw_max_measured if label["side"] == "measured" else raw_max_reference
-        normalized = label["intensity"] / raw_max if raw_max > 0 else 0.0
+        normalized = scale_intensity(
+            label["intensity"] / raw_max if raw_max > 0 else 0.0, scale)
         y = normalized if label["side"] == "measured" else -normalized
         ax.annotate(
             f"{label['mz']:.4f}",
@@ -234,7 +276,7 @@ def render_mirror(payload: MirrorPayload):
 
     ax.axhline(0, color="black", linewidth=0.8)
     ax.set_xlabel("m/z")
-    ax.set_ylabel("Relative intensity (measured / reference)")
+    ax.set_ylabel(f"Relative intensity [{scale}] (measured / reference)")
     ax.set_ylim(-1.15, 1.15)
     ax.set_title(payload.get("title") or "")
 
