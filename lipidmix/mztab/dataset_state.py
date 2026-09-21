@@ -26,6 +26,27 @@ _ABUNDANCE_ASSAY_RE = re.compile(r"abundance_assay\[(\d+)\]", re.IGNORECASE)
 _CV_TERM_RE = re.compile(r"^\[([^\]]*)\]$")
 _ACCESSION_INJECTION_ORDER = "MS:4000089"
 _ACCESSION_BATCH = "MS:4000088"
+# `MTD id_confidence_measure[N]` の宣言行パターン。N は固定順が既定だが、
+# `manualAssigned` があると上流（MztabFormatExport.cs `SetIdConfidenceMeasure`）が
+# 9本目を追加するため、列を N の位置決め打ちで読んではいけない——ここで宣言行から
+# 名前を引き、対応表でキーへ変換する。
+_MEASURE_DECLARATION_RE = re.compile(r"^id_confidence_measure\[(\d+)\]$")
+
+#: 宣言名 → スネークケースキーの対応表。[1] の総合スコアは best_id_confidence_value /
+#: best_id_confidence_measure で既に持っているので、ここでは "total_score" として
+#: 識別だけしておき、_extract_confidence_measures 側で除外する。
+_CONFIDENCE_MEASURE_NAMES: dict[str, str] = {
+    "MS-DIAL algorithm matching score": "total_score",
+    "Retention time similarity": "retention_time_similarity",
+    "Retention index similarity": "retention_index_similarity",
+    "m/z similarity": "mz_similarity",
+    "Simple dot product": "simple_dot_product",
+    "Weighted dot product": "weighted_dot_product",
+    "Reverse dot product": "reverse_dot_product",
+    "Matched peaks count": "matched_peaks_count",
+    "Matched peaks percentage": "matched_peaks_percentage",
+    "CCS similarity": "ccs_similarity",
+}
 
 
 def _parse_cv_term(value: str | None) -> tuple[str | None, str | None]:
@@ -37,6 +58,71 @@ def _parse_cv_term(value: str | None) -> tuple[str | None, str | None]:
     if len(parts) < 4:
         return None, None
     return parts[1], parts[3]
+
+
+def _parse_measure_declaration_name(value: str | None) -> str | None:
+    """`MTD id_confidence_measure[N]` の値 `[,, X, ]` から宣言名 X を取り出す。
+
+    `_parse_cv_term` と構文は同じ `[a, b, c, d]` 形だが、拾う位置が違う
+    （こちらは name が 3 番目=index 2。`_parse_cv_term` は accession/value 用）ので
+    専用に持つ。
+    """
+    m = _CV_TERM_RE.match((value or "").strip())
+    if not m:
+        return None
+    parts = [part.strip() for part in m.group(1).split(",")]
+    if len(parts) < 3:
+        return None
+    return parts[2] or None
+
+
+def _snake_case(name: str) -> str:
+    """未知の measure 宣言名をスネークケース化する（対応表に無い名前を落とさないため）。
+
+    英数字以外の連続をアンダースコアに畳み、小文字化するだけの単純な変換。
+    ``"CCS similarity"`` → ``"ccs_similarity"`` のような既知の対応表エントリと
+    同じ形に揃う程度で十分（厳密な自然言語処理はしない）。
+    """
+    return re.sub(r"[^0-9a-zA-Z]+", "_", name.strip()).strip("_").lower()
+
+
+def _build_confidence_measure_key_map(metadata: dict) -> dict[str, str]:
+    """`MTD id_confidence_measure[N]` の宣言群から `{N(str): スネークケースキー}` を作る。
+
+    宣言が無い（`id_confidence_measure[N]` 行が無い、または名前を取り出せない）
+    index は対応表に含めない——値があっても引けないので無視される。
+    """
+    key_map: dict[str, str] = {}
+    for key, value in metadata.items():
+        m = _MEASURE_DECLARATION_RE.match(key)
+        if not m:
+            continue
+        name = _parse_measure_declaration_name(value)
+        if not name:
+            continue
+        key_map[m.group(1)] = _CONFIDENCE_MEASURE_NAMES.get(name, _snake_case(name))
+    return key_map
+
+
+def _extract_confidence_measures(evidence: dict, measure_key_map: dict[str, str]) -> dict[str, float]:
+    """SME 行（`evidence`）から `id_confidence_measure[2..]` のサブスコアを回収する。
+
+    `[1]`（total_score）は `best_id_confidence_value` / `best_id_confidence_measure`
+    が既に持っているので、ここでは含めない。値が `null`（パーサが None に正規化
+    済み）の列も含めない——「取得したが空」と「無い」を区別する必要が無いぶんの
+    単純化（この dict 自体が「取れたものだけ」を表す）。
+    """
+    if not evidence or not measure_key_map:
+        return {}
+    measures: dict[str, float] = {}
+    for index, key in measure_key_map.items():
+        if key == "total_score":
+            continue
+        value = _to_float(evidence.get(f"id_confidence_measure[{index}]"))
+        if value is None:
+            continue
+        measures[key] = value
+    return measures
 
 
 class DatasetState:
@@ -195,6 +281,13 @@ def build_dataset_state(
     sme_by_id = _index_sme_rows(parse_result["sections"].get("SME", {}).get("rows", []))
     by_source: dict[str, int] = {"database_identifier": 0, "inchi_derived": 0, "smiles_derived": 0, "none": 0}
     derivable_but_missing = 0
+    # `id_confidence_measure[N]` の宣言 → スネークケースキー。SME 行が持つ個別
+    # スコアを後で feature_annotations（SML 由来）へ合流させるため、fid ごとに
+    # 拾っておく（feature_annotations は SML 行だけから作られるので、SME の
+    # サブスコアはここで一旦拾って後段でマージする）。
+    measure_key_map = _build_confidence_measure_key_map(parse_result.get("metadata", {}))
+    confidence_measures_by_fid: dict[str, dict[str, float]] = {}
+    confidence_value_by_fid: dict[str, float] = {}
     for row in smf_rows:
         fid = row.get("SMF_ID", "")
         candidates = _all_candidates(row.get("SME_ID_REFS"), sme_by_id)
@@ -222,6 +315,13 @@ def build_dataset_state(
         if ik is None and (evidence.get("smiles") or evidence.get("inchi")):
             derivable_but_missing += 1
 
+        measures = _extract_confidence_measures(evidence, measure_key_map)
+        if measures:
+            confidence_measures_by_fid[fid] = measures
+        total_value = _to_float(evidence.get("best_id_confidence_value")) if evidence else None
+        if total_value is not None:
+            confidence_value_by_fid[fid] = total_value
+
     with_ik = sum(v for k, v in by_source.items() if k != "none")
     has_rdkit = mztab_identity.rdkit_available()
     ds.inchikey_coverage = {
@@ -241,6 +341,22 @@ def build_dataset_state(
     if annotation_warnings:
         existing = ds.validation_result.setdefault("warnings", [])
         ds.validation_result["warnings"] = [*existing, *annotation_warnings]
+
+    # SME の個別スコアを SML 由来の注釈へ合流させる。**既存の読み取りは変えない**
+    # ——SML 行が自前で best_id_confidence_value を持っていればそれを優先し、
+    # 欠けているときだけ（実 mzTab で稀ではない: Text DB 経由でない同定は
+    # スコアが SME 側にしかない）SME 側の total を補う。曖昧（ambiguous）な
+    # 注釈は「どれが正しいか決められない」ので触らない。
+    for fid, annotation in ds.feature_annotations.items():
+        if annotation.get("ambiguous"):
+            continue
+        measures = confidence_measures_by_fid.get(fid)
+        if measures:
+            annotation["confidence_measures"] = measures
+        if annotation.get("confidence_value") is None:
+            fallback = confidence_value_by_fid.get(fid)
+            if fallback is not None:
+                annotation["confidence_value"] = fallback
 
     # 同定の出所内訳。MS1 注釈を MS/MS 裏付けと取り違えないために分けて数える。
     sme_named = sum(1 for m in ds.feature_metadata.values() if m.get("name"))

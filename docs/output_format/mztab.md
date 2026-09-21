@@ -69,9 +69,26 @@ SMF からこれらを読もうとすると常に `None` になり、「この�
 | `adduct` | `adduct_ions` | |
 | `reliability` | `reliability` | 例: `annotated by user-defined text library` |
 | `confidence_measure` | `best_id_confidence_measure` | |
-| `confidence_value` | `best_id_confidence_value` | float。**MS1 照合スコアであって MS/MS スコアではない** |
+| `confidence_value` | `best_id_confidence_value`（無ければ SME 由来の total score でフォールバック。下記） | float |
+| `confidence_measures` | SME の `id_confidence_measure[2..8]` | dict。**どのツール戻り値にも出ない**（下記） |
 | `inchikey` | 導出 | `smiles` 経由でのみ到達しうる（下記） |
 | `inchikey_source` | 導出 | `smiles_derived` / `none` |
+
+**`confidence_value` のフォールバック（Minor 10）**: SML 行が `best_id_confidence_value`
+を持たない（実 mzTab で稀ではない: Text DB 経由でない同定はスコアが SME 側にしか
+無い）ときは、対応する SME の個別スコア（`id_confidence_measure[2..8]` の合成
+total score）を代わりに入れる。SML 側の値がある場合はそちらを優先し上書きしない。
+このフォールバックが入ったことで、`dataset_export_differential` /
+`arf_export_differential`（`lipidmix/analysis/feature_export.py`）の同じ列が、
+以前は `null` だった行に SME 由来の値を出すようになった（列定義
+`export_contract.py` 自体は無変更）。
+
+**`confidence_measures` はどこからも読まれていない（Minor 9）**: `feature_annotations[fid]`
+に SME の個別スコア（`id_confidence_measure[2..8]`、`_extract_confidence_measures`）が
+入るが、`dataset_export_differential` / `arf_export_differential`
+（`lipidmix/analysis/{dataset_export,feature_export}.py`）は列定義で明示された
+キーだけを拾うため、この辞書は現状どのツール戻り値にも出ない。参照するには
+`DatasetState.feature_annotations[fid]["confidence_measures"]` を直接読むこと。
 
 **`inchi` キーは存在しない。** MS-DIAL は SML の `inchi` を常に `null` で書くため、
 キーを置くと「取得していない」と「無い」の区別を偽ることになる。

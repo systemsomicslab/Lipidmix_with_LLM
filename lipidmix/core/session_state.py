@@ -269,6 +269,20 @@ class EicState:
         return self.features
 
 
+class LibraryState:
+    """参照ライブラリのスロット。他スロットとは共有しない。
+
+    `store` は開いたままの `LibraryStore`。`last_match` は直近の
+    `library_match_feature` の結果（候補ごとのスペクトルとアラインメントを含む）で、
+    `library_plot_mirror` がここから座標を読む。**payload には載せない**。
+    """
+
+    def __init__(self):
+        self.store = None
+        self.source_path: str | None = None
+        self.last_match: dict | None = None
+
+
 class AnalysisSession:
     """パーサ別スロットと、パーサ横断の意味論ガードを束ねる。
 
@@ -295,6 +309,9 @@ class AnalysisSession:
 
         # --- mzTab-M / DatasetState スロット（session.arf とは独立） ---
         self.dataset = None  # DatasetState | None
+
+        # --- 参照ライブラリスロット（MS/MS スペクトル照合。他スロットとは独立） ---
+        self.library = LibraryState()
 
         # --- Console ジョブスロット ---
         # ジョブ状態の正準はディスク上の analysis-job.json。ここはそのパスへのポインタ。

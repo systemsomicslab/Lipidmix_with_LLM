@@ -9,6 +9,24 @@ from __future__ import annotations
 
 import re
 
+from lipidmix.core import session_state
+from lipidmix.library.defaults import DEFAULT_MS2_TOL as _LIBRARY_MS2_TOL
+from lipidmix.library.defaults import DEFAULT_MZ_TOL as _LIBRARY_MZ_TOL
+from lipidmix.library.defaults import DEFAULT_RT_TOL as _LIBRARY_RT_TOL
+from lipidmix.library.defaults import pick_tol as _pick_tol
+
+# session_state は leaf 側（arf/arf2/eic/pai2 の reader・msdial.classes/tags・
+# analysis.preprocessing のみに依存）で、そのどれも peak_verification を import
+# しないため循環しない。実際に `python -c "from lipidmix.core import
+# session_state; ...sys.modules..."` で peak_verification が読み込まれない
+# ことを確認済み（Task 11 レポート参照）。
+#
+# `lipidmix.library.defaults` は stdlib のみの leaf（Task 11 レビュー
+# Important 1 で新設）。`lipidmix.library.tools`（MCP 面）と同じ既定許容幅を
+# ここから読む——`library.tools` 自体は import しない（`@mcp.tool` の登録副作用と
+# mcp_core / session_state 経由の上位層を引き込むため。peak_verification は
+# 下位レイヤに留める）。
+
 # --- 定数（モノアイソトピック質量） ---
 PROTON_MASS = 1.00727646
 ELECTRON_MASS = 0.00054858
@@ -228,6 +246,87 @@ def ether_caveats(name: str | None, ontology: str | None) -> list[str]:
     return []
 
 
+def _spectral_match_for_feature(feature: dict, spectrum: list, store) -> dict:
+    """band=PASS の実スペクトルを、読み込み済みの参照ライブラリと照合する。
+
+    `library_match_feature` MCP ツール（`lipidmix/library/tools.py`）と同じ土俵
+    （`store.candidates()` によるアラインメント検索 + `spectral_match.match_spectrum`
+    採点）を使うが、ここは検証ドシエの一材料でしかないので、戻り値は最良候補の
+    スコアだけに絞る。候補一覧が要る場合は `library_match_feature` を使うこと。
+
+    どの段階で失敗しても（precursor m/z が無い・ライブラリ照会が失敗する等）
+    例外は投げない——照合は msms_evidence の主目的である band 判定を止めてはいけない。
+    """
+    from lipidmix.analysis.spectral_match import match_spectrum
+
+    precursor_mz = feature.get("m/z")
+    if precursor_mz is None:
+        return {"status": "unavailable", "reason": "precursor m/z が無いため照合できません。"}
+
+    ion_mode = feature.get("ion_mode")
+    # store.candidates() の ion_mode 比較は COLLATE NOCASE（Critical 1 修正後）なので
+    # ここで小文字へ揃える必要は無い——PAI2 由来の Enum の `.name`（"Positive"）を
+    # そのまま渡してよい。
+    ion_mode_name = ion_mode.name if hasattr(ion_mode, "name") else (
+        str(ion_mode) if ion_mode is not None else None)
+    rt = (feature.get("time") or {}).get("rt")
+
+    try:
+        search_params = store.summary().get("search_params") or {}
+    except Exception:  # noqa: BLE001 - ここも下の2箇所と同じ意図: 照合の失敗で
+        search_params = {}  # msms_evidence 本来の band 判定を止めない（既定値へ）
+    # `or` ではなく共有の `pick_tol`（`is None` 判定）を使う——`search_params` の
+    # `0.0`（"足切りなし"のような正当な値）を偽値扱いで既定値に差し替えないため
+    # （最終レビュー Important 5: ここが独自の `or` 判定を持っていて、
+    # `lipidmix.library.tools._pick_tol` とロジックがずれていた）。
+    mz_tol = _pick_tol(None, search_params, "ms1_tolerance", _LIBRARY_MZ_TOL)
+    ms2_tol = _pick_tol(None, search_params, "ms2_tolerance", _LIBRARY_MS2_TOL)
+    rt_tol = _pick_tol(None, search_params, "rt_tolerance", _LIBRARY_RT_TOL)
+    # 採点前処理（`normalize_measured`）のパラメータも search_params から採る
+    # （最終レビュー Important 2: 検証 CLI と同じ集合を使わないと、足切りを変えた
+    # run の `.dbs` を読ませたときだけ `library_match_feature` と違う土俵で
+    # 採点することになる）。
+    mass_begin = _pick_tol(None, search_params, "mass_range_begin", 0.0)
+    mass_end = _pick_tol(None, search_params, "mass_range_end", 2000.0)
+    relative_amp_cutoff = _pick_tol(None, search_params, "relative_amp_cutoff", 0.0)
+    absolute_amp_cutoff = _pick_tol(None, search_params, "absolute_amp_cutoff", 0.0)
+
+    try:
+        candidates = store.candidates(
+            precursor_mz, mz_tol=mz_tol, ion_mode=ion_mode_name, rt=rt, rt_tol=rt_tol)
+    except Exception as exc:  # noqa: BLE001 - ライブラリ照合の失敗は band 判定を止めない
+        return {"status": "error", "reason": str(exc)}
+
+    if not candidates:
+        return {"status": "no_candidates", "n_candidates": 0}
+
+    scored = [
+        (record, match_spectrum(
+            spectrum, record["spectrum"], ms2_tol=ms2_tol,
+            mass_begin=mass_begin, mass_end=mass_end,
+            relative_amp_cutoff=relative_amp_cutoff, absolute_amp_cutoff=absolute_amp_cutoff,
+        ))
+        for record in candidates
+    ]
+    scored.sort(key=lambda item: item[1]["weighted_dot_product"], reverse=True)
+    best_record, best_result = scored[0]
+
+    return {
+        "status": "matched",
+        "n_candidates": len(candidates),
+        "best_match": {
+            "name": best_record.get("name"),
+            "ontology": best_record.get("ontology"),
+            "adduct": best_record.get("adduct"),
+            "weighted_dot_product": round(best_result["weighted_dot_product"], 6),
+            "simple_dot_product": round(best_result["simple_dot_product"], 6),
+            "reverse_dot_product": round(best_result["reverse_dot_product"], 6),
+            "matched_peaks_percentage": round(best_result["matched_peaks_percentage"], 6),
+            "matched_peaks_count": best_result["matched_peaks_count"],
+        },
+    }
+
+
 def msms_evidence(feature: dict, top_n: int = 5) -> dict:
     """MS/MS 証拠の band と主要フラグメントを返す（決定的判定）。
 
@@ -242,6 +341,12 @@ def msms_evidence(feature: dict, top_n: int = 5) -> dict:
                       本当に空か区別できないため caveat を付す。
     - ``ABSENT``    : フラグもスペクトルも無い。
 
+    この3状態の契約は変えない。``spectral_match`` はその内側に足すだけの追加情報:
+    ``band == "PASS"`` かつ参照ライブラリが読み込み済み（``session.library.store``
+    がある）ときだけ、実スペクトルをライブラリと照合した最良候補のスコアを載せる。
+    ライブラリ未読み込みなら ``spectral_match`` キー自体を持たない
+    （``dict.get("spectral_match")`` は ``None``）。
+
     ``top_fragments`` は強度降順の上位 ``top_n`` 本（``[[mz, intensity], ...]``）。
     ``n_peaks`` は間引き前の元本数を保つ。
     """
@@ -251,13 +356,17 @@ def msms_evidence(feature: dict, top_n: int = 5) -> dict:
 
     if spectrum:
         top = sorted(spectrum, key=lambda p: p[1], reverse=True)[:top_n]
-        return {
+        result = {
             "band": "PASS",
             "source": "spectrum",
             "n_peaks": n_peaks,
             "top_fragments": [[p[0], p[1]] for p in top],
             "caveat": None,
         }
+        store = getattr(getattr(session_state.session, "library", None), "store", None)
+        if store is not None:
+            result["spectral_match"] = _spectral_match_for_feature(feature, spectrum, store)
+        return result
     if feature.get("has_msms"):
         return {
             "band": "FLAG_ONLY",

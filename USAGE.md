@@ -1,4 +1,4 @@
-# USAGE — ms-data-parser MCP ツール一覧(全63ツール)
+# USAGE — ms-data-parser MCP ツール一覧(全66ツール)
 
 MS-DIAL 出力(`.arf` / `.arf2` / `.pai2` / `.dcl` / `.EIC.aef`)と mzTab-M を解析し、PCA・差次的解析・
 アノテーション検証・文献探索・レポート記録までを行う MCP サーバーのツール群です。
@@ -197,3 +197,15 @@ QC/blank の扱いはツールごとに異なる。`arf_parser` の `class_ids` 
 | `pipeline_status` | 実行中の run の状態を読む(`pipeline_path`, `include_details=False`)。**読み取り専用** — 監視や成果物の確定はこの呼び出しに依存しない(呼ばなくても裏の worker が最後まで進める)。`status`/`stage_statuses`/`needs_input`/`warnings` の要約を返し、`include_details=True` で永続レコード全体を追加取得できる。`status="running"` のとき、workerの生存確認 `observed_health`(`ok`/`worker_missing`/`unknown`)を添える。`worker_missing` なら `recovery_hint` で `pipeline_resume` を促す。 |
 | `pipeline_resume` | 入力訂正(`updates`: `target`/`sample_manifest`/`preprocess`/`comparisons` に限定)、下流の再計算、または中断した工程からの再開を行う。`rerun_upstream=True` を明示しない限り Console 実行はやり直さない(自動再試行はしない)。`request_id` を指定した再送は、直前と同じ内容なら新しい revision を作らず直前の結果を返す。 |
 | `pipeline_cancel` | 取消要求を保存する(`pipeline_path`)。**生データを削除しない** — 保存するのは協調的な取消フラグだけで、実際に停止したかどうかは `pipeline_status` で確認する。二重に呼んでも同じ状態に落ち着く(冪等)。 |
+
+## 14. 参照ライブラリ(MS/MS スペクトル照合)
+
+`.dcl` の測定 MS/MS を参照ライブラリ(`*_Loaded.msp2.dbs` または `*.msp`)と照合し、
+対向プロット(mirror plot)で確認する経路。`library_load` → `library_match_feature` →
+`library_plot_mirror` の順で呼ぶ(前段の状態が無いと `missing_state` 封筒を返す)。
+
+| ツール | 機能 |
+|--------|------|
+| `library_load` | 参照ライブラリを解決し、照合用の SQLite store を構築(または既存キャッシュを再利用)して `session.library` へ持つ。要約(`record_count`/`ion_modes`/`compound_classes` 上位10/`search_params`)を返す。`.msp` 由来で `search_params` が無いときは既定の許容幅を使う旨を明示する。 |
+| `library_match_feature` | 測定 MS/MS(`.dcl`、間引かずに全ピーク使用)を候補と照合し、上位をスコア付きの TSV で返す。`.dcl` に MS/MS が無いときは `not_found`(「未取得」であって「合わなかった」ではない)。スペクトル座標は戻り値に含めず `session.library.last_match` へ持つ。 |
+| `library_plot_mirror` | 直近の照合結果から対向プロット(上段=測定・下段=参照)を描く。既定は PNG 画像、`output="payload"` で座標 JSON。 |

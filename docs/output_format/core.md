@@ -16,6 +16,7 @@
 | `eic` | `lipidmix://docs/output-format/eic` | §7, §8.4, §8.5 | `.EIC.aef` パーサ、EIC 検索、描画契約 |
 | `identity` | `lipidmix://docs/output-format/identity` | §12 | 同定信頼度・名前正規化・MSI レベル |
 | `mztab` | `lipidmix://docs/output-format/mztab` | §13 | mzTab-M 経路（`dataset_load` 以降）。SME/SML の同定、特徴表、差次的エクスポートの同定列 |
+| `library` | `lipidmix://docs/output-format/library` | §14 | 参照ライブラリ（`.dbs`/`.msp`）照合。スコアの意味、`-1`/`0` の区別、意図的に写した瑕疵 |
 
 節番号は分割前の通し番号をそのまま保持している。本文中の `§11.1.1` のような相互参照は、この表からトピックを引いて辿ること。
 

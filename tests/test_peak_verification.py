@@ -1,5 +1,6 @@
 """peak_verification 純ロジックの検証。"""
 
+import textwrap
 import unittest
 
 from lipidmix.msdial import peak_verification as pv
@@ -300,3 +301,160 @@ class MsmsEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(len(out["top_fragments"]), 5)
         self.assertEqual(out["n_peaks"], 20)  # 元本数は保つ
+
+
+def test_the_msms_band_still_has_only_three_states():
+    """PASS / FLAG_ONLY / ABSENT の 3 状態は契約。照合はその内側に足す。"""
+    from lipidmix.msdial.peak_verification import msms_evidence
+    assert msms_evidence({"msms_spectrum": [[100.0, 999.0]]})["band"] == "PASS"
+    assert msms_evidence({"has_msms": True})["band"] == "FLAG_ONLY"
+    assert msms_evidence({})["band"] == "ABSENT"
+
+
+def test_spectral_match_is_absent_without_a_loaded_library():
+    from lipidmix.msdial.peak_verification import msms_evidence
+    assert msms_evidence({"msms_spectrum": [[100.0, 999.0]]}).get("spectral_match") is None
+
+
+_MSP_GABA = textwrap.dedent("""\
+    NAME: GABA
+    PRECURSORMZ: 104.0706
+    IONMODE: Positive
+    Num Peaks: 2
+    87.0441 999
+    69.0335 500
+""")
+
+
+class _FakeIonModePositive:
+    """PAI2 の `pai2.reader.IonMode.Positive` の代わり——`.name` だけ持つ。"""
+    name = "Positive"
+
+
+def _open_gaba_store(tmp_path, monkeypatch):
+    from lipidmix.library import store as library_store
+    monkeypatch.setenv(library_store.LIBRARY_CACHE_ENV, str(tmp_path / "cache"))
+    msp_path = tmp_path / "lib.msp"
+    msp_path.write_text(_MSP_GABA, encoding="utf-8")
+    return library_store.open_store(msp_path)
+
+
+def test_spectral_match_finds_candidates_despite_ion_mode_case_mismatch(tmp_path, monkeypatch):
+    """Critical 1 の再発防止: `verify_peak_annotation` の統合経路
+    （`_spectral_match_for_feature`）は feature 側の `ion_mode.name`
+    （`"Positive"`、大文字始まり）をそのまま store へ渡す。store 側は
+    `"positive"`（小文字、`record.ION_MODES`）。以前は SQLite の既定 BINARY
+    照合で一致せず、ライブラリを読み込んでいても常に `n_candidates=0` を返した
+    （`no_candidates` は『ライブラリに無い化合物だ』という実質的な主張なので、
+    この不一致は誤った結論に直結する）。"""
+    lib_store = _open_gaba_store(tmp_path, monkeypatch)
+    try:
+        feature = {
+            "m/z": 104.0706,
+            "ion_mode": _FakeIonModePositive(),
+            "time": {"rt": None},
+        }
+        spectrum = [[87.0441, 999.0], [69.0335, 500.0]]
+        result = pv._spectral_match_for_feature(feature, spectrum, lib_store)
+        assert result["status"] == "matched"
+        assert result["n_candidates"] == 1
+        assert result["best_match"]["name"] == "GABA"
+    finally:
+        lib_store.close()
+
+
+def test_spectral_match_via_msms_evidence_end_to_end(tmp_path, monkeypatch):
+    """`msms_evidence` から `_spectral_match_for_feature` までを通しで確認する
+    （`session.library.store` が実際に読み込まれた状態で）。"""
+    from lipidmix.core import session_state
+
+    lib_store = _open_gaba_store(tmp_path, monkeypatch)
+    try:
+        monkeypatch.setattr(session_state, "session", session_state.AnalysisSession())
+        session_state.session.library.store = lib_store
+        feature = {
+            "m/z": 104.0706,
+            "ion_mode": _FakeIonModePositive(),
+            "time": {"rt": None},
+            "has_msms": True,
+            "n_msms_peaks": 2,
+            "msms_spectrum": [[87.0441, 999.0], [69.0335, 500.0]],
+        }
+        out = pv.msms_evidence(feature)
+        assert out["band"] == "PASS"
+        assert out["spectral_match"]["status"] == "matched"
+        assert out["spectral_match"]["n_candidates"] == 1
+    finally:
+        lib_store.close()
+
+
+def test_scoring_forwards_search_params_amplitude_cutoffs_to_match_spectrum(monkeypatch):
+    """Important 2 の再発防止: `search_params` の `mass_range_begin` /
+    `mass_range_end` / `relative_amp_cutoff` / `absolute_amp_cutoff` が
+    `match_spectrum` に届くこと（検証 CLI `scripts/verify_spectral_match.py`
+    と同じ集合）。以前は `ms2_tol` しか渡していなかった。"""
+    captured = {}
+
+    def fake_match_spectrum(measured, reference, *, ms2_tol, **kwargs):
+        captured["ms2_tol"] = ms2_tol
+        captured.update(kwargs)
+        return {
+            "simple_dot_product": 1.0, "weighted_dot_product": 1.0,
+            "reverse_dot_product": 1.0, "matched_peaks_percentage": 1.0,
+            "matched_peaks_count": 1, "entropy_similarity": 1.0, "alignment": [],
+        }
+
+    import lipidmix.analysis.spectral_match as spectral_match_module
+    monkeypatch.setattr(spectral_match_module, "match_spectrum", fake_match_spectrum)
+
+    class _FakeStore:
+        def summary(self):
+            return {"search_params": {
+                "ms1_tolerance": 0.02, "ms2_tolerance": 0.05, "rt_tolerance": 1.0,
+                "mass_range_begin": 10.0, "mass_range_end": 1000.0,
+                "relative_amp_cutoff": 0.05, "absolute_amp_cutoff": 100.0,
+            }}
+
+        def candidates(self, *args, **kwargs):
+            return [{"name": "X", "ontology": None, "adduct": None, "spectrum": [[100.0, 10.0]]}]
+
+    feature = {"m/z": 100.0, "ion_mode": None, "time": {}}
+    pv._spectral_match_for_feature(feature, [[100.0, 10.0]], _FakeStore())
+
+    assert captured["mass_begin"] == 10.0
+    assert captured["mass_end"] == 1000.0
+    assert captured["relative_amp_cutoff"] == 0.05
+    assert captured["absolute_amp_cutoff"] == 100.0
+
+
+def test_tolerance_lookup_keeps_an_explicit_zero_from_search_params(monkeypatch):
+    """Important 5 の再発防止: `search_params.get(key)` が `0.0`（正当な値。
+    例えば足切りなし）でも、`or` 判定（偽値扱い）で既定値へ差し替えてはいけない。
+    以前この関数だけが `or` を使っており、`lipidmix.library.tools._pick_tol`
+    （`is None` 判定）とロジックがずれていた。"""
+    captured = {}
+
+    def fake_match_spectrum(measured, reference, *, ms2_tol, **kwargs):
+        captured["ms2_tol"] = ms2_tol
+        return {
+            "simple_dot_product": 1.0, "weighted_dot_product": 1.0,
+            "reverse_dot_product": 1.0, "matched_peaks_percentage": 1.0,
+            "matched_peaks_count": 1, "entropy_similarity": 1.0, "alignment": [],
+        }
+
+    import lipidmix.analysis.spectral_match as spectral_match_module
+    monkeypatch.setattr(spectral_match_module, "match_spectrum", fake_match_spectrum)
+
+    class _FakeStore:
+        def summary(self):
+            # ms2_tolerance=0.0 は「明示的にゼロ」——`or` だと偽値扱いで
+            # 既定値 (_LIBRARY_MS2_TOL=0.025) に化ける。
+            return {"search_params": {"ms2_tolerance": 0.0}}
+
+        def candidates(self, *args, **kwargs):
+            return [{"name": "X", "ontology": None, "adduct": None, "spectrum": [[100.0, 10.0]]}]
+
+    feature = {"m/z": 100.0, "ion_mode": None, "time": {}}
+    pv._spectral_match_for_feature(feature, [[100.0, 10.0]], _FakeStore())
+
+    assert captured["ms2_tol"] == 0.0

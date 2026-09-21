@@ -5,7 +5,7 @@
 ## このリポジトリは何か
 
 MS-DIAL（LC-MS リピドミクス／メタボロミクス解析ソフト）の出力を読み、LLM から使える形で
-公開する **MCP サーバ `ms-data-parser`**。ツール 63・リソース 4・リソーステンプレート 3。
+公開する **MCP サーバ `ms-data-parser`**。ツール 66・リソース 4・リソーステンプレート 3。
 GUI の外では読めない圧縮 MessagePack と独自バイナリを解し、解析そのものをサーバ側で回して
 要約だけを返す（生の行列を LLM の文脈に載せない）。
 
@@ -66,6 +66,9 @@ lipidmix/analysis/  入力形式に依存しない数値処理（前処理/QC・
 lipidmix/plots/     描画 payload の組み立てと matplotlib 描画（volcano / eic / render）
 lipidmix/{arf,arf2,pai2,dcl,eic}/   形式ごとの reader.py（パーサ）と tools.py（MCP ツール）
 lipidmix/mztab/     mzTab-M リーダ・DatasetState 構築
+lipidmix/library/   参照ライブラリ（.dbs / .msp）の読み取りと永続 store。
+                    形式ごとに分けないのは、2 つが同じレコード形と同じ store を
+                    共有する 2 つの入口にすぎないため（spec 2026-09-19）
 lipidmix/console/   MS-DIAL Console 実行層（job_manager / runner / output_collector）
 lipidmix/pipeline/  生データフォルダ起点の統括（受付 request/inputs/store・独立 worker が回す engine・
                     工程 handler の service・再開/取消の recovery・必須出力判定と品質レポートの report）

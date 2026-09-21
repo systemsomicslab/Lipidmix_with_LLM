@@ -18,7 +18,11 @@ import server
 # Task18: 生データフォルダ起点の pipeline_plan/run/status/resume/cancel を追加(56→61)。
 # v2メタボロミクス Task13: dataset_statistic を追加(61→62)。
 # 対話経路S1: pipeline を経ずに解析行列を作る dataset_build_matrix を追加(62→63)。
+# Task10: 参照ライブラリの MS/MS 照合 3 本を追加(63→66)。
 EXPECTED_TOOLS = sorted([
+    "library_load",
+    "library_match_feature",
+    "library_plot_mirror",
     "arf2_annotate_identities",
     "arf2_parser",
     "arf_differential",
