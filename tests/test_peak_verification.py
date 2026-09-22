@@ -458,3 +458,67 @@ def test_tolerance_lookup_keeps_an_explicit_zero_from_search_params(monkeypatch)
     pv._spectral_match_for_feature(feature, [[100.0, 10.0]], _FakeStore())
 
     assert captured["ms2_tol"] == 0.0
+
+
+def test_the_best_match_is_chosen_by_the_same_rule_as_library_match_feature(monkeypatch):
+    """2 つのツールが違う「最良候補」を返すと、ドシエと候補一覧が食い違う。
+    順位付けは `library_match_feature` と同じ総合スコア（`GetTotalScore`）に揃える。"""
+    scores = {
+        "NOISY": {"simple_dot_product": 0.70, "weighted_dot_product": 0.99,
+                  "reverse_dot_product": 0.76, "matched_peaks_percentage": 0.20,
+                  "matched_peaks_count": 18},
+        "CLEAN": {"simple_dot_product": 0.97, "weighted_dot_product": 0.98,
+                  "reverse_dot_product": 0.99, "matched_peaks_percentage": 1.00,
+                  "matched_peaks_count": 16},
+    }
+
+    def fake_match_spectrum(measured, reference, **kwargs):
+        name = "NOISY" if reference == [[100.0, 10.0]] else "CLEAN"
+        return {**scores[name], "entropy_similarity": 0.0, "alignment": []}
+
+    import lipidmix.analysis.spectral_match as spectral_match_module
+    monkeypatch.setattr(spectral_match_module, "match_spectrum", fake_match_spectrum)
+
+    class _FakeStore:
+        def summary(self):
+            return {"search_params": {"ms1_tolerance": 0.01, "ms2_tolerance": 0.025,
+                                      "rt_tolerance": 2.0}}
+
+        def candidates(self, *args, **kwargs):
+            return [
+                {"name": "NOISY", "ontology": None, "adduct": None,
+                 "precursor_mz": 100.0, "rt": 1.0, "spectrum": [[100.0, 10.0]]},
+                {"name": "CLEAN", "ontology": None, "adduct": None,
+                 "precursor_mz": 100.0, "rt": 1.0, "spectrum": [[100.0, 20.0]]},
+            ]
+
+    feature = {"m/z": 100.0, "ion_mode": None, "time": {"rt": 1.0}}
+    out = pv._spectral_match_for_feature(feature, [[100.0, 10.0]], _FakeStore())
+
+    assert out["best_match"]["name"] == "CLEAN"
+    assert "total_score" in out["best_match"]
+
+
+def test_the_best_match_survives_a_candidate_without_precursor_mz_or_rt(monkeypatch):
+    """store のレコードが precursor m/z / RT を欠いていても照合を止めない
+    （照合の失敗で band 判定を止めない、というこの関数の約束）。"""
+    def fake_match_spectrum(measured, reference, **kwargs):
+        return {"simple_dot_product": 1.0, "weighted_dot_product": 1.0,
+                "reverse_dot_product": 1.0, "matched_peaks_percentage": 1.0,
+                "matched_peaks_count": 1, "entropy_similarity": 1.0, "alignment": []}
+
+    import lipidmix.analysis.spectral_match as spectral_match_module
+    monkeypatch.setattr(spectral_match_module, "match_spectrum", fake_match_spectrum)
+
+    class _FakeStore:
+        def summary(self):
+            return {"search_params": {}}
+
+        def candidates(self, *args, **kwargs):
+            return [{"name": "X", "ontology": None, "adduct": None, "spectrum": [[100.0, 10.0]]}]
+
+    feature = {"m/z": 100.0, "ion_mode": None, "time": {}}
+    out = pv._spectral_match_for_feature(feature, [[100.0, 10.0]], _FakeStore())
+
+    assert out["status"] == "matched"
+    assert out["best_match"]["name"] == "X"

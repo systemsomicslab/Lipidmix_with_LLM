@@ -1,4 +1,6 @@
 """対向プロット。座標は payload に持ち、描画は PNG で返す。"""
+import pytest
+
 from lipidmix.plots import mirror
 
 
@@ -17,9 +19,10 @@ def test_the_payload_keeps_both_spectra_and_the_matches():
 
 
 def test_the_labels_are_capped():
+    """`top_labels` は**側ごと**の上限（上流は上下で別々の `Annotator`）。"""
     measured = [[float(i), float(1000 - i)] for i in range(50)]
     payload = mirror.build_mirror_payload(measured, measured, [], title="x", top_labels=3)
-    assert len(payload["labels"]) <= 3
+    assert len(payload["labels"]) <= 3 * 2
 
 
 def test_render_returns_a_png():
@@ -66,3 +69,150 @@ def test_labels_are_ranked_per_side_not_by_raw_scale():
 
     sides = {label["side"] for label in payload["labels"]}
     assert sides == {"measured", "reference"}
+
+
+# --------------------------------------------------------------------------
+# 縦軸のスケール。MS-DIAL GUI は Relative / Absolute / Log10 / Sqrt を
+# 上下独立に選ばせる（`ObservableMsSpectrum.CreateAxisPropertySelectors2`）。
+# precursor がベースピークのスペクトルは Relative だと診断イオンが潰れる。
+# --------------------------------------------------------------------------
+def _payload():
+    return mirror.build_mirror_payload(
+        [[100.0, 20.0], [900.0, 999.0]], [[100.0, 25.0], [900.0, 999.0]],
+        [{"mz": 100.0, "measured": 0.02, "reference": 0.025, "matched": True}], title="t")
+
+
+def test_render_accepts_the_upstream_axis_scales():
+    for scale in ("relative", "sqrt", "log10"):
+        png = mirror.render_mirror(_payload(), scale=scale)
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_defaults_to_relative():
+    assert mirror.render_mirror(_payload()) == mirror.render_mirror(_payload(), scale="relative")
+
+
+def test_render_rejects_an_unknown_scale():
+    """黙って relative に落とすと「Sqrt で見ている」と誤認したまま読むことになる。"""
+    with pytest.raises(ValueError):
+        mirror.render_mirror(_payload(), scale="ln")
+
+
+def test_sqrt_lifts_a_peak_that_relative_flattens():
+    """precursor 優勢のスペクトルで小さな診断イオンが見える高さになること。"""
+    assert mirror.scale_intensity(0.02, "relative") == pytest.approx(0.02)
+    assert mirror.scale_intensity(0.02, "sqrt") == pytest.approx(0.1414213562)
+    assert mirror.scale_intensity(0.02, "log10") > 0.02
+
+
+def test_log10_floors_at_the_documented_decade_and_never_goes_negative():
+    """0 と「0.1% 未満」は同じ高さ 0 に落とす（対数は下へ発散するため）。"""
+    assert mirror.scale_intensity(0.0, "log10") == 0.0
+    assert mirror.scale_intensity(1e-9, "log10") == 0.0
+    assert mirror.scale_intensity(1.0, "log10") == pytest.approx(1.0)
+
+
+def test_peaks_are_bare_stems_without_tip_markers(monkeypatch):
+    """ピーク先端にドットを打たない。上流 `LineSpectrumControlSlim` も
+    `DrawLine` だけで描いており、マーカーは m/z 軸上の位置を太らせて
+    近接ピークを潰すだけで情報を足さない。"""
+    captured = {}
+
+    from lipidmix.plots import render as plot_render
+    real = plot_render.figure_to_png
+
+    def spy(fig):
+        captured["axes"] = fig.axes[0]
+        return real(fig)
+
+    monkeypatch.setattr(plot_render, "figure_to_png", spy)
+    mirror.render_mirror(_payload())
+
+    from matplotlib.collections import LineCollection, PathCollection
+    collections = captured["axes"].collections
+    assert any(isinstance(c, LineCollection) for c in collections)   # ステムは描く
+    assert not any(isinstance(c, PathCollection) for c in collections)  # ドットは描かない
+
+
+# --------------------------------------------------------------------------
+# ラベルの衝突回避。上流 `Annotator.OnRender` は強度降順に走査し、既に置いた
+# ラベルと重なるものを飛ばす（本数上限ではなく幾何で決める）。
+# --------------------------------------------------------------------------
+def _labelled(payload, **kwargs):
+    """描画した図から、実際に置かれたラベルの文字列を拾う。"""
+    captured = {}
+    from lipidmix.plots import render as plot_render
+    real = plot_render.figure_to_png
+
+    def spy(fig):
+        captured["texts"] = [t.get_text() for t in fig.axes[0].texts]
+        return real(fig)
+
+    import pytest as _pytest
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(plot_render, "figure_to_png", spy)
+        mirror.render_mirror(payload, **kwargs)
+    finally:
+        monkeypatch.undo()
+    return captured["texts"]
+
+
+def _crowded_payload():
+    """m/z 軸が広い中に、狭い範囲へ密集したピークを置く（衝突を必ず起こす形）。
+
+    衝突判定は**ピクセル距離**なので、m/z の差が小さいだけでは足りない——
+    軸の幅に対して相対的に近くないと重ならない。そこで遠方に 1 本置いて軸を
+    広げたうえで、0.1 m/z 幅に 12 本を詰める。
+    """
+    cluster = [[500.0 + i * 0.01, 1000.0 - i * 50] for i in range(12)]
+    spread = [[100.0, 200.0], [1000.0, 200.0]]
+    return mirror.build_mirror_payload(
+        spread + cluster, spread + cluster, [], title="crowded")
+
+
+def test_labels_no_longer_overlap_by_default():
+    """既定（auto）では密集した 12 本を全部は描かない（以前は重ねて全部描いていた）。"""
+    texts = _labelled(_crowded_payload())
+    assert 0 < len(texts) < 2 * 14
+
+
+def test_the_msdial_policy_ignores_vertical_separation():
+    """忠実版は水平距離だけを見る（`Overlap="Horizontal, Direct"` は全ラベルが
+    同じ代表箱なので Direct ⊆ Horizontal に縮退する）。高さが違っても
+    m/z が近ければ飛ばすので、2 次元で見る auto より必ずラベルが少ない。"""
+    payload = _crowded_payload()
+    assert len(_labelled(payload, label_policy="msdial")) \
+        < len(_labelled(payload, label_policy="auto"))
+
+
+def test_both_policies_label_well_separated_peaks():
+    """m/z が十分離れていればどちらの方式でも全部に付く。"""
+    payload = mirror.build_mirror_payload(
+        [[100.0, 900.0], [400.0, 800.0], [700.0, 700.0]],
+        [[100.0, 900.0], [400.0, 800.0], [700.0, 700.0]], [], title="sparse")
+    for policy in ("auto", "msdial"):
+        assert len(_labelled(payload, label_policy=policy)) == 6   # 上下 3 本ずつ
+
+
+def test_the_two_sides_do_not_collide_with_each_other():
+    """上流は上下で別々の `Annotator` を使うので側をまたぐ衝突は起きない。
+    同じ m/z のピークが上下にあっても両方ラベルが付くこと。"""
+    payload = mirror.build_mirror_payload(
+        [[300.0, 900.0]], [[300.0, 900.0]], [], title="both sides")
+    assert len(_labelled(payload, label_policy="msdial")) == 2
+
+
+def test_render_rejects_an_unknown_label_policy():
+    with pytest.raises(ValueError):
+        mirror.render_mirror(_payload(), label_policy="clever")
+
+
+def test_the_payload_label_cap_is_per_side():
+    """上流は上下で別の `Annotator`＝別枠。片側が枠を独占しないよう側ごとに切る。"""
+    measured = [[float(i), 1000.0] for i in range(20)]
+    reference = [[float(i), 1.0] for i in range(20)]   # 相対では測定側と同順位
+    payload = mirror.build_mirror_payload(measured, reference, [], title="x", top_labels=3)
+    sides = [label["side"] for label in payload["labels"]]
+    assert sides.count("measured") == 3
+    assert sides.count("reference") == 3

@@ -140,3 +140,46 @@ def test_rt_is_none_for_the_unset_sentinel(tmp_path):
     path.write_bytes(_pack_chunk([r]))
     records = list(dbs.iter_records(path))
     assert records[0]["rt"] is None
+
+
+def _write_dbs(path, parameter):
+    """`Storage` だけを差し替えられる最小の `.dbs`（fixture はテスト自身が作る規約）。"""
+    storage = {"MetabolomicsDataBases": [{"DataBase": ["mylib", 4, 2, "C:/x/mylib.lbm2"],
+                                          "Pairs": [[0, {"SerializableAnnotatorKey":
+                                                         [3, {"Parameter": parameter,
+                                                              "SourceType": 4, "Key": "mylib_1",
+                                                              "Priority": 1}]}]]}]}
+    packed = msgpack.packb(storage, use_bin_type=True)
+    comp = lz4.block.compress(packed, store_size=False)
+    wrapped = (b"\xc9" + struct.pack(">I", len(comp) + 5) + b"\x63"
+               + b"\xd2" + struct.pack(">i", len(packed)) + comp)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("MetabolomicsDB/mylib/DataBase", _pack_chunk([_record(name="Z")]))
+        z.writestr("Storage", wrapped)
+    return path
+
+
+# Key 0..19。15〜18 が注釈スコアリングの可否（既定は全部 False）。
+_PARAMETER = [0.0, 2000.0, 2.0, 100.0, 20.0, 0.01, 0.025, 0.0, 0.0, 0.0225,
+              0.0225, 0.09, 0.0, 0.8, 1.0, True, True, False, False, 0.1]
+
+
+def test_annotation_scoring_flags_are_read_from_the_storage(tmp_path):
+    """Key 15〜18。総合スコアに RT / CCS 項を入れるかはここで決まる。
+    **既定は全部 False だが実 run では True のことがある**ので、推測せず読む。"""
+    meta = dbs.read_storage_meta(_write_dbs(tmp_path / "on.msp2.dbs", _PARAMETER))
+
+    assert meta["search_params"]["use_time_for_annotation_filtering"] is True
+    assert meta["search_params"]["use_time_for_annotation_scoring"] is True
+    assert meta["search_params"]["use_ccs_for_annotation_filtering"] is False
+    assert meta["search_params"]["use_ccs_for_annotation_scoring"] is False
+
+
+def test_the_scoring_flags_are_read_and_not_hardcoded(tmp_path):
+    off = list(_PARAMETER)
+    off[15] = off[16] = False
+    off[17] = off[18] = True
+    meta = dbs.read_storage_meta(_write_dbs(tmp_path / "off.msp2.dbs", off))
+
+    assert meta["search_params"]["use_time_for_annotation_scoring"] is False
+    assert meta["search_params"]["use_ccs_for_annotation_scoring"] is True

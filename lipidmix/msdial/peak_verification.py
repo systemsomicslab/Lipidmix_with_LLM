@@ -251,13 +251,15 @@ def _spectral_match_for_feature(feature: dict, spectrum: list, store) -> dict:
 
     `library_match_feature` MCP ツール（`lipidmix/library/tools.py`）と同じ土俵
     （`store.candidates()` によるアラインメント検索 + `spectral_match.match_spectrum`
-    採点）を使うが、ここは検証ドシエの一材料でしかないので、戻り値は最良候補の
-    スコアだけに絞る。候補一覧が要る場合は `library_match_feature` を使うこと。
+    採点 + `spectral_match.total_score` による順位付け）を使うが、ここは検証ドシエの
+    一材料でしかないので、戻り値は最良候補のスコアだけに絞る。候補一覧が要る場合は
+    `library_match_feature` を使うこと。**「最良」の基準は両者で必ず一致させること**
+    ——食い違うと、同じ feature について 2 つのツールが別の候補を名指しする。
 
     どの段階で失敗しても（precursor m/z が無い・ライブラリ照会が失敗する等）
     例外は投げない——照合は msms_evidence の主目的である band 判定を止めてはいけない。
     """
-    from lipidmix.analysis.spectral_match import match_spectrum
+    from lipidmix.analysis.spectral_match import match_spectrum, total_score
 
     precursor_mz = feature.get("m/z")
     if precursor_mz is None:
@@ -300,15 +302,30 @@ def _spectral_match_for_feature(feature: dict, spectrum: list, store) -> dict:
     if not candidates:
         return {"status": "no_candidates", "n_candidates": 0}
 
-    scored = [
-        (record, match_spectrum(
+    # 並び順は `library_match_feature` と**同じ**総合スコア（`GetTotalScore`）。
+    # 揃えないと、同じ feature について検証ドシエと候補一覧が違う「最良候補」を
+    # 名指しすることになる。RT 項の可否も同じく store の
+    # `IsUseTimeForAnnotationScoring`（`.msp` 由来なら上流既定の False）に従う。
+    use_rt_scoring = bool(search_params.get("use_time_for_annotation_scoring", False))
+
+    scored = []
+    for record in candidates:
+        result = match_spectrum(
             spectrum, record["spectrum"], ms2_tol=ms2_tol,
             mass_begin=mass_begin, mass_end=mass_end,
             relative_amp_cutoff=relative_amp_cutoff, absolute_amp_cutoff=absolute_amp_cutoff,
+        )
+        # store のレコードは precursor m/z / RT を欠きうる（`.msp` 由来など）。
+        # `total_score` は欠測を番兵で落とすので、ここで弾く必要はない。
+        result.update(total_score(
+            result,
+            precursor_mz=precursor_mz, reference_precursor_mz=record.get("precursor_mz"),
+            ms1_tol=mz_tol,
+            rt=rt, reference_rt=record.get("rt"),
+            rt_tol=rt_tol, use_rt=use_rt_scoring,
         ))
-        for record in candidates
-    ]
-    scored.sort(key=lambda item: item[1]["weighted_dot_product"], reverse=True)
+        scored.append((record, result))
+    scored.sort(key=lambda item: item[1]["total_score"], reverse=True)
     best_record, best_result = scored[0]
 
     return {
@@ -318,6 +335,7 @@ def _spectral_match_for_feature(feature: dict, spectrum: list, store) -> dict:
             "name": best_record.get("name"),
             "ontology": best_record.get("ontology"),
             "adduct": best_record.get("adduct"),
+            "total_score": round(best_result["total_score"], 6),
             "weighted_dot_product": round(best_result["weighted_dot_product"], 6),
             "simple_dot_product": round(best_result["simple_dot_product"], 6),
             "reverse_dot_product": round(best_result["reverse_dot_product"], 6),

@@ -268,6 +268,15 @@ Storage
 足切りの設定を変えた run 同士でスコアが合わないときに「移植の誤り」と
 誤診断しないための手がかりになる。
 
+**Key 16（`IsUseTimeForAnnotationScoring`）は総合スコアの形を変える。** 真なら
+`GetTotalScore` に RT 項（`RtSimilarity`）が 1 つ増え、候補の並び順が変わる。
+**既定は false だが実 run では true のことがある**（実測: aging mice kidney neg の
+`Dataset_2026_09_09_17_28_59_Loaded.msp2.dbs` は Key 15/16 が両方 true、
+`RtTolerance=2.0`）。既定値を仮定せず必ず `Storage` から読むこと——
+`lipidmix/library/dbs.py` の `_SEARCH_PARAM_KEYS` が 15〜18 を
+`use_time_for_annotation_*` / `use_ccs_for_annotation_*` として拾い、
+`library_match_feature` の `scoring.use_rt` に反映される。
+
 | Key | 型 | メンバ | 既定 | 備考 |
 |---:|---|---|---|---|
 | 0 | `float` | `MassRangeBegin` | 0 |  |
@@ -285,10 +294,10 @@ Storage
 | 12 | `float` | `MatchedPeaksPercentageCutOff` | 0.25 |  |
 | 13 | `float` | `TotalScoreCutoff` | 0.8 |  |
 | 14 | `float` | `MinimumSpectrumMatch` | 3 |  |
-| 15 | `bool` | `IsUseTimeForAnnotationFiltering` | false |  |
-| 16 | `bool` | `IsUseTimeForAnnotationScoring` | false |  |
-| 17 | `bool` | `IsUseCcsForAnnotationFiltering` | false |  |
-| 18 | `bool` | `IsUseCcsForAnnotationScoring` | false |  |
+| 15 | `bool` | `IsUseTimeForAnnotationFiltering` | false | RT 窓で候補を絞るか。 |
+| 16 | `bool` | `IsUseTimeForAnnotationScoring` | false | **総合スコアに RT 項を足すか**（下記参照）。 |
+| 17 | `bool` | `IsUseCcsForAnnotationFiltering` | false | IM-MS 用。LC-MS の run では false。 |
+| 18 | `bool` | `IsUseCcsForAnnotationScoring` | false | 同上。 |
 | 19 | `float` | `AndromedaScoreCutOff` | 0.1 | **宣言順は Key 12 と Key 13 の間**（上記参照）。 |
 
 ## ドリフト確認の手順

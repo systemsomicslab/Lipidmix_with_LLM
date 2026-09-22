@@ -149,3 +149,113 @@ def test_entropy_similarity_still_returns_the_sentinel_for_a_genuinely_empty_spe
     """縮退（総強度 0 だが非空）と比較不能（空）を混同しない回帰テスト。"""
     assert sm.spectral_entropy_similarity([], [[100.0, 10.0]], bin_width=0.01) == -1.0
     assert sm.spectral_entropy_similarity([[100.0, 0.0]], [], bin_width=0.01) == -1.0
+
+
+# --------------------------------------------------------------------------
+# MS-DIAL の総合スコア（順位付けの正準）。
+# 上流: `MsScanMatching.GetTotalScore` / `GetGaussianSimilarity`、
+#       `MolecularFormulaUtility.FixMassTolerance`。
+# --------------------------------------------------------------------------
+_SCORES = {
+    "simple_dot_product": 0.9, "weighted_dot_product": 0.96,
+    "reverse_dot_product": 0.93, "matched_peaks_percentage": 1.0,
+    "matched_peaks_count": 9,
+}
+_SPECTRUM_TERM = (0.96 + 0.9 + 0.93) / 3
+
+
+def test_gaussian_similarity_peaks_at_one_when_the_values_agree():
+    assert sm.gaussian_similarity(8.5, 8.5, 2.0) == 1.0
+
+
+def test_gaussian_similarity_follows_the_upstream_formula():
+    # exp(-0.5 * ((1 - 2) / 1)^2)
+    assert sm.gaussian_similarity(1.0, 2.0, 1.0) == pytest.approx(0.6065306597126334)
+
+
+def test_gaussian_similarity_returns_the_sentinel_for_missing_values():
+    """`0` は「まったく似ていない」を意味する。欠測はそれと区別して `-1` を返す
+    （上流の `out bool` 版と同じ規約。dot product 3 種の番兵とも揃う）。"""
+    assert sm.gaussian_similarity(None, 1.0, 1.0) == -1.0
+    assert sm.gaussian_similarity(1.0, None, 1.0) == -1.0
+    assert sm.gaussian_similarity(0.0, 1.0, 1.0) == -1.0
+    assert sm.gaussian_similarity(1.0, -1.0, 1.0) == -1.0
+
+
+def test_mass_tolerance_is_left_alone_at_or_below_500():
+    assert sm.fix_mass_tolerance(0.01, 400.0) == 0.01
+    assert sm.fix_mass_tolerance(0.01, 500.0) == 0.01
+
+
+def test_mass_tolerance_is_stretched_by_ppm_above_500():
+    """500 での 0.01 は 20 ppm。その ppm を実測 m/z へ当て直す（上流 `FixMassTolerance`）。"""
+    assert sm.fix_mass_tolerance(0.01, 1000.0) == pytest.approx(0.02)
+    assert sm.fix_mass_tolerance(0.01, 885.54985) == pytest.approx(0.0177109970)
+
+
+def test_total_score_is_an_unnormalised_sum_of_the_upstream_terms():
+    """**1 に収まらない**。上流 `GetTotalScore` は平均でなく和なので、
+    0〜1 に正規化すると別の量になり mzTab とも比較できなくなる。"""
+    out = sm.total_score(
+        _SCORES, precursor_mz=400.0, reference_precursor_mz=400.0, ms1_tol=0.01)
+
+    assert out["mass_similarity"] == 1.0
+    assert out["spectrum_score"] == pytest.approx(_SPECTRUM_TERM)
+    assert out["rt_similarity"] == -1.0          # use_rt=False の既定
+    assert out["total_score"] == pytest.approx(1.0 + _SPECTRUM_TERM + 1.0)
+    assert out["total_score"] > 1.0
+
+
+def test_total_score_adds_the_rt_term_only_when_the_library_says_to_use_it():
+    """`IsUseTimeForAnnotationScoring` は既定 `False`。`.dbs` の実値で決まる。"""
+    common = dict(precursor_mz=400.0, reference_precursor_mz=400.0, ms1_tol=0.01,
+                  rt=8.0, reference_rt=8.0, rt_tol=2.0)
+    off = sm.total_score(_SCORES, use_rt=False, **common)
+    on = sm.total_score(_SCORES, use_rt=True, **common)
+
+    assert off["rt_similarity"] == -1.0
+    assert on["rt_similarity"] == 1.0
+    assert on["total_score"] == pytest.approx(off["total_score"] + 1.0)
+
+
+def test_total_score_skips_the_rt_term_when_the_reference_has_no_rt():
+    """`.msp` 由来のレコードは RT を持たない。欠測を `0` として加算すると
+    「RT が合わない」と読めてしまうので、項ごと落とす。"""
+    out = sm.total_score(
+        _SCORES, precursor_mz=400.0, reference_precursor_mz=400.0, ms1_tol=0.01,
+        rt=8.0, reference_rt=None, rt_tol=2.0, use_rt=True)
+
+    assert out["rt_similarity"] == -1.0
+    assert out["total_score"] == pytest.approx(1.0 + _SPECTRUM_TERM + 1.0)
+
+
+def test_total_score_does_not_add_the_incomparable_sentinel():
+    """`-1`（比較不能）を素朴に足すと総合スコアが下がる。上流は「> 0 のときだけ加算」。"""
+    incomparable = {
+        "simple_dot_product": -1.0, "weighted_dot_product": -1.0,
+        "reverse_dot_product": -1.0, "matched_peaks_percentage": -1.0,
+        "matched_peaks_count": -1,
+    }
+    out = sm.total_score(
+        incomparable, precursor_mz=400.0, reference_precursor_mz=400.0, ms1_tol=0.01)
+
+    assert out["spectrum_score"] == -1.0
+    assert out["total_score"] == pytest.approx(1.0)   # m/z 項だけが残る
+
+
+def test_total_score_survives_a_reference_without_a_precursor_mz():
+    """store のレコードが precursor m/z を欠いていても例外にしない（番兵で落とす）。"""
+    out = sm.total_score(
+        _SCORES, precursor_mz=400.0, reference_precursor_mz=None, ms1_tol=0.01)
+
+    assert out["mass_similarity"] == -1.0
+    assert out["total_score"] == pytest.approx(_SPECTRUM_TERM + 1.0)
+
+
+def test_total_score_refuses_to_use_rt_without_a_tolerance():
+    """`rt_tol=None` のまま RT を使うと 0 除算になる。黙って縮退させない
+    （`store.candidates` の `rt_tol` 欠落と同じ扱い）。"""
+    with pytest.raises(ValueError):
+        sm.total_score(
+            _SCORES, precursor_mz=400.0, reference_precursor_mz=400.0, ms1_tol=0.01,
+            rt=8.0, reference_rt=8.0, use_rt=True)

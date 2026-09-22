@@ -101,7 +101,8 @@ def test_candidates_are_ranked_by_a_documented_key(fresh_session, monkeypatch):
     monkeypatch.setattr(tools, "_measured_spectrum",
                         lambda *a, **k: [[87.0441, 999.0], [69.0335, 500.0]])
     payload = json.loads(tools.library_match_feature(104.0706, ion_mode="positive"))
-    assert payload["ranked_by"] == "weighted_dot_product"
+    assert payload["ranked_by"] == "total_score"
+    assert "total_score" in payload["candidates_table"].splitlines()[0].split("	")
 
 
 def test_second_load_does_not_rescan_the_source_file(fresh_session, monkeypatch):
@@ -251,3 +252,114 @@ def test_reloading_the_library_closes_the_old_store(fresh_session):
     assert session_state.session.library.store is not old_store
     with pytest.raises(Exception):
         old_store.candidates(104.0706, mz_tol=0.01)  # 閉じた接続へのクエリはここで失敗するはず
+
+
+# --------------------------------------------------------------------------
+# 順位付け。MS-DIAL の総合スコア（`GetTotalScore`）に揃えてある。
+# weighted 単独だと、同名・同 precursor の別レコードで実用上の最良候補が
+# 1 位に来ないことがある（2026-09-22 の spike。実データ 120 feature で
+# top-1 一致 88.3% → 94.2%）。
+# --------------------------------------------------------------------------
+_TWO_RECORDS = textwrap.dedent("""\
+    NAME: NOISY
+    PRECURSORMZ: 104.0706
+    IONMODE: Positive
+    Num Peaks: 2
+    87.0441 999
+    69.0335 500
+
+    NAME: CLEAN
+    PRECURSORMZ: 104.0706
+    IONMODE: Positive
+    Num Peaks: 2
+    87.0441 999
+    69.0335 500
+""")
+
+
+def _fake_scores(by_name):
+    """レコード名ごとに固定スコアを返す `match_spectrum` の差し替え。
+
+    採点そのものは `test_spectral_match.py` が縛っているので、ここでは
+    「どのスコアで並べるか」だけを見る。
+    """
+    def fake(measured, reference, **kwargs):
+        # reference の中身では名前が分からないので、呼ばれた順に割り当てる。
+        scores = by_name[fake.calls]
+        fake.calls += 1
+        return {**scores, "entropy_similarity": 0.0, "alignment": []}
+    fake.calls = 0
+    return fake
+
+
+def test_a_higher_weighted_score_no_longer_wins_on_its_own(fresh_session, monkeypatch):
+    """実データで見つかった逆転（PS 753.5430）の再現。1 件目は weighted だけが高く、
+    2 件目は他の全指標で優る。総合スコアなら 2 件目が 1 位になる。"""
+    (fresh_session / "lib.msp").write_text(_TWO_RECORDS, encoding="utf-8")
+    tools.library_load()
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 500.0]])
+    monkeypatch.setattr(tools, "match_spectrum", _fake_scores([
+        {"simple_dot_product": 0.70, "weighted_dot_product": 0.99,
+         "reverse_dot_product": 0.76, "matched_peaks_percentage": 0.20,
+         "matched_peaks_count": 18},
+        {"simple_dot_product": 0.97, "weighted_dot_product": 0.98,
+         "reverse_dot_product": 0.99, "matched_peaks_percentage": 1.00,
+         "matched_peaks_count": 16},
+    ]))
+
+    payload = json.loads(tools.library_match_feature(104.0706, ion_mode="positive"))
+    rows = payload["candidates_table"].splitlines()
+    header = rows[0].split("\t")
+    assert rows[1].split("\t")[header.index("name")] == "CLEAN"
+    assert rows[2].split("\t")[header.index("name")] == "NOISY"
+
+
+def test_the_scoring_rules_used_are_echoed_once(fresh_session, monkeypatch):
+    """RT 項を入れたかどうかは `.dbs` の `IsUseTimeForAnnotationScoring` 次第で、
+    戻り値だけを見ても分からない。呼び出し側が再現できるよう 1 回だけ載せる。"""
+    tools.library_load()
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 500.0]])
+    payload = json.loads(tools.library_match_feature(104.0706, rt=1.0, ion_mode="positive"))
+
+    # `.msp` には注釈スコアリングのフラグが無い → 上流既定の False に倣い RT 項は入らない。
+    assert payload["scoring"]["use_rt"] is False
+    assert payload["scoring"]["ms1_tol"] == pytest.approx(0.01)
+
+
+def test_the_candidate_table_keeps_the_subterms_out_of_the_payload(fresh_session, monkeypatch):
+    """内訳（rt_similarity / mass_similarity / spectrum_score）はセッション側に持つ。
+    表に出すと候補数ぶん掛け算で効いて戻り値が膨らむ。"""
+    tools.library_load()
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 500.0]])
+    payload = json.loads(tools.library_match_feature(104.0706, ion_mode="positive"))
+
+    header = payload["candidates_table"].splitlines()[0].split("\t")
+    assert "rt_similarity" not in header
+    assert "mass_similarity" not in header
+
+    scores = session_state.session.library.last_match["candidates"][0]["scores"]
+    assert "total_score" in scores
+    assert "rt_similarity" in scores
+    assert "mass_similarity" in scores
+
+
+def test_the_no_candidates_message_does_not_leak_float32_noise(fresh_session, monkeypatch):
+    """`.dbs` の許容幅は C# の 32bit float 由来で、64bit へ広げると
+    `0.009999999776482582` になる。`round_floats()` は payload 構造の中の float しか
+    辿らないので、**文字列へ焼いた数値には届かない**——補間箇所で書式を指定する。"""
+    tools.library_load()
+    store = session_state.session.library.store
+    monkeypatch.setattr(store, "summary", lambda: {"search_params": {
+        "ms1_tolerance": 0.009999999776482582, "ms2_tolerance": 0.02500000037252903,
+        "rt_tolerance": 2.0,
+    }})
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 500.0]])
+
+    payload = json.loads(tools.library_match_feature(104.0706, ion_mode="negative"))
+    assert payload["status"] == "no_candidates"
+    assert "±0.01," in payload["message"] or "±0.01 " in payload["message"]
+    assert "0.00999999" not in payload["message"]
