@@ -378,7 +378,8 @@ def library_match_feature(
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
 def library_plot_mirror(rank: int = 1, output: str | None = None,
-                        scale: str = mirror_plot.RELATIVE) -> list | str:
+                        scale: str = mirror_plot.RELATIVE,
+                        label_policy: str = mirror_plot.AUTO) -> list | str:
     """直近の `library_match_feature` 結果から対向プロット（mirror plot）を描く。
 
     上段が測定、下段が参照（`rank` 位の候補）。`output="image"`（既定）は
@@ -395,6 +396,23 @@ def library_plot_mirror(rank: int = 1, output: str | None = None,
     （`ObservableMsSpectrum.CreateAxisPropertySelectors2` の Relative / Absolute /
     Log10 / Sqrt）。`Absolute` は用意しない——対向プロットは単位の違う 2 つの
     スペクトルを上下に並べるので、生の強度で並べても比較にならない。
+
+    `label_policy` は m/z ラベルの衝突回避の方式。どちらも**強度降順に走査して
+    既に置いたラベルと重なるものを飛ばす**（上流 `Annotator.OnRender` と同じ
+    貪欲法）が、重なりの見方が違う:
+
+    - `"auto"`（既定）— 水平と垂直の両方が近いときだけ飛ばす。箱は
+      ラベル自身の文字列を実測する。対向プロットは同じ側でもピークの高さが
+      大きく違うので、2 次元で見るほうが読めるラベルを多く残せる。
+    - `"msdial"` — 上流に忠実。**水平距離だけ**を見て、箱は代表文字列
+      `"1000.00000"` 1 つで全ラベル共通にする。上流の MS2 ビューは
+      `Overlap="Horizontal, Direct"` だが、この合成は OR で、全ラベルが同じ箱を
+      使うため `Direct` は `Horizontal` の部分集合になり実質 `Horizontal` 単独に
+      縮退している。縦にどれだけ離れていても m/z が近ければ飛ばすので、
+      `"auto"` よりラベルは少なくなる。
+
+    どちらも上下は別枠で数える（上流は上下で別々の `Annotator` を持つため、
+    側をまたぐ衝突は起きない）。
     """
     last_match = session_state.session.library.last_match
     if not last_match or not last_match.get("candidates"):
@@ -426,11 +444,12 @@ def library_plot_mirror(rank: int = 1, output: str | None = None,
         return json_payload(round_floats(payload))
 
     try:
-        png = mirror_plot.render_mirror(payload, scale=scale)
+        png = mirror_plot.render_mirror(payload, scale=scale, label_policy=label_policy)
     except ValueError as exc:
         return json_payload({"status": "error", "message": str(exc)})
     caption = (
         f"Mirror: measured vs {candidate['name']} "
-        f"(rank {rank}, precursor m/z={candidate['precursor_mz']}, y-axis={scale})."
+        f"(rank {rank}, precursor m/z={candidate['precursor_mz']}, "
+        f"y-axis={scale}, labels={label_policy})."
     )
     return [caption, Image(data=png, format="png")]

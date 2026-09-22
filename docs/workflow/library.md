@@ -106,13 +106,20 @@ flowchart TD
 （`lipidmix.mirror.v1`）を返す。`scale`（`"relative"` / `"sqrt"` / `"log10"`）は
 縦軸の写し方で、`render_mirror()` の中で `scale_intensity()` が各点に掛ける
 （`output="payload"` の座標は正規化前の生値なので `scale` の影響を受けない）。
+`label_policy`（`"auto"` / `"msdial"`）は m/z ラベルの衝突回避の方式で、
+`_draw_labels()` が**スペクトル全点**を強度降順に走査して重ならないものだけ描く
+（ピクセル座標が要るので描画時にしかできない——`payload["labels"]` は
+自前で描くクライアント向けの要約で、画像はこれを使わない）。
 
 1. lipidmix/library/tools.py  library_plot_mirror()
 2. └─ lipidmix/plots/render.py  resolve_plot_output()
 3. └─ lipidmix/plots/mirror.py  build_mirror_payload()
 4. └─ [output=image] lipidmix/plots/mirror.py  render_mirror()
 5.    └─ lipidmix/plots/mirror.py  scale_intensity()
-6.    └─ lipidmix/plots/render.py  figure_to_png()
+6.    └─ lipidmix/plots/mirror.py  _draw_labels()
+7.    │  └─ lipidmix/plots/mirror.py  _text_extent()
+8.    │  └─ lipidmix/plots/mirror.py  _is_overlap()
+9.    └─ lipidmix/plots/render.py  figure_to_png()
 
 ## `verify_peak_annotation` との関係
 

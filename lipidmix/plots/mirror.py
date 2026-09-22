@@ -131,7 +131,12 @@ def build_mirror_payload(
             if any(abs(mz - center) <= tol for center in matched_mz)
         ]
 
-    labels = _ranked_labels(measured_points, reference_points)[:top_labels]
+    # 側ごとに切る（上流は上下で別々の `Annotator`＝別枠。片側が枠を独占しない）。
+    ranked = _ranked_labels(measured_points, reference_points)
+    labels = [
+        label for side in ("measured", "reference")
+        for label in [item for item in ranked if item["side"] == side][:top_labels]
+    ]
 
     return {
         "plot_schema": MIRROR_PLOT_SCHEMA,
@@ -194,7 +199,93 @@ def scale_intensity(value: float, scale: str = RELATIVE) -> float:
     raise ValueError(f"scale は {SCALES} のいずれかを指定してください（受け取った値: {scale!r}）。")
 
 
-def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE):
+# ラベルの置き方。上流 `Annotator.OnRender`（`Common/ChartDrawing/Chart/`）は
+# 強度降順に走査し、**既に置いたラベルと重なるものを飛ばす**——本数上限ではなく
+# 幾何で決める。MS2 ビューは `TopN` を指定しない（`MsSpectrumView.xaml`）。
+AUTO = "auto"
+MSDIAL = "msdial"
+LABEL_POLICIES = (AUTO, MSDIAL)
+
+# ラベルの文字サイズ（pt）。代表箱の幅もこのサイズで測る。
+_LABEL_FONTSIZE = 6
+
+# 忠実版が箱の大きさを測る代表文字列。上流は**ラベル自身の文字列ではなく**
+# これ 1 つで全ラベルの箱を決める（`Annotator.OnRender` の `repText`）。
+_MSDIAL_REPRESENTATIVE_LABEL = "1000.00000"
+
+# 片側あたりの上限。上流の MS2 ビューには本数上限が無いので、これは暴走止めの
+# 安全弁でしかない——`msdial` では水平棄却が先に効いて到達しない。
+_MAX_LABELS_PER_SIDE = 25
+
+
+def _text_extent(ax, renderer, text: str) -> tuple[float, float]:
+    """文字列の描画サイズ（ピクセル）。使い捨ての Text を置いて測って消す。"""
+    artist = ax.text(0, 0, text, fontsize=_LABEL_FONTSIZE)
+    box = artist.get_window_extent(renderer=renderer)
+    artist.remove()
+    return box.width, box.height
+
+
+def _is_overlap(policy: str, box_a, point_a, box_b, point_b) -> bool:
+    """上流の `IOverlapMethod` に対応する判定（ピクセル座標）。
+
+    `msdial` は **水平方向だけ**を見る。上流の MS2 ビューは
+    `Overlap="Horizontal, Direct"` だが、この合成は OR で、しかも全ラベルが
+    同じ代表箱を使うため `Direct`（水平 AND 垂直）は `Horizontal` の部分集合に
+    なる——つまり実質 `Horizontal` 単独に縮退している。縦にどれだけ離れていても
+    m/z が近ければ飛ばす。
+
+    `auto` は水平と垂直の両方が近いときだけ飛ばす（上流の `Direct` 相当）。
+    対向プロットは同じ側でもピークの高さが大きく違うので、2 次元で見るほうが
+    読めるラベルを多く残せる。
+    """
+    horizontal = (box_a[0] + box_b[0]) / 2 > abs(point_a[0] - point_b[0])
+    if policy == MSDIAL:
+        return horizontal
+    return horizontal and (box_a[1] + box_b[1]) / 2 > abs(point_a[1] - point_b[1])
+
+
+def _draw_labels(ax, fig, points_by_side: dict, policy: str) -> None:
+    """強度降順に走査し、重ならないものだけ描く（上流と同じ貪欲法）。
+
+    候補は `payload["labels"]` ではなく**スペクトル全点**から採る。衝突判定は
+    ピクセル座標が要るので描画時にしかできず、payload 側の `labels` は
+    自前で描くクライアント向けの要約（件数で切った版）という役割分担になる。
+    """
+    if policy not in LABEL_POLICIES:
+        raise ValueError(
+            f"label_policy は {LABEL_POLICIES} のいずれかを指定してください"
+            f"（受け取った値: {policy!r}）。"
+        )
+
+    fig.canvas.draw()          # transData を確定させてからピクセルへ写す
+    renderer = fig.canvas.get_renderer()
+    representative = _text_extent(ax, renderer, _MSDIAL_REPRESENTATIVE_LABEL)
+
+    # 上流は上下で別々の Annotator を使う＝側をまたぐ衝突は起きない。
+    for side, points in points_by_side.items():
+        placed: list[tuple] = []
+        sign = 1 if side == "measured" else -1
+        for mz, height in sorted(points, key=lambda item: item[1], reverse=True):
+            if len(placed) >= _MAX_LABELS_PER_SIDE:
+                break
+            text = f"{mz:.4f}"
+            box = representative if policy == MSDIAL else _text_extent(ax, renderer, text)
+            point = ax.transData.transform((mz, sign * height))
+            if any(_is_overlap(policy, box, point, other_box, other_point)
+                   for other_box, other_point in placed):
+                continue
+            placed.append((box, point))
+            ax.annotate(
+                text, xy=(mz, sign * height),
+                xytext=(0, 4 if sign > 0 else -4), textcoords="offset points",
+                fontsize=_LABEL_FONTSIZE, ha="center",
+                va="bottom" if sign > 0 else "top",
+            )
+
+
+def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE,
+                  label_policy: str = AUTO):
     """対向プロットを PNG バイト列にする（`lipidmix.plots.render.figure_to_png` 経由）。
 
     上段が測定（上向き）、下段が参照（下向き。正規化強度に `-1` を掛ける）。
@@ -209,6 +300,12 @@ def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE):
     `LineSpectrumControlSlim` も `DrawLine` だけで描いている。マーカーは
     m/z 軸上の見かけの太さを増やして近接ピークを潰すだけで、情報を足さない。
 
+    `label_policy` はラベルの衝突回避（`_draw_labels` / `_is_overlap`）。
+    `"auto"`（既定）は水平・垂直の両方を見る 2 次元判定、`"msdial"` は上流に
+    忠実な**水平のみ**の判定で、箱の大きさも代表文字列 1 つで決める。
+    画像のラベルは `payload["labels"]` ではなく**スペクトル全点**から選ぶ
+    （衝突判定にピクセル座標が要るため描画時にしかできない）。
+
     `scale` は縦軸の写し方（`scale_intensity` 参照）。上下は**それぞれ自分の
     最大値で正規化**してから同じスケールを掛ける。軸ラベルに選んだスケールを
     書く——黙って `sqrt` で描くと、読む側が相対強度の比を誤読する。
@@ -220,8 +317,13 @@ def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE):
 
     from lipidmix.plots.render import figure_to_png
 
-    # 未知の scale はここで弾く（描き始めてから落ちないように、最初に検証する）。
+    # 未知の scale / label_policy はここで弾く（描き始めてから落ちないように）。
     scale_intensity(1.0, scale)
+    if label_policy not in LABEL_POLICIES:
+        raise ValueError(
+            f"label_policy は {LABEL_POLICIES} のいずれかを指定してください"
+            f"（受け取った値: {label_policy!r}）。"
+        )
     measured = [[mz, scale_intensity(v, scale)] for mz, v in _normalized_by_max(payload["measured"])]
     reference = [[mz, scale_intensity(v, scale)] for mz, v in _normalized_by_max(payload["reference"])]
     matched_mz = set(payload.get("matched_mz") or [])
@@ -249,27 +351,6 @@ def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE):
             colors=colors, linewidth=1.4,
         )
 
-    raw_max_measured = max(
-        (intensity for _, intensity in payload["measured"]), default=0.0
-    )
-    raw_max_reference = max(
-        (intensity for _, intensity in payload["reference"]), default=0.0
-    )
-    for label in payload.get("labels") or []:
-        raw_max = raw_max_measured if label["side"] == "measured" else raw_max_reference
-        normalized = scale_intensity(
-            label["intensity"] / raw_max if raw_max > 0 else 0.0, scale)
-        y = normalized if label["side"] == "measured" else -normalized
-        ax.annotate(
-            f"{label['mz']:.4f}",
-            xy=(label["mz"], y),
-            xytext=(0, 4 if label["side"] == "measured" else -4),
-            textcoords="offset points",
-            fontsize=6,
-            ha="center",
-            va="bottom" if label["side"] == "measured" else "top",
-        )
-
     ax.axhline(0, color="black", linewidth=0.8)
     ax.set_xlabel("m/z")
     ax.set_ylabel(f"Relative intensity [{scale}] (measured / reference)")
@@ -284,5 +365,8 @@ def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE):
         Line2D([0], [0], color=_MATCHED_COLOR, lw=1.4, label="Matched"),
     ]
     ax.legend(handles=legend_handles, fontsize=8, loc="best")
+
+    # ラベルは軸範囲が確定してから置く（ピクセル座標で重なりを判定するため）。
+    _draw_labels(ax, fig, {"measured": measured, "reference": reference}, label_policy)
 
     return figure_to_png(fig)
