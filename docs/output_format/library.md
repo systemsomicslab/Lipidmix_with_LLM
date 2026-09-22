@@ -175,11 +175,18 @@ BINARY 照合のままで、`verify_peak_annotation` の統合経路（§14.8）
 `ms2_tol` を渡さない呼び出しでは、無根拠な厳密一致で色を付けないという設計判断により
 測定側は一致色分けされない。
 
+**ピークは素のステムだけで、先端にマーカーは打たない**（上流の
+`LineSpectrumControlSlim` も `DrawLine` だけで描く）。マーカーは m/z 軸上の見かけの
+太さを増やして近接ピークを潰すだけで、情報を足さないため。
+
 `scale`（`"relative"` 既定 / `"sqrt"` / `"log10"`）は**縦軸の写し方**で、上下それぞれ
 自分の最大値で正規化したあとに掛ける。**precursor がベースピークのスペクトル**
 （脂質の `[M-H]-` など）は `relative` だと診断イオンが相対数 % に潰れて読めないので、
 そのとき `"sqrt"` を使う。大小関係は保つので「どちらが高いか」の読みは変わらない。
-`log10` は 0.1%（3 桁）を下限に潰す——対数は 0 へ向けて発散するため。
+`log10` は相対 0.1%（3 桁）を下限に潰す——対数は 0 へ向けて発散するため。
+**この下限はこちら独自の値**で、上流の Log10 軸の下限（`ToReactiveLogScaleAxisManager`
+の `lowBound=1`）は**生強度 1 カウント**を指す。上流は生強度を軸に載せるのに対し
+こちらは先に相対化しているので、同じ土俵の値にはならない。
 軸ラベルに選んだスケールが出る。**`output="payload"` の座標は正規化前の生値**
 なので `scale` の影響を受けない（自前で描くクライアントが自分で決める）。
 
@@ -262,3 +269,46 @@ dot product の **OR** 判定で、実 run の cutoff が緩いため）。
 `chemical_name`）: top-1 一致は `weighted_dot_product` 単独の 106/120 (88.3%) に対し
 `total_score` は 113/120 (94.2%)。判定が変わった 7 件は全て総合スコア側が正解で、
 悪化はゼロだった（HISTRY 2026-09-22(1)）。
+
+### 14.10 MS-DIAL との一致点・相違点（まとめ）
+
+**採点・順位付けは GUI 固有ではない。** 実体は共有ライブラリにある——
+`MsScanMatching`（`src/Common/CommonStandard/Algorithm/Scoring/`）、
+`MsReferenceScorer` / `MsScanMatchResultContainer` / `MztabFormatExport`
+（`src/MSDIAL5/MsdialCore/`）。`MsdialGuiApp` には無い。したがって GUI でも
+Console でも同じ判定が走る。一方**描画は GUI だけ**にある
+（`src/Common/ChartDrawing/` の `LineSpectrumControlSlim` / `Annotator` と
+`MsdialGuiApp/Model/Chart/`）——Console は図を描かない。
+
+#### ロジック
+
+| | こちら | MS-DIAL | 備考 |
+|---|---|---|---|
+| 個別スコア 5 種 | 同じ | 同じ | 瑕疵ごと移植。実データで `[4][5][6][7]` 97.4% 一致（§14.3） |
+| 採点前処理 | 同じ | 同じ | `relative_amp_cutoff` / `absolute_amp_cutoff` / 質量範囲を `.dbs` の実値から |
+| 総合スコアの式 | 同じ | 同じ | `GetTotalScore`。正規化しない和、各項 `> 0` のときだけ加算（§14.9） |
+| RT / m/z の一致度 | 同じ | 同じ | `gaussian_similarity`、500 超は ppm 換算（`fix_mass_tolerance`） |
+| RT 項を足す条件 | 同じ | 同じ | `.dbs` の `Key(16)` を読む。既定 `False` |
+| 候補検索の窓 | 同じ | 同じ | precursor m/z ± `Ms1Tolerance`、RT ± `RtTolerance` |
+| **並び順** | `total_score` 単独 | `(IsManuallyModified, IsReferenceMatched, IsAnnotationSuggested, Priority, TotalScore)` の辞書順 | ブール項が脂質クラス判定に依存するため未移植（§14.9） |
+| **候補の足切り** | しない（採点した全件を返す） | `GetRefinedLipidAnnotationLevel` が空文字を返す候補は `null` で消える。各種 cutoff・`IsSpectrumMatch` でも絞る | **上位に化学的にありえない候補が残る**直接の原因 |
+| **名前** | ライブラリのレコード名をそのまま | 注釈レベルに応じて付け直す（クラス止まり / 鎖組成まで） | `GetRefinedLipidAnnotationLevel` の戻り値 |
+| **`matched_peaks` の 2 値** | 汎用 `GetMatchedPeaksScores` | 脂質は `GetLipidomicsMatchedPeaksScores`（クラス固有の診断イオン規則） | `[8]` が 68% しか一致しない既知の理由 |
+| **足さない項** | RT・m/z・スペクトル・matched% の 4 項のみ | CCS / isotope / Andromeda も足しうる | この経路（LC-MS、MS2、脂質）には存在しない項 |
+| **採点対象のファイル** | 呼び出し側が指定した 1 つの `.dcl` | アラインメント spot の「代表ファイル」1 つ | mzTab の値と 0.3〜2% ずれる主因 |
+
+#### 描画（対向プロット）
+
+| | こちら | MS-DIAL | 備考 |
+|---|---|---|---|
+| レイアウト | 上=測定 / 下=参照、m/z 軸共有 | 同じ | |
+| 正規化 | 上下それぞれ自分の最大値 | 同じ（上下で別の軸） | |
+| ピークの描き方 | 素のステムのみ | 同じ（`DrawLine` だけ） | 先端マーカーは両者とも描かない |
+| m/z ラベルの書式・順序 | 小数 4 桁・強度降順 | 同じ（`Format="F4"`、`OrderingPropertyName`=Intensity） | |
+| 縦軸スケール | `relative` / `sqrt` / `log10` | Relative / Absolute / Log10 / Sqrt | |
+| **`Absolute` 軸** | 無い | ある（上下独立に選べる） | 対向プロットで単位の違う 2 つを生強度で並べても比較にならないため |
+| **ラベルの上限** | 強度上位 8 本を**重なっても描く** | 上限本数は指定せず、**外接矩形が既存ラベルと重なるものを飛ばす**（`Overlap="Horizontal, Direct"`） | こちらの既知の欠点。TODO |
+| **一致ピークの色** | 緑でハイライト＋ガイド線 | 概念が無い（色は `SpectrumPeak.SpectrumComment` 由来。既定は側ごとに 1 色） | こちらの追加。静止画では情報量が多い |
+| 色 | `#2471a3` / `#c0392b`（volcano と同系統） | 純 Blue / 純 Red | |
+| **差分・積の重ね描き** | 無い | ある（`UpperDifferenceSpectrumModel` / `UpperProductSpectrumModel`） | |
+| **対話操作** | 無い（静止 PNG、`output="payload"` で座標） | ツールチップ（m/z・強度・`SpectrumComment`）・ズーム | |

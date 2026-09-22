@@ -205,6 +205,10 @@ def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE):
     が計算済みの `payload["matched_measured_mz"]`（`ms2_tol` を渡さなかった場合は
     空）を使う。ラベルは `payload["labels"]` のみ（上位 `top_labels` 本）。
 
+    **ピークは素のステムだけで、先端にマーカーを打たない。** 上流の
+    `LineSpectrumControlSlim` も `DrawLine` だけで描いている。マーカーは
+    m/z 軸上の見かけの太さを増やして近接ピークを潰すだけで、情報を足さない。
+
     `scale` は縦軸の写し方（`scale_intensity` 参照）。上下は**それぞれ自分の
     最大値で正規化**してから同じスケールを掛ける。軸ラベルに選んだスケールを
     書く——黙って `sqrt` で描くと、読む側が相対強度の比を誤読する。
@@ -237,20 +241,12 @@ def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE):
             [mz for mz, _ in measured], 0, [intensity for _, intensity in measured],
             colors=colors, linewidth=1.4,
         )
-        ax.scatter(
-            [mz for mz, _ in measured], [intensity for _, intensity in measured],
-            color=colors, s=10, zorder=3,
-        )
 
     if reference:
         colors = [_MATCHED_COLOR if mz in matched_mz else _REFERENCE_COLOR for mz, _ in reference]
         ax.vlines(
             [mz for mz, _ in reference], 0, [-intensity for _, intensity in reference],
             colors=colors, linewidth=1.4,
-        )
-        ax.scatter(
-            [mz for mz, _ in reference], [-intensity for _, intensity in reference],
-            color=colors, s=10, zorder=3,
         )
 
     raw_max_measured = max(

@@ -109,3 +109,25 @@ def test_log10_floors_at_the_documented_decade_and_never_goes_negative():
     assert mirror.scale_intensity(0.0, "log10") == 0.0
     assert mirror.scale_intensity(1e-9, "log10") == 0.0
     assert mirror.scale_intensity(1.0, "log10") == pytest.approx(1.0)
+
+
+def test_peaks_are_bare_stems_without_tip_markers(monkeypatch):
+    """ピーク先端にドットを打たない。上流 `LineSpectrumControlSlim` も
+    `DrawLine` だけで描いており、マーカーは m/z 軸上の位置を太らせて
+    近接ピークを潰すだけで情報を足さない。"""
+    captured = {}
+
+    from lipidmix.plots import render as plot_render
+    real = plot_render.figure_to_png
+
+    def spy(fig):
+        captured["axes"] = fig.axes[0]
+        return real(fig)
+
+    monkeypatch.setattr(plot_render, "figure_to_png", spy)
+    mirror.render_mirror(_payload())
+
+    from matplotlib.collections import LineCollection, PathCollection
+    collections = captured["axes"].collections
+    assert any(isinstance(c, LineCollection) for c in collections)   # ステムは描く
+    assert not any(isinstance(c, PathCollection) for c in collections)  # ドットは描かない
