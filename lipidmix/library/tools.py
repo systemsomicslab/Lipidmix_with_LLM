@@ -268,7 +268,12 @@ def library_match_feature(
         return json_payload({
             "status": "no_candidates",
             "message": (
-                f"precursor m/z={precursor_mz}±{resolved_mz_tol}"
+                # 許容幅は書式を指定して埋める。`.dbs` 由来の値は C# の 32bit float を
+                # 64bit へ広げたもので `0.009999999776482582` になり、しかも
+                # `round_floats()` は payload 構造の中の float しか辿らないので
+                # **文字列へ焼いた数値には届かない**（成功時の query.mz_tol は
+                # 構造の中の float なので丸まる——だからここだけ素の値が出ていた）。
+                f"precursor m/z={precursor_mz}±{resolved_mz_tol:.4g}"
                 + (f", ion_mode={ion_mode}" if ion_mode else "")
                 + " に該当する参照レコードが見つかりませんでした。"
             ),

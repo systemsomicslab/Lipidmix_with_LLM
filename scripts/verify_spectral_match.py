@@ -181,10 +181,17 @@ def resolve_references(store, exp_mz: float, ion_mode: str, chemical_name: str, 
     if not candidates:
         return [], "no_candidates_in_window"
 
-    exact = [c for c in candidates if c["name"] == chemical_name]
+    # 名前の一致は **`O-`/`P-` の表記ゆらぎを吸収して**見る（`ether_name_variants`）。
+    # 素朴な文字列一致だと、MS-DIAL が採点した `P-` のレコードではなく同じ m/z 窓に
+    # 居る別レコード（`O-` の名前を持つ、スペクトルも違うもの）を掴む。
+    wanted = ether_name_variants(chemical_name)
+    exact = [c for c in candidates if c["name"] in wanted]
     if len(exact) == 1:
         return exact, "exact"
     if len(exact) > 1:
+        # 同義名で複数当たるのは想定内（`O-` 側と `P-` 側が両方ライブラリに居る）。
+        # どちらが採点されたかは名前では決まらないので、呼び出し側が測定側と
+        # 総当たりして再現する組を選ぶ。
         return exact, "exact_ambiguous"
 
     if len(candidates) == 1:
@@ -199,6 +206,39 @@ def resolve_references(store, exp_mz: float, ion_mode: str, chemical_name: str, 
         key=lambda c: difflib.SequenceMatcher(None, c["name"] or "", chemical_name).ratio(),
     )
     return [best], "fuzzy_fallback"
+
+
+_ETHER_CHAIN_RE = re.compile("([OP])-([0-9]+):([0-9]+)")
+
+
+def ether_name_variants(name: str) -> set[str]:
+    """エーテル脂質の `O-` / `P-` 表記ゆらぎを吸収した同義名の集合を返す。
+
+    `O-n:m`（プラスマニル＝1-O-alkyl）と `P-n:(m-1)`（プラスマローゲン＝
+    1-O-alk-1'-enyl）は**同じ化学種の別表記**で、ライブラリには両方の名前の
+    レコードが別々に入っている（スペクトルも別物）。**MS-DIAL は `P-` の
+    レコードを採点し、`GetRefinedLipidAnnotationLevel` を通して `O-` 表記で
+    mzTab へ書き出す**ので、mzTab の名前で素朴に引くと採点されたのとは
+    別のレコードに当たる（HISTRY 2026-09-22(5)。これを落とすと `EtherLPE` の
+    5 件が「移植の誤り」に化けて見える）。
+
+    鎖が複数ある名前（`PE O-16:0_18:1`）では `O-`/`P-` が付いた鎖だけ書き換える。
+    二重結合数が 0 の `O-n:0` は相方が `P-n:-1` になるので作らない。
+    """
+    variants = {name}
+    if not name:
+        return variants
+
+    def _swap(match: re.Match) -> str:
+        kind, carbon, double_bonds = match.group(1), match.group(2), int(match.group(3))
+        if kind == "O":
+            return match.group(0) if double_bonds == 0 else f"P-{carbon}:{double_bonds - 1}"
+        return f"O-{carbon}:{double_bonds + 1}"
+
+    swapped = _ETHER_CHAIN_RE.sub(_swap, name)
+    if swapped != name:
+        variants.add(swapped)
+    return variants
 
 
 def _clamp_sentinel(value: float) -> float:

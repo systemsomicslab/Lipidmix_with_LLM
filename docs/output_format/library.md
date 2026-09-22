@@ -270,6 +270,16 @@ RtSimilarity + AcurateMassSimilarity + (Weighted + Simple + Reverse)/3
 `False`** なので、`.msp` 由来のライブラリでは RT 項は入らない。判断結果は
 `library_match_feature` の `scoring.use_rt` に出る。
 
+**`total_score` の絶対値は MS-DIAL の `TotalScore` と比較できない。** 式は同じだが
+`matched_peaks_percentage` の**項の意味が違う**——上流の脂質経路
+（`GetLipidomicsMatchedPeaksScores`、`MsScanMatching.cs:1169`）は、脂質クラスの
+注釈レベルが立つと `resultArray[0] = 2.0` のように**固定のボーナス値で上書きする**
+（`:1191`）。つまり上流のこの項は割合ではなく**クラス確証のボーナス点**で 1 を超える。
+こちらは汎用の割合（≤ 1.0）を足すので、確度の高い脂質では上流より約 1.0 低く出る。
+順位付けの用途では内部で一貫しているので支障はないが、**mzTab の
+`id_confidence_measure[1]`（MS-DIAL algorithm matching score）と数値を突き合わせては
+いけない**。これが `[8]` の一致率が 68% に留まる理由でもある（仕様差であって不具合ではない）。
+
 **上流の順位付けと完全に同じではない。** `MsScanMatchResultContainer.ResultOrder` は
 
 ```
@@ -309,7 +319,7 @@ Console でも同じ判定が走る。一方**描画は GUI だけ**にある
 
 | | こちら | MS-DIAL | 備考 |
 |---|---|---|---|
-| 個別スコア 5 種 | 同じ | 同じ | 瑕疵ごと移植。実データで `[4][5][6][7]` 97.4% 一致（§14.3） |
+| 個別スコア 5 種 | 同じ | 同じ | 瑕疵ごと移植。実データで `[4][5][6][7]` **194/194 一致**（§14.3） |
 | 採点前処理 | 同じ | 同じ | `relative_amp_cutoff` / `absolute_amp_cutoff` / 質量範囲を `.dbs` の実値から |
 | 総合スコアの式 | 同じ | 同じ | `GetTotalScore`。正規化しない和、各項 `> 0` のときだけ加算（§14.9） |
 | RT / m/z の一致度 | 同じ | 同じ | `gaussian_similarity`、500 超は ppm 換算（`fix_mass_tolerance`） |
@@ -318,7 +328,7 @@ Console でも同じ判定が走る。一方**描画は GUI だけ**にある
 | **並び順** | `total_score` 単独 | `(IsManuallyModified, IsReferenceMatched, IsAnnotationSuggested, Priority, TotalScore)` の辞書順 | ブール項が脂質クラス判定に依存するため未移植（§14.9） |
 | **候補の足切り** | しない（採点した全件を返す） | `GetRefinedLipidAnnotationLevel` が空文字を返す候補は `null` で消える。各種 cutoff・`IsSpectrumMatch` でも絞る | **上位に化学的にありえない候補が残る**直接の原因 |
 | **名前** | ライブラリのレコード名をそのまま | 注釈レベルに応じて付け直す（クラス止まり / 鎖組成まで） | `GetRefinedLipidAnnotationLevel` の戻り値 |
-| **`matched_peaks` の 2 値** | 汎用 `GetMatchedPeaksScores` | 脂質は `GetLipidomicsMatchedPeaksScores`（クラス固有の診断イオン規則） | `[8]` が 68% しか一致しない既知の理由 |
+| **`matched_peaks` の 2 値** | 汎用 `GetMatchedPeaksScores` | 脂質は `GetLipidomicsMatchedPeaksScores`。注釈レベルが立つと `2.0` 等の**ボーナス値で上書き**する（割合ではない） | `[8]` が 68% に留まる理由。`total_score` の絶対値が比較できない理由でもある（§14.9） |
 | **足さない項** | RT・m/z・スペクトル・matched% の 4 項のみ | CCS / isotope / Andromeda も足しうる | この経路（LC-MS、MS2、脂質）には存在しない項 |
 | **採点対象のファイル** | 呼び出し側が指定した 1 つの `.dcl` | アラインメント spot の「代表ファイル」1 つ | mzTab の値と 0.3〜2% ずれる主因 |
 

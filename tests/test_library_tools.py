@@ -344,3 +344,22 @@ def test_the_candidate_table_keeps_the_subterms_out_of_the_payload(fresh_session
     assert "total_score" in scores
     assert "rt_similarity" in scores
     assert "mass_similarity" in scores
+
+
+def test_the_no_candidates_message_does_not_leak_float32_noise(fresh_session, monkeypatch):
+    """`.dbs` の許容幅は C# の 32bit float 由来で、64bit へ広げると
+    `0.009999999776482582` になる。`round_floats()` は payload 構造の中の float しか
+    辿らないので、**文字列へ焼いた数値には届かない**——補間箇所で書式を指定する。"""
+    tools.library_load()
+    store = session_state.session.library.store
+    monkeypatch.setattr(store, "summary", lambda: {"search_params": {
+        "ms1_tolerance": 0.009999999776482582, "ms2_tolerance": 0.02500000037252903,
+        "rt_tolerance": 2.0,
+    }})
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 500.0]])
+
+    payload = json.loads(tools.library_match_feature(104.0706, ion_mode="negative"))
+    assert payload["status"] == "no_candidates"
+    assert "±0.01," in payload["message"] or "±0.01 " in payload["message"]
+    assert "0.00999999" not in payload["message"]
