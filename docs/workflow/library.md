@@ -76,18 +76,25 @@ flowchart TD
 4. │  └─ lipidmix/core/path_resolvers.py  resolve_dcl_file_path()
 5. │  └─ lipidmix/dcl/reader.py  deserialize_dcl()
 6. │  └─ lipidmix/dcl/reader.py  get_msms_by_precursor()
-7. └─ lipidmix/library/store.py  LibraryStore.candidates()
-8. └─ lipidmix/analysis/spectral_match.py  match_spectrum()
-9. │  └─ lipidmix/analysis/spectral_match.py  normalize_measured()
-10. │  └─ lipidmix/analysis/spectral_match.py  simple_dot_product()
-11. │  └─ lipidmix/analysis/spectral_match.py  weighted_dot_product()
-12. │  └─ lipidmix/analysis/spectral_match.py  reverse_dot_product()
-13. │  └─ lipidmix/analysis/spectral_match.py  matched_peaks_scores()
-14. │  └─ lipidmix/analysis/spectral_match.py  spectral_entropy_similarity()
-15. └─ lipidmix/analysis/spectral_match.py  total_score()
-16. │  └─ lipidmix/analysis/spectral_match.py  gaussian_similarity()
-17. │  └─ lipidmix/analysis/spectral_match.py  fix_mass_tolerance()
-18. └─ lipidmix/arf2/reader.py  format_spots_as_table()
+7. └─ lipidmix/analysis/spectral_match.py  cutoff_mask()
+8. └─ lipidmix/library/store.py  LibraryStore.candidates()
+9. └─ lipidmix/analysis/spectral_match.py  match_spectrum()
+10. │  └─ lipidmix/analysis/spectral_match.py  normalize_measured()
+11. │  │  └─ lipidmix/analysis/spectral_match.py  cutoff_mask()
+12. │  └─ lipidmix/analysis/spectral_match.py  simple_dot_product()
+13. │  └─ lipidmix/analysis/spectral_match.py  weighted_dot_product()
+14. │  └─ lipidmix/analysis/spectral_match.py  reverse_dot_product()
+15. │  └─ lipidmix/analysis/spectral_match.py  matched_peaks_scores()
+16. │  └─ lipidmix/analysis/spectral_match.py  spectral_entropy_similarity()
+17. └─ lipidmix/analysis/spectral_match.py  total_score()
+18. │  └─ lipidmix/analysis/spectral_match.py  gaussian_similarity()
+19. │  └─ lipidmix/analysis/spectral_match.py  fix_mass_tolerance()
+20. └─ lipidmix/arf2/reader.py  format_spots_as_table()
+
+手順 7 の `cutoff_mask()` は候補ループの外で 1 回だけ呼ぶ（測定スペクトルと
+`.dbs` の足切りだけで決まり、候補には依存しないため）。ここで求めた
+「採点に入らなかったピークの m/z」を `last_match["unscored_mz"]` に持ち、
+`library_plot_mirror` が図の上でそれらを区別する。
 
 候補は `total_score` の降順（`_RANK_KEY`）＝ MS-DIAL の総合スコア。RT 項を足すか
 どうかは store の `search_params["use_time_for_annotation_scoring"]`（`.dbs` の
@@ -102,8 +109,10 @@ flowchart TD
 状態変更: なし
 
 `ms2_tol` は `library_match_feature` が使った値（`last_match` に保持済み）を自動で
-引き継ぐ。既定は画像（PNG）、`output="payload"` で座標 JSON
-（`lipidmix.mirror.v1`）を返す。`scale`（`"relative"` / `"sqrt"` / `"log10"`）は
+引き継ぐ。`last_match["unscored_mz"]`（足切りで採点から外れた測定ピーク）も同じく
+引き継ぎ、その層は灰色で薄く描いて凡例と caption に件数を出す——足切りが 0 の
+run（既定）では空なので、図も caption も従来と変わらない。既定は画像（PNG）、
+`output="payload"` で座標 JSON（`lipidmix.mirror.v2`）を返す。`scale`（`"relative"` / `"sqrt"` / `"log10"`）は
 縦軸の写し方で、`render_mirror()` の中で `scale_intensity()` が各点に掛ける
 （`output="payload"` の座標は正規化前の生値なので `scale` の影響を受けない）。
 `label_policy`（`"auto"` / `"msdial"`）は m/z ラベルの衝突回避の方式で、

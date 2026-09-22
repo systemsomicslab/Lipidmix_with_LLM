@@ -27,7 +27,10 @@ from __future__ import annotations
 import math
 from typing import TypedDict
 
-MIRROR_PLOT_SCHEMA = "lipidmix.mirror.v1"
+#: v2 で `unscored_mz` / `scored_peak_count` / `unscored_peak_count` を足した
+#: （採点対象外のピークを図の上で区別するため）。読み手（Use-LLLM）との契約なので
+#: フィールドを足したら版を上げる。
+MIRROR_PLOT_SCHEMA = "lipidmix.mirror.v2"
 
 DEFAULT_TOP_LABELS = 8
 
@@ -46,6 +49,9 @@ class MirrorPayload(TypedDict):
     reference: list[list[float]]
     matched_mz: list[float]
     matched_measured_mz: list[float]
+    unscored_mz: list[float]
+    scored_peak_count: int
+    unscored_peak_count: int
     labels: list[MirrorLabel]
 
 
@@ -85,6 +91,7 @@ def build_mirror_payload(
     title: str,
     top_labels: int = DEFAULT_TOP_LABELS,
     ms2_tol: float | None = None,
+    unscored_mz: list[float] | None = None,
 ) -> MirrorPayload:
     """測定・参照スペクトル（生の値）と一致した m/z を対向プロット用にまとめる。
 
@@ -109,6 +116,13 @@ def build_mirror_payload(
       描画は参照側の色分けとガイド線だけに頼る（「一致しているように見えて
       実は許容幅が違う」を防ぐため、無根拠な厳密一致では色付けしない）。
 
+    `unscored_mz` は**採点に入らなかった測定ピークの m/z**（`.dbs` の
+    `relative_amp_cutoff` / `absolute_amp_cutoff` で `normalize_measured` が
+    落とした分。判定は `spectral_match.cutoff_mask`）。`measured` は今までどおり
+    全ピークを保ち、この一覧は「どれが採点対象外か」を示す印として持つ
+    ——`matched_measured_mz` と同じ形で、座標を二重に持たない。渡さなければ空。
+    足切りが 0 の run（既定）では常に空になり、図も payload も従来と変わらない。
+
     `labels` は測定・参照を**それぞれの最大値で正規化した相対強度**で
     ランク付けし、上位 `top_labels` 件（測定・参照の合計で打ち切り）だけを
     残す（`_ranked_labels` 参照）。ラベルが多すぎると重なって読めなくなるための
@@ -132,7 +146,13 @@ def build_mirror_payload(
         ]
 
     # 側ごとに切る（上流は上下で別々の `Annotator`＝別枠。片側が枠を独占しない）。
-    ranked = _ranked_labels(measured_points, reference_points)
+    # 採点対象外のピークはラベル枠を取らない。m/z ラベルが付くと「一致候補として
+    # 見た上で外れた」と読めてしまうが、実際には採点に入っていない。
+    unscored = [float(mz) for mz in (unscored_mz or [])]
+    unscored_set = set(unscored)
+    scored_points = [point for point in measured_points if point[0] not in unscored_set]
+
+    ranked = _ranked_labels(scored_points, reference_points)
     labels = [
         label for side in ("measured", "reference")
         for label in [item for item in ranked if item["side"] == side][:top_labels]
@@ -146,6 +166,9 @@ def build_mirror_payload(
         "reference": reference_points,
         "matched_mz": matched_mz,
         "matched_measured_mz": matched_measured_mz,
+        "unscored_mz": unscored,
+        "scored_peak_count": len(scored_points),
+        "unscored_peak_count": len(measured_points) - len(scored_points),
         "labels": labels,
     }
 
@@ -153,6 +176,7 @@ def build_mirror_payload(
 _MEASURED_COLOR = "#2471a3"  # 上段・測定（volcano の down と同系統の青）
 _REFERENCE_COLOR = "#c0392b"  # 下段・参照（volcano の up と同系統の赤）
 _MATCHED_COLOR = "#27ae60"  # 一致した m/z の印（緑）
+_UNSCORED_COLOR = "#9aa0a6"  # 足切りで採点に入らなかったピーク（灰色・薄く背後に）
 
 
 def _normalized_by_max(points: list[list[float]]) -> list[list[float]]:
@@ -296,6 +320,10 @@ def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE,
     が計算済みの `payload["matched_measured_mz"]`（`ms2_tol` を渡さなかった場合は
     空）を使う。ラベルは `payload["labels"]` のみ（上位 `top_labels` 本）。
 
+    `payload["unscored_mz"]`（足切りで採点に入らなかった測定ピーク）は灰色で薄く、
+    測定パネルの背後に描く。消すと「取れていない」と読めてしまうので描いた上で
+    区別する。ラベルの対象にはせず、凡例の項目も**該当ピークがあるときだけ**足す。
+
     **ピークは素のステムだけで、先端にマーカーを打たない。** 上流の
     `LineSpectrumControlSlim` も `DrawLine` だけで描いている。マーカーは
     m/z 軸上の見かけの太さを増やして近接ピークを潰すだけで、情報を足さない。
@@ -328,19 +356,32 @@ def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE,
     reference = [[mz, scale_intensity(v, scale)] for mz, v in _normalized_by_max(payload["reference"])]
     matched_mz = set(payload.get("matched_mz") or [])
     matched_measured_mz = set(payload.get("matched_measured_mz") or [])
+    unscored_mz = set(payload.get("unscored_mz") or [])
+
+    # 採点対象外のピークは同じパネルに描くが別の層にする（消すと「取れていない」と
+    # 読めてしまう）。正規化の分母は上と共通＝生の最大値なので、層を分けても
+    # 採点されたピークの高さは変わらない。
+    scored = [point for point in measured if point[0] not in unscored_mz]
+    unscored = [point for point in measured if point[0] in unscored_mz]
 
     fig, ax = plt.subplots(figsize=(9, 5))
 
     for mz in sorted(matched_mz):
         ax.axvline(mz, color=_MATCHED_COLOR, alpha=0.25, linewidth=1.0, zorder=0)
 
-    if measured:
+    if unscored:
+        ax.vlines(
+            [mz for mz, _ in unscored], 0, [intensity for _, intensity in unscored],
+            colors=[_UNSCORED_COLOR] * len(unscored), linewidth=1.4, alpha=0.45, zorder=1,
+        )
+
+    if scored:
         colors = [
             _MATCHED_COLOR if mz in matched_measured_mz else _MEASURED_COLOR
-            for mz, _ in measured
+            for mz, _ in scored
         ]
         ax.vlines(
-            [mz for mz, _ in measured], 0, [intensity for _, intensity in measured],
+            [mz for mz, _ in scored], 0, [intensity for _, intensity in scored],
             colors=colors, linewidth=1.4,
         )
 
@@ -364,9 +405,16 @@ def render_mirror(payload: MirrorPayload, *, scale: str = RELATIVE,
         Line2D([0], [0], color=_REFERENCE_COLOR, lw=1.4, label="Reference"),
         Line2D([0], [0], color=_MATCHED_COLOR, lw=1.4, label="Matched"),
     ]
+    # 採点対象外の層は**あるときだけ**凡例に出す。足切り 0 の run（既定）で
+    # 常に出すと、無いものを探させることになる。
+    if unscored:
+        legend_handles.append(
+            Line2D([0], [0], color=_UNSCORED_COLOR, lw=1.4, alpha=0.45,
+                   label="Below cutoff (not scored)"))
     ax.legend(handles=legend_handles, fontsize=8, loc="best")
 
     # ラベルは軸範囲が確定してから置く（ピクセル座標で重なりを判定するため）。
-    _draw_labels(ax, fig, {"measured": measured, "reference": reference}, label_policy)
+    # 採点対象外のピークはラベルの対象にしない（payload 側の `labels` と揃える）。
+    _draw_labels(ax, fig, {"measured": scored, "reference": reference}, label_policy)
 
     return figure_to_png(fig)

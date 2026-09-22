@@ -16,7 +16,7 @@ from pathlib import Path
 from mcp.server.fastmcp import Image
 from mcp.types import ToolAnnotations
 
-from lipidmix.analysis.spectral_match import match_spectrum, total_score
+from lipidmix.analysis.spectral_match import cutoff_mask, match_spectrum, total_score
 from lipidmix.arf2.reader import format_spots_as_table
 from lipidmix.core import mcp_errors, session_state
 from lipidmix.core.mcp_core import mcp
@@ -279,6 +279,13 @@ def library_match_feature(
             ),
         })
 
+    # 足切りで採点から外れたピーク。候補ごとに変わらない（測定スペクトルと cutoff
+    # だけで決まる）ので、候補ループの外で 1 回だけ求める。図はこの一覧を使って
+    # 「描かれてはいるが採点に入っていない」ピークを区別する。
+    kept = cutoff_mask(measured, relative_amp_cutoff=relative_amp_cutoff,
+                       absolute_amp_cutoff=absolute_amp_cutoff)
+    unscored_mz = [float(peak[0]) for peak, keep in zip(measured, kept) if not keep]
+
     # RT 項を入れるかは `.dbs` の `IsUseTimeForAnnotationScoring`（Key 16）次第。
     # `.msp` のようにフラグを持たないライブラリは上流の既定（False）に倣う。
     use_rt_scoring = bool(search_params.get("use_time_for_annotation_scoring", False))
@@ -310,6 +317,7 @@ def library_match_feature(
         "ion_mode": ion_mode,
         "ms2_tol": resolved_ms2_tol,
         "measured": measured,
+        "unscored_mz": unscored_mz,
         "candidates": [
             {
                 "name": record["name"],
@@ -394,6 +402,14 @@ def library_plot_mirror(rank: int = 1, output: str | None = None,
     測定側の一致色分けには許容幅（`ms2_tol`）が要る——`library_match_feature`
     が使った値（store の `search_params` か既定値）を自動で引き継ぐ。
 
+    **`.dbs` の強度足切りで採点に入らなかった測定ピークは灰色で薄く描く**
+    （`last_match["unscored_mz"]` を引き継ぐ）。採点は `normalize_measured` が
+    足切りした後のスペクトルに対して行うのに、図は足切り前の生ピークを描くため、
+    区別が無いと「描かれているのに採点されていない」ピークが黙って混ざる。
+    消さずに描くのは、消すと「MS/MS が取れていない」と読めてしまうため。
+    この層はラベル枠を取らず、凡例と caption の件数は**該当ピークがあるときだけ**
+    出る（足切りが 0 の run では図も caption も従来と変わらない）。
+
     `scale` は縦軸の写し方で `"relative"`（既定）/ `"sqrt"` / `"log10"`。
     **precursor がベースピークのスペクトル**（脂質の [M-H]- など）は `relative`
     だと診断イオンが相対数 % に潰れて読めない——そのときに `"sqrt"` を使う。
@@ -443,6 +459,7 @@ def library_plot_mirror(rank: int = 1, output: str | None = None,
         last_match["measured"], candidate["spectrum"], candidate["alignment"],
         title=f"{candidate['name']} (rank {rank})",
         ms2_tol=last_match.get("ms2_tol"),
+        unscored_mz=last_match.get("unscored_mz"),
     )
 
     if mode == plot_render.PAYLOAD:
@@ -457,4 +474,12 @@ def library_plot_mirror(rank: int = 1, output: str | None = None,
         f"(rank {rank}, precursor m/z={candidate['precursor_mz']}, "
         f"y-axis={scale}, labels={label_policy})."
     )
+    # 足切りで採点から外れたピークがあるときだけ件数を添える。図の灰色の層は
+    # 見落としやすく、「描かれているのに採点されていない」は数値の読み違いに直結する。
+    if payload["unscored_peak_count"]:
+        total_peaks = payload["scored_peak_count"] + payload["unscored_peak_count"]
+        caption += (
+            f" Scored {payload['scored_peak_count']}/{total_peaks} measured peaks; "
+            f"{payload['unscored_peak_count']} below cutoff (grey, not scored)."
+        )
     return [caption, Image(data=png, format="png")]
