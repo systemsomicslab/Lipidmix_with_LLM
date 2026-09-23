@@ -673,8 +673,65 @@ def arf_parser(
 
         return session_state.session.maybe_prepend_caveat(output_text, topic="arf")
 
+    except MemoryError as e:
+        return _format_arf_memory_error(
+            file_path, e, getattr(session_state.session.arf, "features", None),
+        )
     except Exception as e:
         return f"[ERROR] ARF解析に失敗しました: {str(e)}"
+
+
+# 実測モデル: RSS ≈ 8.0 KB × 行数、行数 = スポット × 注入（docs/HISTRY.md 2026-09-20）。
+# 123k〜2.94M 行で線形。ファイルのバイト数とは相関しない。
+_ARF_BYTES_PER_ROW = 8 * 1024
+
+
+def _count_arf_rows(features) -> int | None:
+    """読み込み済みスポットが抱えているピーク行数を数える（DataFrame を組まない）。"""
+    if not isinstance(features, list) or not features:
+        return None
+    total = 0
+    for spot in features:
+        aligned = spot.get("AlignedPeakProperties") if isinstance(spot, dict) else None
+        if isinstance(aligned, list):
+            total += len(aligned)
+    return total
+
+
+def _format_arf_memory_error(file_path: str, exc: BaseException, features) -> str:
+    """メモリ不足を、規模と対処つきで返す。
+
+    `str(MemoryError())` は空文字なので、そのまま返すと理由なしのエラーになる。
+    400 検体規模で最初に当たる失敗がこれ。
+    """
+    spots = getattr(exc, "spots", None)
+    rows = getattr(exc, "rows", None)
+    if rows is not None:
+        stage = "読み込み中に尽きた"
+    elif (counted := _count_arf_rows(features)) is not None:
+        spots, rows = len(features), counted
+        stage = "読み込みは終わり、解析中に尽きた"
+    else:
+        stage = "どこで尽きたかを特定できなかった"
+
+    if rows is None:
+        scale = "- **読めた範囲**: 不明\n"
+        needed = ("- **必要な RAM**: 行数が取れないため算出できない"
+                  "（実測モデルは 8.0 KB × スポット × 注入）\n")
+    else:
+        scale = f"- **読めた範囲**: {spots:,} スポット / {rows:,} 行（行数 = スポット × 注入）\n"
+        needed = (f"- **必要な RAM の目安**: 約 {rows * _ARF_BYTES_PER_ROW / 1e9:.1f} GB"
+                  "（実測モデル 8.0 KB/行）\n")
+
+    return (
+        f"[ERROR] ARF解析に失敗しました: メモリ不足（MemoryError）。{Path(file_path).name}\n"
+        f"- **打ち切り**: {stage}\n"
+        f"{scale}"
+        f"{needed}"
+        "- **対処**: `class_ids` / `tag_labels` / `spot_ids` で対象を絞るか、"
+        "RAM の大きい機械で読む。ファイルのバイト数は指標にならない"
+        "——効くのはスポット × 注入。\n"
+    )
 
 
 def _commit_arf_selection(spots: list[dict], selection_requested: bool) -> None:
