@@ -169,11 +169,26 @@ BINARY 照合のままで、`verify_peak_annotation` の統合経路（§14.8）
 ### 14.7 `library_plot_mirror`
 
 `build_mirror_payload` / `render_mirror`（`lipidmix/plots/mirror.py`）の座標契約は
-`lipidmix.mirror.v1`。上段が測定（上向き）、下段が参照（下向き）、横軸 m/z 共通。
+`lipidmix.mirror.v2`。上段が測定（上向き）、下段が参照（下向き）、横軸 m/z 共通。
 `matched_mz` は**常に参照側の m/z**（参照グリッドの窓中心）で、測定側の一致 m/z は
 別フィールド `matched_measured_mz`（`ms2_tol` を渡したときだけ計算、渡さなければ空）。
 `ms2_tol` を渡さない呼び出しでは、無根拠な厳密一致で色を付けないという設計判断により
 測定側は一致色分けされない。
+
+**採点に入らなかった測定ピークは灰色で薄く描く（`unscored_mz`、v2 で追加）。**
+採点は `normalize_measured` が `.dbs` の `relative_amp_cutoff` / `absolute_amp_cutoff`
+で足切りした後のスペクトルに対して行うのに対し、図は**足切り前の生ピーク**を描く。
+この差は今まで図の上で見分けられず、「描かれているのに採点されていない」ピークが
+黙って混ざっていた。判定の正準は `spectral_match.cutoff_mask`（`normalize_measured`
+も同じ mask の上に載る）。落ちたピークも**消さずに描く**——消すと「MS/MS が
+取れていない」と読めてしまうため。これらはラベル枠を取らず（一致候補として見た、と
+誤読されるため）、凡例の `Below cutoff (not scored)` と画像 caption の件数は
+**該当ピークがあるときだけ**出る。`payload` の `scored_peak_count` /
+`unscored_peak_count` は常に載る（層が空でも数字で気づけるように）。
+
+**足切りが 0 の run では何も変わらない。** `MsRefSearchParameterBase` の Key 7/8 の
+既定は 0.0 で、実データ検証に使った `.dbs`（aging mice kidney neg）も 0.0/0.0 だった
+——この層が現れるのは足切りを非ゼロに設定したプロジェクトだけ。
 
 **ピークは素のステムだけで、先端にマーカーは打たない**（上流の
 `LineSpectrumControlSlim` も `DrawLine` だけで描く）。マーカーは m/z 軸上の見かけの
@@ -346,6 +361,7 @@ Console でも同じ判定が走る。一方**描画は GUI だけ**にある
 | **既定の判定** | 水平＋垂直の 2 次元（`"auto"`） | 水平のみ（`Overlap="Horizontal, Direct"` の縮退） | `"auto"` のほうがラベルが多く載る。忠実版は `label_policy="msdial"` |
 | ラベルの本数上限 | 片側 25 本（安全弁） | 指定なし（MS2 ビューは `TopN` なし） | `"msdial"` では水平棄却が先に効いて上限に届かない |
 | **一致ピークの色** | 緑でハイライト＋ガイド線 | 概念が無い（色は `SpectrumPeak.SpectrumComment` 由来。既定は側ごとに 1 色） | こちらの追加。静止画では情報量が多い |
+| **採点対象外ピーク** | 灰色で薄く描き、凡例と caption に件数（足切りが非ゼロのときだけ） | 概念が無い（足切り後のスペクトルをそのまま描く） | こちらの追加。§14.7。上流は採点対象だけを見せるので「描かれているのに採点外」が起きない |
 | 色 | `#2471a3` / `#c0392b`（volcano と同系統） | 純 Blue / 純 Red | |
 | **差分・積の重ね描き** | 無い | ある（`UpperDifferenceSpectrumModel` / `UpperProductSpectrumModel`） | |
 | **対話操作** | 無い（静止 PNG、`output="payload"` で座標） | ツールチップ（m/z・強度・`SpectrumComment`）・ズーム | |

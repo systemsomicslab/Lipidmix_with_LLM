@@ -216,3 +216,86 @@ def test_the_payload_label_cap_is_per_side():
     sides = [label["side"] for label in payload["labels"]]
     assert sides.count("measured") == 3
     assert sides.count("reference") == 3
+
+
+# --------------------------------------------------------------------------
+# 採点対象外のピーク（`.dbs` の amp cutoff で `normalize_measured` が落とした分）。
+# 図には出るのに採点には入らない——今までこれが見分けられなかった。
+# --------------------------------------------------------------------------
+def _figure(payload, **kwargs):
+    """描画した図の Axes を返す（`figure_to_png` を spy して横取りする）。"""
+    captured = {}
+    from lipidmix.plots import render as plot_render
+    real = plot_render.figure_to_png
+
+    def spy(fig):
+        captured["axes"] = fig.axes[0]
+        return real(fig)
+
+    import pytest as _pytest
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(plot_render, "figure_to_png", spy)
+        mirror.render_mirror(payload, **kwargs)
+    finally:
+        monkeypatch.undo()
+    return captured["axes"]
+
+
+def _unscored_payload():
+    return mirror.build_mirror_payload(
+        [[100.0, 999.0], [200.0, 5.0]], [[100.0, 999.0]], [],
+        title="t", unscored_mz=[200.0])
+
+
+def test_the_payload_separates_scored_peaks_from_the_ones_the_cutoff_dropped():
+    payload = _unscored_payload()
+
+    assert payload["unscored_mz"] == [200.0]
+    assert payload["scored_peak_count"] == 1
+    assert payload["unscored_peak_count"] == 1
+    # 生のスペクトルは今までどおり全ピークを保つ（描画も座標も壊さない）。
+    assert payload["measured"] == [[100.0, 999.0], [200.0, 5.0]]
+
+
+def test_a_dropped_peak_does_not_take_a_label_slot():
+    """ラベル枠は採点に入ったピークのものを優先する。採点外のピークに
+    m/z ラベルが付くと「一致候補として見た」と読めてしまう。"""
+    payload = mirror.build_mirror_payload(
+        [[100.0, 10.0], [200.0, 999.0]], [], [], title="t", unscored_mz=[200.0])
+
+    assert [label["mz"] for label in payload["labels"]] == [100.0]
+
+
+def test_the_schema_version_announces_the_added_layer():
+    """追加フィールドは読み手（Use-LLLM）との契約。黙って足さない。"""
+    assert mirror.MIRROR_PLOT_SCHEMA == "lipidmix.mirror.v2"
+    assert _unscored_payload()["plot_schema"] == "lipidmix.mirror.v2"
+
+
+def test_a_payload_without_dropped_peaks_reports_an_empty_layer():
+    payload = _payload()
+
+    assert payload["unscored_mz"] == []
+    assert payload["unscored_peak_count"] == 0
+
+
+def test_the_legend_names_the_dropped_layer_only_when_there_is_one():
+    plain = [t.get_text() for t in _figure(_payload()).get_legend().get_texts()]
+    with_dropped = [t.get_text() for t in _figure(_unscored_payload()).get_legend().get_texts()]
+
+    assert not any("cutoff" in text for text in plain)
+    assert any("cutoff" in text for text in with_dropped)
+
+
+def test_a_dropped_peak_is_still_drawn_but_in_its_own_colour():
+    """消してしまうと「取れていない」と読めてしまう。描いた上で区別する。"""
+    axes = _figure(_unscored_payload())
+
+    colours = {}
+    for collection in axes.collections:
+        for segment, colour in zip(collection.get_segments(), collection.get_colors()):
+            colours[round(float(segment[0][0]), 4)] = tuple(colour)
+
+    assert 200.0 in colours                      # 描かれている
+    assert colours[200.0] != colours[100.0]      # 採点されたピークと見分けられる

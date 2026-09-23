@@ -259,3 +259,41 @@ def test_total_score_refuses_to_use_rt_without_a_tolerance():
         sm.total_score(
             _SCORES, precursor_mz=400.0, reference_precursor_mz=400.0, ms1_tol=0.01,
             rt=8.0, reference_rt=8.0, use_rt=True)
+
+
+# --------------------------------------------------------------------------
+# 足切りの判定（`cutoff_mask`）。採点に入るピークと、図にだけ出るピークを
+# 分ける唯一の根拠。`normalize_measured` はこの mask の上に載る。
+# --------------------------------------------------------------------------
+def test_the_relative_threshold_is_measured_against_the_pre_cutoff_max():
+    """分母は**足切り前**の最大強度。上流 `maxIntensity` は足切りループの外で
+    一度だけ計算される（生き残ったピークの最大値ではない）。"""
+    spectrum = [[100.0, 1000.0], [200.0, 200.0], [300.0, 50.0]]
+
+    mask = sm.cutoff_mask(spectrum, relative_amp_cutoff=0.1, absolute_amp_cutoff=0.0)
+
+    assert mask == [True, True, False]
+
+
+def test_a_peak_sitting_exactly_on_the_threshold_is_excluded():
+    """上流の条件は `>`。境界上は「外」。"""
+    spectrum = [[100.0, 1000.0], [200.0, 100.0]]
+
+    mask = sm.cutoff_mask(spectrum, relative_amp_cutoff=0.1, absolute_amp_cutoff=0.0)
+
+    assert mask == [True, False]
+
+
+def test_normalize_measured_keeps_exactly_the_peaks_the_mask_marks():
+    """判定規則を 2 箇所に書かない。`normalize_measured` は mask の上に載る。"""
+    spectrum = [[100.0, 1000.0], [200.0, 120.0], [300.0, 20.0]]
+    cutoffs = {"relative_amp_cutoff": 0.05, "absolute_amp_cutoff": 30.0}
+
+    kept = sm.normalize_measured(spectrum, **cutoffs)
+    mask = sm.cutoff_mask(spectrum, **cutoffs)
+
+    assert [mz for mz, _ in kept] == [mz for (mz, _), keep in zip(spectrum, mask) if keep]
+
+
+def test_an_empty_spectrum_has_an_empty_mask():
+    assert sm.cutoff_mask([], relative_amp_cutoff=0.1, absolute_amp_cutoff=0.0) == []

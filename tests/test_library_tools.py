@@ -363,3 +363,86 @@ def test_the_no_candidates_message_does_not_leak_float32_noise(fresh_session, mo
     assert payload["status"] == "no_candidates"
     assert "±0.01," in payload["message"] or "±0.01 " in payload["message"]
     assert "0.00999999" not in payload["message"]
+
+
+# --------------------------------------------------------------------------
+# 採点対象外のピーク。採点は `normalize_measured` で足切りした後のスペクトルに
+# 対して行うのに、図は足切り前の生ピークを描いている。この差を図の上で
+# 見分けられるようにするための受け渡し（`.dbs` の cutoff が非ゼロのときだけ現れる）。
+# --------------------------------------------------------------------------
+def _store_with_cutoffs(monkeypatch, **cutoffs):
+    store = session_state.session.library.store
+    params = {"ms1_tolerance": 0.01, "ms2_tolerance": 0.025, "rt_tolerance": 0.2}
+    params.update(cutoffs)
+    monkeypatch.setattr(store, "summary", lambda: {"search_params": params})
+
+
+def test_peaks_dropped_by_the_cutoff_are_recorded_for_the_figure(fresh_session, monkeypatch):
+    tools.library_load()
+    _store_with_cutoffs(monkeypatch, relative_amp_cutoff=0.1)
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 5.0]])
+
+    tools.library_match_feature(104.0706, ion_mode="positive")
+
+    assert session_state.session.library.last_match["unscored_mz"] == [69.0335]
+
+
+def test_nothing_is_marked_unscored_when_the_cutoffs_are_zero(fresh_session, monkeypatch):
+    """既定（足切り 0）の run では従来と何も変わらないこと。"""
+    tools.library_load()
+    _store_with_cutoffs(monkeypatch, relative_amp_cutoff=0.0, absolute_amp_cutoff=0.0)
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 5.0]])
+
+    tools.library_match_feature(104.0706, ion_mode="positive")
+
+    assert session_state.session.library.last_match["unscored_mz"] == []
+
+
+def test_mirror_plot_passes_the_unscored_peaks_so_the_layer_reaches_the_figure(
+        fresh_session, monkeypatch):
+    """`ms2_tol` と同じ轍（ツール層で渡し忘れると図から静かに消える）を踏まない。"""
+    tools.library_load()
+    _store_with_cutoffs(monkeypatch, relative_amp_cutoff=0.1)
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 5.0]])
+    tools.library_match_feature(104.0706, ion_mode="positive")
+
+    captured = {}
+    from lipidmix.plots import mirror as mirror_plot
+    real_build = mirror_plot.build_mirror_payload
+
+    def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(mirror_plot, "build_mirror_payload", spy)
+    tools.library_plot_mirror(output="payload")
+
+    assert captured.get("unscored_mz") == [69.0335]
+
+
+def test_the_caption_reports_the_dropped_peaks_because_the_figure_alone_is_easy_to_miss(
+        fresh_session, monkeypatch):
+    tools.library_load()
+    _store_with_cutoffs(monkeypatch, relative_amp_cutoff=0.1)
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 5.0]])
+    tools.library_match_feature(104.0706, ion_mode="positive")
+
+    caption = tools.library_plot_mirror()[0]
+
+    assert "1/2" in caption and "cutoff" in caption
+
+
+def test_the_caption_stays_quiet_when_every_peak_was_scored(fresh_session, monkeypatch):
+    tools.library_load()
+    _store_with_cutoffs(monkeypatch, relative_amp_cutoff=0.0)
+    monkeypatch.setattr(tools, "_measured_spectrum",
+                        lambda *a, **k: [[87.0441, 999.0], [69.0335, 5.0]])
+    tools.library_match_feature(104.0706, ion_mode="positive")
+
+    caption = tools.library_plot_mirror()[0]
+
+    assert "cutoff" not in caption

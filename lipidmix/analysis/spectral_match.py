@@ -40,6 +40,7 @@ __all__ = [
     "reverse_dot_product",
     "matched_peaks_scores",
     "spectral_entropy_similarity",
+    "cutoff_mask",
     "normalize_measured",
     "match_spectrum",
     "gaussian_similarity",
@@ -485,6 +486,24 @@ def spectral_entropy_similarity(measured, reference, *, bin_width):
     return 1 - (2 * entropy12 - entropy1 - entropy2) * 0.5
 
 
+def cutoff_mask(spectrum, *, relative_amp_cutoff=0.0, absolute_amp_cutoff=0.0):
+    """足切りを通るピークを入力と同じ並びの真偽リストで返す。
+
+    判定規則そのもの（`>` の厳密不等号・分母は**足切り前**の最大強度）はここにしか
+    無い。`normalize_measured` はこの mask の上に載り、描画層は「図には出るが採点に
+    入らなかったピーク」を同じ mask から割り出す——規則を 2 箇所に書くと、片方だけが
+    上流の変更に追従して静かにずれる（`defaults.py` を作ったのと同じ理由）。
+    """
+    if not spectrum:
+        return []
+    intensities = [float(p[1]) for p in spectrum]
+    max_intensity = max(intensities)
+    return [
+        intensity > max_intensity * relative_amp_cutoff and intensity > absolute_amp_cutoff
+        for intensity in intensities
+    ]
+
+
 def normalize_measured(spectrum, *, relative_amp_cutoff=0.0, absolute_amp_cutoff=0.0):
     """`DataAccess.GetNormalizedMs2Spectra` の写し。**測定側にだけ**掛ける前処理。
 
@@ -508,12 +527,13 @@ def normalize_measured(spectrum, *, relative_amp_cutoff=0.0, absolute_amp_cutoff
         return []
     peaks = [(float(p[0]), float(p[1])) for p in spectrum]
     max_intensity = max(intensity for _, intensity in peaks)
+    mask = cutoff_mask(spectrum, relative_amp_cutoff=relative_amp_cutoff,
+                       absolute_amp_cutoff=absolute_amp_cutoff)
 
-    kept = []
-    for mz, intensity in peaks:
-        if intensity > max_intensity * relative_amp_cutoff and intensity > absolute_amp_cutoff:
-            kept.append([mz, intensity / max_intensity * 100.0])
-    return kept
+    return [
+        [mz, intensity / max_intensity * 100.0]
+        for (mz, intensity), keep in zip(peaks, mask) if keep
+    ]
 
 
 def _sqrt_or_sentinel(value):
