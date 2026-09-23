@@ -38,7 +38,7 @@ PCA 直前に非破壊で適用される（手順 7）。
 5. └─ lipidmix/msdial/classes.py  filter_arf_by_class_ids()
 6. └─ lipidmix/core/path_resolvers.py  _filter_arf_spots()
 7. └─ lipidmix/arf/exclusions.py  prune_spots()
-8. └─ lipidmix/arf/reader.py  extract_peak_properties()
+8. └─ lipidmix/arf/reader.py  count_peak_property_rows()
 9. └─ lipidmix/arf/reader.py  build_pca_matrix()
 10. └─ lipidmix/analysis/pca.py  run_pca()
 11. └─ lipidmix/msdial/classes.py  assign_sample_groups()

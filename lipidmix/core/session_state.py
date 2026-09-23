@@ -47,15 +47,35 @@ _BATCH_DATE_RE = re.compile(r"(\d{8})")
 # 先頭へ最大1回だけ前置する意味論ダイジェスト（自己完結・~7行）。round-trip 不要で
 # ローカルLLM でも意味が届く。全文定義は docs/output_format/（共通核 core.md ＋
 # パーサ別トピック）/ lipidmix://docs/output-format[/{topic}]。§2.1 は脂質名文法。
+#
+# **共通部（ここ）とアッセイ種別行（_ASSAY_CAVEAT_LINE）を分ける。** 脂質名文法は
+# 脂質アッセイでしか成り立たない規則で、一般代謝物の出力に当てると「PC 34:1 形式で
+# ないから未同定」のような誤読を生む。逆に一般代謝物では候補集合（アダクト・異性体・
+# 順位）が同定の実体になる。種別は MS-DIAL のファイル形式からは決まらない
+# （同じ .arf / .mzTab に両方が出る）ので、確定するまではどちらの規則も当てない。
 SEMANTICS_CAVEAT = (
     "[意味論] 解釈前に lipidmix://docs/output-format を参照。要点:\n"
     "- 粒度: ARF行=1スポット×1サンプル / ARF2行=全サンプル統合スポット。\n"
     "- IsGapFilled=true は補間値（実測でない）。\n"
     "- Nameの存在≠確定同定。空/Unknown/no MS2:/low score: を区別。\n"
     "- EIC peak_top は横軸座標(RT)で強度でない。強度はmax_intensity。\n"
-    "- PAI2は単一サンプル→PCA不能。多変量比較はARF/ARF2。\n"
-    "- 脂質名: 34:1(species)と 16:0/18:1(molecular)は別粒度。P-/O-は曖昧(§2.1)。"
+    "- PAI2は単一サンプル→PCA不能。多変量比較はARF/ARF2。"
 )
+
+#: アッセイ種別。`unknown` は「まだ確定していない」であって「脂質」ではない。
+ASSAY_KINDS = ("lipid", "metabolite", "unknown")
+
+#: 種別ごとの追加1行。行数は種別によらず1行（前置の総量を種別で変えない）。
+_ASSAY_CAVEAT_LINE = {
+    "lipid": "- 脂質名: 34:1(species)と 16:0/18:1(molecular)は別粒度。P-/O-は曖昧(§2.1)。",
+    "metabolite": "- 一般代謝物: 名前1件は候補の代表。アダクト/異性体/候補順位を確認。脂質名文法(§2.1)は不適用。",
+    "unknown": "- アッセイ種別が未確定。確定するまで脂質名文法(§2.1)も脂質クラス知識も当てない。",
+}
+
+
+def assay_digest(assay_kind: str) -> str:
+    """共通部＋その種別の1行を組んだ意味論ダイジェストを返す。"""
+    return f"{SEMANTICS_CAVEAT}\n{_ASSAY_CAVEAT_LINE[assay_kind]}"
 
 
 def _build_sample_meta(sample_names, class_index):
@@ -303,9 +323,18 @@ class AnalysisSession:
         # リセットしない（データ切替のたびに再注入しないため）。
         self.output_format_seen = False
         self.caveat_emitted = False
+        # どの種別で前置したか。種別が確定したとき（unknown→lipid/metabolite）に
+        # 1回だけ再注入するために持つ。これが無いと、load_dataset 時点の unknown で
+        # 1回出て終わり、後から種別が確定しても解釈規則が二度と届かない。
+        self.caveat_emitted_kind: str | None = None
         # 既読の output-format トピック（core/arf/eic/…）。トピック別リソースが
         # 読まれるたびに増える。未読トピックのツール出力にだけ誘導1行を足す。
         self.sections_seen: set[str] = set()
+
+        # --- アッセイ種別（解釈規則の選択軸。データ切替では消さない） ---
+        # 確定は利用者との合意事項（record_objective / update_objective）で、
+        # パーサ出力からは決まらない。既定の unknown は「脂質」ではない。
+        self.assay_kind = "unknown"
 
         # --- mzTab-M / DatasetState スロット（session.arf とは独立） ---
         self.dataset = None  # DatasetState | None
@@ -326,16 +355,33 @@ class AnalysisSession:
         """
         if topic in self.sections_seen:
             return None
+        # 脂質名文法は脂質アッセイでしか成り立たないので、種別が脂質のときだけ挙げる。
+        shared = "共通の粒度・脂質名文法" if self.assay_kind == "lipid" else "共通の粒度"
         return (
             f"[意味論] この出力の定義は `lipidmix://docs/output-format/{topic}` にある。"
-            "解釈前に参照すること（共通の粒度・脂質名文法は `lipidmix://docs/output-format`）。"
+            f"解釈前に参照すること（{shared}は `lipidmix://docs/output-format`）。"
         )
+
+    def set_assay_kind(self, assay_kind: str) -> str:
+        """アッセイ種別を確定する。正規化した値を返し、未知の値は拒否する。
+
+        黙って `unknown` へ落とさない——落とすと、利用者が種別を伝えたつもりのまま
+        サーバは未確定として振る舞い、どちらの規則も当たらない状態が続く。
+        """
+        normalized = str(assay_kind).strip().lower()
+        if normalized not in ASSAY_KINDS:
+            raise ValueError(
+                f"assay_kind は {'/'.join(ASSAY_KINDS)} のいずれかです: {assay_kind!r}")
+        self.assay_kind = normalized
+        return normalized
 
     def maybe_prepend_caveat(self, text: str, topic: str | None = None) -> str:
         """解釈直結パーサー出力へ意味論ダイジェスト（最大1回）と誘導1行を付す。
 
-        - SEMANTICS_CAVEAT: output-format リソースが未 fetch（output_format_seen=False）
-          かつ本プロセスで未注入（caveat_emitted=False）のときだけ先頭へ前置する。
+        - 意味論ダイジェスト: output-format リソースが未 fetch（output_format_seen=False）
+          のとき、その時点の `assay_kind` で1回だけ先頭へ前置する。種別が確定して
+          変わったときだけもう1回出す（合計で最大2回。unknown のまま解析が進むと
+          種別固有の規則が一度も届かないため）。
         - topic 誘導: そのトピックが未読のあいだ、毎回末尾に1行だけ付す（安いので
           既読になるまで出し続ける。これがオンデマンド参照の起点になる）。
 
@@ -350,10 +396,13 @@ class AnalysisSession:
             hint = self.section_hint(topic)
             if hint:
                 out = f"{out}\n\n{hint}"
-        if self.output_format_seen or self.caveat_emitted:
+        if self.output_format_seen:
+            return out
+        if self.caveat_emitted and self.caveat_emitted_kind == self.assay_kind:
             return out
         self.caveat_emitted = True
-        return f"{SEMANTICS_CAVEAT}\n\n{out}"
+        self.caveat_emitted_kind = self.assay_kind
+        return f"{assay_digest(self.assay_kind)}\n\n{out}"
 
 
 # インスタンスを1つ作成（サーバー起動中に保持される）

@@ -118,7 +118,8 @@ PLAYBOOK_DIR = _state_dir("LIPIDMIX_PLAYBOOK_DIR", "playbook")
 ANALYSES_DIR = _state_dir("LIPIDMIX_ANALYSES_DIR", "analyses")
 
 MCP_INSTRUCTIONS = """
-This server parses and analyzes MS-DIAL lipidomics outputs.
+This server parses and analyzes MS-DIAL outputs — lipidomics and general
+(hydrophilic) metabolomics both.
 
 Before interpreting any output from ARF, ARF2, PAI2, DCL, or EIC/AEF parser
 tools, you MUST read the MCP resource `lipidmix://docs/output-format` (the shared
@@ -146,6 +147,16 @@ spectrum was seen, `FLAG_ONLY` means only the flag was set — never treat the t
 as equivalent. A `not_found` from `dcl_find_msms` means no MS/MS was acquired for
 that precursor, NOT that the expected fragments are absent.
 
+ASSAY KIND — settle whether this is `lipid` (lipidomics) or `metabolite`
+(general/hydrophilic metabolomics) before interpreting any compound name. THE
+FILE FORMAT DOES NOT TELL YOU: MS-DIAL writes both into the same .arf/.mzTab.
+Until it is settled, apply neither lipid shorthand grammar nor lipid-class
+knowledge. For `metabolite`, GOSLIN/LIPID MAPS normalization and the lipid
+checks (`arf2_annotate_identities`, `verify_peak_annotation`) do not apply;
+identification rests on the candidate set (adducts, isomers, rank). Record it
+with `record_objective(assay_kind=...)`, which also switches the semantics
+digest this server prepends to parser output.
+
 ENTRY POINT — distinguish which of the following the user's folder actually is
 before picking a tool:
 
@@ -171,7 +182,7 @@ before picking a tool:
    `load_dataset(directory)` (or `dataset_load` for an mzTab-M path). It runs
    the standard initial analysis (arf2 overview -> arf PCA, auto-selecting
    PeakProperties.arf over DriftSpots.arf) and primes the session. Its output
-   (group structure, lipid classes, polarity) is exactly the material for
+   (group structure, compound classes, polarity) is exactly the material for
    GATEWAY step 1 below.
 3. MIXED / AMBIGUOUS (raw files and existing MS-DIAL output both present, and
    it is not clear which the user wants). Do NOT guess from the folder's mere
@@ -189,16 +200,17 @@ with analysis; only ask the user if they explicitly want an older batch.
 GATEWAY — before proposing any interpretation or analysis workflow, in order:
 
 1. CONFIRM THE OBJECTIVE (mandatory). From the deterministic parser output
-   (group structure, ionization polarity, lipid classes present, spot/feature
+   (group structure, ionization polarity, compound classes present, spot/feature
    counts) infer the likely experimental objective. Present it to the user as
    1-2 candidate objectives WITH the data evidence behind each guess — never a
    single confident statement (avoid anchoring). ALSO confirm the BIOLOGICAL
-   CONTEXT (organism/cell line/treatment, e.g. "LPS-stimulated macrophages"):
-   you may draft a guess from filenames, but only as a suggestion to confirm —
-   never send filename-derived terms to external services before confirmation.
-   Record it by calling `record_objective(analysis_id, dataset, polarity, groups,
-   comparison, sub_questions, biological_context, inferred_objective,
-   confirmed_objective)` — do not hand-write the file. Only a confirmed objective
+   CONTEXT (organism/cell line/treatment, e.g. "LPS-stimulated macrophages") and
+   the ASSAY KIND above: you may draft a guess from filenames, but only as a
+   suggestion to confirm — never send filename-derived terms to external
+   services before confirmation. Record it by calling
+   `record_objective(analysis_id, dataset, polarity, groups, comparison,
+   sub_questions, biological_context, inferred_objective, confirmed_objective,
+   assay_kind)` — do not hand-write the file. Only a confirmed objective
    drives retrieval. If a new sub-question emerges mid-analysis, add it with
    `update_objective(analysis_id, add_subquestions=[...])` (with user confirmation)
    so it flows through the same gap mechanism.

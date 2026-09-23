@@ -89,6 +89,11 @@ lipidmix/tools/     形式に紐づかない MCP 公開層（入口・サンプ�
   import してはならない（循環）。
 - **セッション状態はパーサ別に分離済み**: `session.arf` / `.arf2` / `.pai2` / `.eic`。あるパーサが
   別スロットを触ってはいけない（`pai2_parser` が ARF の前処理行列を無言破棄した過去のバグの再発防止）。
+- **解釈規則の選択軸は `session.assay_kind`**（`lipid` / `metabolite` / `unknown`、既定
+  `unknown`）。脂質名文法は脂質アッセイでしか成り立たないので、ダイジェスト
+  （`assay_digest()`）も `section_hint` もここで分岐する。**`caveat_emitted` の bool だけに
+  戻さない**——`load_dataset` は GATEWAY より先に走るのでダイジェストは必ず `unknown` で
+  1 回出る。`caveat_emitted_kind` があるから、種別が確定したときにもう 1 回だけ届く。
 - **前提状態が無いときは例外でなく機械可読な封筒を返す**:
   `{"error": {"code": "missing_state", "state": ..., "required_tools": [...], "message": ...}}`
   （`lipidmix/core/mcp_errors.py` の `missing_state`）。クライアントはこれを読んでリプレイする契約。

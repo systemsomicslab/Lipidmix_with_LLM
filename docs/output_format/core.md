@@ -8,7 +8,7 @@
 
 | トピック | リソース | 収録する節 | 内容 |
 |---|---|---|---|
-| `core` | `lipidmix://docs/output-format` | §1, §2, §2.1, §9 | 共通オントロジー・脂質名文法・必須注意（**常に先に読む**） |
+| `core` | `lipidmix://docs/output-format` | §1, §2, §2.1, §9 | 共通オントロジー・脂質名文法（脂質アッセイのみ）・必須注意（**常に先に読む**） |
 | `arf` | `lipidmix://docs/output-format/arf` | §3, §8.1, §10, §11 | `.arf` パーサ、`arf_parser`、前処理・QC、差次的解析 |
 | `arf2` | `lipidmix://docs/output-format/arf2` | §4, §8.2 | `.arf2` パーサ、`arf2_parser` |
 | `pai2` | `lipidmix://docs/output-format/pai2` | §5, §8.3 | `.pai2` パーサ、`pai2_parser` |
@@ -82,6 +82,8 @@ README に記載された主要な MS-DIAL 出力パーサーを対象とする�
 | IonMode | イオン化極性。パーサーにより文字列、Enum、整数のいずれか |
 
 ### 2.1 脂質名の記法（ショートハンド文法）
+
+**適用はアッセイ種別が `lipid` のときだけ。** MS-DIAL は脂質も一般代謝物も同じ `.arf` / `.mzTab` に書くので、ファイル形式ではどちらか決まらない。一般代謝物（`assay_kind=metabolite`）ではこの文法は成り立たず、同定は候補集合（アダクト・異性体・候補順位）で読む——`lipidmix://docs/output-format/identity` §12.6。種別が未確定のあいだはどちらの規則も当てない。
 
 `Name`/`name` と `Ontology`/`ontology` に現れる脂質表記の読み方。LLM はこの文法に沿ってのみ構造を解釈し、名前から鎖組成やエーテル種別を過剰に推定しない（§9-1/§9-2 と併読）。
 

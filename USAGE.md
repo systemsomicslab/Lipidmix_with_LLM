@@ -95,8 +95,8 @@ pipeline_run → pipeline_status(確認) → pipeline_resume(訂正・再開が�
 
 | ツール | 機能 |
 |--------|------|
-| `record_objective` | 確定した実験目的を `analyses/<analysis_id>.md` に記録。目的・比較・群・小問(Q1..Qn)を保存。 |
-| `update_objective` | 目的/文脈/状態を更新し、創発的な小問を追記。 |
+| `record_objective` | 確定した実験目的を `analyses/<analysis_id>.md` に記録。目的・比較・群・小問(Q1..Qn)を保存。`assay_kind`(`lipid`/`metabolite`/`unknown`)を渡すと以後の解釈規則が切り替わる。 |
+| `update_objective` | 目的/文脈/状態/`assay_kind` を更新し、創発的な小問を追記。 |
 
 ## 8. 知識カバレッジ・文献探索・取り込み
 

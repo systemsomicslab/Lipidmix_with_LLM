@@ -348,26 +348,111 @@ def deserialize(file_like_object) -> list[dict]:
     return results
 
 
+def _is_alignment_peak_row(data) -> bool:
+    """`_convert_to_alignment_feature` が実経路に入る行かどうか。
+
+    file_name だけ欲しい呼び出し（`exclusions._entry_file_name`）と、dict を組む
+    本体とで判定が食い違わないよう、ここ 1 か所に置く。
+    """
+    return (isinstance(data, list) and len(data) >= 3
+            and len(data) > 25 and isinstance(data[18], (int, float)))
+
+
+def _file_name_from_row(data: list) -> str | None:
+    """行が実経路のものだと分かっている前提で、先頭付近の文字列を拾う。
+
+    呼び出し側が `_is_alignment_peak_row` を通したあとに使う（ここで再判定すると、
+    spot × 注入ぶんの isinstance/len が二重に走る）。
+    """
+    for item in data[:10]:
+        if isinstance(item, (bytes, str)):
+            decoded = _decode(item)
+            if len(decoded) > 0:
+                return decoded
+    return None
+
+
+def file_name_of(data: list) -> str | None:
+    """`AlignedPeakProperties` の 1 行から file_name だけを取り出す公開境界。
+
+    `_convert_to_alignment_feature(data).get("file_name")` と必ず同じ答えを返す
+    （両者が同じ導出を共有している）。除外判定・roster は file_name しか要らない
+    のに、以前は 1 行ごとに feature dict を丸ごと組んでいた——spot × 注入ぶん
+    呼ばれるので、393MB の `.arf` では 294 万回の無駄な dict 生成になっていた。
+    """
+    if not _is_alignment_peak_row(data):
+        return None
+    return _file_name_from_row(data)
+
+
+#: `_convert_to_alignment_feature` がそのまま添字を引くだけのフィールド。
+#: 実経路の行は len(data) > 25 が保証されているので、範囲判定は要らない。
+_DIRECT_FIELD_INDEX = {
+    "file_id": 0,            # 真の FileID は Key0
+    "master_peak_id": 2,
+    "peak_id": 3,
+    "ms2_raw_id": 9,         # Key9
+    "height": 18,
+    "area": 20,
+    "area_above_baseline": 21,  # Key21
+    "m_z": 22,
+}
+
+#: 行に依らず定数のフィールド（同定側があとから書き換える前提の初期値）。
+_CONSTANT_FIELDS = {"is_msms_matched": False, "is_matched": False}
+
+
+def peak_field(data: list, name: str):
+    """`_convert_to_alignment_feature(data).get(name)` と同じ値を dict 無しで返す。
+
+    `build_pca_matrix` は file_name / is_gap_filled / 要求された props しか読まない
+    のに、1 行ごとに 16 キーの dict を組んでいた（393MB の `.arf` で 294 万回。
+    既定の `props=["height"]` では `rt` のための `_convert_to_times` まで毎行走る）。
+
+    **同値性は `tests/test_arf_hot_paths.py` が全キー × 行の種類で固定している。**
+    フィールドを増やすときは両方に足すこと。
+    """
+    if not _is_alignment_peak_row(data):
+        return None
+    index = _DIRECT_FIELD_INDEX.get(name)
+    if index is not None:
+        return data[index]
+    if name == "file_name":
+        return _file_name_from_row(data)
+    if name == "is_gap_filled":
+        # MasterPeakID(Key2)が負(-2)のサンプルはギャップフィル（未検出→補間値）
+        return isinstance(data[2], int) and data[2] < 0
+    if name == "is_msms":
+        # MS2: Key10 MS2RawSpectrumID2CE が非空ならMS/MS取得済み
+        return bool(data[10]) if isinstance(data[10], dict) else False
+    if name == "rt":
+        return _rt_of(data)
+    if name in ("estimated_noise", "signal_to_noise"):
+        # Key37 PeakShape = [EstimatedNoise, SignalToNoise, ...]（msgpack配列）
+        peak_shape = data[37] if len(data) > 37 and isinstance(data[37], list) else []
+        position = 0 if name == "estimated_noise" else 1
+        return peak_shape[position] if len(peak_shape) > position else None
+    return _CONSTANT_FIELDS.get(name)
+
+
+def _rt_of(data: list):
+    rt_value = None
+    if len(data) > 15 and isinstance(data[15], list):
+        rt_value = _convert_to_times(data[15]).get("rt")
+    elif len(data) > 16 and isinstance(data[16], list):
+        rt_value = _convert_to_times(data[16]).get("rt")
+    return rt_value
+
+
 def _convert_to_alignment_feature(data: list) -> dict:
     if not isinstance(data, list) or len(data) < 3:
         return {}
-    
-    # .arf の AlignmentChromPeakFeature row
-    if len(data) > 25 and isinstance(data[18], (int, float)):
-        rt_value = None
-        if len(data) > 15 and isinstance(data[15], list):
-            rt_value = _convert_to_times(data[15]).get("rt")
-        elif len(data) > 16 and isinstance(data[16], list):
-            rt_value = _convert_to_times(data[16]).get("rt")
 
-        # 【追加】配列の先頭付近からファイル名（文字列）を探す
-        file_name = None
-        for item in data[:10]:
-            if isinstance(item, (bytes, str)):
-                decoded = _decode(item)
-                if len(decoded) > 0:
-                    file_name = decoded
-                    break
+    # .arf の AlignmentChromPeakFeature row
+    if _is_alignment_peak_row(data):
+        rt_value = _rt_of(data)
+
+        file_name = _file_name_from_row(data)
 
         # Key37 PeakShape = [EstimatedNoise, SignalToNoise, ...]（msgpack配列）
         peak_shape = data[37] if len(data) > 37 and isinstance(data[37], list) else []
@@ -482,6 +567,26 @@ def extract_peak_properties(deserialized_list: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
+def count_peak_property_rows(deserialized_list: list[dict]) -> int:
+    """`extract_peak_properties` が返す行数だけを、DataFrame を組まずに数える。
+
+    `arf_parser` は「抽出された総ピークレコード数」と「平均サンプル数/スポット」
+    しか使っていないのに、そのために spot × 注入ぶんの dict を作って pandas の
+    DataFrame へ積んでいた（393MB の `.arf` で 881 万行）。行の採否条件は
+    `extract_peak_properties` と同一に保つ——ずれたら報告値が嘘になる。
+    """
+    total = 0
+    for spot in deserialized_list:
+        aligned = spot.get("AlignedPeakProperties")
+        if not isinstance(aligned, list):
+            continue
+        for sample in aligned:
+            if not isinstance(sample, list) or len(sample) < 3:
+                continue
+            total += 1
+    return total
+
+
 def build_pca_matrix(deserialized_list: list[dict], use_properties: list[str] = None,
                      min_detection_rate: float = 0.0) -> tuple[np.ndarray, list[str], list[str]]:
     """
@@ -511,19 +616,21 @@ def build_pca_matrix(deserialized_list: list[dict], use_properties: list[str] = 
             if not isinstance(sample, list):
                 continue
 
-            feature = _convert_to_alignment_feature(sample)
+            # feature dict は組まない——読むのは file_name / is_gap_filled /
+            # 要求された props だけで、16 キーを作るのは spot × 注入ぶんの無駄。
+            # peak_field は dict 版と同じ値を返す（同値性はテストが固定している）。
 
             # 【追加】行列のキーとしてファイル名を使用
-            file_name = feature.get("file_name")
+            file_name = file_name_of(sample)
             sample_key = file_name if file_name else f"Sample_{sample_index}"
 
             if sample_key not in sample_data_dict:
                 sample_data_dict[sample_key] = {}
 
-            is_detected = not feature.get("is_gap_filled", False)
+            is_detected = not peak_field(sample, "is_gap_filled")
             # 指定された複数のプロパティを列として追加
             for prop in use_properties:
-                val = feature.get(prop)
+                val = peak_field(sample, prop)
                 col_name = f"Spot_{master_id}_{prop}"
                 # Noneの場合は0.0で埋める（欠損値処理）
                 sample_data_dict[sample_key][col_name] = float(val) if val is not None else 0.0
