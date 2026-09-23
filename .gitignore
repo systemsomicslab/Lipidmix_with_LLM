@@ -45,3 +45,8 @@ archives/
 # エージェントごとの隔離作業ツリー（scripts/new-worktree.sh が作る）。中身は
 # 別ブランチのチェックアウトそのものなので、git add -A で丸ごと巻き込まない。
 .worktrees/
+
+# ローカル専用の調査メモ。docs/task.md が出典として参照するので消さないが、
+# 追跡もしない（2026-09-15 の SDD CONSTRAINTS で「削除・stash しない」と
+# 決めた未追跡物をそのまま保つ）。
+docs/research/
