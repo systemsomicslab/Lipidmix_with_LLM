@@ -19,6 +19,7 @@ import server
 # v2メタボロミクス Task13: dataset_statistic を追加(61→62)。
 # 対話経路S1: pipeline を経ずに解析行列を作る dataset_build_matrix を追加(62→63)。
 # Task10: 参照ライブラリの MS/MS 照合 3 本を追加(63→66)。
+# 配布更新: 通知だけでなく適用まで行う server_update を追加(66→67)。
 EXPECTED_TOOLS = sorted([
     "library_load",
     "library_match_feature",
@@ -80,6 +81,7 @@ EXPECTED_TOOLS = sorted([
     "read_report",
     "record_objective",
     "sample_search",
+    "server_update",
     "save_eic_figure",
     "save_pca_figure",
     "save_volcano_figure",
