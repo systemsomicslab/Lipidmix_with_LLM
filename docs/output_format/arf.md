@@ -125,7 +125,7 @@ ARFサンプルとの結合は `FileID` を優先し、欠損時は正規化し�
 
 ### 8.1 `arf_parser()`
 
-返り値はMarkdownテキスト1件（`str`）。総スポット数、適用フィルタ/手動除外の注記、Class ID分布、タグファイル対応数、タグ別件数、総サンプル別レコード数、平均サンプル数/スポット、PCA行列形状、PC1/PC2説明分散比、PCAスコア要約（群別サンプル数・図示note、点列は非同梱）、Loading上位を含む。`class_ids` を指定すると、選択したClass IDに属するサンプル行だけを残してPCAを実行する。複数Class IDはOR条件で、照合は大文字小文字を区別しない。`min_intensity`（スポット平均強度の下限）と `annotation_keyword`（脂質クラス/化合物名の部分一致）で生スポットを絞ってPCAをやり直せる（**フィルタ条件を変えたPCAのやり直しは本ツールの再呼び出しで行う**。ファイルはセッションキャッシュされ再パースは走らない）。手動除外（`arf_exclude`）も行列構築前に反映される。正規化・QC・欠損補完を経た「前処理後」行列でのPCAは `arf_preprocess` → `arf_pca_preprocessed`。`arf_list_classes()` は `.mddata` のパスとClass ID別サンプル数をJSONで返す。`arf_list_tags()` は現在のARFセッションについてタグ定義、サンプルファイル対応数、タグ付与数をJSONで返す。
+返り値はMarkdownテキスト1件（`str`）。総スポット数、適用フィルタ/手動除外の注記、Class ID分布、タグファイル対応数、タグ別件数、総サンプル別レコード数、平均サンプル数/スポット、PCA行列形状、PC1/PC2説明分散比、Loading上位、PCAスコアプロット用ブロック（群別サンプル数・描画指示・サンプル別座標の json 点列）を含む。`class_ids` を指定すると、選択したClass IDに属するサンプル行だけを残してPCAを実行する。複数Class IDはOR条件で、照合は大文字小文字を区別しない。`min_intensity`（スポット平均強度の下限）と `annotation_keyword`（脂質クラス/化合物名の部分一致）で生スポットを絞ってPCAをやり直せる（**フィルタ条件を変えたPCAのやり直しは本ツールの再呼び出しで行う**。ファイルはセッションキャッシュされ再パースは走らない）。手動除外（`arf_exclude`）も行列構築前に反映される。正規化・QC・欠損補完を経た「前処理後」行列でのPCAは `arf_preprocess` → `arf_pca_preprocessed`。`arf_list_classes()` は `.mddata` のパスとClass ID別サンプル数をJSONで返す。`arf_list_tags()` は現在のARFセッションについてタグ定義、サンプルファイル対応数、タグ付与数をJSONで返す。
 
 脂質選択では、`annotation_keyword` の名前は同一バッチのARF2を優先し、ARF2がない／未注釈ならARF名へ戻る。`spot_ids=[10, 20]` はMasterAlignmentIDの完全一致、`ontologies=["PC"]` は脂質クラスの完全一致（大小文字を区別しない）で、各引数はAND条件。空リスト・負のIDなど不正な指定はエラーにする。`annotation_keyword="PC"` は従来どおりLPCにも部分一致するため、PCクラスだけを選ぶには `ontologies` を使う。
 
@@ -135,15 +135,19 @@ ARFサンプルとの結合は `FileID` を優先し、欠損時は正規化し�
 
 脂質選択を指定した場合、分散・検出率フィルタ後にPCAの必要次元数が足りなくても、サンプルが存在すれば生スポット選択は保存する。PCAをスキップした理由と行列形状を返し、PCA図・結果は生成しない。1脂質や定数の脂質もこの経路で後続の前処理へ渡せる。
 
-PCAスコア要約（散布図の点列は非同梱＝`save_pca_figure` で図示。全点列は
-`session.last_pca_plot` に保持され図ツールが参照する）:
+PCAスコアプロット用ブロック（返り値の末尾。**サンプル別の座標点列を同梱する**）。
+散布図は**この点列からクライアント側（チャット）で描く**。`save_pca_figure` は PNG
+ファイルを reports/figures/ へ書き込む操作であり、ユーザーがファイルとしての図を明示的に
+求めたときだけ使う——対話の中で図を見せる目的では呼ばない。同じ点列は
+`session.arf.last_pca_plot` にも保持され、`save_pca_figure` はそこから描く。
 
 | キー/行 | 意味 |
 |---|---|
 | タイトル行 | 図タイトル |
 | `PC1 (x%) × PC2 (y%)` | PC1/PC2 説明分散率 |
 | 群別サンプル数 | 群ラベルがあれば `群=件数` を列挙、無ければ総サンプル数 |
-| 図示note | `save_pca_figure` で散布図を生成する旨 |
+| 描画指示 | 上記座標から散布図を描く（group があれば群ごとに色分け・凡例付き）。PNG が必要なときのみ `save_pca_figure` |
+| json 点列 | `x_label` / `y_label`（説明分散率つき軸名）と `points`。各点は `pc1` / `pc2` / `sample`、群分け時は `group` |
 
 ## 10. 前処理・QC（P2a）
 
@@ -181,7 +185,7 @@ QC/ブランク/注入順のいずれかが欠けているためにスキップ�
 
 ### 10.4 `arf_pca_preprocessed()`
 
-前処理後行列が無い（`session.feature_matrix is None`）場合はエラーメッセージ1件を返す。あれば `arf_reader.run_pca` でPCAを実行し、`arf_parser` と同じ整形ヘルパー（スコアプロット用JSON、Loadings上位）を使って結果を返す。出力テキストの構造・キー意味は8.1節のスコアプロット用JSONと同一。生スポットの選択とは別の計算経路であり、選択を変更した場合は `arf_preprocess()` を再実行する必要がある。
+前処理後行列が無い（`session.feature_matrix is None`）場合はエラーメッセージ1件を返す。あれば `arf_reader.run_pca` でPCAを実行し、`arf_parser` と同じ整形ヘルパー（スコアプロット用JSON、Loadings上位）を使って結果を返す。出力テキストの構造・キー意味は8.1節のスコアプロット用JSONと同一（座標点列を同梱し、散布図はそこからチャットで描く。`save_pca_figure` はPNGファイルが明示的に求められたときだけ）。生スポットの選択とは別の計算経路であり、選択を変更した場合は `arf_preprocess()` を再実行する必要がある。
 
 ### 10.5 手動サンプル/ピーク除外（`arf_exclude`）
 
