@@ -59,6 +59,8 @@ OUT_OF_SCOPE: tuple[str, ...] = (
     "console_plan", "console_prepare_input", "console_method_template",
     "console_method_candidates",
     "console_run", "console_status", "console_cleanup", "job_list",
+    # サーバ自身の保守（解析の流れには現れない）
+    "server_update",
 )
 
 

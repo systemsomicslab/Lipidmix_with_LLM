@@ -21,6 +21,9 @@ LOCAL_WRITE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint"
 # ingest_stage は _inbox に新規ノートを増やし、log_search は探索ログに行を追記し、
 # update_objective(add_subquestions=...) は既存 Q の最大+1 で採番して小問を追記する。
 LOCAL_WRITE_APPEND = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
+# ネットワークへ出たうえでローカルを書き換える。二度目は「最新です」で止まる → 冪等。
+REMOTE_WRITE = {"readOnlyHint": False, "destructiveHint": False,
+                "idempotentHint": True, "openWorldHint": True}
 DESTRUCTIVE = {"readOnlyHint": False, "destructiveHint": True}
 # ファイルを消すが、二度目は何も残っていないので同じ状態に落ち着く → 冪等。
 LOCAL_DELETE = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True}
@@ -122,6 +125,8 @@ EXPECTED_ANNOTATIONS = {
     # LOCAL_WRITE_APPEND を共有する。
     "update_objective": LOCAL_WRITE_APPEND,
     "log_search": LOCAL_WRITE_APPEND,
+    # --- サーバ自身の更新（origin へ出て、作業ツリーを早送りする） ---
+    "server_update": REMOTE_WRITE,
 }
 
 
@@ -151,9 +156,12 @@ class ToolAnnotationTests(unittest.TestCase):
         for name, expected in EXPECTED_ANNOTATIONS.items():
             self.assertEqual(actual[name], expected, name)
 
-    def test_external_network_tool_also_declares_open_world(self):
+    def test_external_network_tools_also_declare_open_world(self):
         """openWorldHint が無いと汎用クライアントがネットワークゲートを迂回する。"""
-        self.assertIs(actual_annotations()["paper_search"]["openWorldHint"], True)
+        actual = actual_annotations()
+        for name in ("paper_search", "server_update"):
+            with self.subTest(tool=name):
+                self.assertIs(actual[name]["openWorldHint"], True)
 
 
 if __name__ == "__main__":

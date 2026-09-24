@@ -48,11 +48,12 @@
 | [metabolomics.md](metabolomics.md) | LC–MS メタボロミクス v2 — 名指しした解析行列への統計 | 2 |
 | [library.md](library.md) | 参照ライブラリ（`.dbs`/`.msp`）— MS/MS スペクトル照合と対向プロット | 3 |
 
-合計 46 ツール。対象外は 20 ツール——文献探索・レポート記録系 12
+合計 46 ツール。対象外は 21 ツール——文献探索・レポート記録系 12
 （`record_objective` `knowledge_coverage` `paper_search` `ingest_*` `write_report` など）＋
 Console 実行層 8（`console_plan` `console_prepare_input` `console_method_template`
-`console_method_candidates` `console_run` `console_status` `console_cleanup` `job_list`）。
-登録ツール総数は 66（46 + 20）。
+`console_method_candidates` `console_run` `console_status` `console_cleanup` `job_list`）＋
+サーバ自身の保守 1（`server_update`。解析の流れに現れず、配布先クローンの更新だけを行う）。
+登録ツール総数は 67（46 + 21）。
 
 ## 一気通貫の順序
 

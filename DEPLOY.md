@@ -84,14 +84,42 @@ When the clone is behind, the notice appears in `load_dataset` (as a line at the
 top of its output) and in the `dataset_status` / `console_status` payloads (as an
 `update_available` key). Up to date, nothing is added.
 
-To apply an update:
+To apply an update, ask Claude to run the `server_update` tool (say "update the
+server"). It fast-forwards the clone to `origin/main` and, only when
+`requirements.txt` changed in that range, reinstalls dependencies with the same
+Python that runs the server.
+
+`server_update` **does not touch any process**. Restarting is the member's job:
+
+> Apply the update, then **restart Claude Desktop**. `git pull` alone leaves the
+> old server process running, which is why the notice says so.
+
+There is no `/update-ms-data-parser` slash command on purpose. Claude Desktop
+cannot currently attach prompts from *local stdio* MCP servers — tools work,
+prompts fail with "Failed to attach prompt" (anthropics/claude-code#82045, open
+since 2026-07-28). The tool name is written into the update notice instead, so
+the notice itself is the entry point.
+
+`server_update` refuses, without changing anything, when:
+
+| `reason` | Meaning |
+|---|---|
+| `dirty_worktree` | Uncommitted changes would be swept into the pull. Commit or discard them first. |
+| `not_on_main` | The clone is on a feature branch — a developer's tree, not a distribution. |
+| `not_fast_forward` | The clone has its own commits. No merge or rebase is attempted. |
+| `fetch_failed` | Offline or no credentials. Stale refs are never reported as "up to date". |
+| `git_unavailable` | No `git`, or the server was unpacked rather than cloned. |
+
+`status="updated_with_warning"` means the code moved but `pip install` failed:
+run `pip install -r requirements.txt` by hand **before** restarting, or the
+server may not start.
+
+The equivalent by hand stays available:
 
 ```powershell
 git pull
+python -m pip install -r requirements.txt
 ```
-
-Then **restart the MCP client**. `git pull` alone leaves the old server process
-running; the notice says so for the same reason.
 
 The check stays silent whenever it cannot be sure: no network, no credentials,
 no `git` on PATH, or a checkout that is not on `main`. Silence means "no news",
