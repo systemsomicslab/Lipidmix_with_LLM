@@ -50,3 +50,17 @@ archives/
 # 追跡もしない（2026-09-15 の SDD CONSTRAINTS で「削除・stash しない」と
 # 決めた未追跡物をそのまま保つ）。
 docs/research/
+
+# 参照ライブラリとその照合用キャッシュ。研究室の参照ライブラリ（.msp）は外部流出
+# 禁止の資産で、本体は環境変数 MSDIAL_MSP_POS / MSDIAL_MSP_NEG でリポジトリの外を
+# 指す。store のキャッシュ（SQLite）と sha256 の対応表はその完全な写し／置き場所を
+# 含むので、LIPIDMIX_LIBRARY_CACHE_DIR を data/ の外へ向けても置き場所を問わず
+# 追跡しない。tests/test_gitignore_library.py がこの網を縛っている。
+*.msp
+*.msp2
+*.dbs
+*.lbm
+*.lbm2
+*.sqlite
+.library-cache/
+.library-digests.json

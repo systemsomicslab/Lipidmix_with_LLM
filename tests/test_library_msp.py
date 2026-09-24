@@ -82,3 +82,80 @@ def test_declared_peak_count_is_not_trusted_when_fewer_peaks_are_present(tmp_pat
     )
     r = list(msp.iter_records(path))[0]
     assert r["spectrum"] == [[50.0, 200.0], [60.0, 100.0]]
+
+
+# --------------------------------------------------------------------------
+# 大容量 `.msp`（研究室ライブラリは 0.5〜1.2 GB）。全体をメモリへ載せず 1 行ずつ読む。
+# --------------------------------------------------------------------------
+def test_the_file_is_streamed_rather_than_read_whole(tmp_path, monkeypatch):
+    """`read_text().splitlines()` は 1.2 GB で文字列＋数千万の行オブジェクトを抱え込む。"""
+    path = tmp_path / "lib.msp"
+    path.write_text(_MSP, encoding="utf-8")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("ファイル全体を一括で読んだ")
+
+    monkeypatch.setattr(msp.Path, "read_text", _boom)
+    monkeypatch.setattr(msp.Path, "read_bytes", _boom)
+
+    assert [r["name"] for r in msp.iter_records(path)] == ["GABA", "Glutamate"]
+
+
+def test_records_are_yielded_lazily(tmp_path):
+    """先頭レコードを取るのに末尾まで読まない（ジェネレータとして 1 件ずつ出す）。"""
+    path = tmp_path / "lib.msp"
+    path.write_bytes(_MSP.encode("utf-8") + b"\nNAME: broken\nPRECURSORMZ: 1\n")
+    first = next(iter(msp.iter_records(path)))
+    assert first["name"] == "GABA"
+
+
+def test_crlf_line_endings_are_accepted(tmp_path):
+    path = tmp_path / "lib.msp"
+    path.write_bytes(_MSP.replace("\n", "\r\n").encode("utf-8"))
+    records = list(msp.iter_records(path))
+    assert [r["name"] for r in records] == ["GABA", "Glutamate"]
+    assert records[0]["spectrum"] == [[69.0335, 500.0], [87.0441, 999.0]]
+
+
+def test_a_name_line_right_after_the_peaks_starts_the_next_record(tmp_path):
+    path = tmp_path / "lib.msp"
+    path.write_text(
+        "NAME: A\nPRECURSORMZ: 1.0\nNum Peaks: 1\n10 1\nNAME: B\nPRECURSORMZ: 2.0\nNum Peaks: 0\n",
+        encoding="utf-8",
+    )
+    records = list(msp.iter_records(path))
+    assert [r["name"] for r in records] == ["A", "B"]
+    assert records[0]["spectrum"] == [[10.0, 1.0]]
+    assert [r["record_index"] for r in records] == [0, 1]
+
+
+def test_non_utf8_lines_fall_back_to_cp932_and_are_counted(tmp_path):
+    """研究室で手編集された `.msp` は cp932 の化合物名を含みうる。1 行で全体を落とさない。"""
+    path = tmp_path / "lib.msp"
+    path.write_bytes(
+        "NAME: グルタミン酸\n".encode("cp932")
+        + b"PRECURSORMZ: 148.0604\nNum Peaks: 0\n\n"
+        + "NAME: ok\n".encode("utf-8")
+        + b"PRECURSORMZ: 1.0\nNum Peaks: 0\n"
+    )
+    stats: dict = {}
+    records = list(msp.iter_records(path, stats=stats))
+    assert [r["name"] for r in records] == ["グルタミン酸", "ok"]
+    assert stats["non_utf8_lines"] == 1
+
+
+def test_undecodable_bytes_fall_back_to_latin1_instead_of_failing(tmp_path):
+    path = tmp_path / "lib.msp"
+    path.write_bytes(b"NAME: caf\xe9\xff\nPRECURSORMZ: 1.0\nNum Peaks: 0\n")
+    stats: dict = {}
+    records = list(msp.iter_records(path, stats=stats))
+    assert records[0]["name"] == "caf\xe9\xff"
+    assert stats["non_utf8_lines"] == 1
+
+
+def test_a_utf8_bom_does_not_hide_the_first_record(tmp_path):
+    path = tmp_path / "lib.msp"
+    path.write_bytes(b"\xef\xbb\xbf" + _MSP.encode("utf-8"))
+    stats: dict = {}
+    assert [r["name"] for r in msp.iter_records(path, stats=stats)] == ["GABA", "Glutamate"]
+    assert stats["non_utf8_lines"] == 0
