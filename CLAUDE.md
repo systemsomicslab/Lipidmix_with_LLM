@@ -53,7 +53,14 @@ Claude Code 用の `.mcp.json` はこれを絶対パスで指すが、`.git/info
 `LIPIDMIX_KNOWLEDGE_DIR` `LIPIDMIX_PLAYBOOK_DIR` `LIPIDMIX_ANALYSES_DIR` `LIPIDMIX_REPORTS_DIR`（蓄積先。
 NAS 共有運用向け）/ `LIPIDMIX_TRANSPORT` `LIPIDMIX_HOST` `LIPIDMIX_PORT`（HTTP 待受）/ `LIPIDMIX_CAVEAT_MODE` /
 `LIPIDMIX_PLOT_OUTPUT`（描画系ツールの戻り値。既定 `image`。Plotly で自分で描く
-クライアント＝Use-LLLM は `payload` を置く）。
+クライアント＝Use-LLLM は `payload` を置く）/ `MSDIAL_MSP_POS` `MSDIAL_MSP_NEG`
+（研究室の参照ライブラリ `.msp` の置き場所。`library_load(ion_mode=...)` が読む）/
+`LIPIDMIX_LIBRARY_CACHE_DIR`（照合用 SQLite キャッシュの置き場所。既定 `data/.library-cache`）。
+
+**研究室の参照ライブラリは外部流出禁止**。本体はリポジトリの外に置いて環境変数で指し、
+パスを追跡対象の文書・テストに書かない。本体とキャッシュの拡張子は `.gitignore` が
+置き場所を問わず無視し、`tests/test_gitignore_library.py` がその網を縛っている。
+照合の上位候補（化合物名・スコア）がツール戻り値に出るのは許容されている。
 
 ## 構成と、触るときの鉄則
 

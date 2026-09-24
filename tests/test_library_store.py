@@ -287,3 +287,133 @@ def test_candidates_ion_mode_comparison_is_case_insensitive(library):
         assert sorted(r["name"] for r in hits_upper) == ["A", "B"]
     finally:
         s.close()
+
+
+# --------------------------------------------------------------------------
+# 大容量 `.msp`（研究室ライブラリ、pos ≈ 1.2 GB）。
+# --------------------------------------------------------------------------
+_MSP_NO_ION_MODE = textwrap.dedent("""\
+    NAME: NO_MODE
+    PRECURSORMZ: 100.0
+    Num Peaks: 1
+    50.0 999
+
+    NAME: POS
+    PRECURSORMZ: 100.0
+    IONMODE: Positive
+    Num Peaks: 1
+    50.0 999
+
+    NAME: NEG
+    PRECURSORMZ: 100.0
+    IONMODE: Negative
+    Num Peaks: 1
+    50.0 999
+""")
+
+
+def test_records_without_an_ion_mode_survive_the_polarity_filter(tmp_path, monkeypatch):
+    """極性ごとに分かれた `.msp` は IONMODE 欄を持たないことがある。NULL を
+    `ion_mode = ?` で弾くと候補が黙って 0 件になる。極性不明は候補に残す。"""
+    monkeypatch.setenv(store.LIBRARY_CACHE_ENV, str(tmp_path / "cache"))
+    path = tmp_path / "lib.msp"
+    path.write_text(_MSP_NO_ION_MODE, encoding="utf-8")
+    s = store.open_store(path)
+    try:
+        hits = s.candidates(100.0, mz_tol=0.01, ion_mode="positive")
+        assert sorted(r["name"] for r in hits) == ["NO_MODE", "POS"]
+        assert s.summary()["records_without_ion_mode"] == 1
+    finally:
+        s.close()
+
+
+def test_non_utf8_lines_are_recorded_in_the_summary(tmp_path, monkeypatch):
+    monkeypatch.setenv(store.LIBRARY_CACHE_ENV, str(tmp_path / "cache"))
+    path = tmp_path / "lib.msp"
+    path.write_bytes("NAME: グルタミン酸\nPRECURSORMZ: 148.06\nNum Peaks: 0\n".encode("cp932"))
+    s = store.open_store(path)
+    try:
+        assert s.summary()["non_utf8_lines"] == 1
+        assert s.candidates(148.06, mz_tol=0.01)[0]["name"] == "グルタミン酸"
+    finally:
+        s.close()
+
+
+def _count_hashing(monkeypatch):
+    calls = []
+    real = store.source_sha256
+
+    def spy(path):
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(store, "source_sha256", spy)
+    return calls
+
+
+def test_reopening_an_unchanged_source_does_not_rehash_it(library, monkeypatch):
+    """1.2 GB の sha256 を `library_load` のたびに払わない。サイズと更新時刻が
+    前回と同じなら、前回の sha256 を使い回す。"""
+    calls = _count_hashing(monkeypatch)
+    store.open_store(library).close()
+    assert len(calls) == 1
+    s = store.open_store(library)
+    try:
+        assert len(calls) == 1
+        assert s.record_count == 4
+    finally:
+        s.close()
+
+
+def test_a_modified_source_is_rehashed_and_rebuilt(library, monkeypatch):
+    calls = _count_hashing(monkeypatch)
+    store.open_store(library).close()
+    library.write_text(_MSP + "\nNAME: E\nPRECURSORMZ: 300.0\nNum Peaks: 0\n", encoding="utf-8")
+    s = store.open_store(library)
+    try:
+        assert len(calls) == 2
+        assert s.record_count == 5
+    finally:
+        s.close()
+
+
+def test_rebuild_rehashes_even_when_the_source_looks_unchanged(library, monkeypatch):
+    """`rebuild=True` は「元ファイルが壊れている疑い」のときに使う。記憶した
+    sha256 を信じない。"""
+    calls = _count_hashing(monkeypatch)
+    store.open_store(library).close()
+    store.open_store(library, rebuild=True).close()
+    assert len(calls) == 2
+
+
+def test_a_corrupt_digest_index_is_ignored(library, monkeypatch):
+    store.open_store(library).close()
+    (store.cache_dir() / store.DIGEST_INDEX_NAME).write_text("{not json", encoding="utf-8")
+    s = store.open_store(library)
+    try:
+        assert s.record_count == 4
+    finally:
+        s.close()
+
+
+def test_the_cli_prebuilds_the_store_for_the_env_var_library(tmp_path, monkeypatch, capsys):
+    """MCP クライアントのタイムアウトを避けるため、初回の構築は手元で済ませられる。"""
+    monkeypatch.setenv(store.LIBRARY_CACHE_ENV, str(tmp_path / "cache"))
+    lib = tmp_path / "outside" / "lab_neg.msp"
+    lib.parent.mkdir()
+    lib.write_text(_MSP, encoding="utf-8")
+    monkeypatch.setenv("MSDIAL_MSP_NEG", str(lib))
+
+    assert store.main(["--ion-mode", "negative"]) == 0
+
+    out = capsys.readouterr().out
+    assert "lab_neg.msp" in out and "4" in out
+    assert "outside" not in out                     # 置き場所は出さない
+    assert store.store_path_for(lib).exists()
+
+
+def test_the_cli_reports_resolution_errors_without_a_traceback(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(store.LIBRARY_CACHE_ENV, str(tmp_path / "cache"))
+    monkeypatch.setenv("MSDIAL_MSP_NEG", str(tmp_path / "gone.msp"))
+    assert store.main(["--ion-mode", "negative"]) == 2
+    assert "MSP_ENV_NOT_FOUND" in capsys.readouterr().err

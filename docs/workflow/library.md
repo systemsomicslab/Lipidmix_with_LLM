@@ -31,19 +31,32 @@ flowchart TD
 
 ## library_load
 
-前提: なし（`file_path` 省略時はデータディレクトリから自動解決。探索順は
-`*_Loaded.msp2.dbs` → `*.msp`）
+前提: なし。解決順は `file_path` の明示 → `ion_mode` に対応する環境変数
+（`MSDIAL_MSP_POS` / `MSDIAL_MSP_NEG`。研究室の参照ライブラリはリポジトリの外に
+置いてここで指す）→ データディレクトリの `*_Loaded.msp2.dbs` → 設定済みの環境変数
+（両方あれば `MSP_AMBIGUOUS`）→ データディレクトリの `*.msp`（複数あれば
+`MSP_AMBIGUOUS`）。候補を更新日時で黙って選ばない。解決できなければ
+`LibraryPathError` を `code` 付きのエラー戻り値にする。
 状態変更: `session.library.store` / `source_path` を格納。`last_match` は
 `None` にリセットする（別ライブラリへの切り替えで、古い照合結果を新ライブラリの
 ものと取り違えないため）。
 
 構築は元ファイルの sha256 をキーにした SQLite キャッシュへの初回変換で、
 2 回目以降（同一ファイル）は再構築しない。`rebuild=True` で強制再構築する。
+sha256 はキャッシュ置き場の対応表（`.library-digests.json`）に
+サイズ・更新時刻と組で覚え、両方が変わっていなければ計算し直さない
+（`_digest_for()`。`rebuild=True` のときは覚えた値を信じない）。
+`.msp` は 1 行ずつ読み、文字コードは行ごとに UTF-8 → cp932 → latin-1。
+
+同じ構築は MCP の外からも走らせられる（`python -m lipidmix.library.store`、
+`store.main()`。解決規則は同じ `resolve_library_path()`）。初回の構築が
+MCP クライアントのタイムアウトに当たるときに使う。
 
 1. lipidmix/library/tools.py  library_load()
 2. └─ lipidmix/core/path_resolvers.py  resolve_library_path()
 3. └─ lipidmix/library/store.py  open_store()
-4. │  └─ lipidmix/library/store.py  source_sha256()
+4. │  └─ lipidmix/library/store.py  _digest_for()
+   │     └─ lipidmix/library/store.py  source_sha256()  [対応表に無い／変わった時、または rebuild=True]
 5. │  └─ lipidmix/library/store.py  _build()  [未キャッシュ時、または rebuild=True]
 6. │     ├─ lipidmix/library/store.py  _iter_records_for()
 7. │     │  ├─ [.msp] lipidmix/library/msp.py  iter_records()

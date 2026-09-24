@@ -238,29 +238,112 @@ def resolve_dcl_file_path(file_path: str | None = None) -> str | None:
     return _resolve_data_file(".dcl", file_path)
 
 
-def resolve_library_path(file_path: str | None = None) -> str | None:
+#: 極性 → 研究室参照ライブラリ（`.msp`）の置き場所を指す環境変数。
+#: Console の `.lbm2` を指す `MSDIAL_LBM` と同じ流儀で、ライブラリ本体は
+#: リポジトリの外（外部流出禁止の資産）に置き、ここで場所だけを教える。
+LIBRARY_ENV_VARS = {"positive": "MSDIAL_MSP_POS", "negative": "MSDIAL_MSP_NEG"}
+
+
+class LibraryPathError(Exception):
+    """参照ライブラリを 1 つに決められない（または指定先が無い）。
+
+    `code` は機械可読（`LIBRARY_NOT_FOUND` / `MSP_ENV_NOT_FOUND` /
+    `MSP_AMBIGUOUS` / `INVALID_ION_MODE`）。`message` にはファイル名と環境変数名
+    だけを載せ、置き場所（ディレクトリ）は載せない——戻り値は LLM の文脈に入る。
+    """
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _library_from_env(ion_mode: str) -> str | None:
+    """極性の環境変数が指すパス。未設定なら None、指す先が無ければ例外。"""
+    var = LIBRARY_ENV_VARS[ion_mode]
+    value = (os.environ.get(var) or "").strip()
+    if not value:
+        return None
+    if not os.path.isfile(value):
+        raise LibraryPathError(
+            "MSP_ENV_NOT_FOUND",
+            f"環境変数 {var} が指すファイル（{os.path.basename(value)}）がありません。"
+            f"{var} の設定を確認してください。",
+        )
+    return value
+
+
+def resolve_library_path(file_path: str | None = None, *, ion_mode: str | None = None) -> str | None:
     """参照ライブラリのパスを解決するヘルパー。
 
-    探索順は `*_Loaded.msp2.dbs` → `*.msp`。**`*.msp2` と `*.lbm2` は候補にしない**
+    順に:
+
+    1. `file_path` の明示（無いファイルなら `LIBRARY_NOT_FOUND`。以前は data
+       ディレクトリの探索へ黙って落ちて別のライブラリを掴んでいた）。
+    2. `ion_mode` を指定したら、その極性の環境変数（`LIBRARY_ENV_VARS`）。
+       未設定なら 3 以降へ落ちる。
+    3. data ディレクトリの `*_Loaded.msp2.dbs`（その run が実際に使った参照）。
+    4. 極性の環境変数。1 つだけ設定されていればそれ、両方なら `MSP_AMBIGUOUS`
+       （`ion_mode` の指定を求める）。
+    5. data ディレクトリの `*.msp`。複数あれば `MSP_AMBIGUOUS`——pos / neg の
+       ように並ぶファイルを更新日時で黙って選ぶと、極性違いで照合しても候補が
+       少し減るだけで誤りに気づけない。
+
+    何も見つからなければ None。**`*.msp2` と `*.lbm2` は候補にしない**
     ——前者は ASCII `.msp` を指定したときだけ中身が入るので0バイトのことがあり
     （脂質経路では常に0）、後者は脂質専用の in-silico ライブラリで本機能
-    （親水性メタボロミクス）の入口としては出さない。複数バッチ混在時は最新バッチへ
-    絞り、同一種別内の重複は最新版（`_pick_latest`）を採る。明示パスは最優先
-    （既存リゾルバと同じ流儀）。
+    （親水性メタボロミクス）の入口としては出さない。`.dbs` は複数バッチ混在時に
+    最新バッチへ絞り、同一種別内の重複は最新版（`_pick_latest`）を採る。
     """
-    if file_path and os.path.exists(file_path):
-        return file_path
+    if ion_mode is not None:
+        normalized = ion_mode.strip().lower()
+        if normalized not in LIBRARY_ENV_VARS:
+            raise LibraryPathError(
+                "INVALID_ION_MODE",
+                f"ion_mode は {' / '.join(LIBRARY_ENV_VARS)} のどちらかを指定してください"
+                f"（受け取った値: {ion_mode!r}）。",
+            )
+        ion_mode = normalized
+
+    if file_path:
+        if os.path.isfile(file_path):
+            return file_path
+        raise LibraryPathError(
+            "LIBRARY_NOT_FOUND",
+            f"指定された参照ライブラリ（{os.path.basename(file_path)}）がありません。",
+        )
+
+    if ion_mode is not None:
+        from_env = _library_from_env(ion_mode)
+        if from_env:
+            return from_env
 
     dbs_paths = [p for p in list_data_files(extension=".msp2.dbs") if os.path.isfile(p)]
     if dbs_paths:
         dbs_paths = _select_latest_batch(dbs_paths)
         return _pick_latest(dbs_paths)
 
-    msp_paths = [p for p in list_data_files(extension=".msp") if os.path.isfile(p)]
+    configured = [mode for mode, var in LIBRARY_ENV_VARS.items() if (os.environ.get(var) or "").strip()]
+    if len(configured) > 1:
+        names = " / ".join(LIBRARY_ENV_VARS[mode] for mode in configured)
+        raise LibraryPathError(
+            "MSP_AMBIGUOUS",
+            f"参照ライブラリが極性ごとに設定されています（{names}）。"
+            f"ion_mode（{' / '.join(configured)}）を指定してください。",
+        )
+    if configured:
+        return _library_from_env(configured[0])
+
+    msp_paths = sorted(p for p in list_data_files(extension=".msp") if os.path.isfile(p))
     if not msp_paths:
         return None
-    msp_paths = _select_latest_batch(msp_paths)
-    return _pick_latest(msp_paths)
+    if len(msp_paths) > 1:
+        names = ", ".join(os.path.basename(p) for p in msp_paths)
+        raise LibraryPathError(
+            "MSP_AMBIGUOUS",
+            f"データディレクトリに .msp が複数あります（{names}）。file_path で 1 つ指定してください。",
+        )
+    return msp_paths[0]
 
 
 def _filter_arf_spots(

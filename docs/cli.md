@@ -63,6 +63,25 @@ C:/Python314/python.exe -m lipidmix.arf.reader --file "data/AlignmentResult_2026
 C:/Python314/python.exe -m lipidmix.arf2.reader
 ```
 
+## `lipidmix.library.store` — 参照ライブラリの store 事前構築
+
+`library_load` と同じ解決規則でライブラリを選び、照合用の SQLite store を構築する
+（既にあれば開くだけ）。大きな `.msp` の初回構築は MCP クライアントのタイムアウトに
+当たりうるので、手元で 1 度走らせておくと以後の `library_load` はキャッシュを開くだけで
+済む。標準出力にはファイル名・件数・所要秒数を 1 行の JSON で出す（置き場所は出さない）。
+
+| フラグ | 意味 |
+|---|---|
+| `--ion-mode {positive,negative}` | 環境変数 `MSDIAL_MSP_POS` / `MSDIAL_MSP_NEG` のどちらを使うか |
+| `--file <path>` | ライブラリのパス（環境変数より優先） |
+| `--rebuild` | キャッシュと記憶した sha256 を無視して作り直す |
+
+解決できないときは `MSP_AMBIGUOUS` などのコードを標準エラーに出して終了コード 2。
+
+```bash
+C:/Python314/python.exe -m lipidmix.library.store --ion-mode negative
+```
+
 ## テスト
 
 ```bash

@@ -129,6 +129,20 @@
 | `search_params` | `.dbs` 由来なら実測の許容幅と注釈スコアリングのフラグ、`.msp` 由来なら `null`（§14.4） |
 | `source_sha256` | 元ファイルの sha256（store のキャッシュキーと同じ） |
 | `skipped_no_precursor_mz` | precursor m/z が無い（または解釈できなかった）ため読み飛ばしたレコード件数（最終レビュー Important 3。`record_count` には含まれない） |
+| `records_without_ion_mode` | 極性（`IONMODE`）を持たないレコード件数（`record_count` に含まれる）。`library_match_feature` の `ion_mode` 絞り込みはこれらを**極性不明として候補に残す** |
+| `non_utf8_lines` | UTF-8 で読めず cp932（無理なら latin-1）で読んだ `.msp` の行数。0 より多ければ化合物名が化けている可能性がある |
+
+**エラー戻り値**: ライブラリを 1 つに決められないときは `{"status": "error", "code": ..., "message": ...}`
+を返し、store は差し替えない。`code` は `MSP_AMBIGUOUS`（候補が複数。`ion_mode` か
+`file_path` を指定する）/ `MSP_ENV_NOT_FOUND`（環境変数 `MSDIAL_MSP_POS` /
+`MSDIAL_MSP_NEG` の指す先が無い）/ `LIBRARY_NOT_FOUND`（明示した `file_path` が無い）/
+`INVALID_ION_MODE`。`message` にはファイル名と環境変数名だけが入り、置き場所は入らない。
+
+**`records_without_ion_mode`**: 研究室ライブラリのように極性ごとにファイルが分かれて
+いると、ファイル側に `IONMODE` 欄が無いことがある。NULL を絞り込みで弾くと候補が
+黙って 0 件になるので残す。その代わり、極性違いのファイルを読んでも候補が消えずに
+残るので、測定の極性に合ったファイルを読んでいるかは呼び出し側が確かめる
+（0 件より多いときは `note` にもそう出る）。
 
 **`skipped_no_precursor_mz`（Important 3）**: reader（`.msp`/`.dbs`）は
 PRECURSORMZ 欠損・パース失敗を契約どおり `None` に潰すだけで例外にしないが、

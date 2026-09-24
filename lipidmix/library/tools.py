@@ -20,7 +20,7 @@ from lipidmix.analysis.spectral_match import cutoff_mask, match_spectrum, total_
 from lipidmix.arf2.reader import format_spots_as_table
 from lipidmix.core import mcp_errors, session_state
 from lipidmix.core.mcp_core import mcp
-from lipidmix.core.path_resolvers import resolve_dcl_file_path, resolve_library_path
+from lipidmix.core.path_resolvers import LibraryPathError, resolve_dcl_file_path, resolve_library_path
 from lipidmix.core.serialization import json_payload, round_floats
 from lipidmix.dcl.reader import deserialize_dcl, get_msms_by_precursor
 from lipidmix.library.defaults import DEFAULT_MS2_TOL as _DEFAULT_MS2_TOL
@@ -58,9 +58,21 @@ _CANDIDATE_TABLE_COLUMNS = [
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
           structured_output=False)
-def library_load(file_path: str | None = None, rebuild: bool = False) -> str:
-    """参照ライブラリ（`*_Loaded.msp2.dbs` 優先、無ければ `*.msp`）を読み込み、
-    照合用の SQLite store を構築（または既存キャッシュを再利用）する。
+def library_load(file_path: str | None = None, rebuild: bool = False,
+                 ion_mode: str | None = None) -> str:
+    """参照ライブラリを読み込み、照合用の SQLite store を構築（または既存キャッシュを
+    再利用）する。
+
+    解決順: `file_path` の明示 → `ion_mode`（`"positive"` / `"negative"`）に対応する
+    環境変数 `MSDIAL_MSP_POS` / `MSDIAL_MSP_NEG` → データディレクトリの
+    `*_Loaded.msp2.dbs` → 設定済みの環境変数（両方あれば `ion_mode` を求める）→
+    データディレクトリの `*.msp`。候補が 1 つに決まらなければ `code` 付きの
+    エラー（`MSP_AMBIGUOUS` など）を返し、黙って選ばない。一度に保持する
+    ライブラリは 1 つだけ——測定の極性に合わせて `ion_mode` を指定する。
+
+    初回の構築は大きな `.msp`（1 GB 級）で数分かかる。MCP のタイムアウトに当たる
+    なら、手元で `python -m lipidmix.library.store --ion-mode <極性>` を 1 度
+    走らせておけば、以後はキャッシュを開くだけで済む。
 
     `library_match_feature` の前提。別ライブラリへ切り替えると直近の照合結果
     （`library_plot_mirror` が読む座標）は破棄する——古い照合を新ライブラリの
@@ -70,7 +82,10 @@ def library_load(file_path: str | None = None, rebuild: bool = False) -> str:
     疑いがあるときなど）。通常は不要——store は元ファイルの sha256 をキーに
     キャッシュされるため、内容が変わらない限り再構築しない。
     """
-    resolved = resolve_library_path(file_path)
+    try:
+        resolved = resolve_library_path(file_path, ion_mode=ion_mode)
+    except LibraryPathError as exc:
+        return json_payload({"status": "error", "code": exc.code, "message": exc.message})
     if not resolved:
         return json_payload({
             "status": "error",
@@ -80,7 +95,10 @@ def library_load(file_path: str | None = None, rebuild: bool = False) -> str:
     try:
         store_obj = open_store(resolved, rebuild=rebuild)
     except Exception as exc:  # noqa: BLE001 - 壊れたライブラリは文言で返す（MCP が扱いやすい）
-        return json_payload({"status": "error", "message": f"参照ライブラリの読み込みに失敗しました: {exc}"})
+        # OSError の文言は置き場所（フルパス）を含む。研究室ライブラリの置き場所は
+        # 戻り値（LLM の文脈）に出さないので、ディレクトリ部分を伏せる。
+        detail = f"{type(exc).__name__}: {exc}".replace(str(Path(resolved).parent), "…")
+        return json_payload({"status": "error", "message": f"参照ライブラリの読み込みに失敗しました: {detail}"})
 
     # 古い store の sqlite3 接続を閉じてから差し替える（Minor 8: 閉じずに上書きすると
     # library_load を繰り返すたびに接続が漏れる。LibraryStore.close() は最初から
@@ -109,6 +127,8 @@ def library_load(file_path: str | None = None, rebuild: bool = False) -> str:
         "compound_classes": store_obj.compound_class_counts(_TOP_COMPOUND_CLASSES),
         "search_params": search_params,
         "skipped_no_precursor_mz": skipped,
+        "records_without_ion_mode": summary["records_without_ion_mode"],
+        "non_utf8_lines": summary["non_utf8_lines"],
     }
     notes = []
     if search_params is None:
@@ -123,6 +143,17 @@ def library_load(file_path: str | None = None, rebuild: bool = False) -> str:
         notes.append(
             f"precursor m/z が無い（または解釈できなかった）レコードを {skipped} 件、"
             f"読み飛ばしました（record_count には含まれません）。"
+        )
+    if summary["records_without_ion_mode"]:
+        notes.append(
+            f"極性（IONMODE）の無いレコードが {summary['records_without_ion_mode']} 件あります。"
+            f"library_match_feature の ion_mode 絞り込みはこれらを極性不明として候補に残します"
+            f"——極性ごとに分かれたライブラリなら、測定の極性に合ったファイルを読んでいるか確認してください。"
+        )
+    if summary["non_utf8_lines"]:
+        notes.append(
+            f"UTF-8 で読めない行が {summary['non_utf8_lines']} 行あり、cp932（無理なら latin-1）で"
+            f"読みました。化合物名が化けている可能性があります。"
         )
     if notes:
         payload["note"] = " ".join(notes)

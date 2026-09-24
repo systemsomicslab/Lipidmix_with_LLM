@@ -12,7 +12,12 @@
 キャッシュは孤立するだけで、参照されなくなる）。
 
 構築は一時ファイルに書いてから rename する（途中で落ちた store を次回の
-`open_store` が掴まないため）。
+`open_store` が掴まないため）。sha256 はサイズ・更新時刻と組でキャッシュ置き場の
+`DIGEST_INDEX_NAME` に覚え、変わっていなければ計算し直さない（研究室の `.msp` は
+1 GB 級で、全読みを `library_load` のたびに払わないため）。
+
+`python -m lipidmix.library.store --ion-mode negative` で MCP の外から事前構築できる
+（`main()`。初回構築が MCP クライアントのタイムアウトに当たるとき用）。
 
 deps: record 経由で `.dbs` / `.msp` の iter_records、mcp_core（leaf の DATA_DIR
 解決のみ）。session_state / tools_* は import しない。
@@ -30,6 +35,7 @@ from typing import Iterable
 import msgpack
 
 from lipidmix.core import mcp_core
+from lipidmix.core.atomic_io import atomic_write_json, read_text_stable
 from lipidmix.library import dbs as dbs_reader
 from lipidmix.library import msp as msp_reader
 
@@ -49,8 +55,17 @@ CREATE TABLE record(
     ion_mode TEXT, adduct TEXT, rt REAL, formula TEXT, inchikey TEXT,
     smiles TEXT, compound_class TEXT, ontology TEXT, spectrum BLOB NOT NULL,
     library_id TEXT, record_index INTEGER);
-CREATE INDEX record_mz ON record(precursor_mz);
 """
+
+#: 索引は全件を入れ終えてから張る（1 件ごとに B-tree を更新するより速い。
+#: 研究室の pos ライブラリは 1.2 GB ある）。
+_INDEX = "CREATE INDEX record_mz ON record(precursor_mz);"
+
+#: 元ファイルの（絶対パス, サイズ, 更新時刻）→ sha256 の対応表。キャッシュ置き場に置く。
+#: サイズと更新時刻が前回と同じなら sha256 を計算し直さない——1.2 GB の全読みを
+#: `library_load` のたびに払わないため。内容の同一性を保証するのは構築時に計算した
+#: sha256 で、この表はその計算を省く近道にすぎない（壊れていたら黙って捨てて計算し直す）。
+DIGEST_INDEX_NAME = ".library-digests.json"
 
 _HASH_CHUNK_SIZE = 1 << 20  # 1 MiB
 
@@ -92,11 +107,12 @@ def store_path_for(path: str | Path, cache_dir: Path | None = None) -> Path:
     return _store_path_for_digest(path, digest, cache_dir)
 
 
-def _iter_records_for(path: Path) -> Iterable[dict]:
+def _iter_records_for(path: Path, stats: dict) -> Iterable[dict]:
     """拡張子でリーダを選ぶ。`.msp` はテキスト、それ以外（`.dbs`/`.lbm2`）は
-    `dbs.iter_records` に任せる（ZIP かどうかは向こうが中身で判定する）。"""
+    `dbs.iter_records` に任せる（ZIP かどうかは向こうが中身で判定する）。
+    `.msp` のときだけ `stats` に `non_utf8_lines` が入る。"""
     if path.suffix.lower() == ".msp":
-        return msp_reader.iter_records(path)
+        return msp_reader.iter_records(path, stats=stats)
     return dbs_reader.iter_records(path)
 
 
@@ -109,47 +125,57 @@ def _build(source_path: Path, dest_path: Path, digest: str) -> None:
     try:
         conn = sqlite3.connect(str(tmp_path))
         try:
+            # 書いている最中のファイルは完成まで誰も開かない（rename で差し替える）ので、
+            # ジャーナルと同期書き込みは要らない。途中で落ちたら一時ファイルごと捨てる。
+            conn.execute("PRAGMA journal_mode = OFF")
+            conn.execute("PRAGMA synchronous = OFF")
             conn.executescript(_SCHEMA)
             ion_mode_counts: dict[str, int] = {}
             record_count = 0
             skipped_no_precursor_mz = 0
-            with conn:
-                for record in _iter_records_for(source_path):
+            reader_stats: dict = {}
+
+            def rows():
+                nonlocal record_count, skipped_no_precursor_mz
+                for record in _iter_records_for(source_path, reader_stats):
                     if record["precursor_mz"] is None:
                         # `record.precursor_mz REAL NOT NULL`（Important 3 レビュー）:
-                        # reader（`.msp` の `msp.py:_read_record` / `.dbs` の
+                        # reader（`.msp` の `msp.iter_records` / `.dbs` の
                         # `_to_record`）は PRECURSORMZ 欠損・パース失敗を契約どおり
                         # None に潰すだけで例外にしない。公開 `.msp`（MassBank 由来
                         # など）には precursor を持たないレコードが普通に混ざるので、
                         # 1 件の欠損でライブラリ全体を使用不能にせず読み飛ばす。
                         skipped_no_precursor_mz += 1
                         continue
-                    spectrum_blob = msgpack.packb(record["spectrum"] or [])
-                    conn.execute(
-                        "INSERT INTO record(name, precursor_mz, ion_mode, adduct, rt, "
-                        "formula, inchikey, smiles, compound_class, ontology, spectrum, "
-                        "library_id, record_index) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            record["name"],
-                            record["precursor_mz"],
-                            record["ion_mode"],
-                            record["adduct"],
-                            record["rt"],
-                            record["formula"],
-                            record["inchikey"],
-                            record["smiles"],
-                            record["compound_class"],
-                            record["ontology"],
-                            spectrum_blob,
-                            record["library_id"],
-                            record["record_index"],
-                        ),
-                    )
                     record_count += 1
                     ion_mode = record["ion_mode"]
                     if ion_mode:
                         ion_mode_counts[ion_mode] = ion_mode_counts.get(ion_mode, 0) + 1
+                    yield (
+                        record["name"],
+                        record["precursor_mz"],
+                        record["ion_mode"],
+                        record["adduct"],
+                        record["rt"],
+                        record["formula"],
+                        record["inchikey"],
+                        record["smiles"],
+                        record["compound_class"],
+                        record["ontology"],
+                        msgpack.packb(record["spectrum"] or []),
+                        record["library_id"],
+                        record["record_index"],
+                    )
+
+            with conn:
+                conn.executemany(
+                    "INSERT INTO record(name, precursor_mz, ion_mode, adduct, rt, "
+                    "formula, inchikey, smiles, compound_class, ontology, spectrum, "
+                    "library_id, record_index) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows(),
+                )
+                conn.execute(_INDEX)
 
                 search_params = None
                 storage_meta = dbs_reader.read_storage_meta(source_path)
@@ -163,6 +189,7 @@ def _build(source_path: Path, dest_path: Path, digest: str) -> None:
                     ("source_path", json.dumps(str(source_path))),
                     ("search_params", json.dumps(search_params)),
                     ("skipped_no_precursor_mz", json.dumps(skipped_no_precursor_mz)),
+                    ("non_utf8_lines", json.dumps(reader_stats.get("non_utf8_lines", 0))),
                 ]
                 conn.executemany("INSERT INTO meta(key, value) VALUES (?, ?)", meta_rows)
         finally:
@@ -184,6 +211,7 @@ class LibraryStore:
         self._source_sha256: str = meta["source_sha256"]
         self._search_params = meta["search_params"]
         self._skipped_no_precursor_mz: int = meta["skipped_no_precursor_mz"]
+        self._non_utf8_lines: int = meta["non_utf8_lines"]
 
     def _load_meta(self) -> dict:
         rows = dict(self._conn.execute("SELECT key, value FROM meta").fetchall())
@@ -196,6 +224,8 @@ class LibraryStore:
             # 同じまま残っている）には無いキーなので、rebuild なしで開いたときに
             # KeyError にしない。
             "skipped_no_precursor_mz": json.loads(rows.get("skipped_no_precursor_mz", "0")),
+            # 同上。以前のリーダは厳密な UTF-8 で読んでいたので、読めた古いキャッシュは 0 で正しい。
+            "non_utf8_lines": json.loads(rows.get("non_utf8_lines", "0")),
         }
 
     def summary(self) -> dict:
@@ -205,6 +235,9 @@ class LibraryStore:
             "source_sha256": self._source_sha256,
             "search_params": self._search_params,
             "skipped_no_precursor_mz": self._skipped_no_precursor_mz,
+            # 極性不明のレコード。`candidates(ion_mode=...)` はこれを弾かずに残す。
+            "records_without_ion_mode": self.record_count - sum(self._ion_modes.values()),
+            "non_utf8_lines": self._non_utf8_lines,
         }
 
     def compound_class_counts(self, top_n: int = 10) -> list[dict]:
@@ -249,7 +282,10 @@ class LibraryStore:
             # BINARY 照合のまま呼び、常に 0 件になっていた。呼び出し側で `lower()`
             # を撒くのではなくここで正規化する——呼び出し側が増えるたびに同じ穴が
             # 開くのを防ぐため）。
-            query += " AND ion_mode = ? COLLATE NOCASE"
+            # `ion_mode IS NULL` は「極性不明」として残す。極性ごとに分かれた
+            # `.msp`（研究室ライブラリ）は IONMODE 欄を持たないことがあり、
+            # NULL を弾くと候補が黙って 0 件になる。
+            query += " AND (ion_mode = ? COLLATE NOCASE OR ion_mode IS NULL)"
             params.append(ion_mode)
         if rt is not None:
             if rt_tol is None:
@@ -290,11 +326,42 @@ class LibraryStore:
         self._conn.close()
 
 
-def open_store(path: str | Path, *, cache_dir: Path | None = None, rebuild: bool = False) -> LibraryStore:
-    """`path` の store を開く。無ければ（または `rebuild=True` なら）構築してから開く。"""
-    source_path = Path(path)
+def _read_digest_index(base: Path) -> dict:
+    try:
+        data = json.loads(read_text_stable(base / DIGEST_INDEX_NAME))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _digest_for(source_path: Path, base: Path, *, trust_index: bool) -> str:
+    """元ファイルの sha256。サイズと更新時刻が記憶と同じなら計算を省く。"""
+    stat = source_path.stat()
+    key = str(source_path.resolve())
+    fingerprint = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    index = _read_digest_index(base)
+    entry = index.get(key)
+    if (trust_index and isinstance(entry, dict) and isinstance(entry.get("sha256"), str)
+            and all(entry.get(k) == v for k, v in fingerprint.items())):
+        return entry["sha256"]
     digest = source_sha256(source_path)
+    index[key] = {**fingerprint, "sha256": digest}
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(base / DIGEST_INDEX_NAME, index)
+    except OSError:
+        pass  # 近道を覚えられないだけ。次回また計算する。
+    return digest
+
+
+def open_store(path: str | Path, *, cache_dir: Path | None = None, rebuild: bool = False) -> LibraryStore:
+    """`path` の store を開く。無ければ（または `rebuild=True` なら）構築してから開く。
+
+    `rebuild=True` は元ファイルの破損を疑うときに使うので、記憶した sha256 も信じない。
+    """
+    source_path = Path(path)
     base = cache_dir if cache_dir is not None else globals()["cache_dir"]()
+    digest = _digest_for(source_path, base, trust_index=not rebuild)
     dest_path = _store_path_for_digest(source_path, digest, cache_dir=base)
 
     if rebuild or not dest_path.exists():
@@ -308,3 +375,60 @@ def open_store(path: str | Path, *, cache_dir: Path | None = None, rebuild: bool
         # 例外を投げたときに Connection を漏らさない。
         conn.close()
         raise
+
+
+def main(argv: list[str] | None = None) -> int:
+    """store を MCP の外で事前構築する CLI。
+
+    研究室ライブラリ（pos ≈ 1.2 GB）の初回構築は数分かかり、MCP クライアントの
+    タイムアウトに当たりうる。手元で 1 度走らせておけば、以後の `library_load` は
+    キャッシュを開くだけで済む。パスの解決規則は `library_load` と同じ
+    （`resolve_library_path`）。出力にはファイル名だけを出し、置き場所は出さない。
+
+        python -m lipidmix.library.store --ion-mode negative
+        python -m lipidmix.library.store --file <path> --rebuild
+    """
+    import argparse
+    import sys
+    import time
+
+    from lipidmix.core.path_resolvers import LibraryPathError, resolve_library_path
+
+    parser = argparse.ArgumentParser(prog="python -m lipidmix.library.store",
+                                     description="参照ライブラリの照合用 store を事前構築する。")
+    parser.add_argument("--ion-mode", choices=("positive", "negative"),
+                        help="環境変数 MSDIAL_MSP_POS / MSDIAL_MSP_NEG のどちらを使うか")
+    parser.add_argument("--file", help="ライブラリのパス（環境変数より優先）")
+    parser.add_argument("--rebuild", action="store_true", help="キャッシュを無視して作り直す")
+    args = parser.parse_args(argv)
+
+    try:
+        resolved = resolve_library_path(args.file, ion_mode=args.ion_mode)
+    except LibraryPathError as exc:
+        print(f"{exc.code}: {exc.message}", file=sys.stderr)
+        return 2
+    if not resolved:
+        print("LIBRARY_NOT_FOUND: 参照ライブラリが見つかりませんでした。", file=sys.stderr)
+        return 2
+
+    started = time.perf_counter()
+    library = open_store(resolved, rebuild=args.rebuild)
+    try:
+        summary = library.summary()
+    finally:
+        library.close()
+    print(json.dumps({
+        "file": Path(resolved).name,
+        "record_count": summary["record_count"],
+        "ion_modes": summary["ion_modes"],
+        "records_without_ion_mode": summary["records_without_ion_mode"],
+        "skipped_no_precursor_mz": summary["skipped_no_precursor_mz"],
+        "non_utf8_lines": summary["non_utf8_lines"],
+        "source_sha256": summary["source_sha256"][:16],
+        "elapsed_s": round(time.perf_counter() - started, 1),
+    }, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -446,3 +446,77 @@ def test_the_caption_stays_quiet_when_every_peak_was_scored(fresh_session, monke
     caption = tools.library_plot_mirror()[0]
 
     assert "cutoff" not in caption
+
+
+# --------------------------------------------------------------------------
+# 研究室ライブラリ（pos / neg の 2 ファイルを環境変数で指す）。
+# --------------------------------------------------------------------------
+_MSP_NEG_NO_MODE = textwrap.dedent("""\
+    NAME: Glutamate
+    PRECURSORMZ: 146.0459
+    Num Peaks: 1
+    102.0561 999
+""")
+
+
+def _lab_libraries(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    pos = outside / "lab_pos.msp"
+    neg = outside / "lab_neg.msp"
+    pos.write_text(_MSP, encoding="utf-8")
+    neg.write_text(_MSP_NEG_NO_MODE, encoding="utf-8")
+    monkeypatch.setenv("MSDIAL_MSP_POS", str(pos))
+    monkeypatch.setenv("MSDIAL_MSP_NEG", str(neg))
+    return pos, neg
+
+
+def test_library_load_picks_the_env_var_for_the_polarity(fresh_session, monkeypatch):
+    (fresh_session / "lib.msp").unlink()
+    _lab_libraries(fresh_session, monkeypatch)
+
+    payload = json.loads(tools.library_load(ion_mode="negative"))
+
+    assert payload["status"] == "success"
+    assert payload["file"] == "lab_neg.msp"
+    assert "outside" not in json.dumps(payload, ensure_ascii=False)   # 置き場所は出さない
+
+
+def test_library_load_asks_for_a_polarity_when_both_are_configured(fresh_session, monkeypatch):
+    (fresh_session / "lib.msp").unlink()
+    _lab_libraries(fresh_session, monkeypatch)
+
+    payload = json.loads(tools.library_load())
+
+    assert payload["status"] == "error"
+    assert payload["code"] == "MSP_AMBIGUOUS"
+    assert session_state.session.library.store is None
+
+
+def test_library_load_reports_an_env_var_pointing_nowhere(fresh_session, monkeypatch):
+    monkeypatch.setenv("MSDIAL_MSP_NEG", str(fresh_session / "gone.msp"))
+    payload = json.loads(tools.library_load(ion_mode="negative"))
+    assert payload["status"] == "error"
+    assert payload["code"] == "MSP_ENV_NOT_FOUND"
+
+
+def test_records_without_a_polarity_are_announced_and_still_matched(fresh_session, monkeypatch):
+    """IONMODE 欄の無い neg ライブラリでも ion_mode="negative" の照合で候補が出る。"""
+    (fresh_session / "lib.msp").unlink()
+    _lab_libraries(fresh_session, monkeypatch)
+
+    payload = json.loads(tools.library_load(ion_mode="negative"))
+    assert payload["records_without_ion_mode"] == 1
+    assert "極性" in payload["note"]
+
+    monkeypatch.setattr(tools, "_measured_spectrum", lambda *a, **k: [[102.0561, 999.0]])
+    match = json.loads(tools.library_match_feature(146.0459, ion_mode="negative"))
+    assert match["n_candidates"] == 1
+
+
+def test_non_utf8_lines_are_announced(fresh_session):
+    (fresh_session / "lib.msp").write_bytes(
+        "NAME: グルタミン酸\nPRECURSORMZ: 148.06\nNum Peaks: 0\n".encode("cp932"))
+    payload = json.loads(tools.library_load())
+    assert payload["non_utf8_lines"] == 1
+    assert "UTF-8" in payload["note"]
